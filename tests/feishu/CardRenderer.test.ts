@@ -58,6 +58,9 @@ describe("CardRenderer", () => {
       cwd: "D:\\dev\\acp-bot",
       currentTask: {
         id: "sess_1",
+        title: "Startup task metadata",
+        model: "gpt-test",
+        reasoningEffort: "high",
         agentName: "codex",
         sessionStatus: "running",
         lastTurnStatus: "running",
@@ -71,10 +74,32 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("Codex");
     expect(serialized).toContain("D:\\\\dev\\\\acp-bot");
     expect(serialized).toContain("sess_1");
+    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain("gpt-test");
+    expect(serialized).toContain("思考强度");
+    expect(serialized).toContain("high");
+    expect(serialized).toContain("Startup task metadata");
+    expect(serialized).toContain("任务 ID");
     expect(serialized).toContain("下一条消息时恢复");
     expect(serialized).toContain("/new");
     expect(serialized).toContain("/status");
     expect(objects.filter((item) => item.tag === "button" || item.tag === "action")).toHaveLength(0);
+  });
+
+  test("renders default model and automatic effort when there is no current task", () => {
+    const card = new CardRenderer().renderStartupStatus({
+      startedAt: new Date("2026-07-15T05:45:00.000Z"),
+      defaultAgentName: "codex",
+      defaultAgentTitle: "Codex",
+      cwd: "D:\\dev\\acp-bot",
+    });
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain("默认");
+    expect(serialized).toContain("思考强度");
+    expect(serialized).toContain("自动");
+    expect(serialized).toContain("下一条普通消息会创建新任务");
   });
 
   test("renders visible reasoning and one collapsed panel per tool in chronological order", () => {

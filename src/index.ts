@@ -19,6 +19,7 @@ import { AcpRuntimeAdapter } from "./runtime/AcpRuntimeAdapter.js";
 import { AgentRuntimeRegistry } from "./runtime/AgentRuntimeRegistry.js";
 import { StateStore } from "./state/StateStore.js";
 import { StartupNotifier } from "./startup/StartupNotifier.js";
+import { SessionMetadataHydrator } from "./startup/SessionMetadataHydrator.js";
 import { startFeishu } from "./startup/startFeishu.js";
 
 const processStartedAt = new Date();
@@ -55,11 +56,12 @@ if (feishuOutbound) {
   });
   routes.push({ matches: (contextKey) => !contextKey.startsWith("console:"), outbound: feishuOutbound, presenter });
   const defaultAgentName = config.defaults.agent!;
+  const metadataHydrator = new SessionMetadataHydrator(store, runtimes);
   startupNotifier = new StartupNotifier(store, feishuOutbound, renderer, logger, {
     defaultAgentName,
     defaultAgentTitle: config.agents[defaultAgentName]?.title ?? defaultAgentName,
     cwd: path.resolve(config.defaults.cwd),
-  });
+  }, metadataHydrator);
 }
 
 const consoleEnabled = config.console.enabled || transport === "console";

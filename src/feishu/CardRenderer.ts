@@ -11,6 +11,9 @@ export interface StartupStatusView {
   cwd: string;
   currentTask?: {
     id: string;
+    title?: string;
+    model?: string;
+    reasoningEffort?: string;
     agentName: string;
     sessionStatus: string;
     lastTurnStatus?: string;
@@ -24,10 +27,13 @@ export class CardRenderer {
       `**启动时间**：${formatStartupTime(view.startedAt)}`,
       `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
       `**工作目录**：${inlineCode(view.cwd)}`,
+      `**当前模型**：${inlineCode(view.currentTask?.model ?? "默认")}`,
+      `**思考强度**：${inlineCode(view.currentTask?.reasoningEffort ?? "自动")}`,
     ];
     if (view.currentTask) {
       lines.push(
-        `**当前任务**：${inlineCode(view.currentTask.id)}`,
+        `**当前任务**：${inlineCode(view.currentTask.title ?? view.currentTask.id)}`,
+        `**任务 ID**：${inlineCode(view.currentTask.id)}`,
         `**任务 Agent**：${inlineCode(view.currentTask.agentName)}`,
         `**任务状态**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)}`,
       );

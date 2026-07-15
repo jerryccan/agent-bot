@@ -1,12 +1,16 @@
 import type { Logger } from "pino";
 import { CardRenderer } from "../feishu/CardRenderer.js";
 import type { FeishuOutbound } from "../feishu/types.js";
-import type { StateStore } from "../state/StateStore.js";
+import type { SessionRecord, StateStore } from "../state/StateStore.js";
 
 export interface StartupNotificationOptions {
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
+}
+
+export interface StartupTaskMetadataHydrator {
+  hydrate(session: SessionRecord): Promise<SessionRecord>;
 }
 
 export class StartupNotifier {
@@ -16,6 +20,7 @@ export class StartupNotifier {
     private readonly renderer: CardRenderer,
     private readonly logger: Pick<Logger, "warn">,
     private readonly options: StartupNotificationOptions,
+    private readonly metadataHydrator?: StartupTaskMetadataHydrator,
   ) {}
 
   async notify(startedAt: Date): Promise<void> {
@@ -28,7 +33,17 @@ export class StartupNotifier {
     }
 
     await Promise.all(contexts.map(async (context) => {
-      const session = context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
+      let session = context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
+      if (session && this.metadataHydrator) {
+        try {
+          session = await this.metadataHydrator.hydrate(session);
+        } catch (error) {
+          this.logger.warn(
+            { error, sessionId: session.localSessionId },
+            "Failed to hydrate startup task metadata.",
+          );
+        }
+      }
       const card = this.renderer.renderStartupStatus({
         startedAt,
         defaultAgentName: this.options.defaultAgentName,
@@ -37,6 +52,9 @@ export class StartupNotifier {
         currentTask: session
           ? {
               id: session.localSessionId,
+              title: session.title,
+              model: session.model,
+              reasoningEffort: session.reasoningEffort,
               agentName: session.agentName,
               sessionStatus: session.status,
               lastTurnStatus: session.lastTurnStatus,

@@ -50,7 +50,14 @@ describe("StartupNotifier", () => {
       cwd: options.cwd,
       status: "running",
     });
-    store.updateRuntimeSession("sess_1", { runtimeKind: "codex", remoteSessionId: "thread_1", lastTurnStatus: "running" });
+    store.updateRuntimeSession("sess_1", {
+      runtimeKind: "codex",
+      remoteSessionId: "thread_1",
+      title: "Current task title",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      lastTurnStatus: "running",
+    });
     store.setCurrentSession("chat_id:c1", "sess_1");
     const sendInteractiveCard = vi.fn(async (_contextKey: string, _card: Record<string, unknown>) => "om_startup");
     const logger = { warn: vi.fn() };
@@ -61,6 +68,42 @@ describe("StartupNotifier", () => {
     expect(sendInteractiveCard).toHaveBeenCalledOnce();
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:c1", expect.any(Object));
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("sess_1");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("Current task title");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("gpt-test");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("high");
+  });
+
+  test("continues startup delivery when legacy metadata hydration fails", async () => {
+    const store = createStore();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "sess_1",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: options.cwd,
+      status: "ready",
+    });
+    store.updateRuntimeSession("sess_1", { runtimeKind: "codex", remoteSessionId: "thread_1" });
+    store.setCurrentSession("chat_id:c1", "sess_1");
+    const sendInteractiveCard = vi.fn(async () => "om_startup");
+    const logger = { warn: vi.fn() };
+    const hydrator = { hydrate: vi.fn(async () => { throw new Error("read failed"); }) };
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard),
+      new CardRenderer(),
+      logger,
+      options,
+      hydrator,
+    );
+
+    await expect(notifier.notify(new Date("2026-07-15T05:45:00.000Z"))).resolves.toBeUndefined();
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "sess_1" }),
+      "Failed to hydrate startup task metadata.",
+    );
   });
 
   test("isolates a failed chat delivery and continues notifying other chats", async () => {
