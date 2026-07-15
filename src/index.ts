@@ -1,3 +1,4 @@
+import path from "node:path";
 import { AcpProcessManager } from "./acp/AcpProcessManager.js";
 import { AcpSessionManager } from "./acp/AcpSessionManager.js";
 import { CodexProcessManager } from "./codex/CodexProcessManager.js";
@@ -17,7 +18,10 @@ import { ProxySessionController } from "./proxy/ProxySessionController.js";
 import { AcpRuntimeAdapter } from "./runtime/AcpRuntimeAdapter.js";
 import { AgentRuntimeRegistry } from "./runtime/AgentRuntimeRegistry.js";
 import { StateStore } from "./state/StateStore.js";
+import { StartupNotifier } from "./startup/StartupNotifier.js";
+import { startFeishu } from "./startup/startFeishu.js";
 
+const processStartedAt = new Date();
 const config = loadConfig();
 const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
@@ -39,15 +43,23 @@ const transport = resolveFeishuTransport(config.feishu);
 const routes: OutboundRoute[] = [];
 let feishuConnector: FeishuConnector | undefined;
 let consoleConnector: ConsoleConnector | undefined;
+let startupNotifier: StartupNotifier | undefined;
 
 const feishuOutbound = transport === "sdk" ? new FeishuMessageClient(config, logger) : undefined;
 if (feishuOutbound) {
-  const presenter = new FeishuTurnPresenter(feishuOutbound, store, new CardRenderer(), {
+  const renderer = new CardRenderer();
+  const presenter = new FeishuTurnPresenter(feishuOutbound, store, renderer, {
     normalIntervalMs: 2_000,
     criticalGapMs: 500,
     onError: (error) => logger.warn({ error }, "Failed to update Codex progress card."),
   });
   routes.push({ matches: (contextKey) => !contextKey.startsWith("console:"), outbound: feishuOutbound, presenter });
+  const defaultAgentName = config.defaults.agent!;
+  startupNotifier = new StartupNotifier(store, feishuOutbound, renderer, logger, {
+    defaultAgentName,
+    defaultAgentTitle: config.agents[defaultAgentName]?.title ?? defaultAgentName,
+    cwd: path.resolve(config.defaults.cwd),
+  });
 }
 
 const consoleEnabled = config.console.enabled || transport === "console";
@@ -70,7 +82,11 @@ if (consoleEnabled) consoleConnector = new ConsoleConnector(controller, logger);
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
-await feishuConnector?.start();
+if (feishuConnector && startupNotifier) {
+  await startFeishu(feishuConnector, startupNotifier, processStartedAt);
+} else {
+  await feishuConnector?.start();
+}
 consoleConnector?.start();
 
 let shuttingDown = false;
