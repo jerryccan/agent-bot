@@ -22,6 +22,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
   readonly kind = "acp" as const;
   private readonly sessions = new Map<string, RuntimeSession>();
   private readonly activeTurns = new Map<string, ActiveAcpTurn>();
+  private readonly toolsBySession = new Map<string, Map<string, ToolState>>();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly approvals = new Map<
     string,
@@ -89,6 +90,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     const turnId = createId("turn");
     session.activeTurnId = turnId;
     this.activeTurns.set(sessionId, { turnId, finalText: "" });
+    this.toolsBySession.set(sessionId, new Map());
     this.emit({ type: "turn_started", sessionId, turnId, startedAt: Date.now() });
     void this.acp.prompt(sessionId, text).then(
       () => {
@@ -96,11 +98,13 @@ export class AcpRuntimeAdapter implements AgentRuntime {
         if (!active || active.turnId !== turnId) return;
         session.activeTurnId = undefined;
         this.activeTurns.delete(sessionId);
+        this.toolsBySession.delete(sessionId);
         this.emit({ type: "turn_completed", sessionId, turnId, finalResponse: active.finalText });
       },
       (error: unknown) => {
         session.activeTurnId = undefined;
         this.activeTurns.delete(sessionId);
+        this.toolsBySession.delete(sessionId);
         this.emit({
           type: "turn_failed",
           sessionId,
@@ -121,6 +125,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     const session = this.requireSession(sessionId);
     session.activeTurnId = undefined;
     this.activeTurns.delete(sessionId);
+    this.toolsBySession.delete(sessionId);
     this.emit({ type: "turn_cancelled", sessionId, turnId });
   }
 
@@ -128,6 +133,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     await this.acp.close(sessionId);
     this.sessions.delete(sessionId);
     this.activeTurns.delete(sessionId);
+    this.toolsBySession.delete(sessionId);
   }
 
   async setModel(): Promise<void> {
@@ -164,6 +170,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
   close(): void {
     this.sessions.clear();
     this.activeTurns.clear();
+    this.toolsBySession.clear();
     this.approvals.clear();
   }
 
@@ -177,12 +184,28 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       return;
     }
     if (updateType === "tool_call" || updateType === "tool_call_update") {
+      const id = typeof update.toolCallId === "string" ? update.toolCallId : createId("tool");
+      const tools = this.toolsBySession.get(sessionId) ?? new Map<string, ToolState>();
+      this.toolsBySession.set(sessionId, tools);
+      const previous = tools.get(id);
+      const rawInput = recordField(update, "rawInput");
+      const command = stringField(rawInput, "command") ?? previous?.command;
+      const description = stringField(rawInput, "description");
+      const status = update.status === "failed" ? "failed" : update.status === "completed" ? "completed" : "running";
+      const output = extractToolOutput(update) ?? previous?.output;
+      const error = extractToolError(update, status, output) ?? previous?.error;
       const tool: ToolState = {
-        id: typeof update.toolCallId === "string" ? update.toolCallId : createId("tool"),
-        title: typeof update.title === "string" ? update.title : "ACP tool",
-        kind: typeof update.kind === "string" ? update.kind : "tool",
-        status: update.status === "failed" ? "failed" : update.status === "completed" ? "completed" : "running",
+        ...previous,
+        id,
+        title: description ?? (typeof update.title === "string" ? update.title : previous?.title) ?? command ?? "ACP tool",
+        kind: typeof update.kind === "string" ? update.kind : previous?.kind ?? (command ? "command" : "tool"),
+        status,
+        command,
+        output: status === "failed" ? previous?.output : output,
+        error,
+        exitCode: extractExitCode(update) ?? previous?.exitCode,
       };
+      tools.set(id, tool);
       this.emit({
         type: updateType === "tool_call" ? "tool_started" : "tool_updated",
         sessionId,
@@ -205,4 +228,69 @@ export class AcpRuntimeAdapter implements AgentRuntime {
 
 function isRecord(value: JsonValue | undefined): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function recordField(record: Record<string, JsonValue> | undefined, key: string): Record<string, JsonValue> | undefined {
+  const value = field(record, key);
+  return isRecord(value) ? value : undefined;
+}
+
+function stringField(record: Record<string, JsonValue> | undefined, key: string): string | undefined {
+  const value = field(record, key);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberField(record: Record<string, JsonValue> | undefined, key: string): number | undefined {
+  const value = field(record, key);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function field(record: Record<string, JsonValue> | undefined, key: string): JsonValue | undefined {
+  if (!record) return undefined;
+  const normalizedKey = normalizeKey(key);
+  const entry = Object.entries(record).find(([candidate]) => normalizeKey(candidate) === normalizedKey);
+  return entry?.[1];
+}
+
+function normalizeKey(value: string): string {
+  return value.replaceAll(/[_-]/g, "").toLowerCase();
+}
+
+function extractToolOutput(update: Record<string, JsonValue>): string | undefined {
+  const content = update.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const nested = recordField(item, "content");
+        const value = stringField(nested, "text") ?? stringField(item, "text");
+        return value ? [value] : [];
+      })
+      .join("\n")
+      .trim();
+    if (text) return text;
+  }
+
+  const output = recordField(recordField(update, "rawOutput"), "output") ?? recordField(update, "rawOutput");
+  const stdout = stringField(output, "stdout");
+  const stderr = stringField(output, "stderr");
+  const combined = [stdout, stderr].filter((value): value is string => Boolean(value)).join("\n").trim();
+  return combined || undefined;
+}
+
+function extractToolError(
+  update: Record<string, JsonValue>,
+  status: ToolState["status"],
+  output: string | undefined,
+): string | undefined {
+  const direct = typeof update.error === "string" ? update.error : undefined;
+  if (direct) return direct;
+  if (status !== "failed") return undefined;
+  const outputRecord = recordField(recordField(update, "rawOutput"), "output") ?? recordField(update, "rawOutput");
+  return stringField(outputRecord, "stderr") ?? output;
+}
+
+function extractExitCode(update: Record<string, JsonValue>): number | undefined {
+  const output = recordField(recordField(update, "rawOutput"), "output") ?? recordField(update, "rawOutput");
+  return numberField(output, "exitCode") ?? numberField(output, "code");
 }
