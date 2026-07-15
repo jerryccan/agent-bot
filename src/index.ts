@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 import { AcpProcessManager } from "./acp/AcpProcessManager.js";
 import { AcpSessionManager } from "./acp/AcpSessionManager.js";
@@ -62,9 +61,8 @@ if (feishuOutbound) {
   startupNotifier = new StartupNotifier(store, feishuOutbound, renderer, logger, {
     defaultAgentName,
     defaultAgentTitle: defaultAgent?.title ?? defaultAgentName,
-    cwd: defaultAgent?.kind === "codex"
-      ? path.join(os.homedir(), "Documents", "Codex")
-      : path.resolve(config.defaults.cwd),
+    cwd: path.resolve(config.defaults.cwd),
+    workspaceKind: defaultAgent?.kind === "codex" ? "projectless" : "project",
   }, metadataHydrator);
 }
 

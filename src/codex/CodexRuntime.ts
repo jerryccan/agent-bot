@@ -12,6 +12,7 @@ import type {
 } from "../runtime/types.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
+import { detectProjectlessWorkspace } from "./ProjectlessWorkspace.js";
 
 const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
   "When capturing any screenshot on Windows, use one fresh process and make it Per-Monitor DPI Aware V2 before loading System.Windows.Forms, System.Drawing, or UI Automation, and before calling any screen, window, or bounds API.",
@@ -74,7 +75,8 @@ export class CodexRuntime implements AgentRuntime {
     const response = await client.request<ThreadResponse>("thread/start", {
       cwd: input.cwd,
       model: input.model,
-      developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
+      threadSource: "user",
+      ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
     });
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
@@ -89,7 +91,7 @@ export class CodexRuntime implements AgentRuntime {
       threadId: input.remoteSessionId,
       cwd: input.cwd,
       model: input.model,
-      developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
+      ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
     });
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
@@ -106,7 +108,7 @@ export class CodexRuntime implements AgentRuntime {
         threadId: session.remoteSessionId,
         cwd: session.cwd,
         model: session.model,
-        developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
+        ...threadLifecycleParams(session.cwd),
         ...permissionParams(session.permissionMode),
       });
       session.needsResume = false;
@@ -412,6 +414,24 @@ function permissionParams(mode: PermissionMode): { approvalPolicy: "never" | "on
   return mode === "auto"
     ? { approvalPolicy: "never", sandbox: "danger-full-access" }
     : { approvalPolicy: "on-request", sandbox: "workspace-write" };
+}
+
+function threadLifecycleParams(cwd: string): {
+  developerInstructions: string;
+} {
+  const projectless = detectProjectlessWorkspace(cwd);
+  if (!projectless) return { developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS };
+  const projectlessInstructions = [
+    "### Projectless Chat",
+    "This projectless thread starts in a generated directory under the user's Documents/Codex folder.",
+    "Prefer answering inline in chat unless using local files would make the result more useful.",
+    `Use work/ for intermediate files, scratch analysis, scripts, drafts, and temporary assets. Use ${projectless.outputDirectory} only for user-facing deliverables that should appear as outputs.`,
+    `When referring to saved deliverables in the final response, link only files from ${projectless.outputDirectory}.`,
+    "Do not write directly in the home directory unless the user explicitly asks.",
+  ].join("\n");
+  return {
+    developerInstructions: `${WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS}\n\n${projectlessInstructions}`,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

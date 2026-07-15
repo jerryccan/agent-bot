@@ -9,6 +9,7 @@ export interface StartupStatusView {
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
+  workspaceKind?: "project" | "projectless";
   currentTask?: {
     id: string;
     title?: string;
@@ -26,7 +27,9 @@ export class CardRenderer {
       "**状态**：🟢 在线",
       `**启动时间**：${formatStartupTime(view.startedAt)}`,
       `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
-      `**工作目录**：${inlineCode(view.cwd)}`,
+      view.workspaceKind === "projectless"
+        ? "**任务范围**：未指定项目"
+        : `**工作目录**：${inlineCode(view.cwd)}`,
       `**当前模型**：${inlineCode(view.currentTask?.model ?? "默认")}`,
       `**思考强度**：${inlineCode(view.currentTask?.reasoningEffort ?? "自动")}`,
     ];

@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
@@ -49,6 +51,28 @@ describe("CodexRuntime", () => {
       expect(instructions).toContain("UI Automation");
       expect(instructions).toContain("bitmap dimensions");
     }
+  });
+
+  test("starts generated Codex task directories with projectless workspace metadata", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const workspaceRoot = path.join(os.homedir(), "Documents", "Codex");
+    const cwd = path.join(workspaceRoot, "2026-07-15", "new-chat");
+
+    await runtime.createSession({
+      localSessionId: "projectless",
+      agentName: "codex",
+      cwd,
+      permissionMode: "auto",
+    });
+
+    const request = client.requests.find((item) => item.method === "thread/start");
+    expect(request?.params).toEqual(expect.objectContaining({
+      cwd,
+      threadSource: "user",
+      developerInstructions: expect.stringMatching(/Projectless Chat[\s\S]*outputs/),
+    }));
+    expect(request?.params).not.toHaveProperty("runtimeWorkspaceRoots");
   });
 
   test("creates a thread and emits active turn deltas and completion", async () => {

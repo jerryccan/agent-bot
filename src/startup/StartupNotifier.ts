@@ -7,6 +7,7 @@ export interface StartupNotificationOptions {
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
+  workspaceKind?: "project" | "projectless";
 }
 
 export interface StartupTaskMetadataHydrator {
@@ -49,6 +50,7 @@ export class StartupNotifier {
         defaultAgentName: this.options.defaultAgentName,
         defaultAgentTitle: this.options.defaultAgentTitle,
         cwd: this.options.cwd,
+        workspaceKind: this.options.workspaceKind,
         currentTask: session
           ? {
               id: session.localSessionId,

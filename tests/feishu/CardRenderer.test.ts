@@ -92,6 +92,7 @@ describe("CardRenderer", () => {
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
       cwd: "D:\\dev\\acp-bot",
+      workspaceKind: "projectless",
     });
     const serialized = JSON.stringify(card);
 
@@ -99,6 +100,9 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("默认");
     expect(serialized).toContain("思考强度");
     expect(serialized).toContain("自动");
+    expect(serialized).toContain("任务范围");
+    expect(serialized).toContain("未指定项目");
+    expect(serialized).not.toContain("D:\\\\dev\\\\acp-bot");
     expect(serialized).toContain("下一条普通消息会创建新任务");
   });
 

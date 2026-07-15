@@ -63,7 +63,7 @@ defaults:
   cwd: "."
 ```
 
-`cwd` 是 ACP agent 的默认工作目录。Codex 新任务未指定目录时使用 `~/Documents/Codex`；也可以用 `/new codex D:\dev\project` 显式指定目录。已有任务的工作目录不会在运行中改变。
+`cwd` 是 ACP agent 的默认工作目录。Codex 新任务未指定目录时会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表；也可以用 `/new codex D:\dev\project` 显式创建项目任务。已有任务的工作目录不会在运行中改变。
 
 ## 飞书应用配置
 

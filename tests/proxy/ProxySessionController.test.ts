@@ -15,6 +15,7 @@ import { StateStore } from "../../src/state/StateStore.js";
 const tempDirs: string[] = [];
 const cleanups: Array<() => void> = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0)) cleanup();
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -141,14 +142,22 @@ describe("ProxySessionController", () => {
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
   });
 
-  test("uses the Codex task directory when a new Codex task omits cwd", async () => {
+  test("creates a Desktop-compatible projectless workspace when a new Codex task omits cwd", async () => {
     const { controller, runtime } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "acp-projectless-home-"));
+    tempDirs.push(home);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
 
     await controller.onMessage(message("/new"));
 
-    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      cwd: path.join(os.homedir(), "Documents", "Codex"),
-    }));
+    const input = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const projectlessRoot = path.join(home, "Documents", "Codex");
+    const relativeCwd = path.relative(projectlessRoot, input.cwd);
+    expect(relativeCwd).toMatch(/^\d{4}-\d{2}-\d{2}[\\/]new-chat$/);
+    expect(input.cwd).not.toBe(projectlessRoot);
+    expect(fs.statSync(input.cwd).isDirectory()).toBe(true);
+    expect(fs.statSync(path.join(input.cwd, "work")).isDirectory()).toBe(true);
+    expect(fs.statSync(path.join(input.cwd, "outputs")).isDirectory()).toBe(true);
   });
 
   test("keeps the first ordinary prompt as the task title fallback", async () => {

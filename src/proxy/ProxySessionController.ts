@@ -1,6 +1,6 @@
-import os from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
+import { createProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import type { AppConfig } from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
@@ -167,7 +167,7 @@ export class ProxySessionController {
     let record = this.currentSession(contextKey);
     if (!record) {
       const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-      record = await this.createSession(contextKey, context.defaultAgent, undefined, false, true);
+      record = await this.createSession(contextKey, context.defaultAgent, undefined, false, true, text);
     }
     const configuredRuntime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
     if (!configuredRuntime.getSession(record.localSessionId)) {
@@ -229,13 +229,13 @@ export class ProxySessionController {
     cwd: string | undefined,
     announce: boolean,
     prepareTurn: boolean,
+    prompt?: string,
   ): Promise<SessionRecord> {
     const agent = this.ensureAgent(agentName);
     const localSessionId = createId("sess");
-    const defaultCwd = agent.kind === "codex"
-      ? path.join(os.homedir(), "Documents", "Codex")
-      : this.config.defaults.cwd;
-    const sessionCwd = path.resolve(cwd ?? defaultCwd);
+    const sessionCwd = cwd === undefined && agent.kind === "codex"
+      ? createProjectlessWorkspace({ prompt }).cwd
+      : path.resolve(cwd ?? this.config.defaults.cwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
     this.store.setCurrentSession(contextKey, localSessionId);
     this.outbound.registerSession(localSessionId, contextKey);
