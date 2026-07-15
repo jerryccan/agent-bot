@@ -1,9 +1,8 @@
 export function truncateText(text: string, maxLength = 8000): string {
-  if (text.length <= maxLength) {
-    return text;
-  }
-
-  return `${text.slice(0, maxLength)}\n\n...已截断，完整内容请查看本地日志。`;
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 0) return "";
+  if (maxLength <= 3) return ".".repeat(maxLength);
+  return `${text.slice(0, maxLength - 3)}...`;
 }
 
 export function codeBlock(text: string, language = ""): string {
