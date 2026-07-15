@@ -10,13 +10,30 @@ function collectObjects(value: unknown): Array<Record<string, unknown>> {
 }
 
 function state(): TurnViewState {
-  const completed = { id: "ok", title: "npm test", kind: "command", status: "completed" as const, output: "all passed" };
-  const failed = { id: "bad", title: "npm run lint", kind: "command", status: "failed" as const, error: "命令失败" };
+  const completed = {
+    id: "ok",
+    title: "npm test",
+    kind: "command",
+    status: "completed" as const,
+    command: "npm test",
+    output: "\u001b[32mall passed\u001b[0m",
+    exitCode: 0,
+  };
+  const failed = {
+    id: "bad",
+    title: "npm run lint",
+    kind: "command",
+    status: "failed" as const,
+    command: "npm run lint",
+    error: "命令失败",
+    exitCode: 1,
+  };
   return {
     sessionId: "s1",
     turnId: "turn_1",
     status: "running",
     startedAt: 1_000,
+    durationMs: 51_600,
     progressText: "正在运行测试",
     assistantText: "",
     plan: [{ text: "执行测试", status: "in_progress" }],
@@ -66,6 +83,10 @@ describe("CardRenderer", () => {
     const panels = objects.filter((item) => item.tag === "collapsible_panel");
     const toolPanels = panels.filter((panel) => !panelTitle(panel).startsWith("文件变更"));
     const serialized = JSON.stringify(card);
+    const markdownContents = objects
+      .filter((item) => item.tag === "markdown")
+      .map((item) => String(item.content ?? ""))
+      .join("\n");
     const topLevel = ((card as { elements: unknown[] }).elements).map((element) => JSON.stringify(element));
     const activityOrder = ["先检查测试配置", "npm test", "再检查代码风格", "npm run lint"].map((text) =>
       topLevel.findIndex((element) => element.includes(text)),
@@ -75,17 +96,44 @@ describe("CardRenderer", () => {
     expect(toolPanels.every((panel) => panel.expanded === false)).toBe(true);
     expect(activityOrder).toEqual([...activityOrder].sort((left, right) => left - right));
     expect(new Set(activityOrder).size).toBe(4);
-    expect(serialized).toContain("命令失败");
-    expect(serialized).toContain("命令");
-    expect(serialized).toContain("npm test");
-    expect(serialized).toContain("结果摘要");
-    expect(serialized).toContain("all passed");
+    expect(markdownContents).toContain("51.6s");
+    expect(markdownContents).toContain("先检查测试配置");
+    expect(markdownContents).toContain("```\nnpm test\n```");
+    expect(markdownContents).toContain("```\nall passed\n```");
+    expect(markdownContents).toContain("```\n命令失败\n```");
+    for (const label of [
+      "**状态**",
+      "**耗时**",
+      "**💭 思考**",
+      "**工具**",
+      "**命令**",
+      "**退出码**",
+      "**结果摘要**",
+      "**错误摘要**",
+    ]) {
+      expect(markdownContents).not.toContain(label);
+    }
+    expect(markdownContents).not.toContain("\u001b");
+    expect(markdownContents).not.toContain("完整内容请查看本地日志");
     expect(serialized).not.toContain("turn_details");
     expect(serialized).not.toContain("查看详情");
     expect(serialized).not.toContain("turn_cancel");
     expect(serialized).not.toContain("已完成的工具（");
     expect(serialized).not.toContain("失败的工具（");
-    expect(serialized).toContain("/cancel");
+    expect(serialized).not.toContain("/cancel");
+  });
+
+  test("uses a compact trailing ellipsis in long tool headers", () => {
+    const running = state();
+    const command = `Get-Content ${"x".repeat(150)}`;
+    const active = { id: "long", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: active.id, tool: active }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel");
+
+    expect(panelTitle(panel ?? {})).toMatch(/\.\.\.$/);
+    expect(panelTitle(panel ?? {})).not.toContain("已截断");
   });
 
   test("shows the active tool prominently and uses a completed header on completion", () => {

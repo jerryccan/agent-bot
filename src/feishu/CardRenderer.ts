@@ -44,7 +44,7 @@ export class CardRenderer {
     ];
 
     if (state.plan.length > 0) {
-      elements.push(markdown(`**计划**\n${state.plan.map(renderPlanStep).join("\n")}`));
+      elements.push(markdown(state.plan.map(renderPlanStep).join("\n")));
     }
     elements.push(...turnActivities(state).flatMap(renderActivity));
     if (state.fileSummary.length > 0) {
@@ -58,8 +58,8 @@ export class CardRenderer {
     if (state.approval) {
       const request = state.approval;
       elements.push(markdown([
-        `**需要确认：${request.title}**`,
-        request.command ? `\`${request.command.replaceAll("`", "'")}\`` : undefined,
+        request.title,
+        request.command ? codeBlock(request.command, 800) : undefined,
         request.reason,
       ].filter(Boolean).join("\n")));
       elements.push({
@@ -79,11 +79,7 @@ export class CardRenderer {
       });
     }
     if (state.error) {
-      elements.push(markdown(`**错误**\n${truncateText(state.error, 2_000)}`));
-    }
-
-    if (!isTerminal(state.status)) {
-      elements.push(markdown("需要停止时，发送 `/cancel`。"));
+      elements.push(markdown(codeBlock(state.error, 2_000)));
     }
 
     return this.baseCard(turnTitle(state.status), turnTemplate(state.status), elements);
@@ -92,9 +88,9 @@ export class CardRenderer {
   renderTurnDetails(state: TurnViewState): Record<string, unknown> {
     return this.baseCard("Codex 执行详情", "blue", [
       markdown(renderTurnSummary(state)),
-      ...(state.plan.length ? [markdown(`**计划**\n${state.plan.map(renderPlanStep).join("\n")}`)] : []),
+      ...(state.plan.length ? [markdown(state.plan.map(renderPlanStep).join("\n"))] : []),
       ...turnActivities(state).flatMap(renderActivity),
-      ...(state.assistantText ? [markdown(`**生成中的回复**\n${truncateText(state.assistantText, 3_000)}`)] : []),
+      ...(state.assistantText ? [markdown(truncateText(state.assistantText, 3_000))] : []),
     ]);
   }
 
@@ -163,7 +159,7 @@ export class CardRenderer {
 
 function renderTurnSummary(state: TurnViewState): string {
   const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
-  return `**状态**：${statusLabel(state.status)}\n**耗时**：${formatDuration(elapsed)}`;
+  return formatDuration(elapsed);
 }
 
 function renderPlanStep(step: TurnViewState["plan"][number]): string {
@@ -174,7 +170,7 @@ function renderPlanStep(step: TurnViewState["plan"][number]): string {
 function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
   if (activity.kind === "reasoning") {
     const text = activity.text.trim();
-    return text ? [markdown(`**💭 思考**\n${truncateText(text, 2_000)}`)] : [];
+    return text ? [markdown(truncateText(text, 2_000))] : [];
   }
   return [toolPanel(activity.tool)];
 }
@@ -212,19 +208,14 @@ function toolPanel(tool: ToolState): Record<string, unknown> {
 }
 
 function renderToolDetails(tool: ToolState): string {
-  const parts = [`**工具**：${inlineCode(tool.title)}`, `**状态**：${toolStatusLabel(tool)}`];
-  const command = tool.command ?? (tool.kind === "command" ? tool.title : undefined);
-  if (command) parts.push(`**命令**\n${codeBlock(command, 800)}`);
-  if (tool.exitCode !== undefined) parts.push(`**退出码**：${tool.exitCode}`);
-  if (tool.startedAt !== undefined && tool.completedAt !== undefined) {
-    parts.push(`**耗时**：${formatDuration(Math.max(0, tool.completedAt - tool.startedAt))}`);
-  }
-  if (tool.files?.length) {
-    parts.push(`**文件**\n${tool.files.map((file) => `- ${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n")}`);
-  }
-  if (tool.error) parts.push(`**错误摘要**\n${codeBlock(tool.error, 1_200)}`);
-  else if (tool.output) parts.push(`**结果摘要**\n${codeBlock(tool.output, 1_200)}`);
-  return parts.join("\n");
+  const command = tool.command ?? tool.title;
+  const fileSummary = tool.files?.length
+    ? tool.files.map((file) => `${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n")
+    : undefined;
+  const result = tool.error ?? tool.output ?? fileSummary;
+  return [codeBlock(command, 800), result ? codeBlock(result, 1_200) : undefined]
+    .filter((part): part is string => part !== undefined)
+    .join("\n");
 }
 
 function toolPanelTitle(tool: ToolState): string {
@@ -239,14 +230,13 @@ function toolTemplate(tool: ToolState): string {
   return "green";
 }
 
-function toolStatusLabel(tool: ToolState): string {
-  if (tool.status === "failed") return "失败";
-  if (tool.status === "running") return "执行中";
-  return "已完成";
+function codeBlock(value: string, maxLength: number): string {
+  const clean = stripAnsi(value).trim();
+  return `\`\`\`\n${truncateText(clean, maxLength).replaceAll("```", "''' ")}\n\`\`\``;
 }
 
-function codeBlock(value: string, maxLength: number): string {
-  return `\`\`\`\n${truncateText(value.trim(), maxLength).replaceAll("```", "''' ")}\n\`\`\``;
+function stripAnsi(value: string): string {
+  return value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 function inlineCode(value: string): string {
@@ -294,23 +284,6 @@ function turnTemplate(status: TurnViewStatus): string {
   if (status === "cancelled") return "grey";
   if (status === "waiting_for_approval") return "orange";
   return "blue";
-}
-
-function statusLabel(status: TurnViewStatus): string {
-  const labels: Record<TurnViewStatus, string> = {
-    starting: "正在启动",
-    running: "正在思考",
-    tool_running: "正在执行工具",
-    waiting_for_approval: "等待确认",
-    completed: "已完成",
-    cancelled: "已停止",
-    failed: "失败",
-  };
-  return labels[status];
-}
-
-function isTerminal(status: TurnViewStatus): boolean {
-  return status === "completed" || status === "cancelled" || status === "failed";
 }
 
 function formatDuration(milliseconds: number): string {
