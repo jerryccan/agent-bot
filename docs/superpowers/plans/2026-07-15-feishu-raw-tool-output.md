@@ -114,7 +114,7 @@ Run: `npm test`, `npm run typecheck`, and `npm run build`.
 
 Expected: all tests pass and both TypeScript commands exit successfully.
 
-- [ ] **Step 6: Commit and deploy**
+- [x] **Step 6: Commit and deploy**
 
 ```text
 git add src/utils/markdown.ts tests/utils/markdown.test.ts src/feishu/CardRenderer.ts tests/feishu/CardRenderer.test.ts docs/superpowers/plans/2026-07-15-feishu-raw-tool-output.md
