@@ -39,6 +39,8 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("all passed");
     expect(serialized).not.toContain("turn_details");
     expect(serialized).not.toContain("查看详情");
+    expect(serialized).not.toContain("turn_cancel");
+    expect(serialized).toContain("/cancel");
   });
 
   test("shows the active tool prominently and uses a completed header on completion", () => {

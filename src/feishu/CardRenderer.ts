@@ -61,15 +61,7 @@ export class CardRenderer {
     }
 
     if (!isTerminal(state.status)) {
-      elements.push({
-        tag: "action",
-        actions: [{
-          tag: "button",
-          text: { tag: "plain_text", content: "停止" },
-          type: "danger",
-          value: { action: "turn_cancel", sessionId: state.sessionId, turnId: state.turnId },
-        }],
-      });
+      elements.push(markdown("需要停止时，发送 `/cancel`。"));
     }
 
     return this.baseCard(turnTitle(state.status), turnTemplate(state.status), elements);

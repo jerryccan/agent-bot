@@ -39,7 +39,7 @@ Expected: FAIL because the current card still contains `turn_details` and omits 
 
 - [ ] **Step 3: Implement the minimal renderer change**
 
-Remove the redundant detail button, retain stop/approval actions, and render a bounded labeled summary:
+Remove the redundant detail/stop buttons, render `/cancel` guidance for active turns, retain approval actions only for explicit confirmation mode, and render a bounded labeled summary:
 
 ```ts
 const command = tool.command ?? (tool.kind === "command" ? tool.title : undefined);
@@ -111,6 +111,6 @@ In one SQLite transaction, set its `default_agent` to `codex` and clear `current
 
 Start the server with the feature worktree config and main `.env`; verify the Feishu WebSocket and local console startup log entries.
 
-- [ ] **Step 5: Verify card callback configuration and a real command turn**
+- [ ] **Step 5: Verify a real command turn**
 
-Enable Feishu App → Events & Callbacks → Callback Configuration if still disabled. Send a Feishu prompt that causes a shell command and verify the completed tool panel shows the concrete command and result summary without resending historical final messages.
+Send a Feishu prompt that causes a shell command and verify the completed tool panel shows the concrete command and result summary without callback-only normal controls or resent historical final messages.
