@@ -26,31 +26,31 @@
 **Interfaces:**
 - Produces: `WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS: string` used as `developerInstructions` in app-server thread requests.
 
-- [ ] **Step 1: Write the failing protocol-level test**
+- [x] **Step 1: Write the failing protocol-level test**
 
 Create and resume sessions through `CodexRuntime`, simulate an app-server disconnect, then start another turn. Assert every `thread/start` and `thread/resume` request contains `developerInstructions` with both `SetProcessDpiAwarenessContext` and `-4`.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npx vitest run tests/codex/CodexRuntime.test.ts`
 
 Expected: FAIL because current thread requests omit `developerInstructions`.
 
-- [ ] **Step 3: Implement the minimal runtime instruction**
+- [x] **Step 3: Implement the minimal runtime instruction**
 
 Add a single constant explaining Per-Monitor DPI Aware V2 capture, and include `developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS` in `thread/start` and both `thread/resume` request objects.
 
-- [ ] **Step 4: Run focused and full verification**
+- [x] **Step 4: Run focused and full verification**
 
 Run: `npx vitest run tests/codex/CodexRuntime.test.ts`, `npm test`, `npm run typecheck`, and `npm run build`.
 
 Expected: all tests pass and both TypeScript commands exit successfully.
 
-- [ ] **Step 5: Restart and run a live DPI capture**
+- [x] **Step 5: Restart and run a live DPI capture**
 
 Restart `acp-bot`, ask the active Feishu Codex session to capture the complete dual-monitor desktop, inspect the generated PNG dimensions, and confirm they equal the DPI-aware virtual bounds reported by Windows.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add src/codex/CodexRuntime.ts tests/codex/CodexRuntime.test.ts docs/superpowers/specs/2026-07-15-windows-dpi-aware-screenshot-design.md docs/superpowers/plans/2026-07-15-windows-dpi-aware-screenshot.md

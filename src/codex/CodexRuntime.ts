@@ -11,6 +11,12 @@ import type {
 } from "../runtime/types.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
 
+const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
+  "When capturing screenshots on Windows, make the fresh screenshot process Per-Monitor DPI Aware V2 before loading System.Windows.Forms, querying screen bounds, or calling Graphics.CopyFromScreen.",
+  "Call user32!SetProcessDpiAwarenessContext((IntPtr)-4) in that same process, then use the physical monitor or virtual-desktop bounds reported after DPI awareness is enabled.",
+  "Validate that the saved image dimensions cover the complete requested physical capture region; do not use DPI-virtualized logical bounds.",
+].join(" ");
+
 export interface AppServerClient {
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
   notify(method: string, params?: unknown): void;
@@ -63,6 +69,7 @@ export class CodexRuntime implements AgentRuntime {
     const response = await client.request<ThreadResponse>("thread/start", {
       cwd: input.cwd,
       model: input.model,
+      developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
       ...permissionParams(input.permissionMode),
     });
     const session = this.makeSession(input, response.thread.id, response.model);
@@ -76,6 +83,7 @@ export class CodexRuntime implements AgentRuntime {
       threadId: input.remoteSessionId,
       cwd: input.cwd,
       model: input.model,
+      developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
       ...permissionParams(input.permissionMode),
     });
     const session = this.makeSession(input, response.thread.id, response.model);
@@ -91,6 +99,7 @@ export class CodexRuntime implements AgentRuntime {
         threadId: session.remoteSessionId,
         cwd: session.cwd,
         model: session.model,
+        developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
         ...permissionParams(session.permissionMode),
       });
       session.needsResume = false;

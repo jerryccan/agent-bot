@@ -3,6 +3,47 @@ import type { AgentEvent } from "../../src/runtime/types.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
 
 describe("CodexRuntime", () => {
+  test("adds DPI-aware Windows screenshot instructions to every thread lifecycle request", async () => {
+    const client = new FakeAppServerClient();
+    let disconnect: ((error: Error) => void) | undefined;
+    const runtime = new CodexRuntime({
+      getClient: async () => client,
+      close: vi.fn(),
+      onDisconnect: (listener) => {
+        disconnect = listener;
+        return () => { disconnect = undefined; };
+      },
+    }, logger());
+
+    await runtime.createSession({
+      localSessionId: "created",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.resumeSession({
+      localSessionId: "restored",
+      remoteSessionId: "thr_restored",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.startTurn("created", "first");
+    disconnect?.(new Error("process exited"));
+    await runtime.startTurn("created", "second");
+
+    const lifecycleRequests = client.requests.filter(
+      (request) => request.method === "thread/start" || request.method === "thread/resume",
+    );
+    expect(lifecycleRequests).toHaveLength(3);
+    for (const request of lifecycleRequests) {
+      expect(request.params).toEqual(expect.objectContaining({
+        developerInstructions: expect.stringContaining("SetProcessDpiAwarenessContext"),
+      }));
+      expect((request.params as { developerInstructions: string }).developerInstructions).toContain("-4");
+    }
+  });
+
   test("creates a thread and emits active turn deltas and completion", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
