@@ -100,6 +100,7 @@ describe("CardRenderer", () => {
     expect(markdownContents).toContain("先检查测试配置");
     expect(markdownContents).toContain("```\nnpm test\n```");
     expect(markdownContents).toContain("```\nall passed\n```");
+    expect(markdownContents).toContain("```\nnpm test\n```\n\n```\nall passed\n```");
     expect(markdownContents).toContain("```\n命令失败\n```");
     for (const label of [
       "**状态**",

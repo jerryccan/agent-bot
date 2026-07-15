@@ -215,7 +215,7 @@ function renderToolDetails(tool: ToolState): string {
   const result = tool.error ?? tool.output ?? fileSummary;
   return [codeBlock(command, 800), result ? codeBlock(result, 1_200) : undefined]
     .filter((part): part is string => part !== undefined)
-    .join("\n");
+    .join("\n\n");
 }
 
 function toolPanelTitle(tool: ToolState): string {
