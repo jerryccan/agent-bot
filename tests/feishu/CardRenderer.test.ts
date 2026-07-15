@@ -10,6 +10,8 @@ function collectObjects(value: unknown): Array<Record<string, unknown>> {
 }
 
 function state(): TurnViewState {
+  const completed = { id: "ok", title: "npm test", kind: "command", status: "completed" as const, output: "all passed" };
+  const failed = { id: "bad", title: "npm run lint", kind: "command", status: "failed" as const, error: "命令失败" };
   return {
     sessionId: "s1",
     turnId: "turn_1",
@@ -18,8 +20,14 @@ function state(): TurnViewState {
     progressText: "正在运行测试",
     assistantText: "",
     plan: [{ text: "执行测试", status: "in_progress" }],
-    completedTools: [{ id: "ok", title: "npm test", kind: "command", status: "completed", output: "all passed" }],
-    failedTools: [{ id: "bad", title: "npm run lint", kind: "command", status: "failed", error: "命令失败" }],
+    activities: [
+      { kind: "reasoning", id: "reasoning:r1:0", text: "先检查测试配置" },
+      { kind: "tool", id: "ok", tool: completed },
+      { kind: "reasoning", id: "reasoning:r2:0", text: "再检查代码风格" },
+      { kind: "tool", id: "bad", tool: failed },
+    ],
+    completedTools: [completed],
+    failedTools: [failed],
     fileSummary: [{ path: "src/index.ts", additions: 5, deletions: 2 }],
   };
 }
@@ -52,13 +60,21 @@ describe("CardRenderer", () => {
     expect(objects.filter((item) => item.tag === "button" || item.tag === "action")).toHaveLength(0);
   });
 
-  test("keeps tool details inside native panels without a callback-only details action", () => {
+  test("renders visible reasoning and one collapsed panel per tool in chronological order", () => {
     const card = new CardRenderer().renderTurn(state());
     const objects = collectObjects(card);
     const panels = objects.filter((item) => item.tag === "collapsible_panel");
+    const toolPanels = panels.filter((panel) => !panelTitle(panel).startsWith("文件变更"));
     const serialized = JSON.stringify(card);
+    const topLevel = ((card as { elements: unknown[] }).elements).map((element) => JSON.stringify(element));
+    const activityOrder = ["先检查测试配置", "npm test", "再检查代码风格", "npm run lint"].map((text) =>
+      topLevel.findIndex((element) => element.includes(text)),
+    );
 
-    expect(panels).toEqual(expect.arrayContaining([expect.objectContaining({ expanded: false }), expect.objectContaining({ expanded: true })]));
+    expect(toolPanels).toHaveLength(2);
+    expect(toolPanels.every((panel) => panel.expanded === false)).toBe(true);
+    expect(activityOrder).toEqual([...activityOrder].sort((left, right) => left - right));
+    expect(new Set(activityOrder).size).toBe(4);
     expect(serialized).toContain("命令失败");
     expect(serialized).toContain("命令");
     expect(serialized).toContain("npm test");
@@ -67,15 +83,23 @@ describe("CardRenderer", () => {
     expect(serialized).not.toContain("turn_details");
     expect(serialized).not.toContain("查看详情");
     expect(serialized).not.toContain("turn_cancel");
+    expect(serialized).not.toContain("已完成的工具（");
+    expect(serialized).not.toContain("失败的工具（");
     expect(serialized).toContain("/cancel");
   });
 
   test("shows the active tool prominently and uses a completed header on completion", () => {
     const running = state();
     running.activeTool = { id: "active", title: "查看仓库", kind: "command", status: "running", command: "rg --files" };
+    running.activities.push({ kind: "tool", id: "active", tool: running.activeTool });
     expect(JSON.stringify(new CardRenderer().renderTurn(running))).toContain("查看仓库");
 
     const completed = { ...state(), status: "completed" as const, completedAt: 4_000, durationMs: 3_000 };
     expect(JSON.stringify(new CardRenderer().renderTurn(completed))).toContain("已完成");
   });
 });
+
+function panelTitle(panel: Record<string, unknown>): string {
+  const header = panel.header as { title?: { content?: string } } | undefined;
+  return header?.title?.content ?? "";
+}

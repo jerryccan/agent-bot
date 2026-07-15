@@ -1,7 +1,7 @@
 import type { JsonValue } from "../acp/acpTypes.js";
 import type { RuntimeSession } from "../acp/AcpSessionManager.js";
 import type { ToolState } from "../runtime/types.js";
-import type { TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
+import type { TurnActivity, TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
 import { truncateText } from "../utils/markdown.js";
 
 export interface StartupStatusView {
@@ -46,18 +46,7 @@ export class CardRenderer {
     if (state.plan.length > 0) {
       elements.push(markdown(`**计划**\n${state.plan.map(renderPlanStep).join("\n")}`));
     }
-    if (state.progressText) {
-      elements.push(markdown(`**当前进展**\n${truncateText(state.progressText, 2_000)}`));
-    }
-    if (state.activeTool) {
-      elements.push(toolPanel("正在执行", [state.activeTool], true, "blue"));
-    }
-    if (state.failedTools.length > 0) {
-      elements.push(toolPanel(`失败的工具（${state.failedTools.length}）`, state.failedTools, true, "red"));
-    }
-    if (state.completedTools.length > 0) {
-      elements.push(toolPanel(`已完成的工具（${state.completedTools.length}）`, state.completedTools, false, "green"));
-    }
+    elements.push(...turnActivities(state).flatMap(renderActivity));
     if (state.fileSummary.length > 0) {
       elements.push({
         tag: "collapsible_panel",
@@ -101,11 +90,10 @@ export class CardRenderer {
   }
 
   renderTurnDetails(state: TurnViewState): Record<string, unknown> {
-    const tools = [...state.completedTools, ...state.failedTools];
     return this.baseCard("Codex 执行详情", "blue", [
       markdown(renderTurnSummary(state)),
       ...(state.plan.length ? [markdown(`**计划**\n${state.plan.map(renderPlanStep).join("\n")}`)] : []),
-      ...(tools.length ? [toolPanel(`工具调用（${tools.length}）`, tools, true, "blue")] : []),
+      ...turnActivities(state).flatMap(renderActivity),
       ...(state.assistantText ? [markdown(`**生成中的回复**\n${truncateText(state.assistantText, 3_000)}`)] : []),
     ]);
   }
@@ -183,23 +171,78 @@ function renderPlanStep(step: TurnViewState["plan"][number]): string {
   return `${marker} ${step.text}`;
 }
 
-function toolPanel(title: string, tools: ToolState[], expanded: boolean, template: string): Record<string, unknown> {
+function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
+  if (activity.kind === "reasoning") {
+    const text = activity.text.trim();
+    return text ? [markdown(`**💭 思考**\n${truncateText(text, 2_000)}`)] : [];
+  }
+  return [toolPanel(activity.tool)];
+}
+
+function turnActivities(state: TurnViewState): TurnActivity[] {
+  if (state.activities?.length) return state.activities;
+
+  const activities: TurnActivity[] = [];
+  if (state.progressText) {
+    activities.push({ kind: "reasoning", id: "legacy-progress", text: state.progressText });
+  }
+  const tools = [state.activeTool, ...state.failedTools, ...state.completedTools].filter(
+    (tool): tool is ToolState => tool !== undefined,
+  );
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    if (seen.has(tool.id)) continue;
+    seen.add(tool.id);
+    activities.push({ kind: "tool", id: tool.id, tool });
+  }
+  return activities;
+}
+
+function toolPanel(tool: ToolState): Record<string, unknown> {
   return {
     tag: "collapsible_panel",
-    expanded,
-    header: { title: { tag: "plain_text", content: title }, template, vertical_align: "center" },
-    elements: tools.map((tool) => markdown(renderTool(tool))),
+    expanded: false,
+    header: {
+      title: { tag: "plain_text", content: toolPanelTitle(tool) },
+      template: toolTemplate(tool),
+      vertical_align: "center",
+    },
+    elements: [markdown(renderToolDetails(tool))],
   };
 }
 
-function renderTool(tool: ToolState): string {
-  const parts = [`**${tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅"} ${tool.title}**`];
+function renderToolDetails(tool: ToolState): string {
+  const parts = [`**工具**：${inlineCode(tool.title)}`, `**状态**：${toolStatusLabel(tool)}`];
   const command = tool.command ?? (tool.kind === "command" ? tool.title : undefined);
   if (command) parts.push(`**命令**\n${codeBlock(command, 800)}`);
   if (tool.exitCode !== undefined) parts.push(`**退出码**：${tool.exitCode}`);
+  if (tool.startedAt !== undefined && tool.completedAt !== undefined) {
+    parts.push(`**耗时**：${formatDuration(Math.max(0, tool.completedAt - tool.startedAt))}`);
+  }
+  if (tool.files?.length) {
+    parts.push(`**文件**\n${tool.files.map((file) => `- ${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n")}`);
+  }
   if (tool.error) parts.push(`**错误摘要**\n${codeBlock(tool.error, 1_200)}`);
   else if (tool.output) parts.push(`**结果摘要**\n${codeBlock(tool.output, 1_200)}`);
   return parts.join("\n");
+}
+
+function toolPanelTitle(tool: ToolState): string {
+  const icon = tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅";
+  const title = truncateText(tool.title.replace(/\s+/g, " ").trim(), 100);
+  return `${icon} ${title}`;
+}
+
+function toolTemplate(tool: ToolState): string {
+  if (tool.status === "failed") return "red";
+  if (tool.status === "running") return "blue";
+  return "green";
+}
+
+function toolStatusLabel(tool: ToolState): string {
+  if (tool.status === "failed") return "失败";
+  if (tool.status === "running") return "执行中";
+  return "已完成";
 }
 
 function codeBlock(value: string, maxLength: number): string {
