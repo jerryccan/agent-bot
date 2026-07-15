@@ -1,14 +1,16 @@
 import type { Logger } from "pino";
 import type {
-  AgentEvent,
   AgentRuntime,
   ApprovalDecision,
   CreateRuntimeSessionInput,
   ModelOption,
   PermissionMode,
   ResumeRuntimeSessionInput,
+  RuntimeEvent,
   RuntimeSession,
+  RuntimeSessionMetadata,
 } from "../runtime/types.js";
+import { normalizeTaskTitle } from "../utils/taskTitle.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
 
 const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
@@ -50,7 +52,7 @@ interface PendingApproval {
 export class CodexRuntime implements AgentRuntime {
   readonly kind = "codex" as const;
   private readonly sessions = new Map<string, CodexSession>();
-  private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private readonly approvals = new Map<string, PendingApproval>();
   private attachedClient?: AppServerClient;
   private unsubscribe?: () => void;
@@ -76,7 +78,7 @@ export class CodexRuntime implements AgentRuntime {
       ...permissionParams(input.permissionMode),
     });
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
-    const session = this.makeSession(input, response.thread.id, response.model, reasoningEffort);
+    const session = this.makeSession(input, response, reasoningEffort);
     this.sessions.set(input.localSessionId, session);
     return session;
   }
@@ -91,7 +93,7 @@ export class CodexRuntime implements AgentRuntime {
       ...permissionParams(input.permissionMode),
     });
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
-    const session = this.makeSession(input, response.thread.id, response.model, reasoningEffort);
+    const session = this.makeSession(input, response, reasoningEffort);
     this.sessions.set(input.localSessionId, session);
     return session;
   }
@@ -122,6 +124,17 @@ export class CodexRuntime implements AgentRuntime {
     session.finalText = "";
     this.emit({ type: "turn_started", sessionId, turnId: response.turn.id, startedAt: Date.now() });
     return response.turn.id;
+  }
+
+  async readSessionMetadata(remoteSessionId: string): Promise<RuntimeSessionMetadata> {
+    const response = await (await this.client()).request<ThreadReadResponse>(
+      "thread/read",
+      { threadId: remoteSessionId, includeTurns: false },
+      5_000,
+    );
+    return {
+      title: normalizeTaskTitle(response.thread.name) ?? normalizeTaskTitle(response.thread.preview),
+    };
   }
 
   async steerTurn(sessionId: string, turnId: string, text: string): Promise<void> {
@@ -193,7 +206,7 @@ export class CodexRuntime implements AgentRuntime {
     }));
   }
 
-  onEvent(listener: (event: AgentEvent) => void): () => void {
+  onEvent(listener: (event: RuntimeEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -227,6 +240,16 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private handleNotification(method: string, params: unknown): void {
+    if (method === "thread/name/updated" && isRecord(params)) {
+      const threadId = stringValue(params.threadId);
+      const title = normalizeTaskTitle(stringValue(params.threadName));
+      if (!threadId || !title) return;
+      const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === threadId);
+      if (!session) return;
+      session.title = title;
+      this.emit({ type: "session_metadata_updated", sessionId: session.localSessionId, title });
+      return;
+    }
     const mapped = mapCodexNotification(method, params);
     if (!mapped) return;
     const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === mapped.threadId);
@@ -316,17 +339,19 @@ export class CodexRuntime implements AgentRuntime {
 
   private makeSession(
     input: CreateRuntimeSessionInput,
-    remoteSessionId: string,
-    model?: string,
+    response: ThreadResponse,
     reasoningEffort?: string,
   ): CodexSession {
     return {
       localSessionId: input.localSessionId,
-      remoteSessionId,
+      remoteSessionId: response.thread.id,
       runtimeKind: "codex",
       agentName: input.agentName,
       cwd: input.cwd,
-      model: input.model ?? model,
+      title: normalizeTaskTitle(response.thread.name)
+        ?? normalizeTaskTitle(response.thread.preview)
+        ?? input.title,
+      model: input.model ?? response.model,
       reasoningEffort,
       permissionMode: input.permissionMode,
       finalText: "",
@@ -346,7 +371,7 @@ export class CodexRuntime implements AgentRuntime {
     return session;
   }
 
-  private emit(event: AgentEvent): void {
+  private emit(event: RuntimeEvent): void {
     for (const listener of this.listeners) listener(event);
   }
 
@@ -374,9 +399,13 @@ export class CodexRuntime implements AgentRuntime {
 }
 
 interface ThreadResponse {
-  thread: { id: string };
+  thread: { id: string; name?: string | null; preview?: string };
   model?: string;
   reasoningEffort?: string | null;
+}
+
+interface ThreadReadResponse {
+  thread: { id: string; name?: string | null; preview?: string };
 }
 
 function permissionParams(mode: PermissionMode): { approvalPolicy: "never" | "on-request"; sandbox: string } {

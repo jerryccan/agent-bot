@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import type { AgentEvent } from "../../src/runtime/types.js";
+import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
 
 describe("CodexRuntime", () => {
@@ -54,7 +54,7 @@ describe("CodexRuntime", () => {
   test("creates a thread and emits active turn deltas and completion", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
-    const events: AgentEvent[] = [];
+    const events: RuntimeEvent[] = [];
     runtime.onEvent((event) => events.push(event));
 
     const session = await runtime.createSession({
@@ -136,7 +136,7 @@ describe("CodexRuntime", () => {
       model: "gpt-test",
     };
     const runtime = new CodexRuntime(provider(client), logger());
-    const events: AgentEvent[] = [];
+    const events: RuntimeEvent[] = [];
     runtime.onEvent((event) => events.push(event));
 
     await runtime.resumeSession({
@@ -195,7 +195,7 @@ describe("CodexRuntime", () => {
     expect(auto).toEqual({ decision: "accept" });
 
     await runtime.setPermissionMode("s1", "confirm");
-    const events: AgentEvent[] = [];
+    const events: RuntimeEvent[] = [];
     runtime.onEvent((event) => events.push(event));
     const pending = client.invokeRequest("item/commandExecution/requestApproval", 8, {
       threadId: "thr_1",
@@ -218,7 +218,7 @@ describe("CodexRuntime", () => {
         return () => { disconnect = undefined; };
       },
     }, logger());
-    const events: AgentEvent[] = [];
+    const events: RuntimeEvent[] = [];
     runtime.onEvent((event) => events.push(event));
     await runtime.createSession({ localSessionId: "s1", agentName: "codex", cwd: process.cwd(), permissionMode: "auto" });
     await runtime.startTurn("s1", "first");
@@ -231,12 +231,82 @@ describe("CodexRuntime", () => {
     const methods = client.requests.map((request) => request.method);
     expect(methods.slice(-2)).toEqual(["thread/resume", "turn/start"]);
   });
+
+  test("prefers a generated thread name and falls back to the thread preview", async () => {
+    const client = new FakeAppServerClient();
+    client.startResult = {
+      thread: { id: "thr_1", name: "Generated title", preview: "First prompt" },
+      model: "gpt-test",
+      reasoningEffort: "medium",
+    };
+    client.resumeResult = {
+      thread: { id: "thr_2", name: null, preview: "Restored first prompt", turns: [] },
+      model: "gpt-test",
+      reasoningEffort: "medium",
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    const created = await runtime.createSession({
+      localSessionId: "created",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    const resumed = await runtime.resumeSession({
+      localSessionId: "resumed",
+      remoteSessionId: "thr_2",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    expect(created.title).toBe("Generated title");
+    expect(resumed.title).toBe("Restored first prompt");
+  });
+
+  test("updates task metadata from a thread name notification without an active turn", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      title: "Prompt fallback",
+      permissionMode: "auto",
+    });
+
+    client.emit("thread/name/updated", { threadId: "thr_1", threadName: "Updated title" });
+    client.emit("thread/name/updated", { threadId: "thr_1", threadName: "   " });
+
+    expect(runtime.getSession("s1")?.title).toBe("Updated title");
+    expect(events).toContainEqual({
+      type: "session_metadata_updated",
+      sessionId: "s1",
+      title: "Updated title",
+    });
+    expect(events.filter((event) => event.type === "session_metadata_updated")).toHaveLength(1);
+  });
+
+  test("reads title-only metadata without loading thread turns", async () => {
+    const client = new FakeAppServerClient();
+    client.readResult = { thread: { id: "thr_1", name: null, preview: "  Legacy\n task  " } };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.readSessionMetadata("thr_1")).resolves.toEqual({ title: "Legacy task" });
+    expect(client.requests).toContainEqual({
+      method: "thread/read",
+      params: { threadId: "thr_1", includeTurns: false },
+    });
+  });
 });
 
 class FakeAppServerClient {
   requests: Array<{ method: string; params: unknown }> = [];
   startResult: unknown = { thread: { id: "thr_1" }, model: "gpt-test", reasoningEffort: "medium" };
   resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
+  readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
   private notificationListener?: (method: string, params: unknown) => void;
   private readonly requestHandlers = new Map<
     string,
@@ -247,6 +317,7 @@ class FakeAppServerClient {
     this.requests.push({ method, params });
     if (method === "thread/start") return this.startResult as T;
     if (method === "thread/resume") return this.resumeResult as T;
+    if (method === "thread/read") return this.readResult as T;
     if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;
     if (method === "model/list") return { data: [{
       id: "gpt-test",
