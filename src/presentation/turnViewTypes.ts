@@ -15,6 +15,10 @@ export interface FileSummary {
   deletions?: number;
 }
 
+export type TurnActivity =
+  | { kind: "reasoning"; id: string; text: string }
+  | { kind: "tool"; id: string; tool: ToolState };
+
 export interface TurnViewState {
   sessionId: string;
   turnId: string;
@@ -25,6 +29,7 @@ export interface TurnViewState {
   progressText?: string;
   assistantText: string;
   plan: PlanStep[];
+  activities: TurnActivity[];
   activeTool?: ToolState;
   completedTools: ToolState[];
   failedTools: ToolState[];

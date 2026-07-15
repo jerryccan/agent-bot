@@ -78,4 +78,43 @@ describe("TurnStateReducer", () => {
     state = reduceTurnEvent(state, event("progress", { text: "x".repeat(7_000) }));
     expect(state.progressText?.length).toBeLessThanOrEqual(6_000);
   });
+
+  test("preserves reasoning and tool activity order while updating entries in place", () => {
+    let state = createTurnViewState("s1", "turn_1", 1_000);
+    state = reduceTurnEvent(
+      state,
+      event("progress", { activityId: "reasoning:r1:0", text: "分析仓库", append: true }),
+    );
+    state = reduceTurnEvent(state, event("tool_started", { tool: tool("t1", "rg --files", "running") }));
+    state = reduceTurnEvent(
+      state,
+      event("tool_updated", { tool: tool("t1", "rg --files", "completed", { output: "a.ts" }) }),
+    );
+    state = reduceTurnEvent(
+      state,
+      event("progress", { activityId: "reasoning:r2:0", text: "准备测试", append: true }),
+    );
+    state = reduceTurnEvent(state, event("tool_started", { tool: tool("t2", "npm test", "running") }));
+    state = reduceTurnEvent(
+      state,
+      event("progress", { activityId: "reasoning:r1:0", text: "并定位入口", append: true }),
+    );
+
+    expect(state.activities.map((activity) => activity.id)).toEqual([
+      "reasoning:r1:0",
+      "t1",
+      "reasoning:r2:0",
+      "t2",
+    ]);
+    expect(state.activities[0]).toEqual({
+      kind: "reasoning",
+      id: "reasoning:r1:0",
+      text: "分析仓库并定位入口",
+    });
+    expect(state.activities[1]).toMatchObject({
+      kind: "tool",
+      id: "t1",
+      tool: { status: "completed", output: "a.ts" },
+    });
+  });
 });
