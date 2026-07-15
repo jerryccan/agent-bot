@@ -37,6 +37,8 @@ export class CommandRouter {
         return requireArg(args[0], "mode value", (value) => ({ type: "mode", value }));
       case "model":
         return { type: "model", model: args[0] };
+      case "thinking":
+        return { type: "thinking", effort: args[0] };
       case "permissions": {
         const mode = args[0];
         if (mode !== undefined && mode !== "auto" && mode !== "confirm") {

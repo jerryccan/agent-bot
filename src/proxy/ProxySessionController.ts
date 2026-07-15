@@ -142,6 +142,9 @@ export class ProxySessionController {
       case "model":
         await this.model(contextKey, command.model);
         return;
+      case "thinking":
+        await this.thinking(contextKey, command.effort);
+        return;
       case "permissions":
         await this.permissions(contextKey, command.mode);
         return;
@@ -268,6 +271,7 @@ export class ProxySessionController {
             agentName: record.agentName,
             cwd: record.cwd,
             model: record.model,
+            reasoningEffort: record.reasoningEffort,
             permissionMode,
           })
         : await runtime.createSession({
@@ -275,6 +279,7 @@ export class ProxySessionController {
             agentName: record.agentName,
             cwd: record.cwd,
             model: record.model,
+            reasoningEffort: record.reasoningEffort,
             permissionMode,
           });
       this.persistRuntimeSession(record, session, "ready");
@@ -293,6 +298,7 @@ export class ProxySessionController {
       runtimeKind: session.runtimeKind,
       remoteSessionId: session.remoteSessionId,
       model: session.model,
+      reasoningEffort: session.reasoningEffort,
       permissionMode: session.permissionMode,
     });
     this.store.updateSession(record.localSessionId, {
@@ -367,14 +373,60 @@ export class ProxySessionController {
   private async model(contextKey: string, model?: string): Promise<void> {
     const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
     if (!model) {
-      const models = await loaded.runtime.listModels();
-      const lines = models.map((item) => `- ${asInlineCode(item.id)}${item.isDefault ? "（默认）" : ""}${item.displayName ? `：${item.displayName}` : ""}`);
-      await this.outbound.sendMarkdown(contextKey, `可用模型：\n${lines.join("\n") || "无"}`);
+      await this.outbound.sendText(contextKey, [
+        `当前模型：${loaded.session.model ?? "默认"}`,
+        `当前思考强度：${loaded.session.reasoningEffort ?? "默认"}`,
+      ].join("\n"));
       return;
     }
+
+    const models = await loaded.runtime.listModels();
+    const selected = models.find((item) => item.id === model);
+    if (!selected) throw new Error(`未知模型：${model}`);
+    const currentEffort = loaded.session.reasoningEffort;
+    const compatible = currentEffort
+      ? selected.supportedReasoningEfforts.some((option) => option.value === currentEffort)
+      : false;
+    const nextEffort = compatible ? currentEffort : selected.defaultReasoningEffort;
+
     await loaded.runtime.setModel(loaded.record.localSessionId, model);
-    this.store.updateRuntimeSession(loaded.record.localSessionId, { model });
-    await this.outbound.sendText(contextKey, `模型已切换为 ${model}，从下一次请求生效。`);
+    if (nextEffort && nextEffort !== currentEffort) {
+      await loaded.runtime.setReasoningEffort(loaded.record.localSessionId, nextEffort);
+    }
+    this.store.updateRuntimeSession(loaded.record.localSessionId, { model, reasoningEffort: nextEffort });
+    const effortMessage = nextEffort && nextEffort !== currentEffort
+      ? `，思考强度已自动调整为 ${nextEffort}`
+      : "";
+    await this.outbound.sendText(contextKey, `模型已切换为 ${model}${effortMessage}，从下一次请求生效。`);
+  }
+
+  private async thinking(contextKey: string, effort?: string): Promise<void> {
+    const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
+    const models = await loaded.runtime.listModels();
+    const currentModel = models.find((item) => item.id === loaded.session.model)
+      ?? models.find((item) => item.isDefault);
+    if (!currentModel) throw new Error("当前运行时没有可配置思考强度的模型。");
+    const supported = currentModel.supportedReasoningEfforts;
+
+    if (!effort) {
+      const lines = supported.map((option) =>
+        `- ${asInlineCode(option.value)}${option.description ? `：${option.description}` : ""}`,
+      );
+      await this.outbound.sendMarkdown(contextKey, [
+        `当前思考强度：${loaded.session.reasoningEffort ?? currentModel.defaultReasoningEffort ?? "默认"}`,
+        "可选强度：",
+        lines.join("\n") || "无",
+      ].join("\n"));
+      return;
+    }
+
+    if (!supported.some((option) => option.value === effort)) {
+      const options = supported.map((option) => option.value).join("、") || "无";
+      throw new Error(`不支持的思考强度：${effort}。支持的强度：${options}`);
+    }
+    await loaded.runtime.setReasoningEffort(loaded.record.localSessionId, effort);
+    this.store.updateRuntimeSession(loaded.record.localSessionId, { reasoningEffort: effort });
+    await this.outbound.sendText(contextKey, `思考强度已切换为 ${effort}，从下一次请求生效。`);
   }
 
   private async permissions(contextKey: string, mode?: PermissionMode): Promise<void> {
@@ -443,7 +495,10 @@ export class ProxySessionController {
       "直接发送文字即可使用 Codex；运行中继续发消息会追加到当前任务。",
       "- `/new [agent] [cwd]`：新建任务",
       "- `/sessions` / `/switch <id>`：查看或切换任务",
-      "- `/model [name]`：查看或切换模型",
+      "- `/model`：显示当前模型和思考强度",
+      "- `/model <name>`：切换模型",
+      "- `/thinking`：显示当前思考强度及可选值",
+      "- `/thinking <level>`：设置思考强度",
       "- `/permissions auto|confirm`：切换自动执行/确认模式",
       "- `/cancel`：停止当前执行",
       "- `/status`：查看当前状态",

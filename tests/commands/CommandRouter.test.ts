@@ -15,4 +15,9 @@ describe("CommandRouter", () => {
     expect(router.parse("/model gpt-test")).toEqual({ type: "model", model: "gpt-test" });
     expect(router.parse("/model")).toEqual({ type: "model" });
   });
+
+  test("parses thinking display and selection", () => {
+    expect(router.parse("/thinking")).toEqual({ type: "thinking" });
+    expect(router.parse("/thinking high")).toEqual({ type: "thinking", effort: "high" });
+  });
 });

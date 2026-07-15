@@ -14,6 +14,7 @@ export type Command =
   | { type: "modes" }
   | { type: "mode"; value: string }
   | { type: "model"; model?: string }
+  | { type: "thinking"; effort?: string }
   | { type: "permissions"; mode?: PermissionMode }
   | { type: "help" }
   | { type: "prompt"; text: string };

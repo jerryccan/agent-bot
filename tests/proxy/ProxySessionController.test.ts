@@ -29,12 +29,23 @@ function fixture() {
   const runtime: AgentRuntime = {
     kind: "codex",
     createSession: vi.fn(async (input) => {
-      const session: RuntimeSession = { ...input, remoteSessionId: "thr_1", runtimeKind: "codex" };
+      const session: RuntimeSession = {
+        ...input,
+        remoteSessionId: "thr_1",
+        runtimeKind: "codex",
+        model: input.model ?? "gpt-test",
+        reasoningEffort: input.reasoningEffort ?? "high",
+      };
       sessions.set(input.localSessionId, session);
       return session;
     }),
     resumeSession: vi.fn(async (input) => {
-      const session: RuntimeSession = { ...input, runtimeKind: "codex" };
+      const session: RuntimeSession = {
+        ...input,
+        runtimeKind: "codex",
+        model: input.model ?? "gpt-test",
+        reasoningEffort: input.reasoningEffort ?? "high",
+      };
       sessions.set(input.localSessionId, session);
       return session;
     }),
@@ -48,15 +59,32 @@ function fixture() {
     steerTurn: vi.fn(async () => undefined),
     cancelTurn: vi.fn(async () => undefined),
     closeSession: vi.fn(async () => undefined),
-    setModel: vi.fn(async () => undefined),
-    setReasoningEffort: vi.fn(async () => undefined),
+    setModel: vi.fn(async (sessionId, model) => {
+      sessions.get(sessionId)!.model = model;
+    }),
+    setReasoningEffort: vi.fn(async (sessionId, effort) => {
+      sessions.get(sessionId)!.reasoningEffort = effort;
+    }),
     setPermissionMode: vi.fn(async () => undefined),
     respondToApproval: vi.fn(async () => undefined),
-    listModels: vi.fn(async () => [{
-      id: "gpt-test",
-      displayName: "GPT Test",
-      supportedReasoningEfforts: [],
-    }]),
+    listModels: vi.fn(async () => [
+      {
+        id: "gpt-test",
+        displayName: "GPT Test",
+        isDefault: true,
+        supportedReasoningEfforts: [
+          { value: "low", description: "Fast" },
+          { value: "high", description: "Deep" },
+        ],
+        defaultReasoningEffort: "low",
+      },
+      {
+        id: "gpt-next",
+        displayName: "GPT Next",
+        supportedReasoningEfforts: [{ value: "medium", description: "Balanced" }],
+        defaultReasoningEffort: "medium",
+      },
+    ]),
     onEvent: vi.fn((listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -134,11 +162,20 @@ describe("ProxySessionController", () => {
     const { controller, runtime, store } = fixture();
     store.getOrCreateUserContext("chat_id:c1", "codex");
     store.createSession({ localSessionId: "saved", contextKey: "chat_id:c1", agentName: "codex", cwd: process.cwd(), status: "ready" });
-    store.updateRuntimeSession("saved", { runtimeKind: "codex", remoteSessionId: "thr_saved", permissionMode: "auto" });
+    store.updateRuntimeSession("saved", {
+      runtimeKind: "codex",
+      remoteSessionId: "thr_saved",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    });
     store.setCurrentSession("chat_id:c1", "saved");
 
     await controller.onMessage(message("continue"));
-    expect(runtime.resumeSession).toHaveBeenCalledWith(expect.objectContaining({ localSessionId: "saved", remoteSessionId: "thr_saved" }));
+    expect(runtime.resumeSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: "saved",
+      remoteSessionId: "thr_saved",
+      reasoningEffort: "high",
+    }));
     expect(runtime.startTurn).toHaveBeenCalledWith("saved", "continue");
   });
 
@@ -159,5 +196,83 @@ describe("ProxySessionController", () => {
     expect(runtime.setPermissionMode).toHaveBeenCalledWith(sessionId, "confirm");
     expect(presenter.showDetails).toHaveBeenCalledWith("chat_id:c1", "turn_1");
     expect(runtime.respondToApproval).toHaveBeenCalledWith(sessionId, "req_1", "accept");
+  });
+
+  test("shows the current model and reasoning effort", async () => {
+    const { controller, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/model"));
+
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringMatching(/当前模型：gpt-test[\s\S]*当前思考强度：high/),
+    );
+  });
+
+  test("shows and changes supported reasoning efforts", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/thinking"));
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("当前思考强度：high"),
+    );
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("`low`：Fast"),
+    );
+
+    await controller.onMessage(message("/thinking low"));
+    expect(runtime.setReasoningEffort).toHaveBeenCalledWith(expect.any(String), "low");
+    expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ reasoningEffort: "low" });
+  });
+
+  test("rejects unsupported reasoning efforts without changing state", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/thinking extreme"));
+
+    expect(runtime.setReasoningEffort).not.toHaveBeenCalled();
+    expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ reasoningEffort: "high" });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("支持的强度：low、high"),
+    );
+  });
+
+  test("retains compatible effort and falls back for an incompatible model", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/model gpt-test"));
+    expect(runtime.setReasoningEffort).not.toHaveBeenCalled();
+
+    await controller.onMessage(message("/model gpt-next"));
+    expect(runtime.setModel).toHaveBeenCalledWith(expect.any(String), "gpt-next");
+    expect(runtime.setReasoningEffort).toHaveBeenCalledWith(expect.any(String), "medium");
+    expect(store.listSessions("chat_id:c1")[0]).toMatchObject({
+      model: "gpt-next",
+      reasoningEffort: "medium",
+    });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("思考强度已自动调整为 medium"),
+    );
+  });
+
+  test("rejects an unknown model without changing runtime state", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/model missing-model"));
+
+    expect(runtime.setModel).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("未知模型：missing-model"),
+    );
   });
 });
