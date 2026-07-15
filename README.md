@@ -91,8 +91,10 @@ defaults:
 - `/new [agent] [cwd]`：创建新任务
 - `/sessions`：列出当前入口的任务
 - `/switch <session>`：切换当前任务
-- `/model`：列出可用模型
-- `/model <name>`：切换模型，从下一次请求生效
+- `/model`：显示当前模型和思考强度
+- `/model <name>`：切换模型，从下一次请求生效；不兼容的思考强度会自动回落到新模型默认值
+- `/thinking`：显示当前思考强度及当前模型支持的可选值
+- `/thinking <level>`：设置思考强度，从下一次请求生效
 - `/permissions auto|confirm`：切换权限模式
 - `/cancel`：停止当前执行
 - `/status`：查看任务、模型、权限、目录和状态
