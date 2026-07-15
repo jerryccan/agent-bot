@@ -7,7 +7,7 @@ Make Codex progress cards read like a concise terminal activity stream. Remove e
 ## Turn Layout
 
 - Keep the colored card header as the only turn-status label: `Codex 正在处理`, `Codex 已完成`, `Codex 执行失败`, or `Codex 已停止`.
-- Show elapsed time as a plain value such as `51.6s`; remove the `状态` and `耗时` labels.
+- Show elapsed time as `耗时：51.6s`; remove the redundant `状态` field while retaining the useful duration label.
 - Render plan steps directly without a `计划` heading.
 - Render each reasoning summary as its original text without a `思考` heading, icon, or bold wrapper.
 - Preserve the existing chronological reasoning/tool order.
@@ -18,9 +18,8 @@ Make Codex progress cards read like a concise terminal activity stream. Remove e
 - Keep one collapsed panel per tool.
 - The panel header contains only a status icon and a single-line tool/command summary.
 - The header uses `...` when truncated.
-- Expanding the panel shows the command or tool name in the first code block.
-- Show output, error, or file-change summary in a second code block when available.
-- Do not render the labels `工具`, `状态`, `命令`, `退出码`, `耗时`, `文件`, `错误摘要`, or `结果摘要`.
+- Expanding the panel shows one code block: `$ ` followed by the command or tool name, then the output, error, or file-change summary on the immediately following line when available.
+- Do not render the tool-detail labels `工具`, `状态`, `命令`, `退出码`, `耗时`, `文件`, `错误摘要`, or `结果摘要`.
 - The status icon and panel color communicate running, success, or failure; numeric exit codes are omitted from the card.
 
 ## Truncation and Output Cleanup
@@ -40,7 +39,6 @@ Make Codex progress cards read like a concise terminal activity stream. Remove e
 ## Verification
 
 - Unit tests assert that routine turn cards omit every removed label and explanatory truncation message.
-- Tests assert raw reasoning text, elapsed value, command blocks, result blocks, chronological order, and one collapsed panel per tool.
+- Tests assert raw reasoning text, elapsed value, a single command-and-result block per tool, chronological order, and one collapsed panel per tool.
 - Truncation tests assert a trailing `...` and maximum-length preservation.
 - A production-renderer card is sent to Feishu after restart and read back to confirm the compact structure.
-

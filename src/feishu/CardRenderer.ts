@@ -159,7 +159,7 @@ export class CardRenderer {
 
 function renderTurnSummary(state: TurnViewState): string {
   const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
-  return formatDuration(elapsed);
+  return `耗时：${formatDuration(elapsed)}`;
 }
 
 function renderPlanStep(step: TurnViewState["plan"][number]): string {
@@ -213,9 +213,9 @@ function renderToolDetails(tool: ToolState): string {
     ? tool.files.map((file) => `${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n")
     : undefined;
   const result = tool.error ?? tool.output ?? fileSummary;
-  return [codeBlock(command, 800), result ? codeBlock(result, 1_200) : undefined]
-    .filter((part): part is string => part !== undefined)
-    .join("\n\n");
+  const commandText = truncateText(stripAnsi(command).trim(), 800);
+  const resultText = result ? truncateText(stripAnsi(result).trim(), 1_200) : undefined;
+  return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
 }
 
 function toolPanelTitle(tool: ToolState): string {

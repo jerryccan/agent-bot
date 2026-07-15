@@ -10,10 +10,10 @@
 
 ## Global Constraints
 
-- The colored card header is the only turn-status label.
+- The colored card header is the only turn-status label; the body retains `耗时：` before the elapsed value.
 - Reasoning summaries render as original text without a heading or icon.
 - Every tool remains an independent panel with `expanded: false`.
-- Tool details contain only code blocks for the command/tool name and available result.
+- Tool details contain one code block with `$ ` before the command/tool name and the available result on the immediately following line.
 - Truncated content ends with `...` and stays within its requested maximum length.
 - Startup and structured status cards retain their field labels.
 
@@ -94,11 +94,10 @@ git commit -m "feat: use compact text truncation"
 Update the turn fixture with a command, output containing ANSI color, and long text. Assert that the serialized routine card:
 
 ```ts
-expect(serialized).toContain("51.6s");
+expect(serialized).toContain("耗时：51.6s");
 expect(serialized).toContain("先检查测试配置");
-expect(serialized).toContain("```\\nnpm test\\n```");
-expect(serialized).toContain("```\\nall passed\\n```");
-for (const label of ["状态", "耗时", "思考", "工具", "命令", "退出码", "结果摘要", "错误摘要"]) {
+expect(serialized).toContain("```\\n$ npm test\\nall passed\\n```");
+for (const label of ["状态", "思考", "工具", "命令", "退出码", "结果摘要", "错误摘要"]) {
   expect(serialized).not.toContain(label);
 }
 expect(serialized).not.toContain("完整内容请查看本地日志");
@@ -120,7 +119,7 @@ Apply these helper contracts:
 ```ts
 function renderTurnSummary(state: TurnViewState): string {
   const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
-  return formatDuration(elapsed);
+  return `耗时：${formatDuration(elapsed)}`;
 }
 
 function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
@@ -132,7 +131,7 @@ function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
 }
 ```
 
-Make `renderToolDetails` return a sequence of unlabeled code blocks: command/tool title first, then error/output/file summary when present. Remove exit code and per-tool elapsed rendering. Remove the plan heading, routine turn-error heading, generated-response heading, and `/cancel` instruction. Add a local ANSI-removal helper before truncating code-block content.
+Make `renderToolDetails` return one unlabeled code block: `$ ` and the command/tool title first, then error/output/file summary on the immediately following line when present. Remove exit code and per-tool elapsed rendering. Remove the plan heading, routine turn-error heading, generated-response heading, and `/cancel` instruction. Add a local ANSI-removal helper before truncating code-block content.
 
 ```ts
 function renderToolDetails(tool: ToolState): string {
@@ -141,9 +140,12 @@ function renderToolDetails(tool: ToolState): string {
     ? tool.files.map((file) => `${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n")
     : undefined;
   const result = tool.error ?? tool.output ?? fileSummary;
-  return [codeBlock(command, 800), result ? codeBlock(result, 1_200) : undefined]
-    .filter((part): part is string => part !== undefined)
-    .join("\n");
+  const commandText = truncateText(stripAnsi(command).trim(), 800);
+  const resultText = result ? truncateText(stripAnsi(result).trim(), 1_200) : undefined;
+  return codeBlock(
+    [`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"),
+    2_003,
+  );
 }
 
 function codeBlock(value: string, maxLength: number): string {
@@ -208,7 +210,7 @@ Stop only the identified acp-bot process tree. Start `D:\dev\acp-bot\.worktrees\
 
 - [ ] **Step 3: Send and read back a production-renderer card**
 
-Use the production `CardRenderer` to create a reasoning/tool/reasoning/tool sample, send it with bot identity, and read the same message back. Confirm that reasoning is raw text, tool panels are separate, details are unlabeled code blocks, and no explanatory truncation message appears.
+Use the production `CardRenderer` to create a reasoning/tool/reasoning/tool sample, send it with bot identity, and read the same message back. Confirm that reasoning is raw text, tool panels are separate, each tool has one unlabeled command-and-result code block, and no explanatory truncation message appears.
 
 - [ ] **Step 4: Confirm clean branch state**
 

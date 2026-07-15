@@ -46,7 +46,7 @@ describe("FeishuTurnPresenter", () => {
   test("reuses the immediate starting card when the real turn id arrives", async () => {
     const { presenter, outbound } = createFixture();
     await presenter.startPendingTurn("s1", "chat_id:c1");
-    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() - 1_000 });
     expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalled());
   });

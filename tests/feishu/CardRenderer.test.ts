@@ -94,14 +94,16 @@ describe("CardRenderer", () => {
 
     expect(toolPanels).toHaveLength(2);
     expect(toolPanels.every((panel) => panel.expanded === false)).toBe(true);
+    const completedPanel = toolPanels.find((panel) => panelTitle(panel).includes("npm test"));
+    const detailElements = (completedPanel?.elements ?? []) as Array<{ content?: string }>;
+    expect(detailElements).toHaveLength(1);
+    expect(detailElements[0]?.content).toBe("```\n$ npm test\nall passed\n```");
     expect(activityOrder).toEqual([...activityOrder].sort((left, right) => left - right));
     expect(new Set(activityOrder).size).toBe(4);
-    expect(markdownContents).toContain("51.6s");
+    expect(markdownContents).toContain("耗时：51.6s");
     expect(markdownContents).toContain("先检查测试配置");
-    expect(markdownContents).toContain("```\nnpm test\n```");
-    expect(markdownContents).toContain("```\nall passed\n```");
-    expect(markdownContents).toContain("```\nnpm test\n```\n\n```\nall passed\n```");
-    expect(markdownContents).toContain("```\n命令失败\n```");
+    expect(markdownContents).toContain("```\n$ npm test\nall passed\n```");
+    expect(markdownContents).toContain("```\n$ npm run lint\n命令失败\n```");
     for (const label of [
       "**状态**",
       "**耗时**",
