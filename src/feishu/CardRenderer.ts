@@ -2,7 +2,7 @@ import type { JsonValue } from "../acp/acpTypes.js";
 import type { RuntimeSession } from "../acp/AcpSessionManager.js";
 import type { ToolState } from "../runtime/types.js";
 import type { TurnActivity, TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
-import { truncateText } from "../utils/markdown.js";
+import { truncateMiddle, truncateText } from "../utils/markdown.js";
 
 export interface StartupStatusView {
   startedAt: Date;
@@ -214,7 +214,7 @@ function renderToolDetails(tool: ToolState): string {
     : undefined;
   const result = tool.error ?? tool.output ?? fileSummary;
   const commandText = truncateText(stripAnsi(command).trim(), 800);
-  const resultText = result ? truncateText(stripAnsi(result).trim(), 1_200) : undefined;
+  const resultText = result ? truncateMiddle(stripAnsi(result).trim(), 1_200) : undefined;
   return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
 }
 

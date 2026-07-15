@@ -27,7 +27,7 @@
 **Interfaces:**
 - Produces: `truncateMiddle(text: string, maxLength?: number, marker?: string): string`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 import { truncateMiddle, truncateText } from "../../src/utils/markdown.js";
@@ -43,13 +43,13 @@ test("returns short text unchanged and handles limits smaller than the marker", 
 });
 ```
 
-- [ ] **Step 2: Run the utility test and verify RED**
+- [x] **Step 2: Run the utility test and verify RED**
 
 Run: `npx vitest run tests/utils/markdown.test.ts`
 
 Expected: FAIL because `truncateMiddle` is not exported.
 
-- [ ] **Step 3: Implement the minimal helper**
+- [x] **Step 3: Implement the minimal helper**
 
 ```ts
 export function truncateMiddle(text: string, maxLength = 8000, marker = "\n...\n"): string {
@@ -63,7 +63,7 @@ export function truncateMiddle(text: string, maxLength = 8000, marker = "\n...\n
 }
 ```
 
-- [ ] **Step 4: Run the utility test and verify GREEN**
+- [x] **Step 4: Run the utility test and verify GREEN**
 
 Run: `npx vitest run tests/utils/markdown.test.ts`
 
@@ -81,17 +81,17 @@ Expected: all utility tests pass.
 - Consumes: `truncateMiddle(text: string, maxLength?: number): string`
 - Preserves: one `collapsible_panel` and one Markdown code block per tool.
 
-- [ ] **Step 1: Write the failing renderer test**
+- [x] **Step 1: Write the failing renderer test**
 
 Create a completed command with an 810-character multiline command and a result containing unique beginning and ending sentinels around more than 1,200 characters. Assert the command begins with `$ `, keeps its original internal newline, ends with `...`, the result contains both sentinels and `\n...\n`, and the omitted middle sentinel is absent.
 
-- [ ] **Step 2: Run the renderer test and verify RED**
+- [x] **Step 2: Run the renderer test and verify RED**
 
 Run: `npx vitest run tests/feishu/CardRenderer.test.ts`
 
 Expected: FAIL because the current result truncation discards the ending sentinel.
 
-- [ ] **Step 3: Switch only result truncation to the middle helper**
+- [x] **Step 3: Switch only result truncation to the middle helper**
 
 ```ts
 import { truncateMiddle, truncateText } from "../utils/markdown.js";
@@ -102,13 +102,13 @@ const resultText = result ? truncateMiddle(stripAnsi(result).trim(), 1_200) : un
 
 Keep the existing `$ ${commandText}` prefix and newline join with the result.
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [x] **Step 4: Run focused tests and verify GREEN**
 
 Run: `npx vitest run tests/utils/markdown.test.ts tests/feishu/CardRenderer.test.ts`
 
 Expected: all focused tests pass.
 
-- [ ] **Step 5: Run full verification**
+- [x] **Step 5: Run full verification**
 
 Run: `npm test`, `npm run typecheck`, and `npm run build`.
 

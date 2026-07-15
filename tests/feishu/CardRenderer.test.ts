@@ -139,6 +139,31 @@ describe("CardRenderer", () => {
     expect(panelTitle(panel ?? {})).not.toContain("已截断");
   });
 
+  test("preserves raw command formatting and both ends of oversized tool results", () => {
+    const running = state();
+    const command = `Write-Output 'first'\n${"x".repeat(900)}`;
+    const output = `RESULT_HEAD\n${"a".repeat(700)}MIDDLE_SENTINEL${"b".repeat(700)}\nRESULT_TAIL`;
+    const tool = { id: "long-output", title: "long output", kind: "command", status: "completed" as const, command, output };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel");
+    const content = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+    const inner = content.slice(4, -4);
+    const resultStart = inner.indexOf("\nRESULT_HEAD");
+    const renderedCommand = inner.slice(2, resultStart);
+    const renderedResult = inner.slice(resultStart + 1);
+
+    expect(renderedCommand).toHaveLength(800);
+    expect(renderedCommand).toMatch(/^Write-Output 'first'\n/);
+    expect(renderedCommand).toMatch(/\.\.\.$/);
+    expect(renderedResult).toHaveLength(1_200);
+    expect(renderedResult).toContain("RESULT_HEAD");
+    expect(renderedResult).toContain("RESULT_TAIL");
+    expect(renderedResult).toContain("\n...\n");
+    expect(renderedResult).not.toContain("MIDDLE_SENTINEL");
+  });
+
   test("shows the active tool prominently and uses a completed header on completion", () => {
     const running = state();
     running.activeTool = { id: "active", title: "查看仓库", kind: "command", status: "running", command: "rg --files" };
