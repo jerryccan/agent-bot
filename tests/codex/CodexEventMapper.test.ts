@@ -54,4 +54,35 @@ describe("mapCodexNotification", () => {
       }),
     });
   });
+
+  test("maps reasoning summary deltas with a stable activity id", () => {
+    expect(
+      mapCodexNotification("item/reasoning/summaryTextDelta", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        itemId: "reason_1",
+        summaryIndex: 2,
+        delta: "正在分析调用链",
+      }),
+    ).toEqual({
+      kind: "progress",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      activityId: "reasoning:reason_1:2",
+      text: "正在分析调用链",
+      append: true,
+    });
+  });
+
+  test("does not expose raw reasoning text deltas", () => {
+    expect(
+      mapCodexNotification("item/reasoning/textDelta", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        itemId: "reason_1",
+        contentIndex: 0,
+        delta: "private raw reasoning",
+      }),
+    ).toBeUndefined();
+  });
 });

@@ -33,7 +33,14 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: "turn_started"; sessionId: string; turnId: string; startedAt: number }
   | { type: "agent_text_delta"; sessionId: string; turnId: string; text: string }
-  | { type: "progress"; sessionId: string; turnId: string; text: string }
+  | {
+      type: "progress";
+      sessionId: string;
+      turnId: string;
+      text: string;
+      activityId?: string;
+      append?: boolean;
+    }
   | { type: "plan_updated"; sessionId: string; turnId: string; steps: PlanStep[] }
   | { type: "tool_started"; sessionId: string; turnId: string; tool: ToolState }
   | { type: "tool_updated"; sessionId: string; turnId: string; tool: ToolState }

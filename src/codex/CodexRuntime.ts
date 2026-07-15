@@ -203,7 +203,14 @@ export class CodexRuntime implements AgentRuntime {
       session.finalText += mapped.text;
       this.emit({ type: "agent_text_delta", sessionId, turnId: mapped.turnId, text: mapped.text });
     } else if (mapped.kind === "progress") {
-      this.emit({ type: "progress", sessionId, turnId: mapped.turnId, text: mapped.text });
+      this.emit({
+        type: "progress",
+        sessionId,
+        turnId: mapped.turnId,
+        activityId: mapped.activityId,
+        text: mapped.text,
+        append: mapped.append,
+      });
     } else if (mapped.kind === "plan") {
       this.emit({ type: "plan_updated", sessionId, turnId: mapped.turnId, steps: mapped.steps });
     } else if (mapped.kind === "tool") {

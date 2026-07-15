@@ -2,7 +2,14 @@ import type { PlanStep, ToolState } from "../runtime/types.js";
 
 export type MappedCodexNotification =
   | { kind: "agent_delta"; threadId: string; turnId: string; text: string }
-  | { kind: "progress"; threadId: string; turnId: string; text: string }
+  | {
+      kind: "progress";
+      threadId: string;
+      turnId: string;
+      activityId: string;
+      text: string;
+      append: true;
+    }
   | { kind: "plan"; threadId: string; turnId: string; steps: PlanStep[] }
   | { kind: "tool"; phase: "started" | "updated"; threadId: string; turnId: string; tool: ToolState }
   | {
@@ -24,9 +31,19 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
     const text = stringValue(params.delta);
     return text === undefined ? undefined : { kind: "agent_delta", threadId, turnId, text };
   }
-  if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+  if (method === "item/reasoning/summaryTextDelta") {
     const text = stringValue(params.delta);
-    return text === undefined ? undefined : { kind: "progress", threadId, turnId, text };
+    const itemId = stringValue(params.itemId);
+    const summaryIndex = numberValue(params.summaryIndex);
+    if (text === undefined || !itemId || summaryIndex === undefined) return undefined;
+    return {
+      kind: "progress",
+      threadId,
+      turnId,
+      activityId: `reasoning:${itemId}:${summaryIndex}`,
+      text,
+      append: true,
+    };
   }
   if (method === "turn/plan/updated" && Array.isArray(params.plan)) {
     const steps = params.plan.flatMap((value): PlanStep[] => {
