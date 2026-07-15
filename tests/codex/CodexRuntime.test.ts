@@ -40,7 +40,14 @@ describe("CodexRuntime", () => {
       expect(request.params).toEqual(expect.objectContaining({
         developerInstructions: expect.stringContaining("SetProcessDpiAwarenessContext"),
       }));
-      expect((request.params as { developerInstructions: string }).developerInstructions).toContain("-4");
+      const instructions = (request.params as { developerInstructions: string }).developerInstructions;
+      expect(instructions).toContain("-4");
+      expect(instructions).toContain("specific window");
+      expect(instructions).toContain("DwmGetWindowAttribute");
+      expect(instructions).toContain("DWMWA_EXTENDED_FRAME_BOUNDS");
+      expect(instructions).toContain("GetWindowRect");
+      expect(instructions).toContain("UI Automation");
+      expect(instructions).toContain("bitmap dimensions");
     }
   });
 

@@ -12,9 +12,12 @@ import type {
 import { mapCodexNotification } from "./CodexEventMapper.js";
 
 const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
-  "When capturing screenshots on Windows, make the fresh screenshot process Per-Monitor DPI Aware V2 before loading System.Windows.Forms, querying screen bounds, or calling Graphics.CopyFromScreen.",
-  "Call user32!SetProcessDpiAwarenessContext((IntPtr)-4) in that same process, then use the physical monitor or virtual-desktop bounds reported after DPI awareness is enabled.",
-  "Validate that the saved image dimensions cover the complete requested physical capture region; do not use DPI-virtualized logical bounds.",
+  "When capturing any screenshot on Windows, use one fresh process and make it Per-Monitor DPI Aware V2 before loading System.Windows.Forms, System.Drawing, or UI Automation, and before calling any screen, window, or bounds API.",
+  "Call user32!SetProcessDpiAwarenessContext((IntPtr)-4) in that same process and verify that it succeeded or that the process is already PMv2 before continuing.",
+  "For a full monitor or desktop, query the physical monitor or virtual-desktop bounds only after PMv2 is active.",
+  "For a specific window, obtain its HWND after PMv2 is active and use DwmGetWindowAttribute with DWMWA_EXTENDED_FRAME_BOUNDS (9) for the physical visible window bounds; use GetWindowRect only as a fallback after PMv2 is active.",
+  "Never crop a window with DPI-virtualized coordinates from an unaware process or with UI Automation BoundingRectangle coordinates.",
+  "Call Graphics.CopyFromScreen with those physical coordinates and validate that the saved bitmap dimensions exactly equal the selected physical capture bounds.",
 ].join(" ");
 
 export interface AppServerClient {
