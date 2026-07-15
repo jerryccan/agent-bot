@@ -49,9 +49,14 @@ function fixture() {
     cancelTurn: vi.fn(async () => undefined),
     closeSession: vi.fn(async () => undefined),
     setModel: vi.fn(async () => undefined),
+    setReasoningEffort: vi.fn(async () => undefined),
     setPermissionMode: vi.fn(async () => undefined),
     respondToApproval: vi.fn(async () => undefined),
-    listModels: vi.fn(async () => [{ id: "gpt-test", displayName: "GPT Test" }]),
+    listModels: vi.fn(async () => [{
+      id: "gpt-test",
+      displayName: "GPT Test",
+      supportedReasoningEfforts: [],
+    }]),
     onEvent: vi.fn((listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

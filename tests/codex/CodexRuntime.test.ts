@@ -58,7 +58,7 @@ describe("CodexRuntime", () => {
     });
     const turnId = await runtime.startTurn("s1", "inspect the repo");
     expect(client.requests.find((request) => request.method === "turn/start")?.params).toEqual(
-      expect.objectContaining({ summary: "auto" }),
+      expect.objectContaining({ effort: "medium", summary: "auto" }),
     );
     client.emit("item/agentMessage/delta", {
       threadId: "thr_1",
@@ -72,10 +72,51 @@ describe("CodexRuntime", () => {
     });
 
     expect(session.remoteSessionId).toBe("thr_1");
+    expect(session.reasoningEffort).toBe("medium");
     expect(events).toContainEqual(expect.objectContaining({ type: "agent_text_delta", text: "hello", turnId }));
     expect(events).toContainEqual(
       expect.objectContaining({ type: "turn_completed", finalResponse: "hello", durationMs: 1200 }),
     );
+  });
+
+  test("persists a selected effort in runtime state and exposes model effort metadata", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+      reasoningEffort: "high",
+    });
+
+    await runtime.setReasoningEffort("s1", "low");
+    expect(runtime.getSession("s1")?.reasoningEffort).toBe("low");
+    await expect(runtime.listModels()).resolves.toEqual([
+      expect.objectContaining({
+        id: "gpt-test",
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { value: "low", description: "Fast" },
+          { value: "medium", description: "Balanced" },
+        ],
+      }),
+    ]);
+  });
+
+  test("uses the model default when a new thread omits reasoning effort", async () => {
+    const client = new FakeAppServerClient();
+    client.startResult = { thread: { id: "thr_1" }, model: "gpt-test", reasoningEffort: null };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    const session = await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    expect(session.reasoningEffort).toBe("medium");
   });
 
   test("resume ignores history and historical notifications", async () => {
@@ -187,7 +228,8 @@ describe("CodexRuntime", () => {
 
 class FakeAppServerClient {
   requests: Array<{ method: string; params: unknown }> = [];
-  resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test" };
+  startResult: unknown = { thread: { id: "thr_1" }, model: "gpt-test", reasoningEffort: "medium" };
+  resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
   private notificationListener?: (method: string, params: unknown) => void;
   private readonly requestHandlers = new Map<
     string,
@@ -196,10 +238,19 @@ class FakeAppServerClient {
 
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params });
-    if (method === "thread/start") return { thread: { id: "thr_1" }, model: "gpt-test" } as T;
+    if (method === "thread/start") return this.startResult as T;
     if (method === "thread/resume") return this.resumeResult as T;
     if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;
-    if (method === "model/list") return { data: [{ id: "gpt-test", displayName: "GPT Test", isDefault: true }] } as T;
+    if (method === "model/list") return { data: [{
+      id: "gpt-test",
+      displayName: "GPT Test",
+      isDefault: true,
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low", description: "Fast" },
+        { reasoningEffort: "medium", description: "Balanced" },
+      ],
+      defaultReasoningEffort: "medium",
+    }] } as T;
     return {} as T;
   }
 

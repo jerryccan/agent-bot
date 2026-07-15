@@ -166,6 +166,7 @@ function inertRuntime(): AgentRuntime {
     cancelTurn: async () => undefined,
     closeSession: async () => undefined,
     setModel: async () => undefined,
+    setReasoningEffort: async () => undefined,
     setPermissionMode: async () => undefined,
     respondToApproval: async () => undefined,
     listModels: async () => [],

@@ -72,7 +72,8 @@ export class CodexRuntime implements AgentRuntime {
       developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
       ...permissionParams(input.permissionMode),
     });
-    const session = this.makeSession(input, response.thread.id, response.model);
+    const reasoningEffort = await this.resolveReasoningEffort(input, response);
+    const session = this.makeSession(input, response.thread.id, response.model, reasoningEffort);
     this.sessions.set(input.localSessionId, session);
     return session;
   }
@@ -86,7 +87,8 @@ export class CodexRuntime implements AgentRuntime {
       developerInstructions: WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS,
       ...permissionParams(input.permissionMode),
     });
-    const session = this.makeSession(input, response.thread.id, response.model);
+    const reasoningEffort = await this.resolveReasoningEffort(input, response);
+    const session = this.makeSession(input, response.thread.id, response.model, reasoningEffort);
     this.sessions.set(input.localSessionId, session);
     return session;
   }
@@ -109,6 +111,7 @@ export class CodexRuntime implements AgentRuntime {
       input: [{ type: "text", text }],
       cwd: session.cwd,
       model: session.model,
+      effort: session.reasoningEffort,
       summary: "auto",
       approvalPolicy: session.permissionMode === "auto" ? "never" : "on-request",
     });
@@ -142,6 +145,10 @@ export class CodexRuntime implements AgentRuntime {
     this.requireSession(sessionId).model = model;
   }
 
+  async setReasoningEffort(sessionId: string, effort: string): Promise<void> {
+    this.requireSession(sessionId).reasoningEffort = effort;
+  }
+
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void> {
     this.requireSession(sessionId).permissionMode = mode;
   }
@@ -159,7 +166,15 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async listModels(): Promise<ModelOption[]> {
-    const response = await (await this.client()).request<{ data: Array<{ id: string; displayName?: string; isDefault?: boolean }> }>(
+    const response = await (await this.client()).request<{
+      data: Array<{
+        id: string;
+        displayName?: string;
+        isDefault?: boolean;
+        supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string }>;
+        defaultReasoningEffort?: string;
+      }>;
+    }>(
       "model/list",
       {},
     );
@@ -167,6 +182,11 @@ export class CodexRuntime implements AgentRuntime {
       id: model.id,
       displayName: model.displayName,
       isDefault: model.isDefault,
+      supportedReasoningEfforts: (model.supportedReasoningEfforts ?? []).map((option) => ({
+        value: option.reasoningEffort,
+        description: option.description,
+      })),
+      defaultReasoningEffort: model.defaultReasoningEffort,
     }));
   }
 
@@ -279,7 +299,24 @@ export class CodexRuntime implements AgentRuntime {
     return response;
   }
 
-  private makeSession(input: CreateRuntimeSessionInput, remoteSessionId: string, model?: string): CodexSession {
+  private async resolveReasoningEffort(
+    input: CreateRuntimeSessionInput,
+    response: ThreadResponse,
+  ): Promise<string | undefined> {
+    if (input.reasoningEffort) return input.reasoningEffort;
+    if (response.reasoningEffort) return response.reasoningEffort;
+    const model = input.model ?? response.model;
+    const models = await this.listModels();
+    return models.find((item) => item.id === model)?.defaultReasoningEffort
+      ?? models.find((item) => item.isDefault)?.defaultReasoningEffort;
+  }
+
+  private makeSession(
+    input: CreateRuntimeSessionInput,
+    remoteSessionId: string,
+    model?: string,
+    reasoningEffort?: string,
+  ): CodexSession {
     return {
       localSessionId: input.localSessionId,
       remoteSessionId,
@@ -287,6 +324,7 @@ export class CodexRuntime implements AgentRuntime {
       agentName: input.agentName,
       cwd: input.cwd,
       model: input.model ?? model,
+      reasoningEffort,
       permissionMode: input.permissionMode,
       finalText: "",
       needsResume: false,
@@ -335,6 +373,7 @@ export class CodexRuntime implements AgentRuntime {
 interface ThreadResponse {
   thread: { id: string };
   model?: string;
+  reasoningEffort?: string | null;
 }
 
 function permissionParams(mode: PermissionMode): { approvalPolicy: "never" | "on-request"; sandbox: string } {

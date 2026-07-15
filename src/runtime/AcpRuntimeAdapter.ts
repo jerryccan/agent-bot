@@ -75,6 +75,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       agentName: input.agentName,
       cwd: input.cwd,
       model: input.model,
+      reasoningEffort: input.reasoningEffort,
       permissionMode: input.permissionMode,
     };
     this.sessions.set(input.localSessionId, session);
@@ -138,6 +139,10 @@ export class AcpRuntimeAdapter implements AgentRuntime {
 
   async setModel(): Promise<void> {
     throw new Error("ACP runtime does not expose model selection through the gateway.");
+  }
+
+  async setReasoningEffort(_sessionId: string, _effort: string): Promise<void> {
+    throw new Error("ACP runtime does not expose reasoning effort through the gateway.");
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void> {

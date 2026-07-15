@@ -30,6 +30,9 @@ describe("AcpRuntimeAdapter tool updates", () => {
       cwd: process.cwd(),
       permissionMode: "auto",
     });
+    await expect(runtime.setReasoningEffort("s1", "high")).rejects.toThrow(
+      "ACP runtime does not expose reasoning effort through the gateway.",
+    );
     await runtime.startTurn("s1", "inspect the directory");
 
     onUpdate?.({} as never, {

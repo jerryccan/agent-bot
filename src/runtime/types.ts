@@ -79,6 +79,13 @@ export interface ModelOption {
   id: string;
   displayName?: string;
   isDefault?: boolean;
+  supportedReasoningEfforts: ReasoningEffortOption[];
+  defaultReasoningEffort?: string;
+}
+
+export interface ReasoningEffortOption {
+  value: string;
+  description?: string;
 }
 
 export interface AgentRuntime {
@@ -91,6 +98,7 @@ export interface AgentRuntime {
   cancelTurn(sessionId: string, turnId: string): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
   setModel(sessionId: string, model: string): Promise<void>;
+  setReasoningEffort(sessionId: string, effort: string): Promise<void>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void>;
   respondToApproval(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
   listModels(): Promise<ModelOption[]>;
