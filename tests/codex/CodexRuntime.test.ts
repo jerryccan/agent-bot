@@ -16,6 +16,9 @@ describe("CodexRuntime", () => {
       permissionMode: "auto",
     });
     const turnId = await runtime.startTurn("s1", "inspect the repo");
+    expect(client.requests.find((request) => request.method === "turn/start")?.params).toEqual(
+      expect.objectContaining({ summary: "auto" }),
+    );
     client.emit("item/agentMessage/delta", {
       threadId: "thr_1",
       turnId,

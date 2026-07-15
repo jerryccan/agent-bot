@@ -100,6 +100,7 @@ export class CodexRuntime implements AgentRuntime {
       input: [{ type: "text", text }],
       cwd: session.cwd,
       model: session.model,
+      summary: "auto",
       approvalPolicy: session.permissionMode === "auto" ? "never" : "on-request",
     });
     session.activeTurnId = response.turn.id;
