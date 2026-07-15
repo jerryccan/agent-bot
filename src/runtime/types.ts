@@ -57,6 +57,7 @@ export interface RuntimeSession {
   agentName: string;
   cwd: string;
   model?: string;
+  reasoningEffort?: string;
   permissionMode: PermissionMode;
   activeTurnId?: string;
 }
@@ -66,6 +67,7 @@ export interface CreateRuntimeSessionInput {
   agentName: string;
   cwd: string;
   model?: string;
+  reasoningEffort?: string;
   permissionMode: PermissionMode;
 }
 

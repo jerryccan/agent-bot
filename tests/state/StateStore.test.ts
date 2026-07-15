@@ -49,6 +49,7 @@ describe("StateStore runtime metadata", () => {
       runtimeKind: "codex",
       remoteSessionId: "thr_1",
       model: "gpt-test",
+      reasoningEffort: "high",
       permissionMode: "auto",
     });
 
@@ -56,6 +57,7 @@ describe("StateStore runtime metadata", () => {
       runtimeKind: "codex",
       remoteSessionId: "thr_1",
       model: "gpt-test",
+      reasoningEffort: "high",
       permissionMode: "auto",
     });
   });

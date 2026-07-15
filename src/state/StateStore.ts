@@ -22,6 +22,7 @@ export interface SessionRecord {
   runtimeKind?: "acp" | "codex";
   remoteSessionId?: string;
   model?: string;
+  reasoningEffort?: string;
   permissionMode?: "auto" | "confirm";
   lastTurnId?: string;
   lastTurnStatus?: string;
@@ -47,6 +48,7 @@ interface SessionRow {
   runtime_kind: "acp" | "codex" | null;
   remote_session_id: string | null;
   model: string | null;
+  reasoning_effort: string | null;
   permission_mode: "auto" | "confirm" | null;
   last_turn_id: string | null;
   last_turn_status: string | null;
@@ -183,7 +185,7 @@ export class StateStore {
     patch: Partial<
       Pick<
         SessionRecord,
-        "runtimeKind" | "remoteSessionId" | "model" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
+        "runtimeKind" | "remoteSessionId" | "model" | "reasoningEffort" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
       >
     >,
   ): void {
@@ -196,7 +198,7 @@ export class StateStore {
       .prepare(
         `
         UPDATE sessions
-        SET runtime_kind = ?, remote_session_id = ?, model = ?, permission_mode = ?,
+        SET runtime_kind = ?, remote_session_id = ?, model = ?, reasoning_effort = ?, permission_mode = ?,
             last_turn_id = ?, last_turn_status = ?, updated_at = ?
         WHERE local_session_id = ?
         `,
@@ -205,6 +207,7 @@ export class StateStore {
         patch.runtimeKind ?? existing.runtimeKind ?? null,
         patch.remoteSessionId ?? existing.remoteSessionId ?? existing.acpSessionId ?? null,
         patch.model ?? existing.model ?? null,
+        patch.reasoningEffort ?? existing.reasoningEffort ?? null,
         patch.permissionMode ?? existing.permissionMode ?? null,
         patch.lastTurnId ?? existing.lastTurnId ?? null,
         patch.lastTurnStatus ?? existing.lastTurnStatus ?? null,
@@ -391,6 +394,7 @@ export class StateStore {
       ["runtime_kind", "TEXT"],
       ["remote_session_id", "TEXT"],
       ["model", "TEXT"],
+      ["reasoning_effort", "TEXT"],
       ["permission_mode", "TEXT"],
       ["last_turn_id", "TEXT"],
       ["last_turn_status", "TEXT"],
@@ -423,6 +427,7 @@ function mapSession(row: SessionRow): SessionRecord {
     runtimeKind: row.runtime_kind ?? (row.acp_session_id ? "acp" : undefined),
     remoteSessionId: row.remote_session_id ?? row.acp_session_id ?? undefined,
     model: row.model ?? undefined,
+    reasoningEffort: row.reasoning_effort ?? undefined,
     permissionMode: row.permission_mode ?? undefined,
     lastTurnId: row.last_turn_id ?? undefined,
     lastTurnStatus: row.last_turn_status ?? undefined,
