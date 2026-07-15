@@ -1,0 +1,297 @@
+import type { Logger } from "pino";
+import type {
+  AgentEvent,
+  AgentRuntime,
+  ApprovalDecision,
+  CreateRuntimeSessionInput,
+  ModelOption,
+  PermissionMode,
+  ResumeRuntimeSessionInput,
+  RuntimeSession,
+} from "../runtime/types.js";
+import { mapCodexNotification } from "./CodexEventMapper.js";
+
+export interface AppServerClient {
+  request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
+  notify(method: string, params?: unknown): void;
+  registerRequestHandler(
+    method: string,
+    handler: (params: unknown, id: string | number, method: string) => Promise<unknown>,
+  ): void;
+  onNotification(listener: (method: string, params: unknown) => void): () => void;
+}
+
+export interface AppServerClientProvider {
+  getClient(): Promise<AppServerClient>;
+  close(): void;
+}
+
+interface CodexSession extends RuntimeSession {
+  finalText: string;
+}
+
+interface PendingApproval {
+  sessionId: string;
+  turnId: string;
+  resolve: (value: { decision: ApprovalDecision }) => void;
+}
+
+export class CodexRuntime implements AgentRuntime {
+  readonly kind = "codex" as const;
+  private readonly sessions = new Map<string, CodexSession>();
+  private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private readonly approvals = new Map<string, PendingApproval>();
+  private attachedClient?: AppServerClient;
+  private unsubscribe?: () => void;
+
+  constructor(
+    private readonly provider: AppServerClientProvider,
+    private readonly logger: Logger,
+  ) {}
+
+  getSession(localSessionId: string): RuntimeSession | undefined {
+    return this.sessions.get(localSessionId);
+  }
+
+  async createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {
+    const client = await this.client();
+    const response = await client.request<ThreadResponse>("thread/start", {
+      cwd: input.cwd,
+      model: input.model,
+      ...permissionParams(input.permissionMode),
+    });
+    const session = this.makeSession(input, response.thread.id, response.model);
+    this.sessions.set(input.localSessionId, session);
+    return session;
+  }
+
+  async resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession> {
+    const client = await this.client();
+    const response = await client.request<ThreadResponse>("thread/resume", {
+      threadId: input.remoteSessionId,
+      cwd: input.cwd,
+      model: input.model,
+      ...permissionParams(input.permissionMode),
+    });
+    const session = this.makeSession(input, response.thread.id, response.model);
+    this.sessions.set(input.localSessionId, session);
+    return session;
+  }
+
+  async startTurn(sessionId: string, text: string): Promise<string> {
+    const session = this.requireSession(sessionId);
+    const client = await this.client();
+    const response = await client.request<{ turn: { id: string } }>("turn/start", {
+      threadId: session.remoteSessionId,
+      input: [{ type: "text", text }],
+      cwd: session.cwd,
+      model: session.model,
+      approvalPolicy: session.permissionMode === "auto" ? "never" : "on-request",
+    });
+    session.activeTurnId = response.turn.id;
+    session.finalText = "";
+    this.emit({ type: "turn_started", sessionId, turnId: response.turn.id, startedAt: Date.now() });
+    return response.turn.id;
+  }
+
+  async steerTurn(sessionId: string, turnId: string, text: string): Promise<void> {
+    const session = this.requireActiveTurn(sessionId, turnId);
+    await (await this.client()).request("turn/steer", {
+      threadId: session.remoteSessionId,
+      expectedTurnId: turnId,
+      input: [{ type: "text", text }],
+    });
+  }
+
+  async cancelTurn(sessionId: string, turnId: string): Promise<void> {
+    const session = this.requireActiveTurn(sessionId, turnId);
+    await (await this.client()).request("turn/interrupt", { threadId: session.remoteSessionId, turnId });
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    await (await this.client()).request("thread/archive", { threadId: session.remoteSessionId });
+    this.sessions.delete(sessionId);
+  }
+
+  async setModel(sessionId: string, model: string): Promise<void> {
+    this.requireSession(sessionId).model = model;
+  }
+
+  async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void> {
+    this.requireSession(sessionId).permissionMode = mode;
+  }
+
+  async respondToApproval(
+    sessionId: string,
+    requestId: string,
+    decision: ApprovalDecision,
+  ): Promise<void> {
+    const pending = this.approvals.get(requestId);
+    if (!pending || pending.sessionId !== sessionId) throw new Error("Approval request is no longer pending.");
+    this.approvals.delete(requestId);
+    pending.resolve({ decision });
+    this.emit({ type: "approval_resolved", sessionId, turnId: pending.turnId, requestId, decision });
+  }
+
+  async listModels(): Promise<ModelOption[]> {
+    const response = await (await this.client()).request<{ data: Array<{ id: string; displayName?: string; isDefault?: boolean }> }>(
+      "model/list",
+      {},
+    );
+    return response.data.filter((model) => model.id).map((model) => ({
+      id: model.id,
+      displayName: model.displayName,
+      isDefault: model.isDefault,
+    }));
+  }
+
+  onEvent(listener: (event: AgentEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  close(): void {
+    this.unsubscribe?.();
+    for (const pending of this.approvals.values()) pending.resolve({ decision: "cancel" });
+    this.approvals.clear();
+    this.sessions.clear();
+    this.provider.close();
+  }
+
+  private async client(): Promise<AppServerClient> {
+    const client = await this.provider.getClient();
+    if (client !== this.attachedClient) this.attachClient(client);
+    return client;
+  }
+
+  private attachClient(client: AppServerClient): void {
+    this.unsubscribe?.();
+    this.attachedClient = client;
+    this.unsubscribe = client.onNotification((method, params) => this.handleNotification(method, params));
+    for (const method of [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval",
+    ]) {
+      client.registerRequestHandler(method, (params, id) => this.handleApproval(params, id));
+    }
+  }
+
+  private handleNotification(method: string, params: unknown): void {
+    const mapped = mapCodexNotification(method, params);
+    if (!mapped) return;
+    const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === mapped.threadId);
+    if (!session || !session.activeTurnId || session.activeTurnId !== mapped.turnId) return;
+    const sessionId = session.localSessionId;
+    if (mapped.kind === "agent_delta") {
+      session.finalText += mapped.text;
+      this.emit({ type: "agent_text_delta", sessionId, turnId: mapped.turnId, text: mapped.text });
+    } else if (mapped.kind === "progress") {
+      this.emit({ type: "progress", sessionId, turnId: mapped.turnId, text: mapped.text });
+    } else if (mapped.kind === "plan") {
+      this.emit({ type: "plan_updated", sessionId, turnId: mapped.turnId, steps: mapped.steps });
+    } else if (mapped.kind === "tool") {
+      this.emit({
+        type: mapped.phase === "started" ? "tool_started" : "tool_updated",
+        sessionId,
+        turnId: mapped.turnId,
+        tool: mapped.tool,
+      });
+    } else if (mapped.kind === "terminal") {
+      session.activeTurnId = undefined;
+      if (mapped.status === "cancelled") {
+        this.emit({ type: "turn_cancelled", sessionId, turnId: mapped.turnId });
+      } else if (mapped.status === "failed") {
+        this.emit({ type: "turn_failed", sessionId, turnId: mapped.turnId, message: mapped.error ?? "Codex turn failed." });
+      } else {
+        this.emit({
+          type: "turn_completed",
+          sessionId,
+          turnId: mapped.turnId,
+          finalResponse: session.finalText,
+          durationMs: mapped.durationMs,
+        });
+      }
+    }
+  }
+
+  private handleApproval(params: unknown, id: string | number): Promise<{ decision: ApprovalDecision }> {
+    if (!isRecord(params)) return Promise.resolve({ decision: "decline" });
+    const threadId = stringValue(params.threadId);
+    const turnId = stringValue(params.turnId);
+    const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === threadId);
+    if (!session || !turnId) return Promise.resolve({ decision: "decline" });
+    if (session.permissionMode === "auto") return Promise.resolve({ decision: "accept" });
+    const requestId = String(id);
+    const response = new Promise<{ decision: ApprovalDecision }>((resolve) => {
+      this.approvals.set(requestId, { sessionId: session.localSessionId, turnId, resolve });
+    });
+    this.emit({
+      type: "approval_requested",
+      sessionId: session.localSessionId,
+      turnId,
+      request: {
+        id: requestId,
+        title: stringValue(params.command) ?? "Codex approval request",
+        command: stringValue(params.command),
+        reason: stringValue(params.reason),
+        options: [
+          { id: "accept", label: "允许一次" },
+          { id: "acceptForSession", label: "本会话允许" },
+          { id: "decline", label: "拒绝" },
+          { id: "cancel", label: "取消任务" },
+        ],
+      },
+    });
+    return response;
+  }
+
+  private makeSession(input: CreateRuntimeSessionInput, remoteSessionId: string, model?: string): CodexSession {
+    return {
+      localSessionId: input.localSessionId,
+      remoteSessionId,
+      runtimeKind: "codex",
+      agentName: input.agentName,
+      cwd: input.cwd,
+      model: input.model ?? model,
+      permissionMode: input.permissionMode,
+      finalText: "",
+    };
+  }
+
+  private requireSession(sessionId: string): CodexSession {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Unknown Codex session: ${sessionId}`);
+    return session;
+  }
+
+  private requireActiveTurn(sessionId: string, turnId: string): CodexSession {
+    const session = this.requireSession(sessionId);
+    if (session.activeTurnId !== turnId) throw new Error(`Codex turn is no longer active: ${turnId}`);
+    return session;
+  }
+
+  private emit(event: AgentEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
+
+interface ThreadResponse {
+  thread: { id: string };
+  model?: string;
+}
+
+function permissionParams(mode: PermissionMode): { approvalPolicy: "never" | "on-request"; sandbox: string } {
+  return mode === "auto"
+    ? { approvalPolicy: "never", sandbox: "danger-full-access" }
+    : { approvalPolicy: "on-request", sandbox: "workspace-write" };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}

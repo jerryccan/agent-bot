@@ -10,7 +10,11 @@ import {
   type AppServerResponse,
 } from "./protocol.js";
 
-type ServerRequestHandler = (params: unknown) => Promise<unknown>;
+type ServerRequestHandler = (
+  params: unknown,
+  id: AppServerRequestId,
+  method: string,
+) => Promise<unknown>;
 type NotificationListener = (method: string, params: unknown) => void;
 
 interface PendingRequest {
@@ -132,7 +136,7 @@ export class AppServerConnection {
       return;
     }
     try {
-      this.write({ id, result: await handler(params) });
+      this.write({ id, result: await handler(params, id, method) });
     } catch (error) {
       this.write({
         id,

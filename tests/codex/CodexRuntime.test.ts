@@ -1,0 +1,170 @@
+import { describe, expect, test, vi } from "vitest";
+import type { AgentEvent } from "../../src/runtime/types.js";
+import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
+
+describe("CodexRuntime", () => {
+  test("creates a thread and emits active turn deltas and completion", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: AgentEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+
+    const session = await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    const turnId = await runtime.startTurn("s1", "inspect the repo");
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId,
+      itemId: "item_1",
+      delta: "hello",
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: turnId, status: "completed", durationMs: 1200 },
+    });
+
+    expect(session.remoteSessionId).toBe("thr_1");
+    expect(events).toContainEqual(expect.objectContaining({ type: "agent_text_delta", text: "hello", turnId }));
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "turn_completed", finalResponse: "hello", durationMs: 1200 }),
+    );
+  });
+
+  test("resume ignores history and historical notifications", async () => {
+    const client = new FakeAppServerClient();
+    client.resumeResult = {
+      thread: {
+        id: "thr_1",
+        turns: [{ id: "old", items: [{ type: "agentMessage", id: "old_i", text: "already sent" }] }],
+      },
+      model: "gpt-test",
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: AgentEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+
+    await runtime.resumeSession({
+      localSessionId: "s1",
+      remoteSessionId: "thr_1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId: "old",
+      itemId: "old_i",
+      delta: "already sent",
+    });
+
+    expect(events).toEqual([]);
+  });
+
+  test("steers and interrupts the active turn", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    const turnId = await runtime.startTurn("s1", "build it");
+
+    await runtime.steerTurn("s1", turnId, "also update docs");
+    await runtime.cancelTurn("s1", turnId);
+
+    expect(client.requests).toContainEqual(
+      expect.objectContaining({ method: "turn/steer", params: expect.objectContaining({ expectedTurnId: turnId }) }),
+    );
+    expect(client.requests).toContainEqual(
+      expect.objectContaining({ method: "turn/interrupt", params: { threadId: "thr_1", turnId } }),
+    );
+  });
+
+  test("auto approvals accept immediately and confirm approvals wait for a response", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    const auto = await client.invokeRequest("item/commandExecution/requestApproval", 7, {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      command: "npm test",
+    });
+    expect(auto).toEqual({ decision: "accept" });
+
+    await runtime.setPermissionMode("s1", "confirm");
+    const events: AgentEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    const pending = client.invokeRequest("item/commandExecution/requestApproval", 8, {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      command: "npm test",
+    });
+    await vi.waitFor(() => expect(events.some((event) => event.type === "approval_requested")).toBe(true));
+    await runtime.respondToApproval("s1", "8", "acceptForSession");
+    await expect(pending).resolves.toEqual({ decision: "acceptForSession" });
+  });
+});
+
+class FakeAppServerClient {
+  requests: Array<{ method: string; params: unknown }> = [];
+  resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test" };
+  private notificationListener?: (method: string, params: unknown) => void;
+  private readonly requestHandlers = new Map<
+    string,
+    (params: unknown, id: string | number, method: string) => Promise<unknown>
+  >();
+
+  async request<T>(method: string, params?: unknown): Promise<T> {
+    this.requests.push({ method, params });
+    if (method === "thread/start") return { thread: { id: "thr_1" }, model: "gpt-test" } as T;
+    if (method === "thread/resume") return this.resumeResult as T;
+    if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;
+    if (method === "model/list") return { data: [{ id: "gpt-test", displayName: "GPT Test", isDefault: true }] } as T;
+    return {} as T;
+  }
+
+  notify(): void {}
+
+  registerRequestHandler(
+    method: string,
+    handler: (params: unknown, id: string | number, method: string) => Promise<unknown>,
+  ): void {
+    this.requestHandlers.set(method, handler);
+  }
+
+  onNotification(listener: (method: string, params: unknown) => void): () => void {
+    this.notificationListener = listener;
+    return () => {
+      this.notificationListener = undefined;
+    };
+  }
+
+  emit(method: string, params: unknown): void {
+    this.notificationListener?.(method, params);
+  }
+
+  invokeRequest(method: string, id: string | number, params: unknown): Promise<unknown> {
+    const handler = this.requestHandlers.get(method);
+    if (!handler) throw new Error(`Missing request handler: ${method}`);
+    return handler(params, id, method);
+  }
+}
+
+function provider(client: FakeAppServerClient): AppServerClientProvider {
+  return { getClient: async () => client, close: vi.fn() };
+}
+
+function logger() {
+  return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as any;
+}
