@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { loadConfig } from "../../src/config/loadConfig.js";
+import { agentConfigSchema } from "../../src/config/schema.js";
 
 describe("loadConfig", () => {
   test("loads the checked-in example config with auto transport", () => {
@@ -11,4 +12,10 @@ describe("loadConfig", () => {
       ["appId", "appSecret", "transport", "useConsoleWhenMissingCredentials"].sort(),
     );
   });
+});
+
+test("uses ACP when agent kind is omitted", () => {
+  const parsed = agentConfigSchema.parse({ title: "Example", command: "node" });
+
+  expect(parsed.kind).toBe("acp");
 });

@@ -29,4 +29,22 @@ export const migrations = [
     created_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS turn_snapshots (
+    turn_id TEXT PRIMARY KEY,
+    local_session_id TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS turn_deliveries (
+    turn_id TEXT PRIMARY KEY,
+    progress_message_id TEXT,
+    final_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    final_delivered_at TEXT,
+    last_card_hash TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ] as const;

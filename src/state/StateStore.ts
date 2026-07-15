@@ -19,6 +19,12 @@ export interface SessionRecord {
   agentName: string;
   cwd: string;
   acpSessionId?: string;
+  runtimeKind?: "acp" | "codex";
+  remoteSessionId?: string;
+  model?: string;
+  permissionMode?: "auto" | "confirm";
+  lastTurnId?: string;
+  lastTurnStatus?: string;
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +44,12 @@ interface SessionRow {
   agent_name: string;
   cwd: string;
   acp_session_id: string | null;
+  runtime_kind: "acp" | "codex" | null;
+  remote_session_id: string | null;
+  model: string | null;
+  permission_mode: "auto" | "confirm" | null;
+  last_turn_id: string | null;
+  last_turn_status: string | null;
   status: SessionStatus;
   created_at: string;
   updated_at: string;
@@ -53,6 +65,7 @@ export class StateStore {
     for (const migration of migrations) {
       this.db.exec(migration);
     }
+    this.ensureSessionColumns();
   }
 
   close(): void {
@@ -158,6 +171,148 @@ export class StateStore {
       );
   }
 
+  updateRuntimeSession(
+    localSessionId: string,
+    patch: Partial<
+      Pick<
+        SessionRecord,
+        "runtimeKind" | "remoteSessionId" | "model" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
+      >
+    >,
+  ): void {
+    const existing = this.getSession(localSessionId);
+    if (!existing) {
+      return;
+    }
+
+    this.db
+      .prepare(
+        `
+        UPDATE sessions
+        SET runtime_kind = ?, remote_session_id = ?, model = ?, permission_mode = ?,
+            last_turn_id = ?, last_turn_status = ?, updated_at = ?
+        WHERE local_session_id = ?
+        `,
+      )
+      .run(
+        patch.runtimeKind ?? existing.runtimeKind ?? null,
+        patch.remoteSessionId ?? existing.remoteSessionId ?? existing.acpSessionId ?? null,
+        patch.model ?? existing.model ?? null,
+        patch.permissionMode ?? existing.permissionMode ?? null,
+        patch.lastTurnId ?? existing.lastTurnId ?? null,
+        patch.lastTurnStatus ?? existing.lastTurnStatus ?? null,
+        new Date().toISOString(),
+        localSessionId,
+      );
+  }
+
+  saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+        INSERT INTO turn_snapshots (turn_id, local_session_id, snapshot_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(turn_id) DO UPDATE SET
+          local_session_id = excluded.local_session_id,
+          snapshot_json = excluded.snapshot_json,
+          updated_at = excluded.updated_at
+        `,
+      )
+      .run(turnId, localSessionId, JSON.stringify(snapshot), now);
+  }
+
+  getTurnSnapshot(turnId: string): unknown {
+    const row = this.db
+      .prepare("SELECT snapshot_json FROM turn_snapshots WHERE turn_id = ?")
+      .get(turnId) as { snapshot_json: string } | undefined;
+    return row ? JSON.parse(row.snapshot_json) : undefined;
+  }
+
+  saveTurnDelivery(
+    turnId: string,
+    patch: { progressMessageId?: string; lastCardHash?: string },
+  ): void {
+    const existing = this.getTurnDelivery(turnId);
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+        INSERT INTO turn_deliveries (
+          turn_id, progress_message_id, final_message_ids_json, final_delivered_at, last_card_hash, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(turn_id) DO UPDATE SET
+          progress_message_id = excluded.progress_message_id,
+          last_card_hash = excluded.last_card_hash,
+          updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        turnId,
+        patch.progressMessageId ?? existing?.progressMessageId ?? null,
+        JSON.stringify(existing?.finalMessageIds ?? []),
+        existing?.finalDeliveredAt ?? null,
+        patch.lastCardHash ?? existing?.lastCardHash ?? null,
+        now,
+      );
+  }
+
+  markFinalDelivered(turnId: string, messageIds: string[]): void {
+    const now = new Date().toISOString();
+    const existing = this.getTurnDelivery(turnId);
+    this.db
+      .prepare(
+        `
+        INSERT INTO turn_deliveries (
+          turn_id, progress_message_id, final_message_ids_json, final_delivered_at, last_card_hash, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(turn_id) DO UPDATE SET
+          final_message_ids_json = excluded.final_message_ids_json,
+          final_delivered_at = excluded.final_delivered_at,
+          updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        turnId,
+        existing?.progressMessageId ?? null,
+        JSON.stringify(messageIds),
+        now,
+        existing?.lastCardHash ?? null,
+        now,
+      );
+  }
+
+  getTurnDelivery(turnId: string):
+    | {
+        progressMessageId?: string;
+        finalMessageIds: string[];
+        finalDelivered: boolean;
+        finalDeliveredAt?: string;
+        lastCardHash?: string;
+      }
+    | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM turn_deliveries WHERE turn_id = ?")
+      .get(turnId) as
+      | {
+          progress_message_id: string | null;
+          final_message_ids_json: string;
+          final_delivered_at: string | null;
+          last_card_hash: string | null;
+        }
+      | undefined;
+    if (!row) {
+      return undefined;
+    }
+    return {
+      progressMessageId: row.progress_message_id ?? undefined,
+      finalMessageIds: JSON.parse(row.final_message_ids_json) as string[],
+      finalDelivered: Boolean(row.final_delivered_at),
+      finalDeliveredAt: row.final_delivered_at ?? undefined,
+      lastCardHash: row.last_card_hash ?? undefined,
+    };
+  }
+
   getSession(localSessionId: string): SessionRecord | undefined {
     const row = this.db
       .prepare("SELECT * FROM sessions WHERE local_session_id = ?")
@@ -184,6 +339,25 @@ export class StateStore {
       )
       .run(contextKey, eventType, JSON.stringify(payload), new Date().toISOString());
   }
+
+  private ensureSessionColumns(): void {
+    const existing = new Set(
+      (this.db.pragma("table_info(sessions)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    const columns: Array<[string, string]> = [
+      ["runtime_kind", "TEXT"],
+      ["remote_session_id", "TEXT"],
+      ["model", "TEXT"],
+      ["permission_mode", "TEXT"],
+      ["last_turn_id", "TEXT"],
+      ["last_turn_status", "TEXT"],
+    ];
+    for (const [name, type] of columns) {
+      if (!existing.has(name)) {
+        this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}`);
+      }
+    }
+  }
 }
 
 function mapUserContext(row: UserContextRow): UserContextRecord {
@@ -203,6 +377,12 @@ function mapSession(row: SessionRow): SessionRecord {
     agentName: row.agent_name,
     cwd: row.cwd,
     acpSessionId: row.acp_session_id ?? undefined,
+    runtimeKind: row.runtime_kind ?? (row.acp_session_id ? "acp" : undefined),
+    remoteSessionId: row.remote_session_id ?? row.acp_session_id ?? undefined,
+    model: row.model ?? undefined,
+    permissionMode: row.permission_mode ?? undefined,
+    lastTurnId: row.last_turn_id ?? undefined,
+    lastTurnStatus: row.last_turn_status ?? undefined,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -4,7 +4,20 @@ feishu:
   appSecret: "${FEISHU_APP_SECRET}"
   useConsoleWhenMissingCredentials: true
 
+console:
+  enabled: true
+
 agents:
+  codex:
+    kind: "codex"
+    title: "Codex"
+    command: "codex"
+    args:
+      - "app-server"
+      - "--listen"
+      - "stdio://"
+    env: {}
+
   coco:
     title: "Coco"
     command: "coco"
@@ -30,7 +43,7 @@ agents:
     env: {}
 
 defaults:
-  agent: "coco"
+  agent: "codex"
   cwd: "."
 
 storage:

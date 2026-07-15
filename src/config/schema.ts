@@ -3,6 +3,7 @@ import { z } from "zod";
 const envRecordSchema = z.record(z.string(), z.string()).default({});
 
 export const agentConfigSchema = z.object({
+  kind: z.enum(["acp", "codex"]).default("acp"),
   title: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
@@ -10,6 +11,11 @@ export const agentConfigSchema = z.object({
 });
 
 export const appConfigSchema = z.object({
+  console: z
+    .object({
+      enabled: z.boolean().default(true),
+    })
+    .default({ enabled: true }),
   feishu: z.object({
     transport: z.enum(["auto", "sdk", "console"]).default("auto"),
     appId: z.string().optional(),
