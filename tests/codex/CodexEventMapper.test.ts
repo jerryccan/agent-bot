@@ -55,6 +55,82 @@ describe("mapCodexNotification", () => {
     });
   });
 
+  test("maps image view lifecycle using the notification phase", () => {
+    const item = {
+      type: "imageView",
+      id: "image_1",
+      path: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+    };
+
+    expect(mapCodexNotification("item/started", { threadId: "thr_1", turnId: "turn_1", item })).toEqual({
+      kind: "tool",
+      phase: "started",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      tool: expect.objectContaining({
+        id: "image_1",
+        kind: "image_view",
+        status: "running",
+        command: "view_image D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+      }),
+    });
+    expect(mapCodexNotification("item/completed", { threadId: "thr_1", turnId: "turn_1", item })).toEqual({
+      kind: "tool",
+      phase: "updated",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      tool: expect.objectContaining({
+        id: "image_1",
+        kind: "image_view",
+        status: "completed",
+        command: "view_image D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+      }),
+    });
+  });
+
+  test("preserves MCP and dynamic tool arguments and successful results", () => {
+    const mcp = mapCodexNotification("item/completed", {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      item: {
+        type: "mcpToolCall",
+        id: "mcp_1",
+        server: "lark",
+        tool: "search",
+        status: "completed",
+        arguments: { query: "Codex" },
+        result: { content: [{ type: "text", text: "found" }], structuredContent: { total: 1 } },
+      },
+    });
+    const dynamic = mapCodexNotification("item/completed", {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      item: {
+        type: "dynamicToolCall",
+        id: "dynamic_1",
+        tool: "inspect",
+        status: "completed",
+        arguments: { path: "a.png" },
+        contentItems: [{ type: "inputText", text: "image inspected" }],
+      },
+    });
+
+    expect(mcp).toEqual(expect.objectContaining({
+      kind: "tool",
+      tool: expect.objectContaining({
+        command: expect.stringContaining('"query": "Codex"'),
+        output: expect.stringContaining('"text": "found"'),
+      }),
+    }));
+    expect(dynamic).toEqual(expect.objectContaining({
+      kind: "tool",
+      tool: expect.objectContaining({
+        command: expect.stringContaining('"path": "a.png"'),
+        output: expect.stringContaining('"text": "image inspected"'),
+      }),
+    }));
+  });
+
   test("maps reasoning summary deltas with a stable activity id", () => {
     expect(
       mapCodexNotification("item/reasoning/summaryTextDelta", {

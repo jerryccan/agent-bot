@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
+import { renderMarkdownWithLocalImages } from "./LocalImageMarkdown.js";
 import type { FeishuOutbound } from "./types.js";
 
 interface TenantTokenResponse {
@@ -14,6 +17,15 @@ interface SendMessageResponse {
   msg: string;
   data?: {
     message_id?: string;
+  };
+  error?: unknown;
+}
+
+interface UploadImageResponse {
+  code: number;
+  msg: string;
+  data?: {
+    image_key?: string;
   };
   error?: unknown;
 }
@@ -37,17 +49,17 @@ export class FeishuMessageClient implements FeishuOutbound {
   }
 
   async sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined> {
+    const elements = await renderMarkdownWithLocalImages(
+      markdown,
+      (filePath) => this.uploadImage(filePath),
+      (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
+    );
     return this.sendMessage(contextKey, "interactive", {
       config: {
         wide_screen_mode: true,
         update_multi: true,
       },
-      elements: [
-        {
-          tag: "markdown",
-          content: markdown,
-        },
-      ],
+      elements,
     }, idempotencyKey);
   }
 
@@ -210,6 +222,32 @@ export class FeishuMessageClient implements FeishuOutbound {
 
     return this.token.value;
   }
+
+  private async uploadImage(filePath: string): Promise<string> {
+    try {
+      const contents = await readFile(filePath);
+      if (contents.byteLength > 10 * 1024 * 1024) {
+        throw new Error(`Image exceeds Feishu's 10 MiB limit: ${filePath}`);
+      }
+      const token = await this.getTenantAccessToken();
+      const form = new FormData();
+      form.append("image_type", "message");
+      form.append("image", new Blob([new Uint8Array(contents)]), path.basename(filePath));
+      const response = await fetch("https://open.feishu.cn/open-apis/im/v1/images", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const payload = (await response.json()) as UploadImageResponse;
+      const imageKey = payload.data?.image_key;
+      if (!response.ok || payload.code !== 0 || !imageKey) {
+        throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "upload image", response.status);
+      }
+      return imageKey;
+    } catch (error) {
+      throw normalizeTransportError(error, "upload image");
+    }
+  }
 }
 
 export class FeishuApiError extends Error {
@@ -219,7 +257,7 @@ export class FeishuApiError extends Error {
   constructor(
     message: string,
     readonly code: number,
-    readonly payload: SendMessageResponse,
+    readonly payload: SendMessageResponse | UploadImageResponse,
     operation = "send",
     readonly httpStatus?: number,
     forceRetryable = false,

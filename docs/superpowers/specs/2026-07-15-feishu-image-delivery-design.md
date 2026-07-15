@@ -12,6 +12,7 @@ Make image-related Codex activity and final answers complete in Feishu. The prog
 - An `imageView` tool uses the original local path and renders as `view_image <path>` in its collapsed tool panel.
 - `imageView` has no textual result in the App Server schema. Completion is communicated by the existing success icon and panel color.
 - Item types without a `status` field use the notification phase: `item/started` is running and `item/completed` is completed.
+- MCP and dynamic tool items preserve their original arguments and successful result payloads as formatted JSON in the existing command/result code block.
 
 ## Local Image Detection
 
@@ -37,7 +38,7 @@ Make image-related Codex activity and final answers complete in Feishu. The prog
 
 ## Verification
 
-- Mapper tests cover `imageView` started and completed notifications and phase-derived status.
+- Mapper tests cover `imageView` started and completed notifications, phase-derived status, and MCP/dynamic tool argument and result preservation.
 - Message-client tests cover local image detection, upload, card element order, preview fields, duplicate-path reuse, and graceful upload failure.
 - Existing no-image Markdown behavior and stable UUID behavior remain covered.
 - A production card containing an actual local screenshot is sent to Feishu and read back as an interactive card with an image resource.

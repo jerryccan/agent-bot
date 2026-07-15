@@ -53,11 +53,12 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
     return { kind: "plan", threadId, turnId, steps };
   }
   if ((method === "item/started" || method === "item/completed") && isRecord(params.item)) {
-    const tool = mapTool(params.item, numberValue(params.startedAtMs), numberValue(params.completedAtMs));
+    const phase = method === "item/started" ? "started" : "updated";
+    const tool = mapTool(params.item, phase, numberValue(params.startedAtMs), numberValue(params.completedAtMs));
     if (!tool) return undefined;
     return {
       kind: "tool",
-      phase: method === "item/started" ? "started" : "updated",
+      phase,
       threadId,
       turnId,
       tool,
@@ -79,11 +80,16 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
   return undefined;
 }
 
-function mapTool(item: Record<string, unknown>, startedAt?: number, completedAt?: number): ToolState | undefined {
+function mapTool(
+  item: Record<string, unknown>,
+  phase: "started" | "updated",
+  startedAt?: number,
+  completedAt?: number,
+): ToolState | undefined {
   const id = stringValue(item.id);
   const type = stringValue(item.type);
   if (!id || !type) return undefined;
-  const status = mapToolStatus(item.status);
+  const status = mapToolStatus(item.status, phase);
   if (type === "commandExecution") {
     const command = stringValue(item.command) ?? "Command";
     return {
@@ -112,12 +118,17 @@ function mapTool(item: Record<string, unknown>, startedAt?: number, completedAt?
   if (type === "mcpToolCall" || type === "dynamicToolCall") {
     const tool = stringValue(item.tool) ?? "tool";
     const server = stringValue(item.server);
+    const title = server ? `${server}.${tool}` : tool;
     const error = isRecord(item.error) ? stringValue(item.error.message) : undefined;
+    const argumentsText = formatJson(item.arguments);
+    const output = formatJson(type === "mcpToolCall" ? item.result : item.contentItems);
     return {
       id,
-      title: server ? `${server}.${tool}` : tool,
+      title,
       kind: type === "mcpToolCall" ? "mcp" : "tool",
       status,
+      command: argumentsText ? `${title}\n${argumentsText}` : title,
+      output,
       error,
       startedAt,
       completedAt,
@@ -125,6 +136,18 @@ function mapTool(item: Record<string, unknown>, startedAt?: number, completedAt?
   }
   if (type === "webSearch") {
     return { id, title: "网页搜索", kind: "web_search", status, startedAt, completedAt };
+  }
+  if (type === "imageView") {
+    const imagePath = stringValue(item.path) ?? "image";
+    return {
+      id,
+      title: `查看图片 ${imagePath}`,
+      kind: "image_view",
+      status,
+      command: `view_image ${imagePath}`,
+      startedAt,
+      completedAt,
+    };
   }
   return undefined;
 }
@@ -135,10 +158,10 @@ function mapPlanStatus(value: unknown): PlanStep["status"] {
   return "pending";
 }
 
-function mapToolStatus(value: unknown): ToolState["status"] {
+function mapToolStatus(value: unknown, phase: "started" | "updated"): ToolState["status"] {
   if (value === "completed") return "completed";
   if (value === "failed" || value === "declined") return "failed";
-  return "running";
+  return phase === "updated" ? "completed" : "running";
 }
 
 function countDiff(diff: string, prefix: "+" | "-"): number {
@@ -155,4 +178,10 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function formatJson(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
 }
