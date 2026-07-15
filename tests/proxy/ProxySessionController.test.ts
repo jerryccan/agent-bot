@@ -141,6 +141,16 @@ describe("ProxySessionController", () => {
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
   });
 
+  test("uses the Codex task directory when a new Codex task omits cwd", async () => {
+    const { controller, runtime } = fixture();
+
+    await controller.onMessage(message("/new"));
+
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: path.join(os.homedir(), "Documents", "Codex"),
+    }));
+  });
+
   test("keeps the first ordinary prompt as the task title fallback", async () => {
     const { controller, store } = fixture();
 
@@ -226,15 +236,16 @@ describe("ProxySessionController", () => {
     expect(runtime.respondToApproval).toHaveBeenCalledWith(sessionId, "req_1", "accept");
   });
 
-  test("shows the current model and reasoning effort", async () => {
-    const { controller, outbound } = fixture();
+  test("shows every supported model and marks the current model", async () => {
+    const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("/new"));
 
     await controller.onMessage(message("/model"));
 
-    expect(outbound.sendText).toHaveBeenCalledWith(
+    expect(runtime.listModels).toHaveBeenCalled();
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
       "chat_id:c1",
-      expect.stringMatching(/当前模型：gpt-test[\s\S]*当前思考强度：high/),
+      expect.stringMatching(/当前模型：`gpt-test`[\s\S]*当前思考强度：high[\s\S]*✅ `gpt-test`（当前）[\s\S]*`gpt-next`/),
     );
   });
 

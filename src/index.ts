@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { AcpProcessManager } from "./acp/AcpProcessManager.js";
 import { AcpSessionManager } from "./acp/AcpSessionManager.js";
@@ -56,11 +57,14 @@ if (feishuOutbound) {
   });
   routes.push({ matches: (contextKey) => !contextKey.startsWith("console:"), outbound: feishuOutbound, presenter });
   const defaultAgentName = config.defaults.agent!;
+  const defaultAgent = config.agents[defaultAgentName];
   const metadataHydrator = new SessionMetadataHydrator(store, runtimes);
   startupNotifier = new StartupNotifier(store, feishuOutbound, renderer, logger, {
     defaultAgentName,
-    defaultAgentTitle: config.agents[defaultAgentName]?.title ?? defaultAgentName,
-    cwd: path.resolve(config.defaults.cwd),
+    defaultAgentTitle: defaultAgent?.title ?? defaultAgentName,
+    cwd: defaultAgent?.kind === "codex"
+      ? path.join(os.homedir(), "Documents", "Codex")
+      : path.resolve(config.defaults.cwd),
   }, metadataHydrator);
 }
 

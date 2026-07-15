@@ -63,7 +63,7 @@ defaults:
   cwd: "."
 ```
 
-`cwd` 是 Codex 默认工作目录。也可以用 `/new codex D:\dev\project` 为新任务指定目录。已有任务的工作目录不会在运行中改变。
+`cwd` 是 ACP agent 的默认工作目录。Codex 新任务未指定目录时使用 `~/Documents/Codex`；也可以用 `/new codex D:\dev\project` 显式指定目录。已有任务的工作目录不会在运行中改变。
 
 ## 飞书应用配置
 
@@ -91,7 +91,7 @@ defaults:
 - `/new [agent] [cwd]`：创建新任务
 - `/sessions`：列出当前入口的任务
 - `/switch <session>`：切换当前任务
-- `/model`：显示当前模型和思考强度
+- `/model`：显示全部支持的模型、当前模型和思考强度
 - `/model <name>`：切换模型，从下一次请求生效；不兼容的思考强度会自动回落到新模型默认值
 - `/thinking`：显示当前思考强度及当前模型支持的可选值
 - `/thinking <level>`：设置思考强度，从下一次请求生效

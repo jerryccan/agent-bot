@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
@@ -231,7 +232,10 @@ export class ProxySessionController {
   ): Promise<SessionRecord> {
     const agent = this.ensureAgent(agentName);
     const localSessionId = createId("sess");
-    const sessionCwd = path.resolve(cwd ?? this.config.defaults.cwd);
+    const defaultCwd = agent.kind === "codex"
+      ? path.join(os.homedir(), "Documents", "Codex")
+      : this.config.defaults.cwd;
+    const sessionCwd = path.resolve(cwd ?? defaultCwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
     this.store.setCurrentSession(contextKey, localSessionId);
     this.outbound.registerSession(localSessionId, contextKey);
@@ -386,9 +390,20 @@ export class ProxySessionController {
   private async model(contextKey: string, model?: string): Promise<void> {
     const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
     if (!model) {
-      await this.outbound.sendText(contextKey, [
-        `当前模型：${loaded.session.model ?? "默认"}`,
+      const models = await loaded.runtime.listModels();
+      const currentModel = loaded.session.model ?? models.find((item) => item.isDefault)?.id;
+      const lines = models.map((item) => {
+        const isCurrent = item.id === currentModel;
+        const marker = isCurrent ? "✅ " : "";
+        const label = isCurrent ? "（当前）" : item.isDefault ? "（默认）" : "";
+        const displayName = item.displayName && item.displayName !== item.id ? `：${item.displayName}` : "";
+        return `- ${marker}${asInlineCode(item.id)}${label}${displayName}`;
+      });
+      await this.outbound.sendMarkdown(contextKey, [
+        `当前模型：${asInlineCode(currentModel ?? "默认")}`,
         `当前思考强度：${loaded.session.reasoningEffort ?? "默认"}`,
+        "支持的模型：",
+        lines.join("\n") || "- 无",
       ].join("\n"));
       return;
     }
@@ -508,7 +523,7 @@ export class ProxySessionController {
       "直接发送文字即可使用 Codex；运行中继续发消息会追加到当前任务。",
       "- `/new [agent] [cwd]`：新建任务",
       "- `/sessions` / `/switch <id>`：查看或切换任务",
-      "- `/model`：显示当前模型和思考强度",
+      "- `/model`：显示全部支持的模型、当前模型和思考强度",
       "- `/model <name>`：切换模型",
       "- `/thinking`：显示当前思考强度及可选值",
       "- `/thinking <level>`：设置思考强度",
