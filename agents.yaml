@@ -1,0 +1,41 @@
+feishu:
+  transport: "auto"
+  appId: "${FEISHU_APP_ID}"
+  appSecret: "${FEISHU_APP_SECRET}"
+  useConsoleWhenMissingCredentials: true
+
+agents:
+  coco:
+    title: "Coco"
+    command: "coco"
+    args:
+      - "acp"
+      - "serve"
+    env: {}
+
+  coco-yolo:
+    title: "Coco YOLO"
+    command: "coco"
+    args:
+      - "acp"
+      - "serve"
+      - "--yolo"
+    env: {}
+
+  example:
+    title: "Example ACP Agent"
+    command: "node"
+    args:
+      - "./examples/example-acp-agent.js"
+    env: {}
+
+defaults:
+  agent: "coco"
+  cwd: "."
+
+storage:
+  sqlitePath: "./data/acp-bot.sqlite"
+
+logging:
+  level: "info"
+  path: "./logs/acp-bot.log"

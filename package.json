@@ -1,0 +1,39 @@
+{
+  "name": "acp-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Feishu bot controlled transparent ACP gateway.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "latest",
+    "@larksuiteoapi/node-sdk": "1.56.1",
+    "better-sqlite3": "latest",
+    "dotenv": "latest",
+    "pino": "latest",
+    "yaml": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "latest",
+    "@types/node": "latest",
+    "eslint": "latest",
+    "prettier": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "overrides": {
+    "axios": "1.18.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
