@@ -52,7 +52,7 @@ describe("StartupNotifier", () => {
     });
     store.updateRuntimeSession("sess_1", { runtimeKind: "codex", remoteSessionId: "thread_1", lastTurnStatus: "running" });
     store.setCurrentSession("chat_id:c1", "sess_1");
-    const sendInteractiveCard = vi.fn(async () => "om_startup");
+    const sendInteractiveCard = vi.fn(async (_contextKey: string, _card: Record<string, unknown>) => "om_startup");
     const logger = { warn: vi.fn() };
     const notifier = new StartupNotifier(store, createOutbound(sendInteractiveCard), new CardRenderer(), logger, options);
 
@@ -67,7 +67,7 @@ describe("StartupNotifier", () => {
     const store = createStore();
     store.getOrCreateUserContext("chat_id:c1", "codex");
     store.getOrCreateUserContext("chat_id:c2", "codex");
-    const sendInteractiveCard = vi.fn(async (contextKey: string) => {
+    const sendInteractiveCard = vi.fn(async (contextKey: string, _card: Record<string, unknown>) => {
       if (contextKey === "chat_id:c1") throw new Error("delivery failed");
       return "om_startup";
     });
