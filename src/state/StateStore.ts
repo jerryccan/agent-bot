@@ -21,6 +21,7 @@ export interface SessionRecord {
   acpSessionId?: string;
   runtimeKind?: "acp" | "codex";
   remoteSessionId?: string;
+  title?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode?: "auto" | "confirm";
@@ -47,6 +48,7 @@ interface SessionRow {
   acp_session_id: string | null;
   runtime_kind: "acp" | "codex" | null;
   remote_session_id: string | null;
+  title: string | null;
   model: string | null;
   reasoning_effort: string | null;
   permission_mode: "auto" | "confirm" | null;
@@ -185,7 +187,7 @@ export class StateStore {
     patch: Partial<
       Pick<
         SessionRecord,
-        "runtimeKind" | "remoteSessionId" | "model" | "reasoningEffort" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
+        "runtimeKind" | "remoteSessionId" | "title" | "model" | "reasoningEffort" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
       >
     >,
   ): void {
@@ -198,7 +200,7 @@ export class StateStore {
       .prepare(
         `
         UPDATE sessions
-        SET runtime_kind = ?, remote_session_id = ?, model = ?, reasoning_effort = ?, permission_mode = ?,
+        SET runtime_kind = ?, remote_session_id = ?, title = ?, model = ?, reasoning_effort = ?, permission_mode = ?,
             last_turn_id = ?, last_turn_status = ?, updated_at = ?
         WHERE local_session_id = ?
         `,
@@ -206,6 +208,7 @@ export class StateStore {
       .run(
         patch.runtimeKind ?? existing.runtimeKind ?? null,
         patch.remoteSessionId ?? existing.remoteSessionId ?? existing.acpSessionId ?? null,
+        patch.title ?? existing.title ?? null,
         patch.model ?? existing.model ?? null,
         patch.reasoningEffort ?? existing.reasoningEffort ?? null,
         patch.permissionMode ?? existing.permissionMode ?? null,
@@ -393,6 +396,7 @@ export class StateStore {
     const columns: Array<[string, string]> = [
       ["runtime_kind", "TEXT"],
       ["remote_session_id", "TEXT"],
+      ["title", "TEXT"],
       ["model", "TEXT"],
       ["reasoning_effort", "TEXT"],
       ["permission_mode", "TEXT"],
@@ -426,6 +430,7 @@ function mapSession(row: SessionRow): SessionRecord {
     acpSessionId: row.acp_session_id ?? undefined,
     runtimeKind: row.runtime_kind ?? (row.acp_session_id ? "acp" : undefined),
     remoteSessionId: row.remote_session_id ?? row.acp_session_id ?? undefined,
+    title: row.title ?? undefined,
     model: row.model ?? undefined,
     reasoningEffort: row.reasoning_effort ?? undefined,
     permissionMode: row.permission_mode ?? undefined,

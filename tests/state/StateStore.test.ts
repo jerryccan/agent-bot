@@ -48,6 +48,7 @@ describe("StateStore runtime metadata", () => {
     store.updateRuntimeSession("s1", {
       runtimeKind: "codex",
       remoteSessionId: "thr_1",
+      title: "Show startup metadata",
       model: "gpt-test",
       reasoningEffort: "high",
       permissionMode: "auto",
@@ -56,6 +57,7 @@ describe("StateStore runtime metadata", () => {
     expect(store.getSession("s1")).toMatchObject({
       runtimeKind: "codex",
       remoteSessionId: "thr_1",
+      title: "Show startup metadata",
       model: "gpt-test",
       reasoningEffort: "high",
       permissionMode: "auto",

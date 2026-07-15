@@ -50,12 +50,25 @@ export type AgentEvent =
   | { type: "turn_cancelled"; sessionId: string; turnId: string }
   | { type: "turn_failed"; sessionId: string; turnId: string; message: string };
 
+export interface SessionMetadataUpdatedEvent {
+  type: "session_metadata_updated";
+  sessionId: string;
+  title: string;
+}
+
+export type RuntimeEvent = AgentEvent | SessionMetadataUpdatedEvent;
+
+export interface RuntimeSessionMetadata {
+  title?: string;
+}
+
 export interface RuntimeSession {
   localSessionId: string;
   remoteSessionId: string;
   runtimeKind: RuntimeKind;
   agentName: string;
   cwd: string;
+  title?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode: PermissionMode;
@@ -66,6 +79,7 @@ export interface CreateRuntimeSessionInput {
   localSessionId: string;
   agentName: string;
   cwd: string;
+  title?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode: PermissionMode;
@@ -93,6 +107,7 @@ export interface AgentRuntime {
   createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession>;
   getSession(localSessionId: string): RuntimeSession | undefined;
+  readSessionMetadata(remoteSessionId: string): Promise<RuntimeSessionMetadata>;
   startTurn(sessionId: string, text: string): Promise<string>;
   steerTurn(sessionId: string, turnId: string, text: string): Promise<void>;
   cancelTurn(sessionId: string, turnId: string): Promise<void>;
@@ -102,6 +117,6 @@ export interface AgentRuntime {
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void>;
   respondToApproval(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
   listModels(): Promise<ModelOption[]>;
-  onEvent(listener: (event: AgentEvent) => void): () => void;
+  onEvent(listener: (event: RuntimeEvent) => void): () => void;
   close(): void;
 }

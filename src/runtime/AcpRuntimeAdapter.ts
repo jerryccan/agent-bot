@@ -2,7 +2,6 @@ import type { JsonValue } from "../acp/acpTypes.js";
 import { AcpSessionManager } from "../acp/AcpSessionManager.js";
 import { createId } from "../utils/id.js";
 import type {
-  AgentEvent,
   AgentRuntime,
   ApprovalDecision,
   CreateRuntimeSessionInput,
@@ -10,6 +9,8 @@ import type {
   PermissionMode,
   ResumeRuntimeSessionInput,
   RuntimeSession,
+  RuntimeEvent,
+  RuntimeSessionMetadata,
   ToolState,
 } from "./types.js";
 
@@ -23,7 +24,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
   private readonly sessions = new Map<string, RuntimeSession>();
   private readonly activeTurns = new Map<string, ActiveAcpTurn>();
   private readonly toolsBySession = new Map<string, Map<string, ToolState>>();
-  private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private readonly approvals = new Map<
     string,
     { sessionId: string; resolve: (value: JsonValue) => void; optionIds: Map<ApprovalDecision, string> }
@@ -40,6 +41,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       localSessionId: input.localSessionId,
       agentName: input.agentName,
       cwd: input.cwd,
+      title: input.title,
       onUpdate: (_session, update) => this.handleUpdate(input.localSessionId, update),
       onPermissionRequest: (_session, params) =>
         new Promise<JsonValue>((resolve) => {
@@ -84,6 +86,10 @@ export class AcpRuntimeAdapter implements AgentRuntime {
 
   async resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession> {
     return this.createSession(input);
+  }
+
+  async readSessionMetadata(_remoteSessionId: string): Promise<RuntimeSessionMetadata> {
+    return {};
   }
 
   async startTurn(sessionId: string, text: string): Promise<string> {
@@ -167,7 +173,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     return [];
   }
 
-  onEvent(listener: (event: AgentEvent) => void): () => void {
+  onEvent(listener: (event: RuntimeEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -226,7 +232,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     return session;
   }
 
-  private emit(event: AgentEvent): void {
+  private emit(event: RuntimeEvent): void {
     for (const listener of this.listeners) listener(event);
   }
 }
