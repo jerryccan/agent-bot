@@ -26,6 +26,8 @@ Make Codex progress cards read like a concise terminal activity stream. Remove e
 
 - Replace the current explanatory truncation suffix with a trailing `...` only.
 - Keep the returned string within the requested maximum length, including the suffix.
+- Render the original tool command, preserving internal whitespace and line breaks, with an 800-character limit and trailing `...` when necessary.
+- Render the original tool result without summarization. If it exceeds 1,200 characters, preserve content from both the beginning and end and replace only the omitted middle with `...` on its own line.
 - Strip ANSI terminal escape sequences from code-block content.
 - Preserve safe Markdown fences by replacing embedded triple backticks.
 
@@ -40,5 +42,5 @@ Make Codex progress cards read like a concise terminal activity stream. Remove e
 
 - Unit tests assert that routine turn cards omit every removed label and explanatory truncation message.
 - Tests assert raw reasoning text, elapsed value, a single command-and-result block per tool, chronological order, and one collapsed panel per tool.
-- Truncation tests assert a trailing `...` and maximum-length preservation.
+- Truncation tests assert trailing truncation for commands, middle truncation for results, preservation of both result boundaries, and maximum-length preservation.
 - A production-renderer card is sent to Feishu after restart and read back to confirm the compact structure.
