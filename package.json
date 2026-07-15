@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Feishu bot controlled transparent ACP gateway.",
+  "description": "Feishu-first gateway for local Codex App Server and ACP agents.",
   "scripts": {
     "dev": "tsx src/index.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",

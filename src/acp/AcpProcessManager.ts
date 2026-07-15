@@ -1,8 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import type { Logger } from "pino";
 import type { AgentConfig } from "../config/schema.js";
 import { AcpJsonRpcConnection } from "./AcpJsonRpcConnection.js";
+import { spawnStdioCommand } from "../utils/spawnCommand.js";
 
 export interface ManagedAcpProcess {
   processKey: string;
@@ -21,13 +22,9 @@ export class AcpProcessManager {
       throw new Error(`ACP process already exists: ${processKey}`);
     }
 
-    const child = spawn(agent.command, agent.args, {
-      env: {
-        ...process.env,
-        ...agent.env,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
+    const child = spawnStdioCommand(agent.command, agent.args, {
+      ...process.env,
+      ...agent.env,
     });
 
     const childLogger = this.logger.child({ processKey, agentName });

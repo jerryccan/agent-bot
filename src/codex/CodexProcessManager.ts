@@ -1,12 +1,13 @@
-import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import type { Logger } from "pino";
 import { AppServerConnection } from "./AppServerConnection.js";
 import type { AppServerClient, AppServerClientProvider } from "./CodexRuntime.js";
+import { spawnStdioCommand } from "../utils/spawnCommand.js";
 
 export class CodexProcessManager implements AppServerClientProvider {
   private client?: AppServerConnection;
-  private child?: ReturnType<typeof spawn>;
+  private child?: ChildProcessWithoutNullStreams;
 
   constructor(
     private readonly command: string,
@@ -17,11 +18,7 @@ export class CodexProcessManager implements AppServerClientProvider {
 
   async getClient(): Promise<AppServerClient> {
     if (this.client) return this.client;
-    const child = spawn(this.command, this.args, {
-      env: { ...process.env, ...this.env },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    const child = spawnStdioCommand(this.command, this.args, { ...process.env, ...this.env });
     this.child = child;
     const client = new AppServerConnection(child, this.logger.child({ component: "codex-app-server" }));
     this.client = client;
