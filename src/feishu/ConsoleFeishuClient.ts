@@ -1,12 +1,14 @@
 import type { FeishuOutbound } from "./types.js";
 
 export class ConsoleFeishuClient implements FeishuOutbound {
-  async sendText(contextKey: string, text: string): Promise<void> {
+  async sendText(contextKey: string, text: string): Promise<string> {
     console.log(`\n[${contextKey}] ${text}\n`);
+    return `console-text-${Date.now()}`;
   }
 
-  async sendMarkdown(contextKey: string, markdown: string): Promise<void> {
+  async sendMarkdown(contextKey: string, markdown: string): Promise<string> {
     console.log(`\n[${contextKey}] ${markdown}\n`);
+    return `console-markdown-${Date.now()}`;
   }
 
   async sendInteractiveCard(contextKey: string, card: Record<string, unknown>): Promise<string> {

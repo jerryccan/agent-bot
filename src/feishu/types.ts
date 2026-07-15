@@ -10,12 +10,13 @@ export interface CardAction {
   actionId: string;
   contextKey: string;
   userId?: string;
+  messageId?: string;
   value: Record<string, unknown>;
 }
 
 export interface FeishuOutbound {
-  sendText(contextKey: string, text: string): Promise<void>;
-  sendMarkdown(contextKey: string, markdown: string): Promise<void>;
+  sendText(contextKey: string, text: string): Promise<string | undefined>;
+  sendMarkdown(contextKey: string, markdown: string): Promise<string | undefined>;
   sendInteractiveCard(contextKey: string, card: Record<string, unknown>): Promise<string | undefined>;
   updateInteractiveCard(messageId: string, card: Record<string, unknown>): Promise<void>;
 }

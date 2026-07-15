@@ -32,12 +32,12 @@ export class FeishuMessageClient implements FeishuOutbound {
     private readonly logger: Logger,
   ) {}
 
-  async sendText(contextKey: string, text: string): Promise<void> {
-    await this.sendMessage(contextKey, "text", { text });
+  async sendText(contextKey: string, text: string): Promise<string | undefined> {
+    return this.sendMessage(contextKey, "text", { text });
   }
 
-  async sendMarkdown(contextKey: string, markdown: string): Promise<void> {
-    await this.sendMessage(contextKey, "interactive", {
+  async sendMarkdown(contextKey: string, markdown: string): Promise<string | undefined> {
+    return this.sendMessage(contextKey, "interactive", {
       config: {
         wide_screen_mode: true,
         update_multi: true,
@@ -73,7 +73,7 @@ export class FeishuMessageClient implements FeishuOutbound {
 
     const payload = (await response.json()) as SendMessageResponse;
     if (!response.ok || payload.code !== 0) {
-      throw new Error(`Failed to update Feishu card: ${payload.msg || response.statusText}`);
+      throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "update");
     }
   }
 
@@ -202,15 +202,16 @@ export class FeishuMessageClient implements FeishuOutbound {
   }
 }
 
-class FeishuApiError extends Error {
+export class FeishuApiError extends Error {
   readonly isRateLimit: boolean;
 
   constructor(
     message: string,
     readonly code: number,
     readonly payload: SendMessageResponse,
+    operation = "send",
   ) {
-    super(`Failed to send Feishu message: ${message}`);
+    super(`Failed to ${operation} Feishu message: ${message}`);
     this.name = "FeishuApiError";
     this.isRateLimit = code === 230020 || message.toLowerCase().includes("frequency limit");
   }
