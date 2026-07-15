@@ -99,6 +99,13 @@ export class StateStore {
     };
   }
 
+  listUserContexts(): UserContextRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM user_contexts ORDER BY created_at ASC")
+      .all() as UserContextRow[];
+    return rows.map(mapUserContext);
+  }
+
   setDefaultAgent(contextKey: string, agentName: string): void {
     const now = new Date().toISOString();
     this.db

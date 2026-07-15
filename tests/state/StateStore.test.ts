@@ -17,6 +17,21 @@ afterEach(() => {
 });
 
 describe("StateStore runtime metadata", () => {
+  test("lists all persisted user contexts in creation order", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.getOrCreateUserContext("console:local", "codex");
+
+    expect(store.listUserContexts().map((context) => context.contextKey)).toEqual([
+      "chat_id:c1",
+      "console:local",
+    ]);
+  });
+
   test("persists Codex thread settings", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);
