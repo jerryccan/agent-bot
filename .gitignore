@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.worktrees/
 data/*.sqlite
 data/*.sqlite-*
 logs/*.log
