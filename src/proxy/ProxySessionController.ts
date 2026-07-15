@@ -7,15 +7,16 @@ import type { CardAction, IncomingMessage } from "../feishu/types.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { AgentRuntimeRegistry } from "../runtime/AgentRuntimeRegistry.js";
 import type {
-  AgentEvent,
   AgentRuntime,
   ApprovalDecision,
   PermissionMode,
+  RuntimeEvent,
   RuntimeSession,
 } from "../runtime/types.js";
 import { StateStore, type SessionRecord } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
 import { asInlineCode } from "../utils/markdown.js";
+import { normalizeTaskTitle } from "../utils/taskTitle.js";
 
 interface LoadedSession {
   record: SessionRecord;
@@ -202,6 +203,11 @@ export class ProxySessionController {
 
   private async startTurn(loaded: LoadedSession, text: string): Promise<void> {
     await this.outbound.startPendingTurn(loaded.record.localSessionId, loaded.record.contextKey);
+    const currentRecord = this.store.getSession(loaded.record.localSessionId);
+    if (!currentRecord?.title) {
+      const title = normalizeTaskTitle(text);
+      if (title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
+    }
     let turnId: string;
     try {
       turnId = await loaded.runtime.startTurn(loaded.record.localSessionId, text);
@@ -270,6 +276,7 @@ export class ProxySessionController {
             remoteSessionId: record.remoteSessionId,
             agentName: record.agentName,
             cwd: record.cwd,
+            title: record.title,
             model: record.model,
             reasoningEffort: record.reasoningEffort,
             permissionMode,
@@ -278,6 +285,7 @@ export class ProxySessionController {
             localSessionId: record.localSessionId,
             agentName: record.agentName,
             cwd: record.cwd,
+            title: record.title,
             model: record.model,
             reasoningEffort: record.reasoningEffort,
             permissionMode,
@@ -297,6 +305,7 @@ export class ProxySessionController {
     this.store.updateRuntimeSession(record.localSessionId, {
       runtimeKind: session.runtimeKind,
       remoteSessionId: session.remoteSessionId,
+      title: session.title,
       model: session.model,
       reasoningEffort: session.reasoningEffort,
       permissionMode: session.permissionMode,
@@ -307,7 +316,11 @@ export class ProxySessionController {
     });
   }
 
-  private async handleRuntimeEvent(event: AgentEvent): Promise<void> {
+  private async handleRuntimeEvent(event: RuntimeEvent): Promise<void> {
+    if (event.type === "session_metadata_updated") {
+      this.store.updateRuntimeSession(event.sessionId, { title: event.title });
+      return;
+    }
     if (event.type === "turn_started") {
       this.store.updateSession(event.sessionId, { status: "running" });
       this.store.updateRuntimeSession(event.sessionId, { lastTurnId: event.turnId, lastTurnStatus: "running" });

@@ -41,7 +41,6 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       localSessionId: input.localSessionId,
       agentName: input.agentName,
       cwd: input.cwd,
-      title: input.title,
       onUpdate: (_session, update) => this.handleUpdate(input.localSessionId, update),
       onPermissionRequest: (_session, params) =>
         new Promise<JsonValue>((resolve) => {
@@ -76,6 +75,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       runtimeKind: "acp",
       agentName: input.agentName,
       cwd: input.cwd,
+      title: input.title,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       permissionMode: input.permissionMode,

@@ -9,7 +9,7 @@ import type { TurnPresenter } from "../../src/presentation/OutboundRouter.js";
 import { OutboundRouter } from "../../src/presentation/OutboundRouter.js";
 import { ProxySessionController } from "../../src/proxy/ProxySessionController.js";
 import { AgentRuntimeRegistry } from "../../src/runtime/AgentRuntimeRegistry.js";
-import type { AgentEvent, AgentRuntime, RuntimeSession } from "../../src/runtime/types.js";
+import type { AgentRuntime, RuntimeEvent, RuntimeSession } from "../../src/runtime/types.js";
 import { StateStore } from "../../src/state/StateStore.js";
 
 const tempDirs: string[] = [];
@@ -25,7 +25,7 @@ function message(text: string): IncomingMessage {
 
 function fixture() {
   const sessions = new Map<string, RuntimeSession>();
-  const listeners = new Set<(event: AgentEvent) => void>();
+  const listeners = new Set<(event: RuntimeEvent) => void>();
   const runtime: AgentRuntime = {
     kind: "codex",
     createSession: vi.fn(async (input) => {
@@ -50,6 +50,7 @@ function fixture() {
       return session;
     }),
     getSession: vi.fn((id) => sessions.get(id)),
+    readSessionMetadata: vi.fn(async () => ({})),
     startTurn: vi.fn(async (sessionId) => {
       const session = sessions.get(sessionId)!;
       session.activeTurnId = "turn_1";
@@ -138,6 +139,33 @@ describe("ProxySessionController", () => {
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), "inspect this repo");
     expect(presenter.registerSession).toHaveBeenCalledWith(expect.any(String), "chat_id:c1");
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
+  });
+
+  test("keeps the first ordinary prompt as the task title fallback", async () => {
+    const { controller, store } = fixture();
+
+    await controller.onMessage(message("  inspect\n this repo  "));
+    await controller.onMessage(message("also update docs"));
+
+    expect(store.listSessions("chat_id:c1")[0]?.title).toBe("inspect this repo");
+  });
+
+  test("persists runtime title metadata without forwarding it to the turn presenter", async () => {
+    const { store, presenter, listeners } = fixture();
+    store.createSession({
+      localSessionId: "saved",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+
+    for (const listener of listeners) {
+      listener({ type: "session_metadata_updated", sessionId: "saved", title: "Generated title" });
+    }
+
+    await vi.waitFor(() => expect(store.getSession("saved")?.title).toBe("Generated title"));
+    expect(presenter.onEvent).not.toHaveBeenCalled();
   });
 
   test("ignores a duplicate inbound message id", async () => {

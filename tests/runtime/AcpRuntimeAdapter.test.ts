@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { AcpSessionManager } from "../../src/acp/AcpSessionManager.js";
 import type { JsonValue } from "../../src/acp/acpTypes.js";
 import { AcpRuntimeAdapter } from "../../src/runtime/AcpRuntimeAdapter.js";
-import type { AgentEvent } from "../../src/runtime/types.js";
+import type { RuntimeEvent } from "../../src/runtime/types.js";
 
 describe("AcpRuntimeAdapter tool updates", () => {
   test("merges command input with the result from a partial completion update", async () => {
@@ -21,7 +21,7 @@ describe("AcpRuntimeAdapter tool updates", () => {
       close: vi.fn(async () => undefined),
     } as unknown as AcpSessionManager;
     const runtime = new AcpRuntimeAdapter(acp);
-    const events: AgentEvent[] = [];
+    const events: RuntimeEvent[] = [];
     runtime.onEvent((event) => events.push(event));
 
     await runtime.createSession({

@@ -161,6 +161,7 @@ function inertRuntime(): AgentRuntime {
     createSession: async () => { throw new Error("unused"); },
     resumeSession: async () => { throw new Error("unused"); },
     getSession: () => undefined,
+    readSessionMetadata: async () => ({}),
     startTurn: async () => { throw new Error("unused"); },
     steerTurn: async () => { throw new Error("unused"); },
     cancelTurn: async () => undefined,
