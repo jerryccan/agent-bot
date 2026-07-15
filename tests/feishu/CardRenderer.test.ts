@@ -25,16 +25,20 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
-  test("collapses successful tools, expands failures, and includes scoped actions", () => {
+  test("keeps tool details inside native panels without a callback-only details action", () => {
     const card = new CardRenderer().renderTurn(state());
     const objects = collectObjects(card);
     const panels = objects.filter((item) => item.tag === "collapsible_panel");
+    const serialized = JSON.stringify(card);
 
     expect(panels).toEqual(expect.arrayContaining([expect.objectContaining({ expanded: false }), expect.objectContaining({ expanded: true })]));
-    expect(JSON.stringify(card)).toContain("命令失败");
-    expect(objects).toContainEqual(
-      expect.objectContaining({ value: expect.objectContaining({ action: "turn_details", sessionId: "s1", turnId: "turn_1" }) }),
-    );
+    expect(serialized).toContain("命令失败");
+    expect(serialized).toContain("命令");
+    expect(serialized).toContain("npm test");
+    expect(serialized).toContain("结果摘要");
+    expect(serialized).toContain("all passed");
+    expect(serialized).not.toContain("turn_details");
+    expect(serialized).not.toContain("查看详情");
   });
 
   test("shows the active tool prominently and uses a completed header on completion", () => {

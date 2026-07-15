@@ -60,25 +60,17 @@ export class CardRenderer {
       elements.push(markdown(`**错误**\n${truncateText(state.error, 2_000)}`));
     }
 
-    elements.push({
-      tag: "action",
-      actions: [
-        {
+    if (!isTerminal(state.status)) {
+      elements.push({
+        tag: "action",
+        actions: [{
           tag: "button",
-          text: { tag: "plain_text", content: "查看详情" },
-          type: "default",
-          value: { action: "turn_details", sessionId: state.sessionId, turnId: state.turnId },
-        },
-        ...(isTerminal(state.status)
-          ? []
-          : [{
-              tag: "button",
-              text: { tag: "plain_text", content: "停止" },
-              type: "danger",
-              value: { action: "turn_cancel", sessionId: state.sessionId, turnId: state.turnId },
-            }]),
-      ],
-    });
+          text: { tag: "plain_text", content: "停止" },
+          type: "danger",
+          value: { action: "turn_cancel", sessionId: state.sessionId, turnId: state.turnId },
+        }],
+      });
+    }
 
     return this.baseCard(turnTitle(state.status), turnTemplate(state.status), elements);
   }
@@ -177,11 +169,16 @@ function toolPanel(title: string, tools: ToolState[], expanded: boolean, templat
 
 function renderTool(tool: ToolState): string {
   const parts = [`**${tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅"} ${tool.title}**`];
-  if (tool.command && tool.command !== tool.title) parts.push(`\`${tool.command.replaceAll("`", "'")}\``);
-  if (tool.exitCode !== undefined) parts.push(`退出码：${tool.exitCode}`);
-  if (tool.error) parts.push(truncateText(tool.error, 1_500));
-  else if (tool.output) parts.push(truncateText(tool.output, 1_500));
+  const command = tool.command ?? (tool.kind === "command" ? tool.title : undefined);
+  if (command) parts.push(`**命令**\n${codeBlock(command, 800)}`);
+  if (tool.exitCode !== undefined) parts.push(`**退出码**：${tool.exitCode}`);
+  if (tool.error) parts.push(`**错误摘要**\n${codeBlock(tool.error, 1_200)}`);
+  else if (tool.output) parts.push(`**结果摘要**\n${codeBlock(tool.output, 1_200)}`);
   return parts.join("\n");
+}
+
+function codeBlock(value: string, maxLength: number): string {
+  return `\`\`\`\n${truncateText(value.trim(), maxLength).replaceAll("```", "''' ")}\n\`\`\``;
 }
 
 function turnTitle(status: TurnViewStatus): string {
