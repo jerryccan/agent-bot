@@ -125,6 +125,7 @@ test("dispatches direct Feishu SDK card action events", async () => {
 
   await connector.start();
   await larkSdkMock.handlers["card.action.trigger"]({
+    header: { event_id: "evt_card_1" },
     action: {
       name: "approve",
       value: { action: "permission", permissionId: "perm_1", optionId: "allow" },
@@ -138,7 +139,7 @@ test("dispatches direct Feishu SDK card action events", async () => {
   });
 
   expect(handler.onCardAction).toHaveBeenCalledWith({
-    actionId: "approve",
+    actionId: "evt_card_1",
     contextKey: "chat_id:oc_1",
     userId: "ou_1",
     value: { action: "permission", permissionId: "perm_1", optionId: "allow" },

@@ -7,6 +7,7 @@ export interface CardUpdateSchedulerOptions<T> {
   criticalGapMs?: number;
   retryBackoffMs?: number[];
   isRateLimit?: (error: unknown) => boolean;
+  isRetryable?: (error: unknown) => boolean;
   onError?: (error: unknown) => void;
 }
 
@@ -108,7 +109,7 @@ export class CardUpdateScheduler<T> {
       this.retryIndex = 0;
       this.markHandled(version);
     } catch (error) {
-      if (this.isRateLimit(error)) {
+      if (this.isRetryable(error)) {
         const index = Math.min(this.retryIndex, this.retryBackoffMs.length - 1);
         this.retryAt = Date.now() + (this.retryBackoffMs[index] ?? 30_000);
         this.retryIndex += 1;
@@ -144,9 +145,14 @@ export class CardUpdateScheduler<T> {
     }
   }
 
-  private isRateLimit(error: unknown): boolean {
-    if (this.options.isRateLimit) return this.options.isRateLimit(error);
-    return typeof error === "object" && error !== null && "isRateLimit" in error && error.isRateLimit === true;
+  private isRetryable(error: unknown): boolean {
+    if (this.options.isRetryable) return this.options.isRetryable(error);
+    if (this.options.isRateLimit?.(error)) return true;
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      (("isRetryable" in error && error.isRetryable === true) || ("isRateLimit" in error && error.isRateLimit === true))
+    );
   }
 }
 

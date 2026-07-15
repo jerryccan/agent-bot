@@ -114,6 +114,31 @@ describe("CodexRuntime", () => {
     await runtime.respondToApproval("s1", "8", "acceptForSession");
     await expect(pending).resolves.toEqual({ decision: "acceptForSession" });
   });
+
+  test("fails an active turn on App Server exit and resumes the thread before the next turn", async () => {
+    const client = new FakeAppServerClient();
+    let disconnect: ((error: Error) => void) | undefined;
+    const runtime = new CodexRuntime({
+      getClient: async () => client,
+      close: vi.fn(),
+      onDisconnect: (listener) => {
+        disconnect = listener;
+        return () => { disconnect = undefined; };
+      },
+    }, logger());
+    const events: AgentEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({ localSessionId: "s1", agentName: "codex", cwd: process.cwd(), permissionMode: "auto" });
+    await runtime.startTurn("s1", "first");
+
+    disconnect?.(new Error("process exited"));
+    expect(events).toContainEqual(expect.objectContaining({ type: "turn_failed", message: expect.stringContaining("process exited") }));
+    expect(runtime.getSession("s1")?.activeTurnId).toBeUndefined();
+
+    await runtime.startTurn("s1", "second");
+    const methods = client.requests.map((request) => request.method);
+    expect(methods.slice(-2)).toEqual(["thread/resume", "turn/start"]);
+  });
 });
 
 class FakeAppServerClient {

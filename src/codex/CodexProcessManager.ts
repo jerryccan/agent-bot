@@ -8,6 +8,7 @@ import { spawnStdioCommand } from "../utils/spawnCommand.js";
 export class CodexProcessManager implements AppServerClientProvider {
   private client?: AppServerConnection;
   private child?: ChildProcessWithoutNullStreams;
+  private readonly disconnectListeners = new Set<(error: Error) => void>();
 
   constructor(
     private readonly command: string,
@@ -31,6 +32,8 @@ export class CodexProcessManager implements AppServerClientProvider {
       client.close();
       if (this.client === client) this.client = undefined;
       if (this.child === child) this.child = undefined;
+      const error = new Error(`Codex App Server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`);
+      for (const listener of this.disconnectListeners) listener(error);
     });
     await client.request("initialize", {
       clientInfo: { name: "feishu_acp_gateway", title: "Feishu ACP Gateway", version: "0.1.0" },
@@ -44,5 +47,10 @@ export class CodexProcessManager implements AppServerClientProvider {
     if (this.child && !this.child.killed) this.child.kill();
     this.client = undefined;
     this.child = undefined;
+  }
+
+  onDisconnect(listener: (error: Error) => void): () => void {
+    this.disconnectListeners.add(listener);
+    return () => this.disconnectListeners.delete(listener);
   }
 }

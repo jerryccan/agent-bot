@@ -107,12 +107,17 @@ function toCardAction(data: unknown) {
   const openId = event.operator?.open_id ?? event.operator?.user_id;
   const chatId = event.context?.open_chat_id ?? event.chat_id;
   return {
-    actionId: event.action.name ?? `${Date.now()}`,
+    actionId: getEventId(data) ?? event.action.action_id ?? event.action.name ?? `${Date.now()}`,
     contextKey: chatId ? `chat_id:${chatId}` : `open_id:${openId}`,
     userId: openId,
     ...(typeof event.context?.open_message_id === "string" ? { messageId: event.context.open_message_id } : {}),
     value: isRecord(event.action.value) ? event.action.value : {},
   };
+}
+
+function getEventId(data: unknown): string | undefined {
+  const value = getNested<unknown>(data, ["header", "event_id"]) ?? getNested(data, ["data", "header", "event_id"]);
+  return typeof value === "string" ? value : undefined;
 }
 
 function getFeishuEvent(data: unknown): Record<string, any> | undefined {

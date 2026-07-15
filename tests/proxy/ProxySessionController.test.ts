@@ -68,8 +68,11 @@ function fixture() {
   const presenter: TurnPresenter = {
     registerSession: vi.fn(),
     unregisterSession: vi.fn(),
+    startPendingTurn: vi.fn(async () => undefined),
+    failPendingTurn: vi.fn(async () => undefined),
     onEvent: vi.fn(async () => undefined),
     showDetails: vi.fn(async () => undefined),
+    resumeDelivery: vi.fn(async () => undefined),
     flushAll: vi.fn(async () => undefined),
   };
   const outboundRouter = new OutboundRouter([{ matches: () => true, outbound, presenter }]);
@@ -95,9 +98,21 @@ describe("ProxySessionController", () => {
     await controller.onMessage(message("inspect this repo"));
 
     expect(runtime.createSession).toHaveBeenCalledOnce();
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(expect.any(String), "chat_id:c1");
+    expect((presenter.startPendingTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
+      (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
+    );
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), "inspect this repo");
     expect(presenter.registerSession).toHaveBeenCalledWith(expect.any(String), "chat_id:c1");
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
+  });
+
+  test("ignores a duplicate inbound message id", async () => {
+    const { controller, runtime } = fixture();
+    const duplicate = { messageId: "same-event", contextKey: "chat_id:c1", text: "inspect" };
+    await controller.onMessage(duplicate);
+    await controller.onMessage(duplicate);
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
   });
 
   test("plain text steers an active turn and cancel bypasses prompt completion", async () => {

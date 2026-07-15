@@ -53,6 +53,7 @@ describe("StateStore runtime metadata", () => {
 
     store.saveTurnSnapshot("turn_1", "s1", { status: "completed", summary: "done" });
     store.saveTurnDelivery("turn_1", { progressMessageId: "om_progress" });
+    store.saveFinalDeliveryProgress("turn_1", ["om_part_1"]);
     store.markFinalDelivered("turn_1", ["om_final"]);
 
     expect(store.getTurnSnapshot("turn_1")).toEqual({ status: "completed", summary: "done" });
@@ -61,5 +62,21 @@ describe("StateStore runtime metadata", () => {
       finalMessageIds: ["om_final"],
       finalDelivered: true,
     });
+  });
+
+  test("claims an inbound event only once across store restarts", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+    expect(first.claimInboundEvent("event_1", "message")).toBe(true);
+    expect(first.claimInboundEvent("event_1", "message")).toBe(false);
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.claimInboundEvent("event_1", "message")).toBe(false);
   });
 });

@@ -4,8 +4,11 @@ import type { FeishuOutbound } from "../feishu/types.js";
 export interface TurnPresenter {
   registerSession(sessionId: string, contextKey: string): void;
   unregisterSession(sessionId: string): void;
+  startPendingTurn(sessionId: string, contextKey: string): Promise<void>;
+  failPendingTurn(sessionId: string, message: string): Promise<void>;
   onEvent(event: AgentEvent): Promise<void>;
   showDetails(contextKey: string, turnId: string): Promise<void>;
+  resumeDelivery(sessionId: string, contextKey: string, turnId: string): Promise<void>;
   flushAll(): Promise<void>;
 }
 
@@ -34,12 +37,24 @@ export class OutboundRouter {
     this.sessionRoutes.delete(sessionId);
   }
 
+  async startPendingTurn(sessionId: string, contextKey: string): Promise<void> {
+    await this.route(contextKey).presenter.startPendingTurn(sessionId, contextKey);
+  }
+
+  async failPendingTurn(sessionId: string, message: string): Promise<void> {
+    await this.sessionRoutes.get(sessionId)?.presenter.failPendingTurn(sessionId, message);
+  }
+
   async onEvent(event: AgentEvent): Promise<void> {
     await this.sessionRoutes.get(event.sessionId)?.presenter.onEvent(event);
   }
 
   async showDetails(contextKey: string, turnId: string): Promise<void> {
     await this.route(contextKey).presenter.showDetails(contextKey, turnId);
+  }
+
+  async resumeDelivery(sessionId: string, contextKey: string, turnId: string): Promise<void> {
+    await this.route(contextKey).presenter.resumeDelivery(sessionId, contextKey, turnId);
   }
 
   sendText(contextKey: string, text: string): Promise<string | undefined> {

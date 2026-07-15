@@ -23,11 +23,13 @@ export interface AppServerClient {
 
 export interface AppServerClientProvider {
   getClient(): Promise<AppServerClient>;
+  onDisconnect?(listener: (error: Error) => void): () => void;
   close(): void;
 }
 
 interface CodexSession extends RuntimeSession {
   finalText: string;
+  needsResume: boolean;
 }
 
 interface PendingApproval {
@@ -43,11 +45,14 @@ export class CodexRuntime implements AgentRuntime {
   private readonly approvals = new Map<string, PendingApproval>();
   private attachedClient?: AppServerClient;
   private unsubscribe?: () => void;
+  private readonly unsubscribeDisconnect?: () => void;
 
   constructor(
     private readonly provider: AppServerClientProvider,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    this.unsubscribeDisconnect = provider.onDisconnect?.((error) => this.handleDisconnect(error));
+  }
 
   getSession(localSessionId: string): RuntimeSession | undefined {
     return this.sessions.get(localSessionId);
@@ -81,6 +86,15 @@ export class CodexRuntime implements AgentRuntime {
   async startTurn(sessionId: string, text: string): Promise<string> {
     const session = this.requireSession(sessionId);
     const client = await this.client();
+    if (session.needsResume) {
+      await client.request("thread/resume", {
+        threadId: session.remoteSessionId,
+        cwd: session.cwd,
+        model: session.model,
+        ...permissionParams(session.permissionMode),
+      });
+      session.needsResume = false;
+    }
     const response = await client.request<{ turn: { id: string } }>("turn/start", {
       threadId: session.remoteSessionId,
       input: [{ type: "text", text }],
@@ -153,6 +167,7 @@ export class CodexRuntime implements AgentRuntime {
 
   close(): void {
     this.unsubscribe?.();
+    this.unsubscribeDisconnect?.();
     for (const pending of this.approvals.values()) pending.resolve({ decision: "cancel" });
     this.approvals.clear();
     this.sessions.clear();
@@ -257,6 +272,7 @@ export class CodexRuntime implements AgentRuntime {
       model: input.model ?? model,
       permissionMode: input.permissionMode,
       finalText: "",
+      needsResume: false,
     };
   }
 
@@ -274,6 +290,28 @@ export class CodexRuntime implements AgentRuntime {
 
   private emit(event: AgentEvent): void {
     for (const listener of this.listeners) listener(event);
+  }
+
+  private handleDisconnect(error: Error): void {
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.attachedClient = undefined;
+    for (const session of this.sessions.values()) {
+      session.needsResume = true;
+      const turnId = session.activeTurnId;
+      if (!turnId) continue;
+      session.activeTurnId = undefined;
+      this.emit({
+        type: "turn_failed",
+        sessionId: session.localSessionId,
+        turnId,
+        message: `Codex App Server disconnected: ${error.message}`,
+      });
+    }
+    for (const [requestId, pending] of this.approvals) {
+      this.approvals.delete(requestId);
+      pending.resolve({ decision: "cancel" });
+    }
   }
 }
 

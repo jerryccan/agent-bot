@@ -16,6 +16,15 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     this.contexts.delete(sessionId);
   }
 
+  async startPendingTurn(_sessionId: string, contextKey: string): Promise<void> {
+    await this.outbound.sendText(contextKey, "Connecting to Codex...");
+  }
+
+  async failPendingTurn(sessionId: string, message: string): Promise<void> {
+    const contextKey = this.contexts.get(sessionId);
+    if (contextKey) await this.outbound.sendText(contextKey, `Codex failed to start: ${message}`);
+  }
+
   async onEvent(event: AgentEvent): Promise<void> {
     const contextKey = this.contexts.get(event.sessionId);
     if (!contextKey) return;
@@ -40,6 +49,8 @@ export class ConsoleTurnPresenter implements TurnPresenter {
   async showDetails(contextKey: string, turnId: string): Promise<void> {
     await this.outbound.sendText(contextKey, `Turn details are available in Feishu (${turnId}).`);
   }
+
+  async resumeDelivery(): Promise<void> {}
 
   async flushAll(): Promise<void> {}
 }

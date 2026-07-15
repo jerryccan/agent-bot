@@ -28,7 +28,6 @@ export class ProxySessionController {
   private readonly messageQueues = new Map<string, Promise<void>>();
   private readonly sessionLoads = new Map<string, Promise<LoadedSession>>();
   private readonly queuedPrompts = new Map<string, string[]>();
-  private readonly handledActions = new Set<string>();
   private readonly unsubscribe: Array<() => void> = [];
 
   constructor(
@@ -50,6 +49,7 @@ export class ProxySessionController {
   }
 
   async onMessage(message: IncomingMessage): Promise<void> {
+    if (!this.store.claimInboundEvent(message.messageId, "message")) return;
     this.store.audit(message.contextKey, "incoming_message", { messageId: message.messageId, text: message.text });
     let command: Command;
     try {
@@ -83,9 +83,7 @@ export class ProxySessionController {
   }
 
   async onCardAction(action: CardAction): Promise<void> {
-    if (this.handledActions.has(action.actionId)) return;
-    this.handledActions.add(action.actionId);
-    if (this.handledActions.size > 1_000) this.handledActions.delete(this.handledActions.values().next().value as string);
+    if (!this.store.claimInboundEvent(action.actionId, "card_action")) return;
 
     try {
       const kind = String(action.value.action ?? "");
@@ -114,7 +112,7 @@ export class ProxySessionController {
         await this.listAgents(contextKey);
         return;
       case "new":
-        await this.createSession(contextKey, command.agent ?? context.defaultAgent, command.cwd, true);
+        await this.createSession(contextKey, command.agent ?? context.defaultAgent, command.cwd, true, false);
         return;
       case "ask":
       case "prompt":
@@ -133,7 +131,7 @@ export class ProxySessionController {
         return;
       case "use":
         await this.setDefaultAgent(contextKey, command.agent);
-        await this.createSession(contextKey, command.agent, command.cwd, true);
+        await this.createSession(contextKey, command.agent, command.cwd, true, false);
         return;
       case "close":
         await this.closeSession(contextKey, command.sessionId);
@@ -164,9 +162,20 @@ export class ProxySessionController {
     let record = this.currentSession(contextKey);
     if (!record) {
       const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-      record = await this.createSession(contextKey, context.defaultAgent, undefined, false);
+      record = await this.createSession(contextKey, context.defaultAgent, undefined, false, true);
     }
-    const loaded = await this.loadSession(record);
+    const configuredRuntime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
+    if (!configuredRuntime.getSession(record.localSessionId)) {
+      this.outbound.registerSession(record.localSessionId, contextKey);
+      await this.outbound.startPendingTurn(record.localSessionId, contextKey);
+    }
+    let loaded: LoadedSession;
+    try {
+      loaded = await this.loadSession(record);
+    } catch (error) {
+      await this.outbound.failPendingTurn(record.localSessionId, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     const activeTurnId = loaded.session.activeTurnId;
     if (activeTurnId) {
       try {
@@ -189,7 +198,17 @@ export class ProxySessionController {
   }
 
   private async startTurn(loaded: LoadedSession, text: string): Promise<void> {
-    const turnId = await loaded.runtime.startTurn(loaded.record.localSessionId, text);
+    await this.outbound.startPendingTurn(loaded.record.localSessionId, loaded.record.contextKey);
+    let turnId: string;
+    try {
+      turnId = await loaded.runtime.startTurn(loaded.record.localSessionId, text);
+    } catch (error) {
+      await this.outbound.failPendingTurn(
+        loaded.record.localSessionId,
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
     this.store.updateSession(loaded.record.localSessionId, { status: "running" });
     this.store.updateRuntimeSession(loaded.record.localSessionId, { lastTurnId: turnId, lastTurnStatus: "running" });
   }
@@ -199,6 +218,7 @@ export class ProxySessionController {
     agentName: string,
     cwd: string | undefined,
     announce: boolean,
+    prepareTurn: boolean,
   ): Promise<SessionRecord> {
     const agent = this.ensureAgent(agentName);
     const localSessionId = createId("sess");
@@ -208,6 +228,7 @@ export class ProxySessionController {
     this.outbound.registerSession(localSessionId, contextKey);
     const runtime = this.runtimes.forAgent(agent);
     try {
+      if (prepareTurn) await this.outbound.startPendingTurn(localSessionId, contextKey);
       const session = await runtime.createSession({
         localSessionId,
         agentName,
@@ -219,6 +240,9 @@ export class ProxySessionController {
       return this.store.getSession(localSessionId) ?? record;
     } catch (error) {
       this.store.updateSession(localSessionId, { status: "failed" });
+      if (prepareTurn) {
+        await this.outbound.failPendingTurn(localSessionId, error instanceof Error ? error.message : String(error));
+      }
       throw error;
     }
   }
@@ -233,6 +257,9 @@ export class ProxySessionController {
 
     this.outbound.registerSession(record.localSessionId, record.contextKey);
     const loading = (async (): Promise<LoadedSession> => {
+      if (record.lastTurnId) {
+        await this.outbound.resumeDelivery(record.localSessionId, record.contextKey, record.lastTurnId);
+      }
       const permissionMode = record.permissionMode ?? "auto";
       const session = record.remoteSessionId
         ? await runtime.resumeSession({

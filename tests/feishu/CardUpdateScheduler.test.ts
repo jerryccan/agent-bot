@@ -60,4 +60,20 @@ describe("CardUpdateScheduler", () => {
     expect(write).toHaveBeenLastCalledWith({ text: "latest" });
     vi.useRealTimers();
   });
+
+  test("retries transient non-rate-limit errors marked retryable", async () => {
+    vi.useFakeTimers();
+    const transient = Object.assign(new Error("server error"), { isRetryable: true });
+    const write = vi.fn().mockRejectedValueOnce(transient).mockResolvedValue(undefined);
+    const scheduler = new CardUpdateScheduler<{ text: string }>({
+      render: (state) => ({ text: state.text }),
+      write,
+      normalIntervalMs: 10,
+      retryBackoffMs: [100],
+    });
+    scheduler.update({ text: "terminal" });
+    await vi.advanceTimersByTimeAsync(110);
+    expect(write).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
 });

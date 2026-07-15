@@ -16,7 +16,7 @@ export interface CardAction {
 
 export interface FeishuOutbound {
   sendText(contextKey: string, text: string): Promise<string | undefined>;
-  sendMarkdown(contextKey: string, markdown: string): Promise<string | undefined>;
+  sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined>;
   sendInteractiveCard(contextKey: string, card: Record<string, unknown>): Promise<string | undefined>;
   updateInteractiveCard(messageId: string, card: Record<string, unknown>): Promise<void>;
 }

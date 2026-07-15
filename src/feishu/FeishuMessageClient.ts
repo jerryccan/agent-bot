@@ -36,7 +36,7 @@ export class FeishuMessageClient implements FeishuOutbound {
     return this.sendMessage(contextKey, "text", { text });
   }
 
-  async sendMarkdown(contextKey: string, markdown: string): Promise<string | undefined> {
+  async sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined> {
     return this.sendMessage(contextKey, "interactive", {
       config: {
         wide_screen_mode: true,
@@ -48,7 +48,7 @@ export class FeishuMessageClient implements FeishuOutbound {
           content: markdown,
         },
       ],
-    });
+    }, idempotencyKey);
   }
 
   async sendInteractiveCard(
@@ -59,21 +59,22 @@ export class FeishuMessageClient implements FeishuOutbound {
   }
 
   async updateInteractiveCard(messageId: string, card: Record<string, unknown>): Promise<void> {
-    const token = await this.getTenantAccessToken();
-    const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}`, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({
-        content: JSON.stringify(card),
-      }),
-    });
-
-    const payload = (await response.json()) as SendMessageResponse;
-    if (!response.ok || payload.code !== 0) {
-      throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "update");
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify({ content: JSON.stringify(card) }),
+      });
+      const payload = (await response.json()) as SendMessageResponse;
+      if (!response.ok || payload.code !== 0) {
+        throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "update", response.status);
+      }
+    } catch (error) {
+      throw normalizeTransportError(error, "update");
     }
   }
 
@@ -81,16 +82,23 @@ export class FeishuMessageClient implements FeishuOutbound {
     contextKey: string,
     msgType: string,
     content: Record<string, unknown>,
+    idempotencyKey?: string,
   ): Promise<string | undefined> {
-    return this.enqueueSend(contextKey, () => this.sendMessageNow(contextKey, msgType, content));
+    return this.enqueueSend(contextKey, () => this.sendMessageNow(contextKey, msgType, content, idempotencyKey));
   }
 
   private async sendMessageNow(
     contextKey: string,
     msgType: string,
     content: Record<string, unknown>,
+    idempotencyKey?: string,
   ): Promise<string | undefined> {
-    const token = await this.getTenantAccessToken();
+    let token: string;
+    try {
+      token = await this.getTenantAccessToken();
+    } catch (error) {
+      throw normalizeTransportError(error, "send");
+    }
     const { receiveId, receiveIdType } = parseContextKey(contextKey);
     let lastError: Error | undefined;
 
@@ -99,38 +107,40 @@ export class FeishuMessageClient implements FeishuOutbound {
         await delay(5000 * attempt);
       }
 
-      const response = await fetch(
-        `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json; charset=utf-8",
+      let error: FeishuApiError;
+      try {
+        const response = await fetch(
+          `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json; charset=utf-8",
+            },
+            body: JSON.stringify({
+              receive_id: receiveId,
+              msg_type: msgType,
+              content: JSON.stringify(content),
+              ...(idempotencyKey ? { uuid: idempotencyKey } : {}),
+            }),
           },
-          body: JSON.stringify({
-            receive_id: receiveId,
-            msg_type: msgType,
-            content: JSON.stringify(content),
-          }),
-        },
-      );
-
-      const payload = (await response.json()) as SendMessageResponse;
-      if (response.ok && payload.code === 0) {
-        return payload.data?.message_id;
+        );
+        const payload = (await response.json()) as SendMessageResponse;
+        if (response.ok && payload.code === 0) return payload.data?.message_id;
+        error = new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "send", response.status);
+      } catch (caught) {
+        error = normalizeTransportError(caught, "send");
       }
-
-      const error = new FeishuApiError(payload.msg || response.statusText, payload.code, payload);
       lastError = error;
 
-      if (!error.isRateLimit || attempt === 2) {
-        this.logger.error({ payload, contextKey, msgType }, "Failed to send Feishu message.");
+      if (!error.isRetryable || attempt === 2) {
+        this.logger.error({ error, contextKey, msgType }, "Failed to send Feishu message.");
         throw error;
       }
 
       this.logger.warn(
-        { code: payload.code, contextKey, msgType, attempt: attempt + 1 },
-        "Feishu chat rate limit hit; retrying after backoff.",
+        { code: error.code, contextKey, msgType, attempt: attempt + 1 },
+        "Retryable Feishu send failure; retrying after backoff.",
       );
     }
 
@@ -204,17 +214,27 @@ export class FeishuMessageClient implements FeishuOutbound {
 
 export class FeishuApiError extends Error {
   readonly isRateLimit: boolean;
+  readonly isRetryable: boolean;
 
   constructor(
     message: string,
     readonly code: number,
     readonly payload: SendMessageResponse,
     operation = "send",
+    readonly httpStatus?: number,
+    forceRetryable = false,
   ) {
     super(`Failed to ${operation} Feishu message: ${message}`);
     this.name = "FeishuApiError";
     this.isRateLimit = code === 230020 || message.toLowerCase().includes("frequency limit");
+    this.isRetryable = forceRetryable || this.isRateLimit || (httpStatus !== undefined && httpStatus >= 500);
   }
+}
+
+function normalizeTransportError(error: unknown, operation: string): FeishuApiError {
+  if (error instanceof FeishuApiError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new FeishuApiError(message, 0, { code: 0, msg: message, error }, operation, undefined, true);
 }
 
 function delay(ms: number): Promise<void> {

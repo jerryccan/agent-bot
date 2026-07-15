@@ -282,6 +282,30 @@ export class StateStore {
       );
   }
 
+  saveFinalDeliveryProgress(turnId: string, messageIds: string[]): void {
+    const now = new Date().toISOString();
+    const existing = this.getTurnDelivery(turnId);
+    this.db
+      .prepare(
+        `
+        INSERT INTO turn_deliveries (
+          turn_id, progress_message_id, final_message_ids_json, final_delivered_at, last_card_hash, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(turn_id) DO UPDATE SET
+          final_message_ids_json = excluded.final_message_ids_json,
+          updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        turnId,
+        existing?.progressMessageId ?? null,
+        JSON.stringify(messageIds),
+        existing?.finalDeliveredAt ?? null,
+        existing?.lastCardHash ?? null,
+        now,
+      );
+  }
+
   getTurnDelivery(turnId: string):
     | {
         progressMessageId?: string;
@@ -338,6 +362,18 @@ export class StateStore {
         `,
       )
       .run(contextKey, eventType, JSON.stringify(payload), new Date().toISOString());
+  }
+
+  claimInboundEvent(eventId: string, eventKind: "message" | "card_action"): boolean {
+    const result = this.db
+      .prepare(
+        `
+        INSERT OR IGNORE INTO inbound_event_receipts (event_id, event_kind, created_at)
+        VALUES (?, ?, ?)
+        `,
+      )
+      .run(eventId, eventKind, new Date().toISOString());
+    return result.changes === 1;
   }
 
   private ensureSessionColumns(): void {

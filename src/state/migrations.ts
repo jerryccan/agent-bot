@@ -47,4 +47,11 @@ export const migrations = [
     updated_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS inbound_event_receipts (
+    event_id TEXT PRIMARY KEY,
+    event_kind TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
 ] as const;
