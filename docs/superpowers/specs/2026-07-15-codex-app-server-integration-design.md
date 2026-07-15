@@ -143,7 +143,7 @@ Missing `kind` remains backward-compatible and means `acp`.
 - Communication uses App Server's JSON-RPC-lite JSONL protocol over stdio; it is separate from the existing ACP JSON-RPC connection.
 - The gateway sends `initialize`, then `initialized`, exactly once for each process generation.
 - Request IDs, pending responses, notifications, and server-initiated requests are handled independently.
-- TypeScript bindings are generated from the installed Codex binary during development and checked into the source tree so the integration matches the supported protocol version.
+- TypeScript bindings are generated from the installed Codex binary during development as a protocol reference. The source tree keeps a focused, hand-audited subset of the message types used by the gateway, plus contract tests against captured protocol fixtures, rather than checking in the entire generated API surface.
 - The process inherits the current OS user and `CODEX_HOME`, reusing the existing ChatGPT login.
 - Unexpected process exit rejects pending operations and marks active turns failed. Restart uses bounded exponential backoff.
 
