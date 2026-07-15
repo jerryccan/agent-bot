@@ -33,6 +33,29 @@ export class CardRenderer {
         elements: [markdown(state.fileSummary.map((file) => `- ${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n"))],
       });
     }
+    if (state.approval) {
+      const request = state.approval;
+      elements.push(markdown([
+        `**需要确认：${request.title}**`,
+        request.command ? `\`${request.command.replaceAll("`", "'")}\`` : undefined,
+        request.reason,
+      ].filter(Boolean).join("\n")));
+      elements.push({
+        tag: "action",
+        actions: request.options.map((option) => ({
+          tag: "button",
+          text: { tag: "plain_text", content: option.label },
+          type: option.id === "accept" || option.id === "acceptForSession" ? "primary" : option.id === "cancel" ? "danger" : "default",
+          value: {
+            action: "approval",
+            sessionId: state.sessionId,
+            turnId: state.turnId,
+            requestId: request.id,
+            decision: option.id,
+          },
+        })),
+      });
+    }
     if (state.error) {
       elements.push(markdown(`**错误**\n${truncateText(state.error, 2_000)}`));
     }

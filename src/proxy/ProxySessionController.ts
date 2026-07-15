@@ -1,122 +1,122 @@
 import path from "node:path";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
-import { AcpSessionManager, type RuntimeSession } from "../acp/AcpSessionManager.js";
-import type { AcpPermissionRequestParams, JsonValue } from "../acp/acpTypes.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
-import { CardRenderer } from "../feishu/CardRenderer.js";
-import type { CardAction, FeishuOutbound, IncomingMessage } from "../feishu/types.js";
-import { StateStore } from "../state/StateStore.js";
+import type { CardAction, IncomingMessage } from "../feishu/types.js";
+import type { OutboundRouter } from "../presentation/OutboundRouter.js";
+import type { AgentRuntimeRegistry } from "../runtime/AgentRuntimeRegistry.js";
+import type {
+  AgentEvent,
+  AgentRuntime,
+  ApprovalDecision,
+  PermissionMode,
+  RuntimeSession,
+} from "../runtime/types.js";
+import { StateStore, type SessionRecord } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
-import { asInlineCode, truncateText } from "../utils/markdown.js";
+import { asInlineCode } from "../utils/markdown.js";
 
-interface PendingPermission {
-  contextKey: string;
-  resolve: (value: JsonValue) => void;
-  options: Array<{ optionId: string; name: string; kind: string }>;
-}
-
-interface SessionUpdateBuffer {
-  contextKey: string;
+interface LoadedSession {
+  record: SessionRecord;
+  runtime: AgentRuntime;
   session: RuntimeSession;
-  textParts: string[];
-  latestUpdate?: Record<string, JsonValue>;
-  timer?: NodeJS.Timeout;
-  flushing?: Promise<void>;
 }
-
-const SESSION_UPDATE_FLUSH_INTERVAL_MS = 2500;
-const SESSION_UPDATE_MAX_TEXT_LENGTH = 6000;
 
 export class ProxySessionController {
   private readonly router = new CommandRouter();
-  private readonly renderer = new CardRenderer();
-  private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly messageQueues = new Map<string, Promise<void>>();
-  private readonly updateBuffers = new Map<string, SessionUpdateBuffer>();
+  private readonly sessionLoads = new Map<string, Promise<LoadedSession>>();
+  private readonly queuedPrompts = new Map<string, string[]>();
+  private readonly handledActions = new Set<string>();
+  private readonly unsubscribe: Array<() => void> = [];
 
   constructor(
     private readonly config: AppConfig,
     private readonly store: StateStore,
-    private readonly acp: AcpSessionManager,
-    private readonly feishu: FeishuOutbound,
+    private readonly runtimes: AgentRuntimeRegistry,
+    private readonly outbound: OutboundRouter,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    for (const kind of ["acp", "codex"] as const) {
+      this.unsubscribe.push(
+        this.runtimes.get(kind).onEvent((event) => {
+          void this.handleRuntimeEvent(event).catch((error: unknown) => {
+            this.logger.warn({ error, event }, "Failed to present runtime event.");
+          });
+        }),
+      );
+    }
+  }
 
   async onMessage(message: IncomingMessage): Promise<void> {
-    const previous = this.messageQueues.get(message.contextKey) ?? Promise.resolve();
-    const next = previous
-      .catch(() => undefined)
-      .then(() => this.handleMessage(message));
-
-    this.messageQueues.set(message.contextKey, next);
-
+    this.store.audit(message.contextKey, "incoming_message", { messageId: message.messageId, text: message.text });
+    let command: Command;
     try {
-      await next;
-    } finally {
-      if (this.messageQueues.get(message.contextKey) === next) {
-        this.messageQueues.delete(message.contextKey);
-      }
+      command = this.router.parse(message.text);
+    } catch (error) {
+      await this.sendError(message.contextKey, error);
+      return;
     }
+
+    // Cancellation must not wait behind a prompt/session operation.
+    if (command.type === "cancel") {
+      try {
+        await this.cancel(message.contextKey);
+      } catch (error) {
+        await this.sendError(message.contextKey, error);
+      }
+      return;
+    }
+
+    const previous = this.messageQueues.get(message.contextKey) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(async () => {
+      try {
+        await this.execute(message.contextKey, command);
+      } catch (error) {
+        await this.sendError(message.contextKey, error);
+      }
+    });
+    this.messageQueues.set(message.contextKey, next);
+    await next;
+    if (this.messageQueues.get(message.contextKey) === next) this.messageQueues.delete(message.contextKey);
   }
 
   async onCardAction(action: CardAction): Promise<void> {
-    await this.handleCardAction(action);
-  }
-
-  async handleMessage(message: IncomingMessage): Promise<void> {
-    this.store.audit(message.contextKey, "incoming_message", {
-      messageId: message.messageId,
-      text: message.text,
-    });
+    if (this.handledActions.has(action.actionId)) return;
+    this.handledActions.add(action.actionId);
+    if (this.handledActions.size > 1_000) this.handledActions.delete(this.handledActions.values().next().value as string);
 
     try {
-      const command = this.router.parse(message.text);
-      await this.execute(message.contextKey, command);
+      const kind = String(action.value.action ?? "");
+      if (kind === "turn_details") {
+        await this.outbound.showDetails(action.contextKey, String(action.value.turnId ?? ""));
+      } else if (kind === "turn_cancel") {
+        const sessionId = String(action.value.sessionId ?? "");
+        await this.cancelSession(this.requireSession(action.contextKey, sessionId));
+      } else if (kind === "approval") {
+        await this.resolveApproval(action);
+      }
     } catch (error) {
-      await this.feishu.sendText(message.contextKey, error instanceof Error ? error.message : String(error));
+      await this.sendError(action.contextKey, error);
     }
   }
 
-  async handleCardAction(action: CardAction): Promise<void> {
-    const value = action.value;
-    if (value.action !== "permission") {
-      return;
-    }
-
-    const permissionId = String(value.permissionId ?? "");
-    const optionId = String(value.optionId ?? "");
-    const pending = this.pendingPermissions.get(permissionId);
-    if (!pending) {
-      await this.feishu.sendText(action.contextKey, "这个确认请求已经过期或已处理。");
-      return;
-    }
-
-    this.pendingPermissions.delete(permissionId);
-    pending.resolve({
-      outcome: {
-        outcome: "selected",
-        optionId,
-      },
-    });
-
-    await this.feishu.sendText(action.contextKey, `已选择：${optionId}`);
+  close(): void {
+    for (const unsubscribe of this.unsubscribe) unsubscribe();
+    this.unsubscribe.length = 0;
   }
 
   private async execute(contextKey: string, command: Command): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-
     switch (command.type) {
       case "agents":
         await this.listAgents(contextKey);
         return;
       case "new":
-        await this.createSession(contextKey, command.agent ?? context.defaultAgent, command.cwd);
+        await this.createSession(contextKey, command.agent ?? context.defaultAgent, command.cwd, true);
         return;
       case "ask":
-        await this.prompt(contextKey, command.text);
-        return;
       case "prompt":
         await this.prompt(contextKey, command.text);
         return;
@@ -124,464 +124,332 @@ export class ProxySessionController {
         await this.listSessions(contextKey);
         return;
       case "switch":
-        await this.switchSession(contextKey, command.sessionId);
+        this.requireSession(contextKey, command.sessionId);
+        this.store.setCurrentSession(contextKey, command.sessionId);
+        await this.outbound.sendText(contextKey, `已切换到任务：${command.sessionId}`);
         return;
       case "agent":
         await this.setDefaultAgent(contextKey, command.agent);
         return;
       case "use":
         await this.setDefaultAgent(contextKey, command.agent);
-        await this.createSession(contextKey, command.agent, command.cwd);
-        return;
-      case "cancel":
-        await this.cancel(contextKey);
+        await this.createSession(contextKey, command.agent, command.cwd, true);
         return;
       case "close":
-        await this.close(contextKey, command.sessionId);
+        await this.closeSession(contextKey, command.sessionId);
         return;
       case "status":
         await this.status(contextKey);
         return;
-      case "modes":
-        await this.listModes(contextKey);
+      case "model":
+        await this.model(contextKey, command.model);
         return;
+      case "permissions":
+        await this.permissions(contextKey, command.mode);
+        return;
+      case "modes":
       case "mode":
-        await this.setMode(contextKey, command.value);
+        await this.outbound.sendText(contextKey, "当前统一运行时不再暴露 ACP modes；Codex 请使用 /model 和 /permissions。");
         return;
       case "help":
         await this.help(contextKey);
         return;
+      case "cancel":
+        return;
     }
-  }
-
-  private async listAgents(contextKey: string): Promise<void> {
-    const lines = Object.entries(this.config.agents).map(
-      ([name, agent]) => `- ${asInlineCode(name)}：${agent.title}`,
-    );
-    await this.feishu.sendMarkdown(contextKey, `可用 agent：\n${lines.join("\n")}`);
-  }
-
-  private async createSession(contextKey: string, agentName: string, cwd?: string): Promise<void> {
-    this.ensureAgent(agentName);
-
-    const sessionCwd = path.resolve(cwd ?? this.config.defaults.cwd);
-    const localSessionId = createId("sess");
-    this.store.createSession({
-      localSessionId,
-      contextKey,
-      agentName,
-      cwd: sessionCwd,
-      status: "starting",
-    });
-    this.store.setCurrentSession(contextKey, localSessionId);
-
-    const runtime = await this.acp.create({
-      localSessionId,
-      agentName,
-      cwd: sessionCwd,
-      onUpdate: (session, update) => {
-        void this.onSessionUpdate(contextKey, session, update).catch((error: unknown) => {
-          this.logger.warn(
-            { error, localSessionId: session.localSessionId },
-            "Failed to handle ACP session update.",
-          );
-        });
-      },
-      onPermissionRequest: (session, params) => this.onPermissionRequest(contextKey, session, params),
-    });
-
-    this.store.updateSession(localSessionId, {
-      acpSessionId: runtime.acpSessionId,
-      status: "ready",
-    });
-
-    await this.feishu.sendInteractiveCard(contextKey, this.renderer.renderSessionStarted(runtime));
   }
 
   private async prompt(contextKey: string, text: string): Promise<void> {
-    const session = this.requireCurrentSession(contextKey);
-    this.store.updateSession(session.localSessionId, { status: "running" });
+    if (!text.trim()) throw new Error("请输入要交给 Codex 的内容。");
+    let record = this.currentSession(contextKey);
+    if (!record) {
+      const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
+      record = await this.createSession(contextKey, context.defaultAgent, undefined, false);
+    }
+    const loaded = await this.loadSession(record);
+    const activeTurnId = loaded.session.activeTurnId;
+    if (activeTurnId) {
+      try {
+        await loaded.runtime.steerTurn(record.localSessionId, activeTurnId, text);
+        return;
+      } catch (error) {
+        this.logger.debug({ error, sessionId: record.localSessionId, activeTurnId }, "Steering raced with turn completion; queueing prompt.");
+        const current = loaded.runtime.getSession(record.localSessionId);
+        if (!current?.activeTurnId) {
+          await this.startTurn(loaded, text);
+          return;
+        }
+        const queued = this.queuedPrompts.get(record.localSessionId) ?? [];
+        queued.push(text);
+        this.queuedPrompts.set(record.localSessionId, queued);
+        return;
+      }
+    }
+    await this.startTurn(loaded, text);
+  }
+
+  private async startTurn(loaded: LoadedSession, text: string): Promise<void> {
+    const turnId = await loaded.runtime.startTurn(loaded.record.localSessionId, text);
+    this.store.updateSession(loaded.record.localSessionId, { status: "running" });
+    this.store.updateRuntimeSession(loaded.record.localSessionId, { lastTurnId: turnId, lastTurnStatus: "running" });
+  }
+
+  private async createSession(
+    contextKey: string,
+    agentName: string,
+    cwd: string | undefined,
+    announce: boolean,
+  ): Promise<SessionRecord> {
+    const agent = this.ensureAgent(agentName);
+    const localSessionId = createId("sess");
+    const sessionCwd = path.resolve(cwd ?? this.config.defaults.cwd);
+    const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
+    this.store.setCurrentSession(contextKey, localSessionId);
+    this.outbound.registerSession(localSessionId, contextKey);
+    const runtime = this.runtimes.forAgent(agent);
     try {
-      const result = await this.acp.prompt(session.localSessionId, text);
-      await this.flushSessionUpdates(session.localSessionId, true);
-      this.store.updateSession(session.localSessionId, { status: "ready" });
-      await this.safeSendText(contextKey, `完成：${result.stopReason}`, {
-        localSessionId: session.localSessionId,
+      const session = await runtime.createSession({
+        localSessionId,
+        agentName,
+        cwd: sessionCwd,
+        permissionMode: "auto",
       });
+      this.persistRuntimeSession(record, session, "ready");
+      if (announce) await this.outbound.sendText(contextKey, `已创建 ${agent.title} 任务：${localSessionId}`);
+      return this.store.getSession(localSessionId) ?? record;
     } catch (error) {
-      await this.flushSessionUpdates(session.localSessionId, true).catch((flushError: unknown) => {
-        this.logger.warn({ error: flushError, localSessionId: session.localSessionId }, "Failed to flush updates.");
-      });
-      this.store.updateSession(session.localSessionId, { status: "failed" });
+      this.store.updateSession(localSessionId, { status: "failed" });
       throw error;
     }
+  }
+
+  private async loadSession(record: SessionRecord): Promise<LoadedSession> {
+    const agent = this.ensureAgent(record.agentName);
+    const runtime = this.runtimes.forAgent(agent);
+    const existing = runtime.getSession(record.localSessionId);
+    if (existing) return { record, runtime, session: existing };
+    const pending = this.sessionLoads.get(record.localSessionId);
+    if (pending) return pending;
+
+    this.outbound.registerSession(record.localSessionId, record.contextKey);
+    const loading = (async (): Promise<LoadedSession> => {
+      const permissionMode = record.permissionMode ?? "auto";
+      const session = record.remoteSessionId
+        ? await runtime.resumeSession({
+            localSessionId: record.localSessionId,
+            remoteSessionId: record.remoteSessionId,
+            agentName: record.agentName,
+            cwd: record.cwd,
+            model: record.model,
+            permissionMode,
+          })
+        : await runtime.createSession({
+            localSessionId: record.localSessionId,
+            agentName: record.agentName,
+            cwd: record.cwd,
+            model: record.model,
+            permissionMode,
+          });
+      this.persistRuntimeSession(record, session, "ready");
+      return { record: this.store.getSession(record.localSessionId) ?? record, runtime, session };
+    })();
+    this.sessionLoads.set(record.localSessionId, loading);
+    try {
+      return await loading;
+    } finally {
+      this.sessionLoads.delete(record.localSessionId);
+    }
+  }
+
+  private persistRuntimeSession(record: SessionRecord, session: RuntimeSession, status: "ready" | "running"): void {
+    this.store.updateRuntimeSession(record.localSessionId, {
+      runtimeKind: session.runtimeKind,
+      remoteSessionId: session.remoteSessionId,
+      model: session.model,
+      permissionMode: session.permissionMode,
+    });
+    this.store.updateSession(record.localSessionId, {
+      acpSessionId: session.runtimeKind === "acp" ? session.remoteSessionId : undefined,
+      status,
+    });
+  }
+
+  private async handleRuntimeEvent(event: AgentEvent): Promise<void> {
+    if (event.type === "turn_started") {
+      this.store.updateSession(event.sessionId, { status: "running" });
+      this.store.updateRuntimeSession(event.sessionId, { lastTurnId: event.turnId, lastTurnStatus: "running" });
+    } else if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+      const status = event.type === "turn_failed" ? "failed" : "ready";
+      this.store.updateSession(event.sessionId, { status });
+      this.store.updateRuntimeSession(event.sessionId, {
+        lastTurnId: event.turnId,
+        lastTurnStatus: event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
+      });
+    }
+
+    await this.outbound.onEvent(event);
+    if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+      await this.startNextQueuedPrompt(event.sessionId);
+    }
+  }
+
+  private async startNextQueuedPrompt(sessionId: string): Promise<void> {
+    const queued = this.queuedPrompts.get(sessionId);
+    const text = queued?.shift();
+    if (!text) {
+      this.queuedPrompts.delete(sessionId);
+      return;
+    }
+    if (queued?.length === 0) this.queuedPrompts.delete(sessionId);
+    const record = this.store.getSession(sessionId);
+    if (!record || record.status === "closed") return;
+    try {
+      await this.startTurn(await this.loadSession(record), text);
+    } catch (error) {
+      this.logger.warn({ error, sessionId }, "Failed to start queued prompt.");
+      await this.sendError(record.contextKey, error);
+    }
+  }
+
+  private async cancel(contextKey: string): Promise<void> {
+    const record = this.requireCurrentSession(contextKey);
+    await this.cancelSession(record);
+  }
+
+  private async cancelSession(record: SessionRecord): Promise<void> {
+    const loaded = await this.loadSession(record);
+    const turnId = loaded.session.activeTurnId;
+    if (!turnId) {
+      await this.outbound.sendText(record.contextKey, "当前没有正在执行的任务。");
+      return;
+    }
+    await loaded.runtime.cancelTurn(record.localSessionId, turnId);
+  }
+
+  private async resolveApproval(action: CardAction): Promise<void> {
+    const sessionId = String(action.value.sessionId ?? "");
+    const requestId = String(action.value.requestId ?? "");
+    const decision = String(action.value.decision ?? "") as ApprovalDecision;
+    if (!(["accept", "acceptForSession", "decline", "cancel"] as string[]).includes(decision)) {
+      throw new Error("无效的确认选项。");
+    }
+    const loaded = await this.loadSession(this.requireSession(action.contextKey, sessionId));
+    await loaded.runtime.respondToApproval(sessionId, requestId, decision);
+  }
+
+  private async model(contextKey: string, model?: string): Promise<void> {
+    const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
+    if (!model) {
+      const models = await loaded.runtime.listModels();
+      const lines = models.map((item) => `- ${asInlineCode(item.id)}${item.isDefault ? "（默认）" : ""}${item.displayName ? `：${item.displayName}` : ""}`);
+      await this.outbound.sendMarkdown(contextKey, `可用模型：\n${lines.join("\n") || "无"}`);
+      return;
+    }
+    await loaded.runtime.setModel(loaded.record.localSessionId, model);
+    this.store.updateRuntimeSession(loaded.record.localSessionId, { model });
+    await this.outbound.sendText(contextKey, `模型已切换为 ${model}，从下一次请求生效。`);
+  }
+
+  private async permissions(contextKey: string, mode?: PermissionMode): Promise<void> {
+    const record = this.requireCurrentSession(contextKey);
+    if (!mode) {
+      await this.outbound.sendText(contextKey, `当前权限模式：${record.permissionMode ?? "auto"}`);
+      return;
+    }
+    const loaded = await this.loadSession(record);
+    await loaded.runtime.setPermissionMode(record.localSessionId, mode);
+    this.store.updateRuntimeSession(record.localSessionId, { permissionMode: mode });
+    await this.outbound.sendText(contextKey, mode === "auto" ? "已切换为自动执行模式。" : "已切换为执行前确认模式。");
+  }
+
+  private async closeSession(contextKey: string, sessionId?: string): Promise<void> {
+    const record = sessionId ? this.requireSession(contextKey, sessionId) : this.requireCurrentSession(contextKey);
+    const loaded = await this.loadSession(record);
+    await loaded.runtime.closeSession(record.localSessionId);
+    this.outbound.unregisterSession(record.localSessionId);
+    this.store.updateSession(record.localSessionId, { status: "closed" });
+    if (this.currentSession(contextKey)?.localSessionId === record.localSessionId) this.store.setCurrentSession(contextKey, undefined);
+    await this.outbound.sendText(contextKey, `已关闭任务：${record.localSessionId}`);
+  }
+
+  private async listAgents(contextKey: string): Promise<void> {
+    const lines = Object.entries(this.config.agents).map(([name, agent]) => `- ${asInlineCode(name)}：${agent.title}`);
+    await this.outbound.sendMarkdown(contextKey, `可用 agent：\n${lines.join("\n")}`);
   }
 
   private async listSessions(contextKey: string): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const sessions = this.store.listSessions(contextKey);
     if (!sessions.length) {
-      await this.feishu.sendText(contextKey, "当前没有会话。使用 /new [agent] [cwd] 创建一个。");
+      await this.outbound.sendText(contextKey, "当前没有任务，直接发送消息即可自动创建。");
       return;
     }
-
-    const lines = sessions.map((session) => {
+    await this.outbound.sendMarkdown(contextKey, sessions.map((session) => {
       const marker = session.localSessionId === context.currentSessionId ? "*" : "-";
       return `${marker} ${asInlineCode(session.localSessionId)} ${session.agentName} ${session.status} ${session.cwd}`;
-    });
-    await this.feishu.sendMarkdown(contextKey, lines.join("\n"));
-  }
-
-  private async switchSession(contextKey: string, sessionId: string): Promise<void> {
-    const session = this.store.getSession(sessionId);
-    if (!session || session.contextKey !== contextKey) {
-      throw new Error(`找不到会话：${sessionId}`);
-    }
-
-    this.store.setCurrentSession(contextKey, sessionId);
-    await this.feishu.sendText(contextKey, `已切换到会话：${sessionId}`);
+    }).join("\n"));
   }
 
   private async setDefaultAgent(contextKey: string, agentName: string): Promise<void> {
     this.ensureAgent(agentName);
     this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     this.store.setDefaultAgent(contextKey, agentName);
-    await this.feishu.sendText(contextKey, `默认 agent 已切换为：${agentName}`);
-  }
-
-  private async cancel(contextKey: string): Promise<void> {
-    const session = this.requireCurrentSession(contextKey);
-    this.acp.cancel(session.localSessionId);
-    await this.feishu.sendText(contextKey, `已发送取消请求：${session.localSessionId}`);
-  }
-
-  private async close(contextKey: string, sessionId?: string): Promise<void> {
-    const session = sessionId ? this.requireSession(contextKey, sessionId) : this.requireCurrentSession(contextKey);
-    await this.acp.close(session.localSessionId);
-    this.store.updateSession(session.localSessionId, { status: "closed" });
-
-    const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-    if (context.currentSessionId === session.localSessionId) {
-      this.store.setCurrentSession(contextKey, undefined);
-    }
-
-    await this.feishu.sendText(contextKey, `已关闭会话：${session.localSessionId}`);
+    await this.outbound.sendText(contextKey, `默认 agent 已切换为：${agentName}`);
   }
 
   private async status(contextKey: string): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const current = context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
-    const status = [
+    await this.outbound.sendMarkdown(contextKey, [
       `默认 agent：${context.defaultAgent}`,
-      `当前会话：${current?.localSessionId ?? "无"}`,
-      `当前会话工作目录：${current?.cwd ?? "无"}`,
-      `当前状态：${current?.status ?? "无"}`,
-    ].join("\n");
-
-    await this.feishu.sendInteractiveCard(contextKey, this.renderer.renderStatus(status));
-  }
-
-  private async listModes(contextKey: string): Promise<void> {
-    const session = this.requireRuntimeCurrentSession(contextKey);
-    const configText = session.configOptions
-      ? `Config Options:\n${JSON.stringify(session.configOptions, null, 2)}`
-      : "Config Options: 无";
-    const modeText = session.modes ? `Modes:\n${JSON.stringify(session.modes, null, 2)}` : "Modes: 无";
-    const commandsText = session.availableCommands
-      ? `Available Commands:\n${JSON.stringify(session.availableCommands, null, 2)}`
-      : "Available Commands: 无";
-
-    await this.feishu.sendMarkdown(
-      contextKey,
-      truncateText(`\`\`\`json\n${configText}\n\n${modeText}\n\n${commandsText}\n\`\`\``, 8000),
-    );
-  }
-
-  private async setMode(contextKey: string, value: string): Promise<void> {
-    const runtime = this.requireRuntimeCurrentSession(contextKey);
-    const modeConfigId = findModeConfigId(runtime.configOptions);
-    if (modeConfigId) {
-      await this.acp.setConfigOption(runtime.localSessionId, modeConfigId, value);
-      await this.feishu.sendText(contextKey, `已切换模式：${value}`);
-      return;
-    }
-
-    if (runtime.modes) {
-      await this.acp.setMode(runtime.localSessionId, value);
-      await this.feishu.sendText(contextKey, `已切换模式：${value}`);
-      return;
-    }
-
-    await this.feishu.sendText(contextKey, "当前 agent 没有声明可切换的工作模式。");
+      `当前任务：${current?.localSessionId ?? "无"}`,
+      `运行时：${current?.runtimeKind ?? "未启动"}`,
+      `模型：${current?.model ?? "默认"}`,
+      `权限：${current?.permissionMode ?? "auto"}`,
+      `状态：${current?.status ?? "无"}`,
+      `目录：${current?.cwd ?? "无"}`,
+    ].join("\n"));
   }
 
   private async help(contextKey: string): Promise<void> {
-    await this.feishu.sendMarkdown(
-      contextKey,
-      [
-        "可用命令：",
-        "- `/agents`：列出 agent",
-        "- `/new [agent] [cwd]`：创建新会话",
-        "- `/use <agent> [cwd]`：切换默认 agent 并创建新会话",
-        "- `/agent <agent>`：切换默认 agent",
-        "- `/sessions`：列出会话",
-        "- `/switch <session>`：切换当前会话",
-        "- `/ask <content>`：发送 prompt",
-        "- 普通文本：发送到当前会话",
-        "- `/modes`：查看 agent 声明的模式/配置",
-        "- `/mode <value>`：切换 agent 声明的模式",
-        "- `/cancel`：取消当前任务",
-        "- `/close [session]`：关闭会话",
-        "- `/status`：查看状态",
-      ].join("\n"),
-    );
+    await this.outbound.sendMarkdown(contextKey, [
+      "直接发送文字即可使用 Codex；运行中继续发消息会追加到当前任务。",
+      "- `/new [agent] [cwd]`：新建任务",
+      "- `/sessions` / `/switch <id>`：查看或切换任务",
+      "- `/model [name]`：查看或切换模型",
+      "- `/permissions auto|confirm`：切换自动执行/确认模式",
+      "- `/cancel`：停止当前执行",
+      "- `/status`：查看当前状态",
+      "- `/close [id]`：关闭任务",
+      "- `/agents` / `/agent <name>`：查看或切换默认 agent",
+    ].join("\n"));
   }
 
-  private async onSessionUpdate(
-    contextKey: string,
-    session: RuntimeSession,
-    update: Record<string, JsonValue>,
-  ): Promise<void> {
-    this.store.audit(contextKey, "session_update", {
-      localSessionId: session.localSessionId,
-      update,
-    });
-
-    const updateType = update.sessionUpdate;
-    if (updateType === "agent_message_chunk") {
-      const text = extractText(update);
-      if (text) {
-        this.bufferSessionUpdate(contextKey, session, text, undefined);
-        return;
-      }
-    }
-
-    this.bufferSessionUpdate(contextKey, session, undefined, update);
+  private ensureAgent(agentName: string) {
+    const agent = this.config.agents[agentName];
+    if (!agent) throw new Error(`未知 agent：${agentName}`);
+    return agent;
   }
 
-  private bufferSessionUpdate(
-    contextKey: string,
-    session: RuntimeSession,
-    text: string | undefined,
-    update: Record<string, JsonValue> | undefined,
-  ): void {
-    let buffer = this.updateBuffers.get(session.localSessionId);
-    if (!buffer) {
-      buffer = {
-        contextKey,
-        session,
-        textParts: [],
-      };
-      this.updateBuffers.set(session.localSessionId, buffer);
-    }
-
-    buffer.contextKey = contextKey;
-    buffer.session = session;
-    if (text) {
-      buffer.textParts.push(text);
-    }
-    if (update) {
-      buffer.latestUpdate = update;
-    }
-
-    this.scheduleSessionUpdateFlush(buffer);
-  }
-
-  private scheduleSessionUpdateFlush(buffer: SessionUpdateBuffer): void {
-    if (buffer.timer) {
-      return;
-    }
-
-    buffer.timer = setTimeout(() => {
-      buffer.timer = undefined;
-      void this.flushSessionUpdates(buffer.session.localSessionId).catch((error: unknown) => {
-        this.logger.warn(
-          { error, localSessionId: buffer.session.localSessionId },
-          "Failed to flush ACP session updates.",
-        );
-      });
-    }, SESSION_UPDATE_FLUSH_INTERVAL_MS);
-  }
-
-  private async flushSessionUpdates(localSessionId: string, force = false): Promise<void> {
-    const buffer = this.updateBuffers.get(localSessionId);
-    if (!buffer) {
-      return;
-    }
-
-    if (buffer.flushing) {
-      await buffer.flushing;
-      if (force) {
-        await this.flushSessionUpdates(localSessionId, true);
-      }
-      return;
-    }
-
-    if (buffer.timer) {
-      clearTimeout(buffer.timer);
-      buffer.timer = undefined;
-    }
-
-    const text = buffer.textParts.join("");
-    const latestUpdate = buffer.latestUpdate;
-    buffer.textParts = [];
-    buffer.latestUpdate = undefined;
-
-    if (!text && !latestUpdate) {
-      this.updateBuffers.delete(localSessionId);
-      return;
-    }
-
-    buffer.flushing = (async () => {
-      if (text) {
-        await this.safeSendMarkdown(
-          buffer.contextKey,
-          truncateText(text, SESSION_UPDATE_MAX_TEXT_LENGTH),
-          { localSessionId, kind: "agent_message_chunk" },
-        );
-      }
-
-      if (latestUpdate) {
-        await this.safeSendInteractiveCard(
-          buffer.contextKey,
-          this.renderer.renderSessionUpdate(buffer.session, latestUpdate),
-          { localSessionId, kind: String(latestUpdate.sessionUpdate ?? "update") },
-        );
-      }
-    })();
-
-    await buffer.flushing;
-    buffer.flushing = undefined;
-
-    if (buffer.textParts.length || buffer.latestUpdate) {
-      if (force) {
-        await this.flushSessionUpdates(localSessionId, true);
-      } else {
-        this.scheduleSessionUpdateFlush(buffer);
-      }
-      return;
-    }
-
-    this.updateBuffers.delete(localSessionId);
-  }
-
-  private async safeSendText(
-    contextKey: string,
-    text: string,
-    meta: Record<string, unknown> = {},
-  ): Promise<void> {
-    try {
-      await this.feishu.sendText(contextKey, text);
-    } catch (error) {
-      this.logger.warn({ error, contextKey, ...meta }, "Failed to send Feishu text message.");
-    }
-  }
-
-  private async safeSendMarkdown(
-    contextKey: string,
-    markdown: string,
-    meta: Record<string, unknown> = {},
-  ): Promise<void> {
-    try {
-      await this.feishu.sendMarkdown(contextKey, markdown);
-    } catch (error) {
-      this.logger.warn({ error, contextKey, ...meta }, "Failed to send Feishu markdown message.");
-    }
-  }
-
-  private async safeSendInteractiveCard(
-    contextKey: string,
-    card: Record<string, unknown>,
-    meta: Record<string, unknown> = {},
-  ): Promise<void> {
-    try {
-      await this.feishu.sendInteractiveCard(contextKey, card);
-    } catch (error) {
-      this.logger.warn({ error, contextKey, ...meta }, "Failed to send Feishu interactive card.");
-    }
-  }
-
-  private async onPermissionRequest(
-    contextKey: string,
-    session: RuntimeSession,
-    params: AcpPermissionRequestParams,
-  ): Promise<JsonValue> {
-    const permissionId = createId("perm");
-    const toolTitle = typeof params.toolCall.title === "string" ? params.toolCall.title : "Agent permission request";
-
-    const result = new Promise<JsonValue>((resolve) => {
-      this.pendingPermissions.set(permissionId, {
-        contextKey,
-        resolve,
-        options: params.options,
-      });
-    });
-
-    await this.feishu.sendInteractiveCard(
-      contextKey,
-      this.renderer.renderPermissionRequest(session, permissionId, toolTitle, params.options),
-    );
-
-    return result;
-  }
-
-  private ensureAgent(agentName: string): void {
-    if (!this.config.agents[agentName]) {
-      throw new Error(`未知 agent：${agentName}`);
-    }
-  }
-
-  private requireCurrentSession(contextKey: string) {
+  private currentSession(contextKey: string): SessionRecord | undefined {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-    if (!context.currentSessionId) {
-      throw new Error("当前没有会话。请先使用 /new [agent] [cwd] 创建会话。");
-    }
-
-    return this.requireSession(contextKey, context.currentSessionId);
+    return context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
   }
 
-  private requireRuntimeCurrentSession(contextKey: string): RuntimeSession {
-    const session = this.requireCurrentSession(contextKey);
-    const runtime = this.acp.get(session.localSessionId);
-    if (!runtime) {
-      throw new Error("当前会话没有运行中的 ACP 连接，可能需要重新创建会话。");
-    }
-
-    return runtime;
+  private requireCurrentSession(contextKey: string): SessionRecord {
+    const record = this.currentSession(contextKey);
+    if (!record) throw new Error("当前没有任务，直接发送一条消息即可自动创建。");
+    return record;
   }
 
-  private requireSession(contextKey: string, sessionId: string) {
-    const session = this.store.getSession(sessionId);
-    if (!session || session.contextKey !== contextKey) {
-      throw new Error(`找不到会话：${sessionId}`);
-    }
-
-    return session;
-  }
-}
-
-function extractText(update: Record<string, JsonValue>): string | undefined {
-  const content = update.content;
-  if (typeof content !== "object" || content === null || Array.isArray(content)) {
-    return undefined;
+  private requireSession(contextKey: string, sessionId: string): SessionRecord {
+    const record = this.store.getSession(sessionId);
+    if (!record || record.contextKey !== contextKey) throw new Error(`找不到任务：${sessionId}`);
+    return record;
   }
 
-  return content.type === "text" && typeof content.text === "string" ? content.text : undefined;
-}
-
-function findModeConfigId(configOptions: JsonValue | undefined): string | undefined {
-  if (!Array.isArray(configOptions)) {
-    return undefined;
+  private async sendError(contextKey: string, error: unknown): Promise<void> {
+    this.logger.warn({ error, contextKey }, "Request failed.");
+    await this.outbound.sendText(contextKey, error instanceof Error ? error.message : String(error));
   }
-
-  const modeOption = configOptions.find(
-    (option): option is Record<string, JsonValue> =>
-      typeof option === "object" &&
-      option !== null &&
-      !Array.isArray(option) &&
-      option.category === "mode" &&
-      typeof option.id === "string",
-  );
-
-  return modeOption?.id as string | undefined;
 }

@@ -35,6 +35,15 @@ export class CommandRouter {
         return { type: "modes" };
       case "mode":
         return requireArg(args[0], "mode value", (value) => ({ type: "mode", value }));
+      case "model":
+        return { type: "model", model: args[0] };
+      case "permissions": {
+        const mode = args[0];
+        if (mode !== undefined && mode !== "auto" && mode !== "confirm") {
+          throw new Error("权限模式只能是 auto 或 confirm。");
+        }
+        return { type: "permissions", mode };
+      }
       case "help":
         return { type: "help" };
       default:

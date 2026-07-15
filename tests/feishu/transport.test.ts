@@ -1,4 +1,3 @@
-import readline from "node:readline";
 import type { Logger } from "pino";
 import { describe, expect, test, vi } from "vitest";
 import type { AppConfig } from "../../src/config/schema.js";
@@ -6,9 +5,6 @@ import { appConfigSchema } from "../../src/config/schema.js";
 import { FeishuConnector } from "../../src/feishu/FeishuConnector.js";
 import { resolveFeishuTransport } from "../../src/feishu/transport.js";
 
-const readlineMock = vi.hoisted(() => ({
-  createInterface: vi.fn(() => ({ prompt: vi.fn(), on: vi.fn() })),
-}));
 const larkSdkMock = vi.hoisted(() => ({
   handlers: {} as Record<string, (data: unknown) => Promise<unknown>>,
   register: vi.fn((handlers: Record<string, (data: unknown) => Promise<unknown>>) => {
@@ -18,7 +14,6 @@ const larkSdkMock = vi.hoisted(() => ({
   start: vi.fn(),
 }));
 
-vi.mock("node:readline", () => ({ default: readlineMock }));
 vi.mock("@larksuiteoapi/node-sdk", () => ({
   WSClient: vi.fn(function () {
     return { start: larkSdkMock.start };
@@ -78,24 +73,6 @@ test("the configuration rejects unsupported transport values", () => {
   ).toThrow();
 });
 
-test("starts the console input path when console mode is explicit", async () => {
-  const config = {
-    feishu: {
-      transport: "console",
-      appId: "cli_app",
-      appSecret: "secret",
-      useConsoleWhenMissingCredentials: true,
-    },
-  } as AppConfig;
-  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
-  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
-  const connector = new FeishuConnector(config, handler, logger, "console");
-
-  await connector.start();
-
-  expect(readline.createInterface).toHaveBeenCalledOnce();
-});
-
 test("dispatches direct Feishu SDK message events", async () => {
   const config = {
     feishu: {
@@ -107,7 +84,7 @@ test("dispatches direct Feishu SDK message events", async () => {
   } as AppConfig;
   const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
   const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
-  const connector = new FeishuConnector(config, handler, logger, "sdk");
+  const connector = new FeishuConnector(config, handler, logger);
 
   await connector.start();
   await larkSdkMock.handlers["im.message.receive_v1"]({
@@ -144,7 +121,7 @@ test("dispatches direct Feishu SDK card action events", async () => {
   } as AppConfig;
   const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
   const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
-  const connector = new FeishuConnector(config, handler, logger, "sdk");
+  const connector = new FeishuConnector(config, handler, logger);
 
   await connector.start();
   await larkSdkMock.handlers["card.action.trigger"]({

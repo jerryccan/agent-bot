@@ -1,7 +1,5 @@
-import readline from "node:readline";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
-import type { FeishuTransportMode } from "./transport.js";
 import type { FeishuEventHandler, IncomingMessage } from "./types.js";
 
 export class FeishuConnector {
@@ -9,15 +7,9 @@ export class FeishuConnector {
     private readonly config: AppConfig,
     private readonly handler: FeishuEventHandler,
     private readonly logger: Logger,
-    private readonly mode: FeishuTransportMode,
   ) {}
 
   async start(): Promise<void> {
-    if (this.mode === "console") {
-      this.startConsoleMode();
-      return;
-    }
-
     const { appId, appSecret } = this.config.feishu;
     if (!appId || !appSecret) {
       throw new Error("Feishu appId/appSecret are required.");
@@ -28,43 +20,6 @@ export class FeishuConnector {
 
   stop(): void {
     // SDK connector currently relies on process lifetime.
-  }
-
-  private startConsoleMode(): void {
-    this.logger.info("Starting console mode.");
-    console.log("Console mode started. Type /help, /agents, /new ... or plain prompts.");
-
-    const reader = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      prompt: "acp-bot> ",
-    });
-    let isClosed = false;
-
-    reader.prompt();
-    reader.on("line", (line) => {
-      const message: IncomingMessage = {
-        messageId: `console-${Date.now()}`,
-        contextKey: "chat_id:console",
-        chatId: "console",
-        userId: "console",
-        text: line,
-      };
-
-      void this.handler
-        .onMessage(message)
-        .catch((error) => this.logger.error({ error }, "Console message handling failed."))
-        .finally(() => {
-          if (!isClosed) {
-            reader.prompt();
-          }
-        });
-    });
-
-    reader.on("close", () => {
-      isClosed = true;
-      this.logger.info("Console input closed.");
-    });
   }
 
   private async startFeishuWs(appId: string, appSecret: string): Promise<void> {
@@ -155,6 +110,7 @@ function toCardAction(data: unknown) {
     actionId: event.action.name ?? `${Date.now()}`,
     contextKey: chatId ? `chat_id:${chatId}` : `open_id:${openId}`,
     userId: openId,
+    ...(typeof event.context?.open_message_id === "string" ? { messageId: event.context.open_message_id } : {}),
     value: isRecord(event.action.value) ? event.action.value : {},
   };
 }
