@@ -25,6 +25,33 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("renders a callback-free startup status card with resumable task state", () => {
+    const card = new CardRenderer().renderStartupStatus({
+      startedAt: new Date("2026-07-15T05:45:00.000Z"),
+      defaultAgentName: "codex",
+      defaultAgentTitle: "Codex",
+      cwd: "D:\\dev\\acp-bot",
+      currentTask: {
+        id: "sess_1",
+        agentName: "codex",
+        sessionStatus: "running",
+        lastTurnStatus: "running",
+      },
+    });
+    const serialized = JSON.stringify(card);
+    const objects = collectObjects(card);
+
+    expect(serialized).toContain("acp-bot 已启动");
+    expect(serialized).toContain("在线");
+    expect(serialized).toContain("Codex");
+    expect(serialized).toContain("D:\\\\dev\\\\acp-bot");
+    expect(serialized).toContain("sess_1");
+    expect(serialized).toContain("下一条消息时恢复");
+    expect(serialized).toContain("/new");
+    expect(serialized).toContain("/status");
+    expect(objects.filter((item) => item.tag === "button" || item.tag === "action")).toHaveLength(0);
+  });
+
   test("keeps tool details inside native panels without a callback-only details action", () => {
     const card = new CardRenderer().renderTurn(state());
     const objects = collectObjects(card);

@@ -4,7 +4,40 @@ import type { ToolState } from "../runtime/types.js";
 import type { TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
 import { truncateText } from "../utils/markdown.js";
 
+export interface StartupStatusView {
+  startedAt: Date;
+  defaultAgentName: string;
+  defaultAgentTitle: string;
+  cwd: string;
+  currentTask?: {
+    id: string;
+    agentName: string;
+    sessionStatus: string;
+    lastTurnStatus?: string;
+  };
+}
+
 export class CardRenderer {
+  renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
+    const lines = [
+      "**状态**：🟢 在线",
+      `**启动时间**：${formatStartupTime(view.startedAt)}`,
+      `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
+      `**工作目录**：${inlineCode(view.cwd)}`,
+    ];
+    if (view.currentTask) {
+      lines.push(
+        `**当前任务**：${inlineCode(view.currentTask.id)}`,
+        `**任务 Agent**：${inlineCode(view.currentTask.agentName)}`,
+        `**任务状态**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)}`,
+      );
+    } else {
+      lines.push("**当前任务**：无，下一条普通消息会创建新任务");
+    }
+    lines.push("发送普通消息继续当前任务；发送 `/new` 创建新任务；发送 `/status` 查看详情。");
+    return this.baseCard("acp-bot 已启动", "green", [markdown(lines.join("\n"))]);
+  }
+
   renderTurn(state: TurnViewState): Record<string, unknown> {
     const elements: unknown[] = [
       markdown(renderTurnSummary(state)),
@@ -171,6 +204,37 @@ function renderTool(tool: ToolState): string {
 
 function codeBlock(value: string, maxLength: number): string {
   return `\`\`\`\n${truncateText(value.trim(), maxLength).replaceAll("```", "''' ")}\n\`\`\``;
+}
+
+function inlineCode(value: string): string {
+  return `\`${value.replaceAll("`", "'")}\``;
+}
+
+function formatStartupTime(value: Date): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(value);
+}
+
+function persistedTaskStatus(sessionStatus: string, lastTurnStatus?: string): string {
+  if (sessionStatus === "running" || lastTurnStatus === "running") {
+    return "上次运行中，可在下一条消息时恢复";
+  }
+  const labels: Record<string, string> = {
+    starting: "上次正在启动",
+    ready: "就绪",
+    completed: "上次已完成",
+    cancelled: "上次已停止",
+    closed: "已关闭",
+    failed: "上次失败",
+  };
+  return labels[lastTurnStatus ?? sessionStatus] ?? lastTurnStatus ?? sessionStatus;
 }
 
 function turnTitle(status: TurnViewStatus): string {
