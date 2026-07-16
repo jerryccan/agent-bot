@@ -91,11 +91,14 @@ export class CardRenderer {
       elements.push(markdown(codeBlock(state.error, 2_000)));
     }
 
-    return this.baseCard(turnTitle(state.status), turnTemplate(state.status), elements);
+    return this.baseCard(turnTitle(state.status, state.taskTitle), turnTemplate(state.status), elements);
   }
 
   renderTurnDetails(state: TurnViewState): Record<string, unknown> {
-    return this.baseCard("Codex 执行详情", "blue", [
+    const title = state.taskTitle
+      ? `Codex 执行详情：${truncateText(state.taskTitle.replace(/\s+/g, " ").trim(), 60)}`
+      : "Codex 执行详情";
+    return this.baseCard(title, "blue", [
       markdown(renderTurnSummary(state)),
       ...(state.plan.length ? [markdown(state.plan.map(renderPlanStep).join("\n"))] : []),
       ...turnActivities(state).flatMap(renderActivity),
@@ -279,12 +282,18 @@ function persistedTaskStatus(sessionStatus: string, lastTurnStatus?: string): st
   return labels[lastTurnStatus ?? sessionStatus] ?? lastTurnStatus ?? sessionStatus;
 }
 
-function turnTitle(status: TurnViewStatus): string {
-  if (status === "completed") return "Codex 已完成";
-  if (status === "failed") return "Codex 执行失败";
-  if (status === "cancelled") return "Codex 已停止";
-  if (status === "waiting_for_approval") return "Codex 等待确认";
-  return "Codex 正在处理";
+function turnTitle(status: TurnViewStatus, taskTitle?: string): string {
+  const prefix = status === "completed"
+    ? "Codex 已完成"
+    : status === "failed"
+      ? "Codex 执行失败"
+      : status === "cancelled"
+        ? "Codex 已停止"
+        : status === "waiting_for_approval"
+          ? "Codex 等待确认"
+          : "Codex 正在处理";
+  const compactTitle = taskTitle ? truncateText(taskTitle.replace(/\s+/g, " ").trim(), 60) : "";
+  return compactTitle ? `${prefix}：${compactTitle}` : prefix;
 }
 
 function turnTemplate(status: TurnViewStatus): string {

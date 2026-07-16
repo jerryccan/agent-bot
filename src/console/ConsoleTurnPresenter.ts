@@ -12,6 +12,8 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     this.contexts.set(sessionId, contextKey);
   }
 
+  updateSessionTitle(): void {}
+
   unregisterSession(sessionId: string): void {
     this.contexts.delete(sessionId);
   }

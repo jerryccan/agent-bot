@@ -102,6 +102,7 @@ function fixture() {
   };
   const presenter: TurnPresenter = {
     registerSession: vi.fn(),
+    updateSessionTitle: vi.fn(),
     unregisterSession: vi.fn(),
     startPendingTurn: vi.fn(async () => undefined),
     failPendingTurn: vi.fn(async () => undefined),
@@ -133,12 +134,12 @@ describe("ProxySessionController", () => {
     await controller.onMessage(message("inspect this repo"));
 
     expect(runtime.createSession).toHaveBeenCalledOnce();
-    expect(presenter.startPendingTurn).toHaveBeenCalledWith(expect.any(String), "chat_id:c1");
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(expect.any(String), "chat_id:c1", "inspect this repo");
     expect((presenter.startPendingTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
       (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
     );
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), "inspect this repo");
-    expect(presenter.registerSession).toHaveBeenCalledWith(expect.any(String), "chat_id:c1");
+    expect(presenter.registerSession).toHaveBeenCalledWith(expect.any(String), "chat_id:c1", "inspect this repo");
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
   });
 
@@ -169,22 +170,18 @@ describe("ProxySessionController", () => {
     expect(store.listSessions("chat_id:c1")[0]?.title).toBe("inspect this repo");
   });
 
-  test("persists runtime title metadata without forwarding it to the turn presenter", async () => {
-    const { store, presenter, listeners } = fixture();
-    store.createSession({
-      localSessionId: "saved",
-      contextKey: "chat_id:c1",
-      agentName: "codex",
-      cwd: process.cwd(),
-      status: "ready",
-    });
+  test("persists runtime title metadata and refreshes the turn presenter", async () => {
+    const { controller, store, presenter, listeners } = fixture();
+    await controller.onMessage(message("/new"));
+    const sessionId = store.listSessions("chat_id:c1")[0]!.localSessionId;
 
     for (const listener of listeners) {
-      listener({ type: "session_metadata_updated", sessionId: "saved", title: "Generated title" });
+      listener({ type: "session_metadata_updated", sessionId, title: "Generated title" });
     }
 
-    await vi.waitFor(() => expect(store.getSession("saved")?.title).toBe("Generated title"));
+    await vi.waitFor(() => expect(store.getSession(sessionId)?.title).toBe("Generated title"));
     expect(presenter.onEvent).not.toHaveBeenCalled();
+    expect(presenter.updateSessionTitle).toHaveBeenCalledWith(sessionId, "Generated title");
   });
 
   test("ignores a duplicate inbound message id", async () => {
@@ -322,5 +319,38 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       expect.stringContaining("未知模型：missing-model"),
     );
+  });
+
+  test("shows a rich status summary for the current task", async () => {
+    const { controller, outbound } = fixture();
+    await controller.onMessage(message("inspect this repo"));
+
+    await controller.onMessage(message("/status"));
+
+    const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string;
+    expect(markdown).toMatch(/### 当前任务/);
+    expect(markdown).toContain("**标题**：inspect this repo");
+    expect(markdown).toContain("**状态**：执行中");
+    expect(markdown).toContain("**模型 / 思考强度**：`gpt-test` / `high`");
+    expect(markdown).toContain("**权限模式**：自动执行");
+    expect(markdown).toContain("**任务范围**：未指定项目");
+    expect(markdown).toContain("**Codex 任务 ID**：`thr_1`");
+    expect(markdown).toContain("### acp-bot");
+    expect(markdown).toContain("**任务统计**：共 1 个");
+  });
+
+  test("renders grouped help without repeating command entries", async () => {
+    const { controller, outbound } = fixture();
+
+    await controller.onMessage(message("/help"));
+
+    const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string;
+    expect(markdown).toContain("### 任务");
+    expect(markdown).toContain("### 模型与执行");
+    expect(markdown).toContain("### Agent 与状态");
+    expect(markdown.match(/`\/model \[name\]`/g)).toHaveLength(1);
+    expect(markdown.match(/`\/thinking \[level\]`/g)).toHaveLength(1);
+    expect(markdown).not.toContain("`/model`：");
+    expect(markdown).not.toContain("`/model <name>`：");
   });
 });

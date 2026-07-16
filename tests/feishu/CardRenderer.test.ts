@@ -202,6 +202,22 @@ describe("CardRenderer", () => {
     const completed = { ...state(), status: "completed" as const, completedAt: 4_000, durationMs: 3_000 };
     expect(JSON.stringify(new CardRenderer().renderTurn(completed))).toContain("已完成");
   });
+
+  test("includes the current task title in every turn card header", () => {
+    const completed = {
+      ...state(),
+      taskTitle: "优化飞书交互体验",
+      status: "completed" as const,
+      completedAt: 4_000,
+      durationMs: 3_000,
+    };
+
+    const card = new CardRenderer().renderTurn(completed) as {
+      header: { title: { content: string } };
+    };
+
+    expect(card.header.title.content).toBe("Codex 已完成：优化飞书交互体验");
+  });
 });
 
 function panelTitle(panel: Record<string, unknown>): string {

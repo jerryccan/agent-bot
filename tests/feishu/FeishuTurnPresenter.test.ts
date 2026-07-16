@@ -51,6 +51,24 @@ describe("FeishuTurnPresenter", () => {
     await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalled());
   });
 
+  test("updates the active card when Codex generates a new task title", async () => {
+    const { presenter, outbound } = createFixture();
+    presenter.registerSession("s1", "chat_id:c1", "Initial title");
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+
+    presenter.updateSessionTitle("s1", "Generated title");
+    await presenter.flushAll();
+
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith(
+      "progress_1",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: expect.objectContaining({ content: "Codex 正在处理：Generated title" }),
+        }),
+      }),
+    );
+  });
+
   test("cleans up a failed starting card so a later prompt can retry", async () => {
     const { presenter, outbound } = createFixture();
     (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>)

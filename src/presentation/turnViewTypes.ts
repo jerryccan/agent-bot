@@ -22,6 +22,7 @@ export type TurnActivity =
 export interface TurnViewState {
   sessionId: string;
   turnId: string;
+  taskTitle?: string;
   status: TurnViewStatus;
   startedAt: number;
   completedAt?: number;

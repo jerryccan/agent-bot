@@ -7,10 +7,16 @@ const MAX_FAILED_TOOLS = 5;
 const MAX_FILES = 30;
 const MAX_ACTIVITIES = 40;
 
-export function createTurnViewState(sessionId: string, turnId: string, startedAt: number): TurnViewState {
+export function createTurnViewState(
+  sessionId: string,
+  turnId: string,
+  startedAt: number,
+  taskTitle?: string,
+): TurnViewState {
   return {
     sessionId,
     turnId,
+    taskTitle,
     status: "starting",
     startedAt,
     assistantText: "",

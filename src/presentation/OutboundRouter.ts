@@ -2,9 +2,10 @@ import type { AgentEvent } from "../runtime/types.js";
 import type { FeishuOutbound } from "../feishu/types.js";
 
 export interface TurnPresenter {
-  registerSession(sessionId: string, contextKey: string): void;
+  registerSession(sessionId: string, contextKey: string, taskTitle?: string): void;
+  updateSessionTitle(sessionId: string, taskTitle: string): void;
   unregisterSession(sessionId: string): void;
-  startPendingTurn(sessionId: string, contextKey: string): Promise<void>;
+  startPendingTurn(sessionId: string, contextKey: string, taskTitle?: string): Promise<void>;
   failPendingTurn(sessionId: string, message: string): Promise<void>;
   onEvent(event: AgentEvent): Promise<void>;
   showDetails(contextKey: string, turnId: string): Promise<void>;
@@ -25,10 +26,14 @@ export class OutboundRouter {
     if (routes.length === 0) throw new Error("At least one outbound route is required.");
   }
 
-  registerSession(sessionId: string, contextKey: string): void {
+  registerSession(sessionId: string, contextKey: string, taskTitle?: string): void {
     const route = this.route(contextKey);
     this.sessionRoutes.set(sessionId, route);
-    route.presenter.registerSession(sessionId, contextKey);
+    route.presenter.registerSession(sessionId, contextKey, taskTitle);
+  }
+
+  updateSessionTitle(sessionId: string, taskTitle: string): void {
+    this.sessionRoutes.get(sessionId)?.presenter.updateSessionTitle(sessionId, taskTitle);
   }
 
   unregisterSession(sessionId: string): void {
@@ -37,8 +42,8 @@ export class OutboundRouter {
     this.sessionRoutes.delete(sessionId);
   }
 
-  async startPendingTurn(sessionId: string, contextKey: string): Promise<void> {
-    await this.route(contextKey).presenter.startPendingTurn(sessionId, contextKey);
+  async startPendingTurn(sessionId: string, contextKey: string, taskTitle?: string): Promise<void> {
+    await this.route(contextKey).presenter.startPendingTurn(sessionId, contextKey, taskTitle);
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {

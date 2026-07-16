@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { Logger } from "pino";
-import { createProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
+import { createProjectlessWorkspace, detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import type { AppConfig } from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
@@ -171,8 +171,8 @@ export class ProxySessionController {
     }
     const configuredRuntime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
     if (!configuredRuntime.getSession(record.localSessionId)) {
-      this.outbound.registerSession(record.localSessionId, contextKey);
-      await this.outbound.startPendingTurn(record.localSessionId, contextKey);
+      this.outbound.registerSession(record.localSessionId, contextKey, record.title);
+      await this.outbound.startPendingTurn(record.localSessionId, contextKey, record.title);
     }
     let loaded: LoadedSession;
     try {
@@ -203,12 +203,11 @@ export class ProxySessionController {
   }
 
   private async startTurn(loaded: LoadedSession, text: string): Promise<void> {
-    await this.outbound.startPendingTurn(loaded.record.localSessionId, loaded.record.contextKey);
     const currentRecord = this.store.getSession(loaded.record.localSessionId);
-    if (!currentRecord?.title) {
-      const title = normalizeTaskTitle(text);
-      if (title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
-    }
+    const title = currentRecord?.title ?? normalizeTaskTitle(text);
+    if (!currentRecord?.title && title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
+    if (title) this.outbound.updateSessionTitle(loaded.record.localSessionId, title);
+    await this.outbound.startPendingTurn(loaded.record.localSessionId, loaded.record.contextKey, title);
     let turnId: string;
     try {
       turnId = await loaded.runtime.startTurn(loaded.record.localSessionId, text);
@@ -237,11 +236,13 @@ export class ProxySessionController {
       ? createProjectlessWorkspace({ prompt }).cwd
       : path.resolve(cwd ?? this.config.defaults.cwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
+    const initialTitle = normalizeTaskTitle(prompt ?? "");
+    if (initialTitle) this.store.updateRuntimeSession(localSessionId, { title: initialTitle });
     this.store.setCurrentSession(contextKey, localSessionId);
-    this.outbound.registerSession(localSessionId, contextKey);
+    this.outbound.registerSession(localSessionId, contextKey, initialTitle);
     const runtime = this.runtimes.forAgent(agent);
     try {
-      if (prepareTurn) await this.outbound.startPendingTurn(localSessionId, contextKey);
+      if (prepareTurn) await this.outbound.startPendingTurn(localSessionId, contextKey, initialTitle);
       const session = await runtime.createSession({
         localSessionId,
         agentName,
@@ -268,7 +269,7 @@ export class ProxySessionController {
     const pending = this.sessionLoads.get(record.localSessionId);
     if (pending) return pending;
 
-    this.outbound.registerSession(record.localSessionId, record.contextKey);
+    this.outbound.registerSession(record.localSessionId, record.contextKey, record.title);
     const loading = (async (): Promise<LoadedSession> => {
       if (record.lastTurnId) {
         await this.outbound.resumeDelivery(record.localSessionId, record.contextKey, record.lastTurnId);
@@ -323,6 +324,7 @@ export class ProxySessionController {
   private async handleRuntimeEvent(event: RuntimeEvent): Promise<void> {
     if (event.type === "session_metadata_updated") {
       this.store.updateRuntimeSession(event.sessionId, { title: event.title });
+      this.outbound.updateSessionTitle(event.sessionId, event.title);
       return;
     }
     if (event.type === "turn_started") {
@@ -507,31 +509,61 @@ export class ProxySessionController {
   private async status(contextKey: string): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const current = context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
-    await this.outbound.sendMarkdown(contextKey, [
-      `默认 agent：${context.defaultAgent}`,
-      `当前任务：${current?.localSessionId ?? "无"}`,
-      `运行时：${current?.runtimeKind ?? "未启动"}`,
-      `模型：${current?.model ?? "默认"}`,
-      `权限：${current?.permissionMode ?? "auto"}`,
-      `状态：${current?.status ?? "无"}`,
-      `目录：${current?.cwd ?? "无"}`,
-    ].join("\n"));
+    const sessions = this.store.listSessions(contextKey);
+    const lines = ["### 当前任务"];
+    if (!current) {
+      lines.push("无。直接发送消息即可创建一个未指定项目的 Codex 任务。");
+    } else {
+      const agent = this.ensureAgent(current.agentName);
+      const runtimeSession = this.runtimes.forAgent(agent).getSession(current.localSessionId);
+      const activeTurnId = runtimeSession?.activeTurnId;
+      const queued = this.queuedPrompts.get(current.localSessionId)?.length ?? 0;
+      lines.push(
+        `**标题**：${current.title ?? "未命名任务"}`,
+        `**状态**：${sessionStatusLabel(current.status, activeTurnId)}`,
+        `**Agent / 运行时**：${asInlineCode(agent.title)} / ${asInlineCode(current.runtimeKind ?? agent.kind)}`,
+        `**模型 / 思考强度**：${asInlineCode(current.model ?? "默认")} / ${asInlineCode(current.reasoningEffort ?? "自动")}`,
+        `**权限模式**：${current.permissionMode === "confirm" ? "执行前确认" : "自动执行"}`,
+        `**任务范围**：${detectProjectlessWorkspace(current.cwd) ? "未指定项目" : "指定项目"}`,
+        `**工作目录**：${asInlineCode(current.cwd)}`,
+        `**本地任务 ID**：${asInlineCode(current.localSessionId)}`,
+        `**Codex 任务 ID**：${asInlineCode(current.remoteSessionId ?? "尚未创建")}`,
+        `**当前执行**：${activeTurnId ? asInlineCode(activeTurnId) : "无"} · **排队消息**：${queued} 条`,
+        `**最近结果**：${turnStatusLabel(current.lastTurnStatus)}`,
+        `**创建 / 更新**：${formatStatusTime(current.createdAt)} / ${formatStatusTime(current.updatedAt)}`,
+      );
+    }
+    lines.push(
+      "",
+      "### acp-bot",
+      `**默认 Agent**：${asInlineCode(context.defaultAgent)}`,
+      `**任务统计**：${sessionStats(sessions)}`,
+      "**交互方式**：普通消息继续当前任务；`/new` 创建新任务；`/help` 查看命令。",
+    );
+    await this.outbound.sendMarkdown(contextKey, lines.join("\n"));
   }
 
   private async help(contextKey: string): Promise<void> {
     await this.outbound.sendMarkdown(contextKey, [
-      "直接发送文字即可使用 Codex；运行中继续发消息会追加到当前任务。",
-      "- `/new [agent] [cwd]`：新建任务",
-      "- `/sessions` / `/switch <id>`：查看或切换任务",
-      "- `/model`：显示全部支持的模型、当前模型和思考强度",
-      "- `/model <name>`：切换模型",
-      "- `/thinking`：显示当前思考强度及可选值",
-      "- `/thinking <level>`：设置思考强度",
-      "- `/permissions auto|confirm`：切换自动执行/确认模式",
-      "- `/cancel`：停止当前执行",
-      "- `/status`：查看当前状态",
-      "- `/close [id]`：关闭任务",
-      "- `/agents` / `/agent <name>`：查看或切换默认 agent",
+      "直接发送消息即可使用 Codex；执行中继续发送会追加到当前任务。方括号表示可选参数。",
+      "",
+      "### 任务",
+      "- `/new [agent] [cwd]`　创建新任务；不填目录时创建未指定项目任务",
+      "- `/sessions`　列出任务",
+      "- `/switch <id>`　切换任务",
+      "- `/cancel`　停止当前执行",
+      "- `/close [id]`　关闭当前任务或指定任务",
+      "",
+      "### 模型与执行",
+      "- `/model [name]`　查看全部模型，或切换模型",
+      "- `/thinking [level]`　查看可选思考强度，或设置强度",
+      "- `/permissions [auto|confirm]`　查看或切换执行确认模式",
+      "",
+      "### Agent 与状态",
+      "- `/status`　查看当前任务与 acp-bot 的详细状态",
+      "- `/agents`　列出可用 Agent",
+      "- `/agent <name>`　设置新任务使用的默认 Agent",
+      "- `/help`　显示本帮助",
     ].join("\n"));
   }
 
@@ -562,4 +594,51 @@ export class ProxySessionController {
     this.logger.warn({ error, contextKey }, "Request failed.");
     await this.outbound.sendText(contextKey, error instanceof Error ? error.message : String(error));
   }
+}
+
+function sessionStatusLabel(status: SessionRecord["status"], activeTurnId?: string): string {
+  if (activeTurnId || status === "running") return "执行中";
+  const labels: Record<SessionRecord["status"], string> = {
+    starting: "正在启动",
+    ready: "就绪",
+    running: "执行中",
+    closed: "已关闭",
+    failed: "异常",
+  };
+  return labels[status];
+}
+
+function turnStatusLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    running: "执行中",
+    completed: "已完成",
+    cancelled: "已停止",
+    failed: "失败",
+  };
+  return status ? labels[status] ?? status : "尚无执行记录";
+}
+
+function sessionStats(sessions: SessionRecord[]): string {
+  if (sessions.length === 0) return "共 0 个";
+  const counts = new Map<string, number>();
+  for (const session of sessions) {
+    const label = sessionStatusLabel(session.status);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const details = [...counts].map(([label, count]) => `${label} ${count}`).join("，");
+  return `共 ${sessions.length} 个（${details}）`;
+}
+
+function formatStatusTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
 }

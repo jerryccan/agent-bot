@@ -41,6 +41,7 @@ interface TurnEntry {
 
 export class FeishuTurnPresenter {
   private readonly sessionContexts = new Map<string, string>();
+  private readonly sessionTitles = new Map<string, string>();
   private readonly entries = new Map<string, TurnEntry>();
   private readonly pendingEntries = new Map<string, TurnEntry>();
   private readonly renderer: CardRenderer;
@@ -54,22 +55,40 @@ export class FeishuTurnPresenter {
     this.renderer = renderer ?? new CardRenderer();
   }
 
-  registerSession(sessionId: string, contextKey: string): void {
+  registerSession(sessionId: string, contextKey: string, taskTitle?: string): void {
     this.sessionContexts.set(sessionId, contextKey);
+    if (taskTitle) this.sessionTitles.set(sessionId, taskTitle);
+  }
+
+  updateSessionTitle(sessionId: string, taskTitle: string): void {
+    this.sessionTitles.set(sessionId, taskTitle);
+    for (const entry of this.entries.values()) {
+      if (entry.state.sessionId !== sessionId || entry.state.taskTitle === taskTitle) continue;
+      entry.state = { ...entry.state, taskTitle };
+      this.store.saveTurnSnapshot(entry.state.turnId, sessionId, entry.state);
+      entry.scheduler?.update(entry.state, "critical");
+    }
   }
 
   unregisterSession(sessionId: string): void {
     this.sessionContexts.delete(sessionId);
+    this.sessionTitles.delete(sessionId);
   }
 
-  async startPendingTurn(sessionId: string, contextKey: string): Promise<void> {
+  async startPendingTurn(sessionId: string, contextKey: string, taskTitle?: string): Promise<void> {
     const existing = this.pendingEntries.get(sessionId);
     if (existing) {
       await existing.initializing;
       return;
     }
     this.sessionContexts.set(sessionId, contextKey);
-    const state = createTurnViewState(sessionId, createId("pending"), Date.now());
+    if (taskTitle) this.sessionTitles.set(sessionId, taskTitle);
+    const state = createTurnViewState(
+      sessionId,
+      createId("pending"),
+      Date.now(),
+      taskTitle ?? this.sessionTitles.get(sessionId),
+    );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(state.turnId, entry);
     this.pendingEntries.set(sessionId, entry);
@@ -107,7 +126,7 @@ export class FeishuTurnPresenter {
         this.pendingEntries.delete(event.sessionId);
         this.entries.delete(pending.state.turnId);
         pending.state = reduceTurnEvent(
-          createTurnViewState(event.sessionId, event.turnId, event.startedAt),
+          createTurnViewState(event.sessionId, event.turnId, event.startedAt, pending.state.taskTitle),
           event,
         );
         this.entries.set(event.turnId, pending);
@@ -172,7 +191,10 @@ export class FeishuTurnPresenter {
     const contextKey = this.sessionContexts.get(event.sessionId);
     if (!contextKey) return undefined;
     const startedAt = event.type === "turn_started" ? event.startedAt : Date.now();
-    const state = reduceTurnEvent(createTurnViewState(event.sessionId, event.turnId, startedAt), event);
+    const state = reduceTurnEvent(
+      createTurnViewState(event.sessionId, event.turnId, startedAt, this.sessionTitles.get(event.sessionId)),
+      event,
+    );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(event.turnId, entry);
     this.store.saveTurnSnapshot(event.turnId, event.sessionId, state);
