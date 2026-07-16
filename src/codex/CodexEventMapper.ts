@@ -1,7 +1,14 @@
 import type { PlanStep, ToolState } from "../runtime/types.js";
 
 export type MappedCodexNotification =
-  | { kind: "agent_delta"; threadId: string; turnId: string; text: string }
+  | { kind: "agent_delta"; threadId: string; turnId: string; itemId: string; text: string }
+  | {
+      kind: "agent_message_phase";
+      threadId: string;
+      turnId: string;
+      itemId: string;
+      phase: "commentary" | "final_answer";
+    }
   | {
       kind: "progress";
       threadId: string;
@@ -29,7 +36,8 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
 
   if (method === "item/agentMessage/delta") {
     const text = stringValue(params.delta);
-    return text === undefined ? undefined : { kind: "agent_delta", threadId, turnId, text };
+    const itemId = stringValue(params.itemId);
+    return text === undefined || !itemId ? undefined : { kind: "agent_delta", threadId, turnId, itemId, text };
   }
   if (method === "item/reasoning/summaryTextDelta") {
     const text = stringValue(params.delta);
@@ -53,6 +61,12 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
     return { kind: "plan", threadId, turnId, steps };
   }
   if ((method === "item/started" || method === "item/completed") && isRecord(params.item)) {
+    if (params.item.type === "agentMessage") {
+      const itemId = stringValue(params.item.id);
+      const phase = messagePhase(params.item.phase);
+      if (!itemId || !phase) return undefined;
+      return { kind: "agent_message_phase", threadId, turnId, itemId, phase };
+    }
     const phase = method === "item/started" ? "started" : "updated";
     const tool = mapTool(params.item, phase, numberValue(params.startedAtMs), numberValue(params.completedAtMs));
     if (!tool) return undefined;
@@ -178,6 +192,10 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function messagePhase(value: unknown): "commentary" | "final_answer" | undefined {
+  return value === "commentary" || value === "final_answer" ? value : undefined;
 }
 
 function formatJson(value: unknown): string | undefined {

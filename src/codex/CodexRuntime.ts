@@ -41,6 +41,7 @@ export interface AppServerClientProvider {
 
 interface CodexSession extends RuntimeSession {
   finalText: string;
+  messagePhases: Map<string, "commentary" | "final_answer">;
   needsResume: boolean;
 }
 
@@ -124,6 +125,7 @@ export class CodexRuntime implements AgentRuntime {
     });
     session.activeTurnId = response.turn.id;
     session.finalText = "";
+    session.messagePhases.clear();
     this.emit({ type: "turn_started", sessionId, turnId: response.turn.id, startedAt: Date.now() });
     return response.turn.id;
   }
@@ -257,9 +259,22 @@ export class CodexRuntime implements AgentRuntime {
     const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === mapped.threadId);
     if (!session || !session.activeTurnId || session.activeTurnId !== mapped.turnId) return;
     const sessionId = session.localSessionId;
-    if (mapped.kind === "agent_delta") {
-      session.finalText += mapped.text;
-      this.emit({ type: "agent_text_delta", sessionId, turnId: mapped.turnId, text: mapped.text });
+    if (mapped.kind === "agent_message_phase") {
+      session.messagePhases.set(mapped.itemId, mapped.phase);
+    } else if (mapped.kind === "agent_delta") {
+      if (session.messagePhases.get(mapped.itemId) === "commentary") {
+        this.emit({
+          type: "progress",
+          sessionId,
+          turnId: mapped.turnId,
+          activityId: `commentary:${mapped.itemId}`,
+          text: mapped.text,
+          append: true,
+        });
+      } else {
+        session.finalText += mapped.text;
+        this.emit({ type: "agent_text_delta", sessionId, turnId: mapped.turnId, text: mapped.text });
+      }
     } else if (mapped.kind === "progress") {
       this.emit({
         type: "progress",
@@ -280,6 +295,7 @@ export class CodexRuntime implements AgentRuntime {
       });
     } else if (mapped.kind === "terminal") {
       session.activeTurnId = undefined;
+      session.messagePhases.clear();
       if (mapped.status === "cancelled") {
         this.emit({ type: "turn_cancelled", sessionId, turnId: mapped.turnId });
       } else if (mapped.status === "failed") {
@@ -357,6 +373,7 @@ export class CodexRuntime implements AgentRuntime {
       reasoningEffort,
       permissionMode: input.permissionMode,
       finalText: "",
+      messagePhases: new Map(),
       needsResume: false,
     };
   }

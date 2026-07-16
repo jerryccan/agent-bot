@@ -110,6 +110,68 @@ describe("CodexRuntime", () => {
     );
   });
 
+  test("routes commentary messages to the timeline and keeps only final-answer text in the response", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    const turnId = await runtime.startTurn("s1", "explain it");
+
+    client.emit("item/started", {
+      threadId: "thr_1",
+      turnId,
+      item: { type: "agentMessage", id: "commentary_1", text: "", phase: "commentary" },
+    });
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId,
+      itemId: "commentary_1",
+      delta: "我先检查官方文档。",
+    });
+    client.emit("item/started", {
+      threadId: "thr_1",
+      turnId,
+      item: { type: "agentMessage", id: "final_1", text: "", phase: "final_answer" },
+    });
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId,
+      itemId: "final_1",
+      delta: "这是最终结论。",
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: turnId, status: "completed" },
+    });
+
+    expect(events).toContainEqual({
+      type: "progress",
+      sessionId: "s1",
+      turnId,
+      activityId: "commentary:commentary_1",
+      text: "我先检查官方文档。",
+      append: true,
+    });
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "agent_text_delta",
+      text: "我先检查官方文档。",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "agent_text_delta",
+      text: "这是最终结论。",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      finalResponse: "这是最终结论。",
+    }));
+  });
+
   test("persists a selected effort in runtime state and exposes model effort metadata", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());

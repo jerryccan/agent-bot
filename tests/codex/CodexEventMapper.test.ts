@@ -2,6 +2,36 @@ import { describe, expect, test } from "vitest";
 import { mapCodexNotification } from "../../src/codex/CodexEventMapper.js";
 
 describe("mapCodexNotification", () => {
+  test("preserves assistant message item ids and commentary phases", () => {
+    expect(
+      mapCodexNotification("item/started", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "message_1", text: "", phase: "commentary" },
+      }),
+    ).toEqual({
+      kind: "agent_message_phase",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      itemId: "message_1",
+      phase: "commentary",
+    });
+    expect(
+      mapCodexNotification("item/agentMessage/delta", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        itemId: "message_1",
+        delta: "先检查官方文档",
+      }),
+    ).toEqual({
+      kind: "agent_delta",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      itemId: "message_1",
+      text: "先检查官方文档",
+    });
+  });
+
   test("maps plan updates", () => {
     expect(
       mapCodexNotification("turn/plan/updated", {
