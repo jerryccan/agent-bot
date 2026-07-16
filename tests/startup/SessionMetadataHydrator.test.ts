@@ -14,7 +14,7 @@ afterEach(() => {
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-function fixture(title?: string) {
+function fixture(title?: string, hasTurn = true) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-hydrator-"));
   directories.push(directory);
   const store = new StateStore(path.join(directory, "state.sqlite"));
@@ -30,6 +30,7 @@ function fixture(title?: string) {
     runtimeKind: "codex",
     remoteSessionId: "thread_1",
     title,
+    lastTurnId: hasTurn ? "turn_1" : undefined,
   });
   const readSessionMetadata = vi.fn(async () => ({ title: "Hydrated title" }));
   const runtimes = {
@@ -54,6 +55,13 @@ describe("SessionMetadataHydrator", () => {
 
   test("does not read metadata for a session that already has a title", async () => {
     const { hydrator, readSessionMetadata, session } = fixture("Existing title");
+
+    await expect(hydrator.hydrate(session)).resolves.toBe(session);
+    expect(readSessionMetadata).not.toHaveBeenCalled();
+  });
+
+  test("does not hydrate an empty Codex thread that has no persisted rollout yet", async () => {
+    const { hydrator, readSessionMetadata, session } = fixture(undefined, false);
 
     await expect(hydrator.hydrate(session)).resolves.toBe(session);
     expect(readSessionMetadata).not.toHaveBeenCalled();

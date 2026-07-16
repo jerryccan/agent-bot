@@ -277,10 +277,11 @@ export class ProxySessionController {
         await this.outbound.resumeDelivery(record.localSessionId, record.contextKey, record.lastTurnId);
       }
       const permissionMode = record.permissionMode ?? "auto";
-      const session = record.remoteSessionId
+      const canResume = Boolean(record.remoteSessionId) && !(agent.kind === "codex" && !record.lastTurnId);
+      const session = canResume
         ? await runtime.resumeSession({
             localSessionId: record.localSessionId,
-            remoteSessionId: record.remoteSessionId,
+            remoteSessionId: record.remoteSessionId!,
             agentName: record.agentName,
             cwd: record.cwd,
             title: record.title,

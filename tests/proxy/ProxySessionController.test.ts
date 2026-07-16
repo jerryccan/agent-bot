@@ -209,6 +209,8 @@ describe("ProxySessionController", () => {
     store.updateRuntimeSession("saved", {
       runtimeKind: "codex",
       remoteSessionId: "thr_saved",
+      lastTurnId: "turn_saved",
+      lastTurnStatus: "completed",
       reasoningEffort: "high",
       permissionMode: "auto",
     });
@@ -221,6 +223,38 @@ describe("ProxySessionController", () => {
       reasoningEffort: "high",
     }));
     expect(runtime.startTurn).toHaveBeenCalledWith("saved", "continue");
+  });
+
+  test("recreates an empty Codex thread after restart instead of resuming a missing rollout", async () => {
+    const { controller, runtime, store } = fixture();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "empty",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("empty", {
+      runtimeKind: "codex",
+      remoteSessionId: "thr_without_rollout",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    });
+    store.setCurrentSession("chat_id:c1", "empty");
+
+    await controller.onMessage(message("run a local command"));
+
+    expect(runtime.resumeSession).not.toHaveBeenCalled();
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: "empty",
+      cwd: process.cwd(),
+      model: "gpt-test",
+      reasoningEffort: "high",
+    }));
+    expect(runtime.startTurn).toHaveBeenCalledWith("empty", "run a local command");
+    expect(store.getSession("empty")?.remoteSessionId).toBe("thr_1");
   });
 
   test("handles model, permissions, details, and approval actions", async () => {

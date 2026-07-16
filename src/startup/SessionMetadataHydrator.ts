@@ -10,6 +10,7 @@ export class SessionMetadataHydrator {
 
   async hydrate(session: SessionRecord): Promise<SessionRecord> {
     if (session.title || !session.runtimeKind || !session.remoteSessionId) return session;
+    if (session.runtimeKind === "codex" && !session.lastTurnId) return session;
     const metadata = await this.runtimes.get(session.runtimeKind).readSessionMetadata(session.remoteSessionId);
     const title = normalizeTaskTitle(metadata.title);
     if (title) this.store.updateRuntimeSession(session.localSessionId, { title });
