@@ -324,19 +324,25 @@ describe("ProxySessionController", () => {
   test("shows a rich status summary for the current task", async () => {
     const { controller, outbound } = fixture();
     await controller.onMessage(message("inspect this repo"));
+    const cardsBeforeStatus = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.length;
 
     await controller.onMessage(message("/status"));
 
-    const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string;
-    expect(markdown).toMatch(/### 当前任务/);
-    expect(markdown).toContain("**标题**：inspect this repo");
-    expect(markdown).toContain("**状态**：执行中");
-    expect(markdown).toContain("**模型 / 思考强度**：`gpt-test` / `high`");
-    expect(markdown).toContain("**权限模式**：自动执行");
-    expect(markdown).toContain("**任务范围**：未指定项目");
-    expect(markdown).toContain("**Codex 任务 ID**：`thr_1`");
-    expect(markdown).toContain("### acp-bot");
-    expect(markdown).toContain("**任务统计**：共 1 个");
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(cardsBeforeStatus + 1);
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(card).toMatchObject({ header: { title: { content: "Codex 状态" } } });
+    expect(serialized).toContain("当前任务");
+    expect(serialized).toContain("**标题**：inspect this repo");
+    expect(serialized).toContain("**状态**：执行中");
+    expect(serialized).toContain("**模型 / 思考强度**：gpt-test / high");
+    expect(serialized).toContain("**权限模式**：自动执行");
+    expect(serialized).toContain("**任务范围**：未指定项目");
+    expect(serialized).toContain("**Codex 任务 ID**：thr_1");
+    expect(serialized).toContain("acp-bot");
+    expect(serialized).toContain("**任务统计**：共 1 个");
+    expect(serialized).not.toContain("###");
+    expect(serialized).not.toContain("`");
   });
 
   test("renders grouped help without repeating command entries", async () => {
@@ -344,13 +350,21 @@ describe("ProxySessionController", () => {
 
     await controller.onMessage(message("/help"));
 
-    const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string;
-    expect(markdown).toContain("### 任务");
-    expect(markdown).toContain("### 模型与执行");
-    expect(markdown).toContain("### Agent 与状态");
-    expect(markdown.match(/`\/model \[name\]`/g)).toHaveLength(1);
-    expect(markdown.match(/`\/thinking \[level\]`/g)).toHaveLength(1);
-    expect(markdown).not.toContain("`/model`：");
-    expect(markdown).not.toContain("`/model <name>`：");
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(outbound.sendMarkdown).not.toHaveBeenCalled();
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const serialized = JSON.stringify(card);
+    expect(card).toMatchObject({ header: { title: { content: "Codex 使用帮助" } } });
+    expect(serialized).toContain("**任务**");
+    expect(serialized).toContain("**模型与执行**");
+    expect(serialized).toContain("**Agent 与状态**");
+    expect(serialized.match(/\/model \[name\]/g)).toHaveLength(1);
+    expect(serialized.match(/\/thinking \[level\]/g)).toHaveLength(1);
+    expect(serialized).toContain("/switch &#60;id&#62;");
+    expect(serialized).toContain("/agent &#60;name&#62;");
+    expect(serialized).not.toContain("<id>");
+    expect(serialized).not.toContain("<name>");
+    expect(serialized).not.toContain("###");
+    expect(serialized).not.toContain("`");
   });
 });

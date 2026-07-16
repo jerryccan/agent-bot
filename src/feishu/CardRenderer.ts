@@ -21,6 +21,11 @@ export interface StartupStatusView {
   };
 }
 
+export interface CardSection {
+  title?: string;
+  lines: string[];
+}
+
 export class CardRenderer {
   renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
     const lines = [
@@ -149,6 +154,16 @@ export class CardRenderer {
 
   renderStatus(status: string): Record<string, unknown> {
     return this.baseCard("ACP Gateway 状态", "blue", [markdown(status)]);
+  }
+
+  renderSectionsCard(title: string, sections: CardSection[]): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [];
+    sections.forEach((section, index) => {
+      if (index > 0) elements.push({ tag: "hr" });
+      const heading = section.title ? `**${section.title}**\n` : "";
+      elements.push(markdown(`${heading}${section.lines.join("\n")}`));
+    });
+    return this.baseCard(title, "blue", elements);
   }
 
   private baseCard(title: string, template: string, elements: unknown[]): Record<string, unknown> {

@@ -5,6 +5,7 @@ import type { AppConfig } from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
 import type { CardAction, IncomingMessage } from "../feishu/types.js";
+import { CardRenderer, type CardSection } from "../feishu/CardRenderer.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { AgentRuntimeRegistry } from "../runtime/AgentRuntimeRegistry.js";
 import type {
@@ -27,6 +28,7 @@ interface LoadedSession {
 
 export class ProxySessionController {
   private readonly router = new CommandRouter();
+  private readonly cardRenderer = new CardRenderer();
   private readonly messageQueues = new Map<string, Promise<void>>();
   private readonly sessionLoads = new Map<string, Promise<LoadedSession>>();
   private readonly queuedPrompts = new Map<string, string[]>();
@@ -510,61 +512,75 @@ export class ProxySessionController {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const current = context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
     const sessions = this.store.listSessions(contextKey);
-    const lines = ["### 当前任务"];
+    const taskLines: string[] = [];
     if (!current) {
-      lines.push("无。直接发送消息即可创建一个未指定项目的 Codex 任务。");
+      taskLines.push("无。直接发送消息即可创建一个未指定项目的 Codex 任务。");
     } else {
       const agent = this.ensureAgent(current.agentName);
       const runtimeSession = this.runtimes.forAgent(agent).getSession(current.localSessionId);
       const activeTurnId = runtimeSession?.activeTurnId;
       const queued = this.queuedPrompts.get(current.localSessionId)?.length ?? 0;
-      lines.push(
-        `**标题**：${current.title ?? "未命名任务"}`,
+      taskLines.push(
+        `**标题**：${cardText(current.title ?? "未命名任务")}`,
         `**状态**：${sessionStatusLabel(current.status, activeTurnId)}`,
-        `**Agent / 运行时**：${asInlineCode(agent.title)} / ${asInlineCode(current.runtimeKind ?? agent.kind)}`,
-        `**模型 / 思考强度**：${asInlineCode(current.model ?? "默认")} / ${asInlineCode(current.reasoningEffort ?? "自动")}`,
+        `**Agent / 运行时**：${cardText(agent.title)} / ${cardText(current.runtimeKind ?? agent.kind)}`,
+        `**模型 / 思考强度**：${cardText(current.model ?? "默认")} / ${cardText(current.reasoningEffort ?? "自动")}`,
         `**权限模式**：${current.permissionMode === "confirm" ? "执行前确认" : "自动执行"}`,
         `**任务范围**：${detectProjectlessWorkspace(current.cwd) ? "未指定项目" : "指定项目"}`,
-        `**工作目录**：${asInlineCode(current.cwd)}`,
-        `**本地任务 ID**：${asInlineCode(current.localSessionId)}`,
-        `**Codex 任务 ID**：${asInlineCode(current.remoteSessionId ?? "尚未创建")}`,
-        `**当前执行**：${activeTurnId ? asInlineCode(activeTurnId) : "无"} · **排队消息**：${queued} 条`,
+        `**工作目录**：${cardText(current.cwd)}`,
+        `**本地任务 ID**：${cardText(current.localSessionId)}`,
+        `**Codex 任务 ID**：${cardText(current.remoteSessionId ?? "尚未创建")}`,
+        `**当前执行**：${activeTurnId ? cardText(activeTurnId) : "无"}　**排队消息**：${queued} 条`,
         `**最近结果**：${turnStatusLabel(current.lastTurnStatus)}`,
         `**创建 / 更新**：${formatStatusTime(current.createdAt)} / ${formatStatusTime(current.updatedAt)}`,
       );
     }
-    lines.push(
-      "",
-      "### acp-bot",
-      `**默认 Agent**：${asInlineCode(context.defaultAgent)}`,
-      `**任务统计**：${sessionStats(sessions)}`,
-      "**交互方式**：普通消息继续当前任务；`/new` 创建新任务；`/help` 查看命令。",
-    );
-    await this.outbound.sendMarkdown(contextKey, lines.join("\n"));
+    const sections: CardSection[] = [
+      { title: "当前任务", lines: taskLines },
+      {
+        title: "acp-bot",
+        lines: [
+          `**默认 Agent**：${cardText(context.defaultAgent)}`,
+          `**任务统计**：${sessionStats(sessions)}`,
+          "**交互方式**：普通消息继续当前任务；/new 创建新任务；/help 查看命令。",
+        ],
+      },
+    ];
+    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Codex 状态", sections));
   }
 
   private async help(contextKey: string): Promise<void> {
-    await this.outbound.sendMarkdown(contextKey, [
-      "直接发送消息即可使用 Codex；执行中继续发送会追加到当前任务。方括号表示可选参数。",
-      "",
-      "### 任务",
-      "- `/new [agent] [cwd]`　创建新任务；不填目录时创建未指定项目任务",
-      "- `/sessions`　列出任务",
-      "- `/switch <id>`　切换任务",
-      "- `/cancel`　停止当前执行",
-      "- `/close [id]`　关闭当前任务或指定任务",
-      "",
-      "### 模型与执行",
-      "- `/model [name]`　查看全部模型，或切换模型",
-      "- `/thinking [level]`　查看可选思考强度，或设置强度",
-      "- `/permissions [auto|confirm]`　查看或切换执行确认模式",
-      "",
-      "### Agent 与状态",
-      "- `/status`　查看当前任务与 acp-bot 的详细状态",
-      "- `/agents`　列出可用 Agent",
-      "- `/agent <name>`　设置新任务使用的默认 Agent",
-      "- `/help`　显示本帮助",
-    ].join("\n"));
+    const sections: CardSection[] = [
+      { lines: ["直接发送消息即可使用 Codex；执行中继续发送会追加到当前任务。方括号表示可选参数。"] },
+      {
+        title: "任务",
+        lines: [
+          "- **/new [agent] [cwd]**　创建新任务；不填目录时创建未指定项目任务",
+          "- **/sessions**　列出任务",
+          "- **/switch &#60;id&#62;**　切换任务",
+          "- **/cancel**　停止当前执行",
+          "- **/close [id]**　关闭当前任务或指定任务",
+        ],
+      },
+      {
+        title: "模型与执行",
+        lines: [
+          "- **/model [name]**　查看全部模型，或切换模型",
+          "- **/thinking [level]**　查看可选思考强度，或设置强度",
+          "- **/permissions [auto|confirm]**　查看或切换执行确认模式",
+        ],
+      },
+      {
+        title: "Agent 与状态",
+        lines: [
+          "- **/status**　查看当前任务与 acp-bot 的详细状态",
+          "- **/agents**　列出可用 Agent",
+          "- **/agent &#60;name&#62;**　设置新任务使用的默认 Agent",
+          "- **/help**　显示本帮助",
+        ],
+      },
+    ];
+    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Codex 使用帮助", sections));
   }
 
   private ensureAgent(agentName: string) {
@@ -641,4 +657,8 @@ function formatStatusTime(value: string): string {
     second: "2-digit",
     hourCycle: "h23",
   }).format(date);
+}
+
+function cardText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("`", "&#96;").replaceAll("<", "&#60;").replaceAll(">", "&#62;");
 }
