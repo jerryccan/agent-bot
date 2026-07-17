@@ -64,62 +64,19 @@ export class CardRenderer {
   }
 
   renderTurn(state: TurnViewState): Record<string, unknown> {
-    const elements: unknown[] = [
-      markdown(renderTurnSummary(state)),
-    ];
-
-    if (state.plan.length > 0) {
-      elements.push(markdown(state.plan.map(renderPlanStep).join("\n")));
-    }
-    elements.push(...turnActivities(state).flatMap(renderActivity));
-    if (state.fileSummary.length > 0) {
-      elements.push({
-        tag: "collapsible_panel",
-        expanded: false,
-        header: { title: { tag: "plain_text", content: `文件变更（${state.fileSummary.length}）` }, vertical_align: "center" },
-        elements: [markdown(state.fileSummary.map((file) => `- ${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n"))],
-      });
-    }
-    if (state.approval) {
-      const request = state.approval;
-      elements.push(markdown([
-        request.title,
-        request.command ? codeBlock(request.command, 800) : undefined,
-        request.reason,
-      ].filter(Boolean).join("\n")));
-      elements.push({
-        tag: "action",
-        actions: request.options.map((option) => ({
-          tag: "button",
-          text: { tag: "plain_text", content: option.label },
-          type: option.id === "accept" || option.id === "acceptForSession" ? "primary" : option.id === "cancel" ? "danger" : "default",
-          value: {
-            action: "approval",
-            sessionId: state.sessionId,
-            turnId: state.turnId,
-            requestId: request.id,
-            decision: option.id,
-          },
-        })),
-      });
-    }
-    if (state.error) {
-      elements.push(markdown(codeBlock(state.error, 2_000)));
-    }
-
-    return this.baseCard(turnTitle(state.status, state.taskTitle), turnTemplate(state.status), elements);
+    return turnCard(
+      turnTitle(state.status, state.taskTitle),
+      turnTemplate(state.status),
+      renderTurnElements(state, "hidden"),
+      renderTurnSubtitle(state),
+    );
   }
 
   renderTurnDetails(state: TurnViewState): Record<string, unknown> {
     const title = state.taskTitle
       ? `Codex 执行详情：${truncateText(state.taskTitle.replace(/\s+/g, " ").trim(), 60)}`
       : "Codex 执行详情";
-    return this.baseCard(title, "blue", [
-      markdown(renderTurnSummary(state)),
-      ...(state.plan.length ? [markdown(state.plan.map(renderPlanStep).join("\n"))] : []),
-      ...turnActivities(state).flatMap(renderActivity),
-      ...(state.assistantText ? [markdown(truncateText(state.assistantText, 3_000))] : []),
-    ]);
+    return turnCard(title, "blue", renderTurnElements(state, "always"), renderTurnSubtitle(state));
   }
 
   renderSessionStarted(session: RuntimeSession): Record<string, unknown> {
@@ -279,9 +236,90 @@ export class CardRenderer {
   }
 }
 
-function renderTurnSummary(state: TurnViewState): string {
+function renderTurnSubtitle(state: TurnViewState): string {
   const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
-  return `耗时：${formatDuration(elapsed)}`;
+  const activityTools = turnActivities(state).filter((activity) => activity.kind === "tool").length;
+  return [
+    `耗时 ${formatDuration(elapsed)}`,
+    activityTools > 0 ? `${activityTools} 个工具` : undefined,
+    state.fileSummary.length > 0 ? `${state.fileSummary.length} 个文件` : undefined,
+  ].filter(Boolean).join(" · ");
+}
+
+function renderTurnElements(
+  state: TurnViewState,
+  assistantTextMode: "hidden" | "always",
+): Record<string, unknown>[] {
+  const elements: Record<string, unknown>[] = [];
+  if (state.plan.length > 0) elements.push(planPanel(state.plan));
+  elements.push(...turnActivities(state).flatMap(renderActivity));
+  if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
+
+  if (state.approval) {
+    const request = state.approval;
+    elements.push(markdown([
+      `**${request.title}**`,
+      request.command ? codeBlock(request.command, 800) : undefined,
+      request.reason,
+    ].filter(Boolean).join("\n")));
+    elements.push({
+      tag: "column_set",
+      flex_mode: "flow",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      columns: request.options.map((option) => ({
+        tag: "column",
+        width: "auto",
+        elements: [{
+          tag: "button",
+          text: { tag: "plain_text", content: option.label },
+          type: option.id === "accept" || option.id === "acceptForSession" ? "primary" : option.id === "cancel" ? "danger" : "default",
+          behaviors: [{
+            type: "callback",
+            value: {
+              action: "approval",
+              sessionId: state.sessionId,
+              turnId: state.turnId,
+              requestId: request.id,
+              decision: option.id,
+            },
+          }],
+        }],
+      })),
+    });
+  }
+  if (state.error) elements.push(markdown(codeBlock(state.error, 2_000)));
+  const showAssistantText = state.assistantText && assistantTextMode === "always";
+  if (showAssistantText) {
+    if (elements.length > 0) elements.push({ tag: "hr" });
+    const heading = state.status === "completed" ? "回答" : "回答生成中";
+    elements.push(markdown(`**${heading}**\n${truncateText(state.assistantText, 3_000)}`));
+  }
+  if (elements.length === 0) elements.push(markdown(emptyTurnText(state.status)));
+  return elements;
+}
+
+function emptyTurnText(status: TurnViewStatus): string {
+  if (status === "starting") return "正在连接 Codex…";
+  if (status === "completed") return "本轮已完成。";
+  if (status === "cancelled") return "本轮已停止。";
+  return "正在等待 Codex 返回进度…";
+}
+
+function planPanel(plan: TurnViewState["plan"]): Record<string, unknown> {
+  const completed = plan.filter((step) => step.status === "completed").length;
+  return collapsiblePanel(`计划 · ${completed}/${plan.length}`, plan.map(renderPlanStep).join("\n"), {
+    expanded: true,
+    borderColor: "blue",
+  });
+}
+
+function fileSummaryPanel(state: TurnViewState): Record<string, unknown> {
+  return collapsiblePanel(
+    `文件变更 · ${state.fileSummary.length}`,
+    state.fileSummary.map((file) => `- ${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n"),
+    { elementId: "turn_files" },
+  );
 }
 
 function renderPlanStep(step: TurnViewState["plan"][number]): string {
@@ -292,7 +330,10 @@ function renderPlanStep(step: TurnViewState["plan"][number]): string {
 function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
   if (activity.kind === "reasoning") {
     const text = activity.text.trim();
-    return text ? [markdown(truncateText(text, 2_000))] : [];
+    if (!text) return [];
+    const content = truncateText(text, 2_000);
+    if (activity.id.startsWith("commentary:")) return [markdown(content)];
+    return [markdown(`> 💭 ${content.replaceAll("\n", "\n> ")}`)];
   }
   return [toolPanel(activity.tool)];
 }
@@ -317,15 +358,32 @@ function turnActivities(state: TurnViewState): TurnActivity[] {
 }
 
 function toolPanel(tool: ToolState): Record<string, unknown> {
+  return collapsiblePanel(toolPanelTitle(tool), renderToolDetails(tool));
+}
+
+function collapsiblePanel(
+  title: string,
+  content: string,
+  options: { expanded?: boolean; borderColor?: string; elementId?: string } = {},
+): Record<string, unknown> {
   return {
     tag: "collapsible_panel",
-    expanded: false,
+    ...(options.elementId ? { element_id: options.elementId } : {}),
+    direction: "vertical",
+    vertical_spacing: "4px",
+    padding: "8px",
+    margin: "0px",
+    expanded: options.expanded ?? false,
     header: {
-      title: { tag: "plain_text", content: toolPanelTitle(tool) },
-      template: toolTemplate(tool),
+      title: { tag: "plain_text", content: title },
       vertical_align: "center",
+      padding: "4px 8px 4px 8px",
     },
-    elements: [markdown(renderToolDetails(tool))],
+    border: {
+      color: options.borderColor ?? "grey",
+      corner_radius: "5px",
+    },
+    elements: [markdown(content)],
   };
 }
 
@@ -344,12 +402,6 @@ function toolPanelTitle(tool: ToolState): string {
   const icon = tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅";
   const title = truncateText(tool.title.replace(/\s+/g, " ").trim(), 100);
   return `${icon} ${title}`;
-}
-
-function toolTemplate(tool: ToolState): string {
-  if (tool.status === "failed") return "red";
-  if (tool.status === "running") return "blue";
-  return "green";
 }
 
 function codeBlock(value: string, maxLength: number): string {
@@ -434,6 +486,38 @@ function escapeCardHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function turnCard(
+  title: string,
+  template: string,
+  elements: Record<string, unknown>[],
+  subtitle: string,
+): Record<string, unknown> {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+    },
+    header: {
+      template,
+      title: {
+        tag: "plain_text",
+        content: title,
+      },
+      subtitle: {
+        tag: "plain_text",
+        content: subtitle,
+      },
+      padding: "12px 12px 12px 12px",
+    },
+    body: {
+      direction: "vertical",
+      vertical_spacing: "8px",
+      padding: "12px 12px 12px 12px",
+      elements,
+    },
+  };
 }
 
 function formatUpdate(update: Record<string, JsonValue>): string {

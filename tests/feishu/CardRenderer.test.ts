@@ -110,27 +110,55 @@ describe("CardRenderer", () => {
     const card = new CardRenderer().renderTurn(state());
     const objects = collectObjects(card);
     const panels = objects.filter((item) => item.tag === "collapsible_panel");
-    const toolPanels = panels.filter((panel) => !panelTitle(panel).startsWith("文件变更"));
+    const toolPanels = panels.filter((panel) => !panelTitle(panel).startsWith("文件变更") && !panelTitle(panel).startsWith("计划"));
     const serialized = JSON.stringify(card);
     const markdownContents = objects
       .filter((item) => item.tag === "markdown")
       .map((item) => String(item.content ?? ""))
       .join("\n");
-    const topLevel = ((card as { elements: unknown[] }).elements).map((element) => JSON.stringify(element));
+    const topLevel = ((card as { body: { elements: unknown[] } }).body.elements).map((element) => JSON.stringify(element));
     const activityOrder = ["先检查测试配置", "npm test", "再检查代码风格", "npm run lint"].map((text) =>
       topLevel.findIndex((element) => element.includes(text)),
     );
 
     expect(toolPanels).toHaveLength(2);
     expect(toolPanels.every((panel) => panel.expanded === false)).toBe(true);
+    expect(toolPanels.every((panel) => JSON.stringify(panel.border) === JSON.stringify({ color: "grey", corner_radius: "5px" }))).toBe(true);
+    expect(panels.every((panel) => (panel.header as { padding?: string }).padding === "4px 8px 4px 8px")).toBe(true);
+    expect(panels.find((panel) => panelTitle(panel).startsWith("文件变更"))).toMatchObject({
+      tag: "collapsible_panel",
+      element_id: "turn_files",
+      expanded: false,
+    });
+    expect(panels).toContainEqual(expect.objectContaining({
+      tag: "collapsible_panel",
+      expanded: true,
+      direction: "vertical",
+      vertical_spacing: "4px",
+      padding: "8px",
+      border: { color: "blue", corner_radius: "5px" },
+    }));
     const completedPanel = toolPanels.find((panel) => panelTitle(panel).includes("npm test"));
     const detailElements = (completedPanel?.elements ?? []) as Array<{ content?: string }>;
     expect(detailElements).toHaveLength(1);
     expect(detailElements[0]?.content).toBe("```\n$ npm test\nall passed\n```");
     expect(activityOrder).toEqual([...activityOrder].sort((left, right) => left - right));
     expect(new Set(activityOrder).size).toBe(4);
-    expect(markdownContents).toContain("耗时：51.6s");
+    expect(card).toMatchObject({
+      schema: "2.0",
+      header: {
+        subtitle: { tag: "plain_text", content: "耗时 51.6s · 2 个工具 · 1 个文件" },
+        padding: "12px 12px 12px 12px",
+      },
+      body: {
+        direction: "vertical",
+        vertical_spacing: "8px",
+        padding: "12px 12px 12px 12px",
+        elements: expect.any(Array),
+      },
+    });
     expect(markdownContents).toContain("先检查测试配置");
+    expect(markdownContents).toContain("> 💭 先检查测试配置");
     expect(markdownContents).toContain("```\n$ npm test\nall passed\n```");
     expect(markdownContents).toContain("```\n$ npm run lint\n命令失败\n```");
     for (const label of [
@@ -162,10 +190,22 @@ describe("CardRenderer", () => {
     running.activities = [{ kind: "tool", id: active.id, tool: active }];
 
     const card = new CardRenderer().renderTurn(running);
-    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel");
+    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel" && panelTitle(item).includes("Get-Content"));
 
     expect(panelTitle(panel ?? {})).toMatch(/\.\.\.$/);
     expect(panelTitle(panel ?? {})).not.toContain("已截断");
+  });
+
+  test("keeps a stable identity for the trailing file panel as activities are inserted before it", () => {
+    const running = state();
+    const renderer = new CardRenderer();
+    const before = collectObjects(renderer.renderTurn(running)).find((item) => panelTitle(item).startsWith("文件变更"));
+
+    running.activities.push({ kind: "reasoning", id: "reasoning:new", text: "新增进度" });
+    const after = collectObjects(renderer.renderTurn(running)).find((item) => panelTitle(item).startsWith("文件变更"));
+
+    expect(before).toMatchObject({ element_id: "turn_files" });
+    expect(after).toMatchObject({ element_id: "turn_files" });
   });
 
   test("preserves raw command formatting and both ends of oversized tool results", () => {
@@ -176,7 +216,7 @@ describe("CardRenderer", () => {
     running.activities = [{ kind: "tool", id: tool.id, tool }];
 
     const card = new CardRenderer().renderTurn(running);
-    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel");
+    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel" && panelTitle(item).includes("long output"));
     const content = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
     const inner = content.slice(4, -4);
     const resultStart = inner.indexOf("\nRESULT_HEAD");
@@ -197,7 +237,10 @@ describe("CardRenderer", () => {
     const running = state();
     running.activeTool = { id: "active", title: "查看仓库", kind: "command", status: "running", command: "rg --files" };
     running.activities.push({ kind: "tool", id: "active", tool: running.activeTool });
-    expect(JSON.stringify(new CardRenderer().renderTurn(running))).toContain("查看仓库");
+    const runningCard = new CardRenderer().renderTurn(running);
+    const runningPanel = collectObjects(runningCard).find((item) => panelTitle(item).includes("查看仓库"));
+    expect(panelTitle(runningPanel ?? {})).toBe("⏳ 查看仓库");
+    expect(runningPanel).toMatchObject({ border: { color: "grey", corner_radius: "5px" } });
 
     const completed = { ...state(), status: "completed" as const, completedAt: 4_000, durationMs: 3_000 };
     expect(JSON.stringify(new CardRenderer().renderTurn(completed))).toContain("已完成");
@@ -217,6 +260,108 @@ describe("CardRenderer", () => {
     };
 
     expect(card.header.title.content).toBe("Codex 已完成：优化飞书交互体验");
+  });
+
+  test("renders approval controls with Card 2.0 callback behaviors", () => {
+    const waiting = state();
+    waiting.status = "waiting_for_approval";
+    waiting.approval = {
+      id: "approval_1",
+      title: "允许运行命令？",
+      command: "npm test",
+      options: [
+        { id: "accept", label: "允许" },
+        { id: "cancel", label: "取消" },
+      ],
+    };
+
+    const card = new CardRenderer().renderTurn(waiting);
+    const objects = collectObjects(card);
+
+    expect(card).toMatchObject({ schema: "2.0", body: { elements: expect.any(Array) } });
+    expect(objects.some((item) => item.tag === "action")).toBe(false);
+    expect(objects).toContainEqual(expect.objectContaining({
+      tag: "column_set",
+      flex_mode: "flow",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+    }));
+    expect(objects).toContainEqual(expect.objectContaining({
+      tag: "button",
+      type: "primary",
+      behaviors: [{
+        type: "callback",
+        value: {
+          action: "approval",
+          sessionId: "s1",
+          turnId: "turn_1",
+          requestId: "approval_1",
+          decision: "accept",
+        },
+      }],
+    }));
+  });
+
+  test("renders a useful Card 2.0 placeholder before the first progress event", () => {
+    const starting = state();
+    starting.status = "starting";
+    starting.progressText = undefined;
+    starting.activeTool = undefined;
+    starting.plan = [];
+    starting.activities = [];
+    starting.completedTools = [];
+    starting.failedTools = [];
+    starting.fileSummary = [];
+
+    const card = new CardRenderer().renderTurn(starting) as {
+      schema: string;
+      body: { elements: Array<{ tag: string; content: string }> };
+    };
+
+    expect(card.schema).toBe("2.0");
+    expect(card.body.elements).toEqual([{ tag: "markdown", content: "正在连接 Codex…" }]);
+  });
+
+  test("renders commentary assistant text as plain Markdown and keeps final-answer text out of progress cards", () => {
+    const generating = state();
+    generating.progressText = undefined;
+    generating.activeTool = undefined;
+    generating.plan = [];
+    generating.activities = [{
+      kind: "reasoning",
+      id: "commentary:1",
+      text: "正在组织回答",
+    }];
+    generating.completedTools = [];
+    generating.failedTools = [];
+    generating.fileSummary = [];
+    generating.assistantText = "正在组织回答正文";
+
+    const runningCard = new CardRenderer().renderTurn(generating) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    expect(runningCard.body.elements).toEqual([{
+      tag: "markdown",
+      content: "正在组织回答",
+    }]);
+
+    generating.status = "completed";
+    const completedCard = new CardRenderer().renderTurn(generating) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    expect(completedCard.body.elements).toEqual([{
+      tag: "markdown",
+      content: "正在组织回答",
+    }]);
+
+    const detailsCard = new CardRenderer().renderTurnDetails(generating) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    expect(detailsCard.body.elements).toEqual([
+      { tag: "markdown", content: "正在组织回答" },
+      { tag: "hr" },
+      { tag: "markdown", content: "**回答**\n正在组织回答正文" },
+    ]);
   });
 
   test("renders task actions as colored callback links below the body", () => {
