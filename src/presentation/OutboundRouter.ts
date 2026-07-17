@@ -82,6 +82,14 @@ export class OutboundRouter {
     return this.route(contextKey).outbound.sendInteractiveCard(contextKey, card);
   }
 
+  async updateInteractiveCard(
+    contextKey: string,
+    messageId: string,
+    card: Record<string, unknown>,
+  ): Promise<void> {
+    await this.route(contextKey).outbound.updateInteractiveCard(messageId, card);
+  }
+
   async flushAll(): Promise<void> {
     const presenters = [...new Set(this.routes.map((route) => route.presenter))];
     await Promise.all(presenters.map((presenter) => presenter.flushAll()));

@@ -46,11 +46,11 @@ export class FeishuConnector {
           return {};
         }
 
-        try {
-          await this.handler.onCardAction(action);
-        } catch (error) {
-          this.logger.error({ error, actionId: action.actionId }, "Failed to handle Feishu card action.");
-        }
+        void Promise.resolve()
+          .then(() => this.handler.onCardAction(action))
+          .catch((error: unknown) => {
+            this.logger.error({ error, actionId: action.actionId }, "Failed to handle Feishu card action.");
+          });
         return {
           toast: {
             type: "success",

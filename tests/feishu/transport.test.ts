@@ -135,6 +135,7 @@ test("dispatches direct Feishu SDK card action events", async () => {
     },
     context: {
       open_chat_id: "oc_1",
+      open_message_id: "om_card_1",
     },
   });
 
@@ -142,6 +143,46 @@ test("dispatches direct Feishu SDK card action events", async () => {
     actionId: "evt_card_1",
     contextKey: "chat_id:oc_1",
     userId: "ou_1",
+    messageId: "om_card_1",
     value: { action: "permission", permissionId: "perm_1", optionId: "allow" },
   });
+});
+
+test("acknowledges card callbacks before asynchronous card updates finish", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  let finishAction!: () => void;
+  const pendingAction = new Promise<void>((resolve) => {
+    finishAction = resolve;
+  });
+  const handler = {
+    onMessage: vi.fn(),
+    onCardAction: vi.fn(() => pendingAction),
+  };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  const response = await larkSdkMock.handlers["card.action.trigger"]({
+    header: { event_id: "evt_card_async" },
+    action: {
+      value: { action: "session_more", visibleCount: "5" },
+    },
+    operator: { open_id: "ou_1" },
+    context: {
+      open_chat_id: "oc_1",
+      open_message_id: "om_card_async",
+    },
+  });
+
+  expect(response).toEqual({ toast: { type: "success", content: "已处理" } });
+  expect(handler.onCardAction).toHaveBeenCalledOnce();
+  finishAction();
+  await pendingAction;
 });

@@ -37,10 +37,17 @@ const MESSAGE_RECEIVED_REACTION = "OnIt";
 const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
 const MESSAGE_CANCELLED_REACTION = "CrossMark";
+const SESSION_PAGE_SIZE = 5;
 
 interface QueuedPrompt {
   text: string;
   messageId?: string;
+}
+
+interface SessionsCardOptions {
+  updateMessageId?: string;
+  forceSwitchTaskId?: string;
+  visibleCount?: number;
 }
 
 export interface ProxyLifecycle {
@@ -155,6 +162,15 @@ export class ProxySessionController {
       } else if (kind === "turn_cancel") {
         const sessionId = String(action.value.sessionId ?? "");
         await this.cancelSession(this.requireSession(action.contextKey, sessionId));
+      } else if (kind === "session_more") {
+        await this.refreshSessionsCardFromAction(action, undefined, true);
+      } else if (kind === "session_switch") {
+        await this.switchSession(action.contextKey, String(action.value.sessionId ?? ""));
+        await this.refreshSessionsCardFromAction(action);
+      } else if (kind === "session_stop") {
+        const sessionId = String(action.value.sessionId ?? "");
+        await this.stopSessionReference(action.contextKey, sessionId);
+        await this.refreshSessionsCardFromAction(action, sessionId);
       } else if (kind === "approval") {
         await this.resolveApproval(action);
       }
@@ -736,20 +752,26 @@ export class ProxySessionController {
     ].join("\n"));
   }
 
-  private async listSessions(contextKey: string, searchTerm?: string): Promise<void> {
+  private async listSessions(
+    contextKey: string,
+    searchTerm?: string,
+    options: SessionsCardOptions = {},
+  ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const normalizedSearch = searchTerm?.trim().toLowerCase();
+    const visibleCount = options.visibleCount ?? SESSION_PAGE_SIZE;
     const localSessions = this.store.listSessions(contextKey).filter((session) =>
       session.status !== "closed" && this.isCodexSession(session),
     );
     let remoteSessions: RemoteSessionSummary[] = [];
     let remoteHint: string | undefined;
+    let remoteHasMore = false;
     const runtime = this.runtimes.get("codex");
     if (runtime.listRemoteSessions) {
       try {
-        const page = await runtime.listRemoteSessions({ searchTerm, limit: 20 });
+        const page = await runtime.listRemoteSessions({ searchTerm, limit: visibleCount });
         remoteSessions = page.sessions;
-        if (page.nextCursor) remoteHint = "还有更多结果，请使用 /sessions 关键词 缩小范围。";
+        remoteHasMore = Boolean(page.nextCursor);
       } catch (error) {
         this.logger.warn({ error, contextKey }, "Failed to list Codex sessions.");
         remoteHint = `读取 Codex 任务失败：${error instanceof Error ? error.message : String(error)}`;
@@ -762,29 +784,75 @@ export class ProxySessionController {
         || Number(right.active) - Number(left.active)
         || right.updatedAt - left.updatedAt);
     const activeCount = entries.filter((entry) => entry.active).length;
-    const visibleEntries = entries.slice(0, 16);
+    const visibleEntries = entries.slice(0, visibleCount);
+    const hasMore = remoteHasMore || entries.length > visibleCount;
     this.lastSessionListings.set(contextKey, visibleEntries.map((entry) => entry.id));
-    const lines = visibleEntries.map((entry, index) => {
+    const cardEntries = visibleEntries.map((entry, index) => {
       const marker = entry.current ? "✅" : entry.active ? "🟢 **活跃**" : "•";
-      return `**${index + 1}.**　${marker}　**${cardText(entry.title)}**　${cardText(entry.id)}\n${entry.status} · ${entry.updatedLabel} · ${cardText(entry.cwd || "目录未知")}`;
+      const showStop = entry.status === "外部执行中" && entry.id !== options.forceSwitchTaskId;
+      return {
+        lines: [
+          `**${index + 1}.**　${marker}　**${cardText(entry.title)}**　${cardText(entry.id)}`,
+          `${entry.status} · ${entry.updatedLabel} · ${cardText(entry.cwd || "目录未知")}`,
+        ],
+        action: entry.current ? undefined : {
+          text: showStop ? "Stop" : "Switch",
+          type: showStop ? "danger" as const : "default" as const,
+          value: {
+            action: showStop ? "session_stop" : "session_switch",
+            sessionId: entry.id,
+            ...(searchTerm ? { searchTerm } : {}),
+            visibleCount: String(visibleCount),
+          },
+        },
+      };
     });
-    if (entries.length > 16) remoteHint = "还有更多结果，请使用 /sessions 关键词 缩小范围。";
-    const sections: CardSection[] = [{
-      title: activeCount > 0 ? `任务（${activeCount} 个活跃）` : "任务",
-      lines: [
-        ...(lines.length ? lines : ["无"]),
+    const card = this.cardRenderer.renderTaskListCard(
+      searchTerm ? `Codex 任务：${searchTerm}` : "Codex 任务",
+      activeCount > 0 ? `任务（${activeCount} 个活跃）` : "任务",
+      cardEntries,
+      [
         ...(remoteHint ? [remoteHint] : []),
-        "发送 **/switch [序号或任务 ID]** 切换任务；不带参数切回上一个任务。序号对应本次列表；外部正在执行的回合不会被接管。",
+        "点击 **Switch** 快速切换；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
+        "也可发送 **/switch [序号或任务 ID]**；不带参数切回上一个任务。外部正在执行的回合不会被接管。",
         "发送 **/status [序号或任务 ID]** 查看当前或指定任务状态。",
       ],
-    }];
-    await this.outbound.sendInteractiveCard(
-      contextKey,
-      this.cardRenderer.renderSectionsCard(searchTerm ? `Codex 任务：${searchTerm}` : "Codex 任务", sections),
+      hasMore ? {
+        text: "更多任务",
+        type: "primary",
+        value: {
+          action: "session_more",
+          ...(searchTerm ? { searchTerm } : {}),
+          visibleCount: String(visibleCount),
+        },
+      } : undefined,
     );
+    if (options.updateMessageId) {
+      await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+    } else {
+      await this.outbound.sendInteractiveCard(contextKey, card);
+    }
+  }
+
+  private async refreshSessionsCardFromAction(
+    action: CardAction,
+    forceSwitchTaskId?: string,
+    loadMore = false,
+  ): Promise<void> {
+    if (!action.messageId) return;
+    const searchTerm = typeof action.value.searchTerm === "string" && action.value.searchTerm.trim()
+      ? action.value.searchTerm
+      : undefined;
+    const currentVisibleCount = parseSessionVisibleCount(action.value.visibleCount);
+    await this.listSessions(action.contextKey, searchTerm, {
+      updateMessageId: action.messageId,
+      forceSwitchTaskId,
+      visibleCount: currentVisibleCount + (loadMore ? SESSION_PAGE_SIZE : 0),
+    });
   }
 
   private async switchSession(contextKey: string, reference?: string): Promise<void> {
+    this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const taskId = this.resolveSessionReference(contextKey, reference);
     const direct = this.store.getSession(taskId);
     const existing = direct ?? this.store.findSessionByRemoteSessionId(taskId);
@@ -830,6 +898,41 @@ export class ProxySessionController {
       contextKey,
       `已切换到任务：${remote.title ?? remote.preview ?? remote.id}。历史消息不会重新发送。`,
     );
+  }
+
+  private async stopSessionReference(contextKey: string, taskId: string): Promise<void> {
+    const direct = this.store.getSession(taskId);
+    if (direct) {
+      if (direct.contextKey !== contextKey || direct.status === "closed") throw new Error(`找不到任务：${taskId}`);
+      await this.cancelSession(direct);
+      return;
+    }
+
+    const existing = this.store.findSessionByRemoteSessionId(taskId);
+    if (existing?.contextKey === contextKey && existing.status !== "closed") {
+      await this.cancelSession(existing);
+      return;
+    }
+
+    const runtime = this.runtimes.get("codex");
+    if (!runtime.readRemoteSession || !runtime.interruptRemoteTurn) {
+      throw new Error("当前 Codex 运行时不支持停止外部任务。");
+    }
+    const remote = await runtime.readRemoteSession(taskId);
+    const turnId = remote.status === "active" || remote.lastTurnStatus === "inProgress"
+      ? remote.lastTurnId
+      : undefined;
+    if (!turnId) {
+      await this.outbound.sendText(contextKey, "当前没有正在执行的任务。");
+      return;
+    }
+    await runtime.interruptRemoteTurn(remote.id, turnId);
+    this.store.audit(contextKey, "turn_interrupt_sent", {
+      remoteSessionId: remote.id,
+      turnId,
+      source: "sessions_card",
+    });
+    await this.outbound.sendText(contextKey, `已向 Codex 发送 Interrupt 请求：${turnId}`);
   }
 
   private resolveSessionReference(contextKey: string, reference?: string): string {
@@ -1368,6 +1471,11 @@ function isQueueIndependentCommand(command: Command): boolean {
   if (command.type === "thinking") return command.effort === undefined;
   if (command.type === "permissions") return command.mode === undefined;
   return false;
+}
+
+function parseSessionVisibleCount(value: unknown): number {
+  const parsed = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed >= SESSION_PAGE_SIZE ? parsed : SESSION_PAGE_SIZE;
 }
 
 function isPromptCommand(command: Command): boolean {

@@ -218,6 +218,60 @@ describe("CardRenderer", () => {
 
     expect(card.header.title.content).toBe("Codex 已完成：优化飞书交互体验");
   });
+
+  test("renders each task with a compact adjacent card action button", () => {
+    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
+      lines: ["**Task**", "就绪"],
+      action: {
+        text: "Switch",
+        value: { action: "session_switch", sessionId: "thr_1" },
+      },
+    }], ["说明"]);
+    const objects = collectObjects(card);
+    const button = objects.find((item) => item.tag === "button");
+
+    expect(button).toMatchObject({
+      text: { tag: "plain_text", content: "Switch" },
+      width: "default",
+      size: "small",
+      behaviors: [{
+        type: "callback",
+        value: { action: "session_switch", sessionId: "thr_1" },
+      }],
+    });
+    expect(card).toMatchObject({ schema: "2.0", body: { elements: expect.any(Array) } });
+    expect(objects).toContainEqual(expect.objectContaining({
+      tag: "column",
+      width: "auto",
+    }));
+  });
+
+  test("allows the current task to render without an action button", () => {
+    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
+      lines: ["✅ **Current task**", "执行中"],
+    }], []);
+
+    expect(collectObjects(card).some((item) => item.tag === "button")).toBe(false);
+  });
+
+  test("renders a full-width footer action for loading more tasks", () => {
+    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [], [], {
+      text: "更多任务",
+      type: "primary",
+      value: { action: "session_more", visibleCount: "5" },
+    });
+
+    expect(collectObjects(card)).toContainEqual(expect.objectContaining({
+      tag: "button",
+      text: { tag: "plain_text", content: "更多任务" },
+      type: "primary",
+      width: "fill",
+      behaviors: [{
+        type: "callback",
+        value: { action: "session_more", visibleCount: "5" },
+      }],
+    }));
+  });
 });
 
 function panelTitle(panel: Record<string, unknown>): string {

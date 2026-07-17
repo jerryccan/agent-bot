@@ -26,6 +26,17 @@ export interface CardSection {
   lines: string[];
 }
 
+export interface TaskListCardAction {
+  text: string;
+  type?: "default" | "primary" | "danger";
+  value: Record<string, string>;
+}
+
+export interface TaskListCardEntry {
+  lines: string[];
+  action?: TaskListCardAction;
+}
+
 export class CardRenderer {
   renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
     const lines = [
@@ -164,6 +175,97 @@ export class CardRenderer {
       elements.push(markdown(`${heading}${section.lines.join("\n")}`));
     });
     return this.baseCard(title, "blue", elements);
+  }
+
+  renderTaskListCard(
+    title: string,
+    sectionTitle: string,
+    entries: TaskListCardEntry[],
+    footerLines: string[],
+    footerAction?: TaskListCardAction,
+  ): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [markdown(`**${sectionTitle}**`)];
+    if (entries.length === 0) {
+      elements.push(markdown("无"));
+    } else {
+      entries.forEach((entry, index) => {
+        if (entry.action) {
+          elements.push({
+            tag: "column_set",
+            flex_mode: "none",
+            horizontal_spacing: "8px",
+            columns: [
+              {
+                tag: "column",
+                width: "weighted",
+                weight: 1,
+                vertical_align: "center",
+                elements: [markdown(entry.lines.join("\n"))],
+              },
+              {
+                tag: "column",
+                width: "auto",
+                vertical_align: "center",
+                elements: [{
+                  tag: "button",
+                  text: { tag: "plain_text", content: entry.action.text },
+                  type: entry.action.type ?? "default",
+                  width: "default",
+                  size: "small",
+                  behaviors: [{
+                    type: "callback",
+                    value: entry.action.value,
+                  }],
+                }],
+              },
+            ],
+          });
+        } else {
+          elements.push(markdown(entry.lines.join("\n")));
+        }
+        if (index < entries.length - 1) elements.push({ tag: "hr" });
+      });
+    }
+    if (footerLines.length > 0) {
+      elements.push({ tag: "hr" }, markdown(footerLines.join("\n")));
+    }
+    if (footerAction) {
+      elements.push({
+        tag: "column_set",
+        flex_mode: "none",
+        columns: [{
+          tag: "column",
+          width: "weighted",
+          weight: 1,
+          elements: [{
+            tag: "button",
+            text: { tag: "plain_text", content: footerAction.text },
+            type: footerAction.type ?? "default",
+            width: "fill",
+            behaviors: [{
+              type: "callback",
+              value: footerAction.value,
+            }],
+          }],
+        }],
+      });
+    }
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+      },
+      header: {
+        template: "blue",
+        title: {
+          tag: "plain_text",
+          content: title,
+        },
+      },
+      body: {
+        elements,
+      },
+    };
   }
 
   private baseCard(title: string, template: string, elements: unknown[]): Record<string, unknown> {
