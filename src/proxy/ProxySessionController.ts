@@ -17,7 +17,12 @@ import type {
   RuntimeEvent,
   RuntimeSession,
 } from "../runtime/types.js";
-import { StateStore, type SessionRecord } from "../state/StateStore.js";
+import {
+  StateStore,
+  type MessageReactionRecord,
+  type MessageReactionStatus,
+  type SessionRecord,
+} from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
 import { asInlineCode, truncateMiddle, truncateText } from "../utils/markdown.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
@@ -26,6 +31,16 @@ interface LoadedSession {
   record: SessionRecord;
   runtime: AgentRuntime;
   session: RuntimeSession;
+}
+
+const MESSAGE_RECEIVED_REACTION = "OnIt";
+const MESSAGE_COMPLETED_REACTION = "DONE";
+const MESSAGE_FAILED_REACTION = "ERROR";
+const MESSAGE_CANCELLED_REACTION = "CrossMark";
+
+interface QueuedPrompt {
+  text: string;
+  messageId?: string;
 }
 
 export interface ProxyLifecycle {
@@ -38,7 +53,7 @@ export class ProxySessionController {
   private readonly cardRenderer = new CardRenderer();
   private readonly messageQueues = new Map<string, Promise<void>>();
   private readonly sessionLoads = new Map<string, Promise<LoadedSession>>();
-  private readonly queuedPrompts = new Map<string, string[]>();
+  private readonly queuedPrompts = new Map<string, QueuedPrompt[]>();
   private readonly lastSessionListings = new Map<string, string[]>();
   private readonly unsubscribe: Array<() => void> = [];
 
@@ -71,15 +86,34 @@ export class ProxySessionController {
       );
     }
     this.restorePersistedSessionRoutes();
+    void this.restorePersistedMessageReactions().catch((error: unknown) => {
+      this.logger.warn({ error }, "Failed to restore persisted message reaction statuses.");
+    });
   }
 
   async onMessage(message: IncomingMessage): Promise<void> {
     if (!this.store.claimInboundEvent(message.messageId, "message")) return;
+    try {
+      const reactionId = await this.outbound.addReaction(
+        message.contextKey,
+        message.messageId,
+        MESSAGE_RECEIVED_REACTION,
+      );
+      if (reactionId) {
+        this.store.saveMessageReaction(message.messageId, message.contextKey, reactionId, MESSAGE_RECEIVED_REACTION);
+      }
+    } catch (error) {
+      this.logger.warn(
+        { error, messageId: message.messageId, contextKey: message.contextKey },
+        "Failed to acknowledge the incoming Feishu message with a reaction.",
+      );
+    }
     this.store.audit(message.contextKey, "incoming_message", { messageId: message.messageId, text: message.text });
     let command: Command;
     try {
       command = this.router.parse(message.text);
     } catch (error) {
+      await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
       await this.sendError(message.contextKey, error);
       return;
     }
@@ -87,8 +121,10 @@ export class ProxySessionController {
     // Operational and read-only commands must remain available even if a prompt operation is slow.
     if (isQueueIndependentCommand(command)) {
       try {
-        await this.execute(message.contextKey, command);
+        await this.execute(message.contextKey, command, message.messageId);
+        if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
       } catch (error) {
+        await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
         await this.sendError(message.contextKey, error);
       }
       return;
@@ -97,8 +133,10 @@ export class ProxySessionController {
     const previous = this.messageQueues.get(message.contextKey) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
       try {
-        await this.execute(message.contextKey, command);
+        await this.execute(message.contextKey, command, message.messageId);
+        if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
       } catch (error) {
+        await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
         await this.sendError(message.contextKey, error);
       }
     });
@@ -131,15 +169,21 @@ export class ProxySessionController {
     this.lastSessionListings.clear();
   }
 
-  private async execute(contextKey: string, command: Command): Promise<void> {
+  private async execute(contextKey: string, command: Command, messageId?: string): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     switch (command.type) {
       case "new":
-        await this.createSession(contextKey, context.defaultAgent, command.cwd, true, false);
+        await this.createSession(
+          contextKey,
+          context.defaultAgent,
+          command.cwd ?? this.inheritedNewTaskCwd(contextKey),
+          true,
+          false,
+        );
         return;
       case "ask":
       case "prompt":
-        await this.prompt(contextKey, command.text);
+        await this.prompt(contextKey, command.text, messageId);
         return;
       case "sessions":
         await this.listSessions(contextKey, command.searchTerm);
@@ -197,7 +241,23 @@ export class ProxySessionController {
     }
   }
 
-  private async prompt(contextKey: string, text: string): Promise<void> {
+  private async restorePersistedMessageReactions(): Promise<void> {
+    const pending = this.store.listPendingMessageReactions();
+    const terminalTurns = new Map<string, "completed" | "failed" | "cancelled">();
+    for (const reaction of pending) {
+      if (!reaction.turnId || !reaction.localSessionId) continue;
+      const session = this.store.getSession(reaction.localSessionId);
+      if (session?.lastTurnId !== reaction.turnId) continue;
+      if (session.lastTurnStatus === "completed" || session.lastTurnStatus === "failed" || session.lastTurnStatus === "cancelled") {
+        terminalTurns.set(reaction.turnId, session.lastTurnStatus);
+      }
+    }
+    for (const [turnId, status] of terminalTurns) {
+      await this.finalizeTurnMessageReactions(turnId, status);
+    }
+  }
+
+  private async prompt(contextKey: string, text: string, messageId?: string): Promise<void> {
     if (!text.trim()) throw new Error("请输入要交给 Codex 的内容。");
     let record = this.currentSession(contextKey);
     if (!record) {
@@ -233,6 +293,7 @@ export class ProxySessionController {
     if (activeTurnId) {
       try {
         await loaded.runtime.steerTurn(record.localSessionId, activeTurnId, text);
+        if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, activeTurnId);
         return;
       } catch (error) {
         this.logger.debug({ error, sessionId: record.localSessionId, activeTurnId }, "Steering failed; reconciling the Codex thread.");
@@ -243,12 +304,14 @@ export class ProxySessionController {
           this.logger.warn({ error: syncError, sessionId: record.localSessionId }, "Failed to synchronize after steering failure.");
         }
         if (!current?.activeTurnId) {
-          await this.startTurn(loaded, text);
+          const turnId = await this.startTurn(loaded, text);
+          if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
           return;
         }
         if (current.activeTurnId !== activeTurnId) {
           try {
             await loaded.runtime.steerTurn(record.localSessionId, current.activeTurnId, text);
+            if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, current.activeTurnId);
             return;
           } catch (retryError) {
             this.logger.warn(
@@ -258,15 +321,16 @@ export class ProxySessionController {
           }
         }
         const queued = this.queuedPrompts.get(record.localSessionId) ?? [];
-        queued.push(text);
+        queued.push({ text, messageId });
         this.queuedPrompts.set(record.localSessionId, queued);
         return;
       }
     }
-    await this.startTurn(loaded, text);
+    const turnId = await this.startTurn(loaded, text);
+    if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
   }
 
-  private async startTurn(loaded: LoadedSession, text: string): Promise<void> {
+  private async startTurn(loaded: LoadedSession, text: string): Promise<string> {
     const currentRecord = this.store.getSession(loaded.record.localSessionId);
     const title = currentRecord?.title ?? normalizeTaskTitle(text);
     if (!currentRecord?.title && title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
@@ -282,8 +346,14 @@ export class ProxySessionController {
       );
       throw error;
     }
-    this.store.updateSession(loaded.record.localSessionId, { status: "running" });
-    this.store.updateRuntimeSession(loaded.record.localSessionId, { lastTurnId: turnId, lastTurnStatus: "running" });
+    const latest = this.store.getSession(loaded.record.localSessionId);
+    const alreadyTerminal = latest?.lastTurnId === turnId
+      && ["completed", "cancelled", "failed"].includes(latest.lastTurnStatus ?? "");
+    if (!alreadyTerminal) {
+      this.store.updateSession(loaded.record.localSessionId, { status: "running" });
+      this.store.updateRuntimeSession(loaded.record.localSessionId, { lastTurnId: turnId, lastTurnStatus: "running" });
+    }
+    return turnId;
   }
 
   private async createSession(
@@ -423,6 +493,10 @@ export class ProxySessionController {
         lastTurnId: event.turnId,
         lastTurnStatus: event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
       });
+      await this.finalizeTurnMessageReactions(
+        event.turnId,
+        event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
+      );
     }
 
     await this.outbound.onEvent(event);
@@ -437,8 +511,8 @@ export class ProxySessionController {
 
   private async startNextQueuedPrompt(sessionId: string): Promise<void> {
     const queued = this.queuedPrompts.get(sessionId);
-    const text = queued?.shift();
-    if (!text) {
+    const prompt = queued?.shift();
+    if (!prompt) {
       this.queuedPrompts.delete(sessionId);
       return;
     }
@@ -446,10 +520,68 @@ export class ProxySessionController {
     const record = this.store.getSession(sessionId);
     if (!record || record.status === "closed") return;
     try {
-      await this.startTurn(await this.loadSession(record), text);
+      const turnId = await this.startTurn(await this.loadSession(record), prompt.text);
+      if (prompt.messageId) await this.bindMessageReactionToTurn(prompt.messageId, sessionId, turnId);
     } catch (error) {
       this.logger.warn({ error, sessionId }, "Failed to start queued prompt.");
+      if (prompt.messageId) await this.finalizeStandaloneMessageReaction(prompt.messageId, "failed");
       await this.sendError(record.contextKey, error);
+    }
+  }
+
+  private async finalizeStandaloneMessageReaction(
+    messageId: string,
+    status: "completed" | "failed" | "cancelled",
+  ): Promise<void> {
+    const reaction = this.store.claimMessageReaction(messageId);
+    if (reaction) await this.replaceMessageReaction(reaction, status);
+  }
+
+  private async bindMessageReactionToTurn(messageId: string, sessionId: string, turnId: string): Promise<void> {
+    this.store.bindMessageReaction(messageId, sessionId, turnId);
+    const session = this.store.getSession(sessionId);
+    if (session?.lastTurnId !== turnId) return;
+    if (session.lastTurnStatus === "completed" || session.lastTurnStatus === "failed" || session.lastTurnStatus === "cancelled") {
+      await this.finalizeTurnMessageReactions(turnId, session.lastTurnStatus);
+    }
+  }
+
+  private async finalizeTurnMessageReactions(
+    turnId: string,
+    status: "completed" | "failed" | "cancelled",
+  ): Promise<void> {
+    for (const reaction of this.store.claimMessageReactionsForTurn(turnId)) {
+      await this.replaceMessageReaction(reaction, status);
+    }
+  }
+
+  private async replaceMessageReaction(
+    reaction: MessageReactionRecord,
+    status: Exclude<MessageReactionStatus, "pending" | "updating">,
+  ): Promise<void> {
+    const emojiType = status === "completed"
+      ? MESSAGE_COMPLETED_REACTION
+      : status === "cancelled"
+        ? MESSAGE_CANCELLED_REACTION
+        : MESSAGE_FAILED_REACTION;
+    try {
+      const replacementId = await this.outbound.addReaction(reaction.contextKey, reaction.messageId, emojiType);
+      if (!replacementId) throw new Error("Feishu did not return the replacement reaction ID.");
+      try {
+        await this.outbound.deleteReaction(reaction.contextKey, reaction.messageId, reaction.reactionId);
+      } catch (error) {
+        this.logger.warn(
+          { error, messageId: reaction.messageId, reactionId: reaction.reactionId },
+          "Added the terminal reaction but failed to remove the previous reaction.",
+        );
+      }
+      this.store.finishMessageReaction(reaction.messageId, replacementId, emojiType, status);
+    } catch (error) {
+      this.store.releaseMessageReaction(reaction.messageId);
+      this.logger.warn(
+        { error, messageId: reaction.messageId, status },
+        "Failed to update the Feishu message reaction for a completed task state.",
+      );
     }
   }
 
@@ -880,7 +1012,7 @@ export class ProxySessionController {
       {
         title: "任务管理",
         lines: [
-          "**/new [cwd]**　使用默认 Agent 创建任务",
+          "**/new [cwd]**　使用默认 Agent 创建任务；省略目录时继承当前项目形态",
           "**/sessions [关键词]**　查找本机任务",
           "**/switch [序号或任务 ID]**　不填参数切回上一个任务",
         ],
@@ -926,6 +1058,14 @@ export class ProxySessionController {
   private currentSession(contextKey: string): SessionRecord | undefined {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     return context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
+  }
+
+  private inheritedNewTaskCwd(contextKey: string): string | undefined {
+    const current = this.currentSession(contextKey);
+    if (!current) return undefined;
+    return detectProjectlessWorkspace(current.cwd)
+      ? createProjectlessWorkspace().cwd
+      : current.cwd;
   }
 
   private requireCurrentSession(contextKey: string): SessionRecord {
@@ -1228,4 +1368,8 @@ function isQueueIndependentCommand(command: Command): boolean {
   if (command.type === "thinking") return command.effort === undefined;
   if (command.type === "permissions") return command.mode === undefined;
   return false;
+}
+
+function isPromptCommand(command: Command): boolean {
+  return command.type === "ask" || command.type === "prompt";
 }

@@ -55,4 +55,19 @@ export const migrations = [
     created_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id TEXT PRIMARY KEY,
+    context_key TEXT NOT NULL,
+    reaction_id TEXT NOT NULL,
+    emoji_type TEXT NOT NULL,
+    local_session_id TEXT,
+    turn_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_reactions_turn_status
+    ON message_reactions(turn_id, status);
+  `,
 ] as const;

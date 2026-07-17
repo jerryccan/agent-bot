@@ -15,6 +15,8 @@ export interface CardAction {
 }
 
 export interface FeishuOutbound {
+  addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
+  deleteReaction?(messageId: string, reactionId: string): Promise<void>;
   sendText(contextKey: string, text: string): Promise<string | undefined>;
   sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined>;
   sendInteractiveCard(contextKey: string, card: Record<string, unknown>): Promise<string | undefined>;

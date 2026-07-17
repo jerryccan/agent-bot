@@ -62,6 +62,14 @@ export class OutboundRouter {
     await this.route(contextKey).presenter.resumeDelivery(sessionId, contextKey, turnId);
   }
 
+  async addReaction(contextKey: string, messageId: string, emojiType: string): Promise<string | undefined> {
+    return this.route(contextKey).outbound.addReaction?.(messageId, emojiType);
+  }
+
+  async deleteReaction(contextKey: string, messageId: string, reactionId: string): Promise<void> {
+    await this.route(contextKey).outbound.deleteReaction?.(messageId, reactionId);
+  }
+
   sendText(contextKey: string, text: string): Promise<string | undefined> {
     return this.route(contextKey).outbound.sendText(contextKey, text);
   }

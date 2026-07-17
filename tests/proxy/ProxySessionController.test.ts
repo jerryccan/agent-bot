@@ -122,6 +122,8 @@ function fixture() {
   };
   const acp = { ...runtime, kind: "acp" as const } as AgentRuntime;
   const outbound: FeishuOutbound = {
+    addReaction: vi.fn(async () => undefined),
+    deleteReaction: vi.fn(async () => undefined),
     sendText: vi.fn(async () => "text"),
     sendMarkdown: vi.fn(async () => "markdown"),
     sendInteractiveCard: vi.fn(async () => "card"),
@@ -168,12 +170,16 @@ function fixture() {
 
 describe("ProxySessionController", () => {
   test("plain text creates the default Codex session and starts a turn", async () => {
-    const { controller, runtime, store, presenter } = fixture();
+    const { controller, runtime, store, presenter, outbound } = fixture();
     await controller.onMessage(message("inspect this repo"));
 
+    expect(outbound.addReaction).toHaveBeenCalledWith("m-inspect this repo", "OnIt");
     expect(runtime.createSession).toHaveBeenCalledOnce();
     expect(presenter.startPendingTurn).toHaveBeenCalledWith(expect.any(String), "chat_id:c1", "inspect this repo");
     expect((presenter.startPendingTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
+      (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
+    );
+    expect((outbound.addReaction as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
       (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
     );
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), "inspect this repo");
@@ -225,6 +231,36 @@ describe("ProxySessionController", () => {
     expect(fs.statSync(path.join(input.cwd, "outputs")).isDirectory()).toBe(true);
   });
 
+  test("inherits the current project directory when new omits cwd", async () => {
+    const { controller, runtime } = fixture();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-project-"));
+    tempDirs.push(project);
+
+    await controller.onMessage(message(`/new "${project}"`));
+    await controller.onMessage({ messageId: "new-in-project", contextKey: "chat_id:c1", text: "/new" });
+
+    expect((runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[1]?.[0]).toMatchObject({
+      cwd: project,
+    });
+  });
+
+  test("creates a fresh projectless workspace when new is sent from a projectless task", async () => {
+    const { controller, runtime } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "acp-projectless-home-"));
+    tempDirs.push(home);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+
+    await controller.onMessage(message("/new"));
+    await controller.onMessage({ messageId: "new-projectless-again", contextKey: "chat_id:c1", text: "/new" });
+
+    const firstCwd = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].cwd;
+    const secondCwd = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[1]?.[0].cwd;
+    const projectlessRoot = path.join(home, "Documents", "Codex");
+    expect(path.relative(projectlessRoot, firstCwd)).toMatch(/^\d{4}-\d{2}-\d{2}[\\/]new-chat$/);
+    expect(path.relative(projectlessRoot, secondCwd)).toMatch(/^\d{4}-\d{2}-\d{2}[\\/]new-chat-2$/);
+    expect(secondCwd).not.toBe(firstCwd);
+  });
+
   test("keeps the first ordinary prompt as the task title fallback", async () => {
     const { controller, store } = fixture();
 
@@ -249,11 +285,63 @@ describe("ProxySessionController", () => {
   });
 
   test("ignores a duplicate inbound message id", async () => {
-    const { controller, runtime } = fixture();
+    const { controller, runtime, outbound } = fixture();
     const duplicate = { messageId: "same-event", contextKey: "chat_id:c1", text: "inspect" };
     await controller.onMessage(duplicate);
     await controller.onMessage(duplicate);
     expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(outbound.addReaction).toHaveBeenCalledOnce();
+  });
+
+  test("continues processing when the received-message reaction fails", async () => {
+    const { controller, runtime, outbound } = fixture();
+    (outbound.addReaction as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("missing reaction scope"));
+
+    await controller.onMessage(message("continue despite reaction failure"));
+
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+  });
+
+  test("replaces every received reaction with DONE when the bound turn completes", async () => {
+    const { controller, sessions, store, outbound, listeners } = fixture();
+    let reactionSequence = 0;
+    (outbound.addReaction as ReturnType<typeof vi.fn>).mockImplementation(async () => `reaction_${++reactionSequence}`);
+
+    await controller.onMessage(message("build it"));
+    await controller.onMessage(message("also update docs"));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    expect(store.getMessageReaction("m-build it")).toMatchObject({ turnId: "turn_1", status: "pending" });
+    expect(store.getMessageReaction("m-also update docs")).toMatchObject({ turnId: "turn_1", status: "pending" });
+
+    sessions.get(session.localSessionId)!.activeTurnId = undefined;
+    for (const listener of listeners) {
+      listener({ type: "turn_completed", sessionId: session.localSessionId, turnId: "turn_1", finalResponse: "done" });
+    }
+
+    await vi.waitFor(() => expect(store.getMessageReaction("m-build it")?.status).toBe("completed"));
+    expect(store.getMessageReaction("m-also update docs")).toMatchObject({ emojiType: "DONE", status: "completed" });
+    expect(outbound.addReaction).toHaveBeenCalledWith("m-build it", "DONE");
+    expect(outbound.addReaction).toHaveBeenCalledWith("m-also update docs", "DONE");
+    expect(outbound.deleteReaction).toHaveBeenCalledWith("m-build it", "reaction_1");
+    expect(outbound.deleteReaction).toHaveBeenCalledWith("m-also update docs", "reaction_2");
+  });
+
+  test("uses CrossMark for the original prompt when its turn is cancelled", async () => {
+    const { controller, sessions, store, outbound, listeners } = fixture();
+    (outbound.addReaction as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce("reaction_on_it")
+      .mockResolvedValueOnce("reaction_cancelled");
+
+    await controller.onMessage(message("long task"));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    sessions.get(session.localSessionId)!.activeTurnId = undefined;
+    for (const listener of listeners) {
+      listener({ type: "turn_cancelled", sessionId: session.localSessionId, turnId: "turn_1" });
+    }
+
+    await vi.waitFor(() => expect(store.getMessageReaction("m-long task")?.status).toBe("cancelled"));
+    expect(outbound.addReaction).toHaveBeenLastCalledWith("m-long task", "CrossMark");
+    expect(outbound.deleteReaction).toHaveBeenCalledWith("m-long task", "reaction_on_it");
   });
 
   test("plain text steers an active turn and stop bypasses prompt completion", async () => {

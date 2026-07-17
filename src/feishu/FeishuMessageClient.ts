@@ -30,6 +30,15 @@ interface UploadImageResponse {
   error?: unknown;
 }
 
+interface ReactionResponse {
+  code: number;
+  msg: string;
+  data?: {
+    reaction_id?: string;
+  };
+  error?: unknown;
+}
+
 export class FeishuMessageClient implements FeishuOutbound {
   private token?: {
     value: string;
@@ -43,6 +52,49 @@ export class FeishuMessageClient implements FeishuOutbound {
     private readonly config: AppConfig,
     private readonly logger: Logger,
   ) {}
+
+  async addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(
+        `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({ reaction_type: { emoji_type: emojiType } }),
+        },
+      );
+      const payload = (await response.json()) as ReactionResponse;
+      if (!response.ok || payload.code !== 0) {
+        throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "add reaction", response.status);
+      }
+      return payload.data?.reaction_id;
+    } catch (error) {
+      throw normalizeTransportError(error, "add reaction");
+    }
+  }
+
+  async deleteReaction(messageId: string, reactionId: string): Promise<void> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(
+        `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(reactionId)}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      const payload = (await response.json()) as ReactionResponse;
+      if (!response.ok || payload.code !== 0) {
+        throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "delete reaction", response.status);
+      }
+    } catch (error) {
+      throw normalizeTransportError(error, "delete reaction");
+    }
+  }
 
   async sendText(contextKey: string, text: string): Promise<string | undefined> {
     return this.sendMessage(contextKey, "text", { text });
@@ -257,7 +309,7 @@ export class FeishuApiError extends Error {
   constructor(
     message: string,
     readonly code: number,
-    readonly payload: SendMessageResponse | UploadImageResponse,
+    readonly payload: SendMessageResponse | UploadImageResponse | ReactionResponse,
     operation = "send",
     readonly httpStatus?: number,
     forceRetryable = false,

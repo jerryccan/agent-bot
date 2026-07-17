@@ -66,7 +66,7 @@ defaults:
   cwd: "."
 ```
 
-`cwd` 是 ACP agent 的默认工作目录。Codex 新任务未指定目录时会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表；也可以用 `/new D:\dev\project` 显式创建项目任务。已有任务的工作目录不会在运行中改变。
+`cwd` 是 ACP agent 的默认工作目录。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new D:\dev\project` 显式指定项目目录。已有任务的工作目录不会在运行中改变。
 
 ## 飞书应用配置
 
@@ -77,9 +77,11 @@ defaults:
 - 订阅 `im.message.receive_v1`
 - 订阅 `card.action.trigger`
 - 开通机器人收发消息、发送卡片和更新消息所需权限
+- 开通 `im:message.reactions:write_only`，用于添加和替换消息处理状态表情
 
 消息体验：
 
+- 收到消息并完成去重后，先在原消息上添加 `OnIt` 表情；任务完成后替换为 `DONE`，失败替换为 `ERROR`，取消替换为 `CrossMark`。消息与 Codex turn 的绑定会持久化，重启恢复后仍可补齐终态；表情操作失败不会阻断任务处理
 - 直接发文字时，若没有当前任务会自动创建 Codex thread
 - Codex 运行中继续发文字，会通过 steering 追加到当前 turn；若恰好完成，则自动排为下一次请求
 - 每个 turn 只有一张进度卡，普通更新最多每 2 秒一次，关键状态最短间隔 500ms
@@ -91,7 +93,7 @@ defaults:
 ## 命令
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
-- `/new [cwd]`：始终使用当前默认 Agent 创建新任务
+- `/new [cwd]`：使用当前默认 Agent 创建新任务；未指定目录时继承当前任务的项目或 Projectless 形态
 - `/sessions [关键词]`：列出同一 `CODEX_HOME` 下的全部 Codex 任务
 - `/switch [序号或 Codex 任务 ID]`：不带参数切回上一个任务；也可按最近一次 `/sessions` 的序号或任务 ID 切换空闲任务
 - `/model`：显示全部支持的模型、当前模型和思考强度

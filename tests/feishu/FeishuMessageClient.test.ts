@@ -16,6 +16,45 @@ afterEach(() => {
 });
 
 describe("FeishuMessageClient", () => {
+  test("adds an OnIt reaction to acknowledge an incoming message", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { reaction_id: "reaction_1" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.addReaction("om_received", "OnIt")).resolves.toBe("reaction_1");
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_received/reactions",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      headers: expect.objectContaining({ Authorization: "Bearer token" }),
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      reaction_type: { emoji_type: "OnIt" },
+    });
+  });
+
+  test("deletes the previous reaction when replacing a message status", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok" }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await client.deleteReaction("om_received", "reaction_1");
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_received/reactions/reaction_1",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "DELETE",
+      headers: expect.objectContaining({ Authorization: "Bearer token" }),
+    });
+  });
+
   test("passes a stable UUID with an idempotent final message", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

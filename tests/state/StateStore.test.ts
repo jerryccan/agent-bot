@@ -163,4 +163,56 @@ describe("StateStore runtime metadata", () => {
     stores.push(second);
     expect(second.claimInboundEvent("event_1", "message")).toBe(false);
   });
+
+  test("persists and atomically claims message reactions bound to a turn", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+    first.saveMessageReaction("om_1", "chat_id:c1", "reaction_on_it", "OnIt");
+    first.bindMessageReaction("om_1", "session_1", "turn_1");
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.listPendingMessageReactions()).toEqual([
+      expect.objectContaining({
+        messageId: "om_1",
+        localSessionId: "session_1",
+        turnId: "turn_1",
+        emojiType: "OnIt",
+        status: "pending",
+      }),
+    ]);
+    expect(second.claimMessageReactionsForTurn("turn_1")).toEqual([
+      expect.objectContaining({ messageId: "om_1", status: "updating" }),
+    ]);
+    expect(second.claimMessageReactionsForTurn("turn_1")).toEqual([]);
+    second.finishMessageReaction("om_1", "reaction_done", "DONE", "completed");
+    expect(second.getMessageReaction("om_1")).toMatchObject({
+      reactionId: "reaction_done",
+      emojiType: "DONE",
+      status: "completed",
+    });
+  });
+
+  test("retries a reaction replacement interrupted by process restart", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+    first.saveMessageReaction("om_restart", "chat_id:c1", "reaction_on_it", "OnIt");
+    first.bindMessageReaction("om_restart", "session_1", "turn_1");
+    expect(first.claimMessageReactionsForTurn("turn_1")).toHaveLength(1);
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.getMessageReaction("om_restart")?.status).toBe("pending");
+    expect(second.claimMessageReactionsForTurn("turn_1")).toHaveLength(1);
+  });
 });

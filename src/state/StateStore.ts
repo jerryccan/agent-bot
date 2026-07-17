@@ -33,6 +33,20 @@ export interface SessionRecord {
   updatedAt: string;
 }
 
+export type MessageReactionStatus = "pending" | "updating" | "completed" | "failed" | "cancelled";
+
+export interface MessageReactionRecord {
+  messageId: string;
+  contextKey: string;
+  reactionId: string;
+  emojiType: string;
+  localSessionId?: string;
+  turnId?: string;
+  status: MessageReactionStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface UserContextRow {
   context_key: string;
   default_agent: string;
@@ -61,6 +75,18 @@ interface SessionRow {
   updated_at: string;
 }
 
+interface MessageReactionRow {
+  message_id: string;
+  context_key: string;
+  reaction_id: string;
+  emoji_type: string;
+  local_session_id: string | null;
+  turn_id: string | null;
+  status: MessageReactionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
 export class StateStore {
   private readonly db: Database.Database;
 
@@ -71,6 +97,7 @@ export class StateStore {
     for (const migration of migrations) {
       this.db.exec(migration);
     }
+    this.db.exec("UPDATE message_reactions SET status = 'pending' WHERE status = 'updating'");
     this.ensureUserContextColumns();
     this.ensureSessionColumns();
   }
@@ -467,6 +494,92 @@ export class StateStore {
     return result.changes === 1;
   }
 
+  saveMessageReaction(messageId: string, contextKey: string, reactionId: string, emojiType: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO message_reactions (
+        message_id, context_key, reaction_id, emoji_type, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        context_key = excluded.context_key,
+        reaction_id = excluded.reaction_id,
+        emoji_type = excluded.emoji_type,
+        status = 'pending',
+        updated_at = excluded.updated_at
+    `).run(messageId, contextKey, reactionId, emojiType, now, now);
+  }
+
+  bindMessageReaction(messageId: string, localSessionId: string, turnId: string): void {
+    this.db.prepare(`
+      UPDATE message_reactions
+      SET local_session_id = ?, turn_id = ?, updated_at = ?
+      WHERE message_id = ? AND status = 'pending'
+    `).run(localSessionId, turnId, new Date().toISOString(), messageId);
+  }
+
+  claimMessageReactionsForTurn(turnId: string): MessageReactionRecord[] {
+    const claim = this.db.transaction(() => {
+      const rows = this.db.prepare(`
+        SELECT * FROM message_reactions WHERE turn_id = ? AND status = 'pending' ORDER BY created_at ASC
+      `).all(turnId) as MessageReactionRow[];
+      if (rows.length > 0) {
+        this.db.prepare(`
+          UPDATE message_reactions SET status = 'updating', updated_at = ?
+          WHERE turn_id = ? AND status = 'pending'
+        `).run(new Date().toISOString(), turnId);
+      }
+      return rows.map((row) => ({ ...mapMessageReaction(row), status: "updating" as const }));
+    });
+    return claim();
+  }
+
+  claimMessageReaction(messageId: string): MessageReactionRecord | undefined {
+    const claim = this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT * FROM message_reactions WHERE message_id = ? AND status = 'pending'
+      `).get(messageId) as MessageReactionRow | undefined;
+      if (!row) return undefined;
+      this.db.prepare(`
+        UPDATE message_reactions SET status = 'updating', updated_at = ? WHERE message_id = ? AND status = 'pending'
+      `).run(new Date().toISOString(), messageId);
+      return { ...mapMessageReaction(row), status: "updating" as const };
+    });
+    return claim();
+  }
+
+  listPendingMessageReactions(): MessageReactionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM message_reactions WHERE status = 'pending' AND turn_id IS NOT NULL ORDER BY created_at ASC
+    `).all() as MessageReactionRow[];
+    return rows.map(mapMessageReaction);
+  }
+
+  finishMessageReaction(
+    messageId: string,
+    reactionId: string,
+    emojiType: string,
+    status: Exclude<MessageReactionStatus, "pending" | "updating">,
+  ): void {
+    this.db.prepare(`
+      UPDATE message_reactions
+      SET reaction_id = ?, emoji_type = ?, status = ?, updated_at = ?
+      WHERE message_id = ?
+    `).run(reactionId, emojiType, status, new Date().toISOString(), messageId);
+  }
+
+  releaseMessageReaction(messageId: string): void {
+    this.db.prepare(`
+      UPDATE message_reactions SET status = 'pending', updated_at = ?
+      WHERE message_id = ? AND status = 'updating'
+    `).run(new Date().toISOString(), messageId);
+  }
+
+  getMessageReaction(messageId: string): MessageReactionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM message_reactions WHERE message_id = ?")
+      .get(messageId) as MessageReactionRow | undefined;
+    return row ? mapMessageReaction(row) : undefined;
+  }
+
   private ensureSessionColumns(): void {
     const existing = new Set(
       (this.db.pragma("table_info(sessions)") as Array<{ name: string }>).map((column) => column.name),
@@ -524,6 +637,20 @@ function mapSession(row: SessionRow): SessionRecord {
     permissionMode: row.permission_mode ?? undefined,
     lastTurnId: row.last_turn_id ?? undefined,
     lastTurnStatus: row.last_turn_status ?? undefined,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapMessageReaction(row: MessageReactionRow): MessageReactionRecord {
+  return {
+    messageId: row.message_id,
+    contextKey: row.context_key,
+    reactionId: row.reaction_id,
+    emojiType: row.emoji_type,
+    localSessionId: row.local_session_id ?? undefined,
+    turnId: row.turn_id ?? undefined,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
