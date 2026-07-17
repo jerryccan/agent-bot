@@ -9,6 +9,7 @@ export interface UserContextRecord {
   contextKey: string;
   defaultAgent: string;
   currentSessionId?: string;
+  previousSessionId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,6 +37,7 @@ interface UserContextRow {
   context_key: string;
   default_agent: string;
   current_session_id: string | null;
+  previous_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -69,6 +71,7 @@ export class StateStore {
     for (const migration of migrations) {
       this.db.exec(migration);
     }
+    this.ensureUserContextColumns();
     this.ensureSessionColumns();
   }
 
@@ -110,6 +113,57 @@ export class StateStore {
     return rows.map(mapUserContext);
   }
 
+  reconcileInterruptedAcpSessions(acpAgentNames: string[]): SessionRecord[] {
+    const agentClause = acpAgentNames.length
+      ? ` OR (runtime_kind IS NULL AND agent_name IN (${acpAgentNames.map(() => "?").join(", ")}))`
+      : "";
+    const rows = this.db
+      .prepare(`SELECT * FROM sessions WHERE status = 'running' AND (runtime_kind = 'acp'${agentClause})`)
+      .all(...acpAgentNames) as SessionRow[];
+    if (rows.length === 0) return [];
+
+    const now = new Date().toISOString();
+    const completedAt = Date.now();
+    const reconcile = this.db.transaction(() => {
+      for (const row of rows) {
+        this.db.prepare(`
+          UPDATE sessions
+          SET status = 'failed',
+              last_turn_status = CASE WHEN last_turn_id IS NULL THEN last_turn_status ELSE 'failed' END,
+              updated_at = ?
+          WHERE local_session_id = ?
+        `).run(now, row.local_session_id);
+
+        if (!row.last_turn_id) continue;
+        const snapshotRow = this.db
+          .prepare("SELECT snapshot_json FROM turn_snapshots WHERE turn_id = ?")
+          .get(row.last_turn_id) as { snapshot_json: string } | undefined;
+        if (!snapshotRow) continue;
+        try {
+          const snapshot = JSON.parse(snapshotRow.snapshot_json) as Record<string, unknown>;
+          if (!["starting", "running", "tool_running", "waiting_for_approval"].includes(String(snapshot.status))) continue;
+          const startedAt = typeof snapshot.startedAt === "number" ? snapshot.startedAt : undefined;
+          const failedSnapshot: Record<string, unknown> = {
+            ...snapshot,
+            status: "failed",
+            completedAt,
+            ...(startedAt === undefined ? {} : { durationMs: Math.max(0, completedAt - startedAt) }),
+            error: "acp-bot 已重启，原 ACP 进程中的执行无法继续。",
+          };
+          delete failedSnapshot.activeTool;
+          delete failedSnapshot.approval;
+          this.db.prepare(`
+            UPDATE turn_snapshots SET snapshot_json = ?, updated_at = ? WHERE turn_id = ?
+          `).run(JSON.stringify(failedSnapshot), now, row.last_turn_id);
+        } catch {
+          // Keep an unreadable historical snapshot intact while still correcting the session state.
+        }
+      }
+    });
+    reconcile();
+    return rows.map(mapSession);
+  }
+
   setDefaultAgent(contextKey: string, agentName: string): void {
     const now = new Date().toISOString();
     this.db
@@ -120,8 +174,17 @@ export class StateStore {
   setCurrentSession(contextKey: string, localSessionId?: string): void {
     const now = new Date().toISOString();
     this.db
-      .prepare("UPDATE user_contexts SET current_session_id = ?, updated_at = ? WHERE context_key = ?")
-      .run(localSessionId ?? null, now, contextKey);
+      .prepare(`
+        UPDATE user_contexts
+        SET previous_session_id = CASE
+              WHEN current_session_id IS NOT ? THEN current_session_id
+              ELSE previous_session_id
+            END,
+            current_session_id = ?,
+            updated_at = ?
+        WHERE context_key = ?
+      `)
+      .run(localSessionId ?? null, localSessionId ?? null, now, contextKey);
   }
 
   createSession(input: {
@@ -147,7 +210,15 @@ export class StateStore {
         ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
         `,
       )
-      .run(input.localSessionId, input.contextKey, input.agentName, input.cwd, input.status, now, now);
+      .run(
+        input.localSessionId,
+        input.contextKey,
+        input.agentName,
+        input.cwd,
+        input.status,
+        now,
+        now,
+      );
 
     return {
       ...input,
@@ -366,6 +437,13 @@ export class StateStore {
     return rows.map(mapSession);
   }
 
+  findSessionByRemoteSessionId(remoteSessionId: string): SessionRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM sessions WHERE remote_session_id = ? AND status != 'closed' ORDER BY created_at ASC LIMIT 1")
+      .get(remoteSessionId) as SessionRow | undefined;
+    return row ? mapSession(row) : undefined;
+  }
+
   audit(contextKey: string, eventType: string, payload: unknown): void {
     this.db
       .prepare(
@@ -409,6 +487,15 @@ export class StateStore {
       }
     }
   }
+
+  private ensureUserContextColumns(): void {
+    const existing = new Set(
+      (this.db.pragma("table_info(user_contexts)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("previous_session_id")) {
+      this.db.exec("ALTER TABLE user_contexts ADD COLUMN previous_session_id TEXT");
+    }
+  }
 }
 
 function mapUserContext(row: UserContextRow): UserContextRecord {
@@ -416,6 +503,7 @@ function mapUserContext(row: UserContextRow): UserContextRecord {
     contextKey: row.context_key,
     defaultAgent: row.default_agent,
     currentSessionId: row.current_session_id ?? undefined,
+    previousSessionId: row.previous_session_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

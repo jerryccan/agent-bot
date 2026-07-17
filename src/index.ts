@@ -1,4 +1,6 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { AcpProcessManager } from "./acp/AcpProcessManager.js";
 import { AcpSessionManager } from "./acp/AcpSessionManager.js";
 import { CodexProcessManager } from "./codex/CodexProcessManager.js";
@@ -21,6 +23,7 @@ import { StateStore } from "./state/StateStore.js";
 import { StartupNotifier } from "./startup/StartupNotifier.js";
 import { SessionMetadataHydrator } from "./startup/SessionMetadataHydrator.js";
 import { startFeishu } from "./startup/startFeishu.js";
+import { RESTART_EXIT_CODE } from "./supervision/restartPolicy.js";
 
 const processStartedAt = new Date();
 const config = loadConfig();
@@ -78,13 +81,18 @@ if (consoleOutbound) {
 
 if (routes.length === 0) throw new Error("Neither Feishu nor console input is enabled.");
 const outbound = new OutboundRouter(routes);
-const controller = new ProxySessionController(config, store, runtimes, outbound, logger);
+let shuttingDown = false;
+let restartRequested = false;
+const controller = new ProxySessionController(config, store, runtimes, outbound, logger, {
+  supervised: process.env.ACP_BOT_SUPERVISED === "1",
+  restart: requestRestart,
+});
 
 if (feishuOutbound) feishuConnector = new FeishuConnector(config, controller, logger);
 if (consoleEnabled) consoleConnector = new ConsoleConnector(controller, logger);
 
-process.on("SIGINT", () => void shutdown());
-process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown(0));
+process.on("SIGTERM", () => void shutdown(0));
 
 if (feishuConnector && startupNotifier) {
   await startFeishu(feishuConnector, startupNotifier, processStartedAt);
@@ -93,17 +101,50 @@ if (feishuConnector && startupNotifier) {
 }
 consoleConnector?.start();
 
-let shuttingDown = false;
-async function shutdown(): Promise<void> {
+async function requestRestart(contextKey: string): Promise<void> {
+  if (restartRequested) {
+    await outbound.sendText(contextKey, "acp-bot 已在重启中，请稍候。").catch(() => undefined);
+    return;
+  }
+  restartRequested = true;
+  await outbound.sendText(contextKey, "acp-bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
+    logger.warn({ error, contextKey }, "Failed to send restart acknowledgement.");
+  });
+  setTimeout(() => {
+    if (process.env.ACP_BOT_SUPERVISED === "1") {
+      void shutdown(RESTART_EXIT_CODE);
+      return;
+    }
+    const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
+    const supervisor = spawn(process.execPath, [supervisorEntry], {
+      cwd: process.cwd(),
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore",
+      env: { ...process.env, ACP_BOT_START_DELAY_MS: "1000" },
+    });
+    supervisor.unref();
+    void shutdown(0);
+  }, 100);
+}
+
+async function shutdown(exitCode: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  logger.info("Shutting down ACP bot.");
+  logger.info({ exitCode }, "Shutting down ACP bot.");
   feishuConnector?.stop();
   consoleConnector?.stop();
   controller.close();
-  await outbound.flushAll().catch((error: unknown) => logger.warn({ error }, "Failed to flush presenters."));
+  await Promise.race([
+    outbound.flushAll().catch((error: unknown) => logger.warn({ error }, "Failed to flush presenters.")),
+    delay(5_000),
+  ]);
   runtimes.close();
   acpProcessManager.stopAll();
   store.close();
-  process.exit(0);
+  process.exit(exitCode);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

@@ -24,6 +24,8 @@ interface PendingRequest {
   timeout?: NodeJS.Timeout;
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export class AppServerConnection {
   private nextId = 1;
   private closed = false;
@@ -39,7 +41,7 @@ export class AppServerConnection {
     this.process.once("close", () => this.close());
   }
 
-  request<T = unknown>(method: string, params?: unknown, timeoutMs = 0): Promise<T> {
+  request<T = unknown>(method: string, params?: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
     if (this.closed) {
       return Promise.reject(new Error(`Cannot send App Server request after connection closed: ${method}`));
     }

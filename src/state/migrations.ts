@@ -4,6 +4,7 @@ export const migrations = [
     context_key TEXT PRIMARY KEY,
     default_agent TEXT NOT NULL,
     current_session_id TEXT,
+    previous_session_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );

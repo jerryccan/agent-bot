@@ -12,25 +12,26 @@ export class CommandRouter {
 
     switch (command) {
       case "agents":
-        return { type: "agents" };
+        return { type: "agent" };
       case "new":
-        return { type: "new", agent: args[0], cwd: args[1] };
+        if (args.length > 1) throw new Error("/new 只接受一个可选工作目录；Agent 使用当前默认值。");
+        return { type: "new", cwd: args[0] };
       case "ask":
         return { type: "ask", text: trimmed.slice(rawCommand.length).trim() };
       case "sessions":
-        return { type: "sessions" };
+        return { type: "sessions", searchTerm: trimmed.slice(rawCommand.length).trim() || undefined };
       case "switch":
-        return requireArg(args[0], "session id", (sessionId) => ({ type: "switch", sessionId }));
+        return args[0] ? { type: "switch", sessionId: args[0] } : { type: "switch" };
       case "agent":
-        return requireArg(args[0], "agent name", (agent) => ({ type: "agent", agent }));
+        return args[0] ? { type: "agent", agent: args[0] } : { type: "agent" };
       case "use":
         return requireArg(args[0], "agent name", (agent) => ({ type: "use", agent, cwd: args[1] }));
-      case "cancel":
-        return { type: "cancel" };
-      case "close":
-        return { type: "close", sessionId: args[0] };
+      case "stop":
+        return { type: "stop" };
       case "status":
-        return { type: "status" };
+        return args[0] ? { type: "status", sessionId: args[0] } : { type: "status" };
+      case "restart":
+        return { type: "restart" };
       case "modes":
         return { type: "modes" };
       case "mode":

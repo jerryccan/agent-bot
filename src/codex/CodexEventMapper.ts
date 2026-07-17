@@ -1,6 +1,7 @@
 import type { PlanStep, ToolState } from "../runtime/types.js";
 
 export type MappedCodexNotification =
+  | { kind: "turn_started"; threadId: string; turnId: string; startedAt?: number }
   | { kind: "agent_delta"; threadId: string; turnId: string; itemId: string; text: string }
   | {
       kind: "agent_message_phase";
@@ -33,6 +34,15 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
   const threadId = stringValue(params.threadId);
   const turnId = stringValue(params.turnId) ?? (isRecord(params.turn) ? stringValue(params.turn.id) : undefined);
   if (!threadId || !turnId) return undefined;
+
+  if (method === "turn/started") {
+    return {
+      kind: "turn_started",
+      threadId,
+      turnId,
+      startedAt: isRecord(params.turn) ? secondsToMilliseconds(numberValue(params.turn.startedAt)) : undefined,
+    };
+  }
 
   if (method === "item/agentMessage/delta") {
     const text = stringValue(params.delta);
@@ -192,6 +202,10 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function secondsToMilliseconds(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : value * 1_000;
 }
 
 function messagePhase(value: unknown): "commentary" | "final_answer" | undefined {

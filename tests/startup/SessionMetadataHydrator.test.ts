@@ -45,6 +45,54 @@ function fixture(title?: string, hasTurn = true) {
 }
 
 describe("SessionMetadataHydrator", () => {
+  test("restores and synchronizes a persisted running Codex turn during startup", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-hydrator-running-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.createSession({
+      localSessionId: "running",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "running",
+    });
+    store.updateRuntimeSession("running", {
+      runtimeKind: "codex",
+      remoteSessionId: "thread_running",
+      lastTurnId: "turn_running",
+      lastTurnStatus: "running",
+      permissionMode: "auto",
+    });
+    const resumed = {
+      localSessionId: "running",
+      remoteSessionId: "thread_running",
+      runtimeKind: "codex" as const,
+      agentName: "codex",
+      cwd: process.cwd(),
+      title: "Recovered title",
+      permissionMode: "auto" as const,
+      activeTurnId: "turn_running",
+    };
+    const runtime = {
+      getSession: vi.fn(() => undefined),
+      resumeSession: vi.fn(async () => resumed),
+      synchronizeSession: vi.fn(async () => resumed),
+      readSessionMetadata: vi.fn(async () => ({})),
+    };
+    const runtimes = { get: vi.fn(() => runtime) } as unknown as AgentRuntimeRegistry;
+    const hydrator = new SessionMetadataHydrator(store, runtimes);
+
+    await hydrator.hydrate(store.getSession("running")!);
+
+    expect(runtime.resumeSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thread_running",
+      activeTurnId: "turn_running",
+    }));
+    expect(runtime.synchronizeSession).toHaveBeenCalledWith("running");
+    expect(store.getSession("running")?.title).toBe("Recovered title");
+  });
+
   test("reads and persists missing runtime metadata", async () => {
     const { hydrator, readSessionMetadata, session, store } = fixture();
 

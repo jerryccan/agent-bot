@@ -21,8 +21,11 @@ App Server 直接复用本机 Codex 的登录状态，不需要机器人用户�
 ```powershell
 npm install
 Copy-Item .env.example .env
-npm run dev
+npm run build
+npm start
 ```
+
+`npm start` 通过常驻 supervisor 启动 acp-bot。acp-bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。开发调试可使用 `npm run dev` 直接运行单进程。
 
 填入 `.env`：
 
@@ -63,7 +66,7 @@ defaults:
   cwd: "."
 ```
 
-`cwd` 是 ACP agent 的默认工作目录。Codex 新任务未指定目录时会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表；也可以用 `/new codex D:\dev\project` 显式创建项目任务。已有任务的工作目录不会在运行中改变。
+`cwd` 是 ACP agent 的默认工作目录。Codex 新任务未指定目录时会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表；也可以用 `/new D:\dev\project` 显式创建项目任务。已有任务的工作目录不会在运行中改变。
 
 ## 飞书应用配置
 
@@ -88,19 +91,18 @@ defaults:
 ## 命令
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
-- `/new [agent] [cwd]`：创建新任务
-- `/sessions`：列出当前入口的任务
-- `/switch <session>`：切换当前任务
+- `/new [cwd]`：始终使用当前默认 Agent 创建新任务
+- `/sessions [关键词]`：列出同一 `CODEX_HOME` 下的全部 Codex 任务
+- `/switch [序号或 Codex 任务 ID]`：不带参数切回上一个任务；也可按最近一次 `/sessions` 的序号或任务 ID 切换空闲任务
 - `/model`：显示全部支持的模型、当前模型和思考强度
 - `/model <name>`：切换模型，从下一次请求生效；不兼容的思考强度会自动回落到新模型默认值
 - `/thinking`：显示当前思考强度及当前模型支持的可选值
 - `/thinking <level>`：设置思考强度，从下一次请求生效
 - `/permissions auto|confirm`：切换权限模式
-- `/cancel`：停止当前执行
-- `/status`：查看任务、模型、权限、目录和状态
-- `/close [session]`：关闭任务
-- `/agents`：列出 agent
-- `/agent <agent>`：切换默认 agent
+- `/stop`：停止当前执行
+- `/status [序号或 Codex 任务 ID]`：查看当前任务，或按最近一次 `/sessions` 的序号/任务 ID 查看指定任务的详细状态、执行步骤和最终结果
+- `/restart`：优雅重启 acp-bot；可绕过阻塞的任务消息队列
+- `/agent [agent]`：不带参数列出全部 Agent 并标出当前项；带参数时切换默认 Agent
 - `/use <agent> [cwd]`：切换默认 agent 并创建任务
 - `/help`：显示帮助
 
@@ -111,9 +113,17 @@ defaults:
 
 ## 持久化与恢复
 
-SQLite 默认位于 `./data/acp-bot.sqlite`，保存入口当前任务、Codex thread ID、模型、权限模式、进度快照和最终消息投递账本。
+SQLite 默认位于 `./data/acp-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、进度快照和最终消息投递账本。
 
-进程重启后的第一次新消息会惰性调用 `thread/resume`。返回值中的历史 turns 不进入展示链路，且 Runtime 只接受本地新启动 turn 的事件；投递账本还会阻止同一最终回复重复发送。App Server 异常退出后不会自动重放 prompt。
+进程重启时会恢复持久化的活动 turn，并通过 `thread/read` 与 Codex 的真实状态校准。运行中收到新的 turn ID、线程终态通知或控制请求失败时也会重新校准；投递账本会阻止已经成功发送的最终回复被重复发送。App Server 请求均有有限超时，不会永久占住飞书消息队列。
+
+supervisor 使用退出码 `75` 区分 `/restart` 发起的主动重启；其他意外退出同样会自动拉起。`/status` 会显示当前保活机制是否已启用。
+
+### 统一 Codex 任务
+
+`/sessions` 通过只读的 `thread/list` 发现 Codex Desktop、CLI、acp-bot 或其他 App Server 创建的任务。任务不再按创建端分类，对外统一使用 Codex 任务 ID，并为当前展示结果生成从 1 开始的序号。`/switch` 不带参数时在当前任务和上一个任务之间往返，也可以使用最近一次列表中的序号或任务 ID 切换任何空闲任务；首次切换时只建立消息路由，保留原任务的工作目录和上下文，不回放历史消息。
+
+内部仍保存一个本地路由键，用于关联飞书卡片、投递账本和当前聊天，但它不代表另一类任务，也不会在用户界面中显示。为避免干扰其他 Codex 客户端，acp-bot 只会续写或停止自己启动的当前 turn；首次加载以及每次继续消息前都会核对真实 turn ID。若任务正在其他客户端执行，acp-bot 只读展示状态，不会 `resume`、`steer` 或 `interrupt`。
 
 ## 保留 ACP Agent
 
@@ -128,4 +138,4 @@ agents:
     args: ["./examples/example-acp-agent.js"]
 ```
 
-Codex 是默认入口，原有 ACP agent 仍可通过 `/agent`、`/use` 或 `/new` 选择。
+Codex 是默认入口。`/agent` 用于查看或设置后续新任务的默认 Agent；`/use` 用于切换默认 Agent 并立即创建任务；`/new` 始终使用当前默认 Agent。

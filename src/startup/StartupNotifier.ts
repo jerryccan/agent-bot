@@ -53,7 +53,7 @@ export class StartupNotifier {
         workspaceKind: this.options.workspaceKind,
         currentTask: session
           ? {
-              id: session.localSessionId,
+              id: session.remoteSessionId ?? session.localSessionId,
               title: session.title,
               model: session.model,
               reasoningEffort: session.reasoningEffort,

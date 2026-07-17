@@ -1,4 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import readline from "node:readline";
 import type { Logger } from "pino";
 import { AppServerConnection } from "./AppServerConnection.js";
@@ -40,6 +42,10 @@ export class CodexProcessManager implements AppServerClientProvider {
     });
     client.notify("initialized", {});
     return client;
+  }
+
+  getCodexHome(): string {
+    return this.env.CODEX_HOME ?? process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
   }
 
   close(): void {

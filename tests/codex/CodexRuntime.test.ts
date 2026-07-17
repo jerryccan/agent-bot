@@ -244,7 +244,8 @@ describe("CodexRuntime", () => {
 
   test("steers and interrupts the active turn", async () => {
     const client = new FakeAppServerClient();
-    const runtime = new CodexRuntime(provider(client), logger());
+    const log = logger();
+    const runtime = new CodexRuntime(provider(client), log);
     await runtime.createSession({
       localSessionId: "s1",
       agentName: "codex",
@@ -262,6 +263,123 @@ describe("CodexRuntime", () => {
     expect(client.requests).toContainEqual(
       expect.objectContaining({ method: "turn/interrupt", params: { threadId: "thr_1", turnId } }),
     );
+    expect(client.timeouts).toContainEqual({ method: "turn/steer", timeoutMs: 10_000 });
+    expect(client.timeouts).toContainEqual({ method: "turn/interrupt", timeoutMs: 10_000 });
+    expect(log.info).toHaveBeenCalledWith(
+      { sessionId: "s1", threadId: "thr_1", turnId },
+      "Codex accepted the turn interrupt request.",
+    );
+  });
+
+  test("reconciles a stale active turn and recovers the latest completed result", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.startTurn("s1", "monitor it");
+    client.readResult = {
+      thread: {
+        id: "thr_1",
+        status: { type: "idle" },
+        turns: [
+          { id: "turn_1", status: "completed", items: [], startedAt: 10, durationMs: 100 },
+          {
+            id: "turn_2",
+            status: "completed",
+            startedAt: 20,
+            durationMs: 250,
+            items: [{ type: "agentMessage", id: "final", phase: "final_answer", text: "最新执行结果" }],
+          },
+        ],
+      },
+    };
+
+    await runtime.synchronizeSession("s1");
+
+    expect(runtime.getSession("s1")?.activeTurnId).toBeUndefined();
+    expect(events).toContainEqual({ type: "turn_cancelled", sessionId: "s1", turnId: "turn_1" });
+    expect(events).toContainEqual({ type: "turn_started", sessionId: "s1", turnId: "turn_2", startedAt: 20_000 });
+    expect(events).toContainEqual({
+      type: "turn_completed",
+      sessionId: "s1",
+      turnId: "turn_2",
+      finalResponse: "最新执行结果",
+      durationMs: 250,
+    });
+  });
+
+  test("tracks a live Codex turn that supersedes the locally active turn", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({ localSessionId: "s1", agentName: "codex", cwd: process.cwd(), permissionMode: "auto" });
+    await runtime.startTurn("s1", "start");
+
+    client.emit("turn/started", {
+      threadId: "thr_1",
+      turn: { id: "turn_2", status: "inProgress", startedAt: 42, items: [] },
+    });
+    client.emit("item/started", {
+      threadId: "thr_1",
+      turnId: "turn_2",
+      item: { type: "agentMessage", id: "final_2", phase: "final_answer" },
+    });
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId: "turn_2",
+      itemId: "final_2",
+      delta: "done",
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: "turn_2", status: "completed" },
+    });
+
+    expect(events).toContainEqual({ type: "turn_cancelled", sessionId: "s1", turnId: "turn_1" });
+    expect(events).toContainEqual({ type: "turn_started", sessionId: "s1", turnId: "turn_2", startedAt: 42_000 });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      turnId: "turn_2",
+      finalResponse: "done",
+    }));
+    expect(runtime.getSession("s1")?.activeTurnId).toBeUndefined();
+  });
+
+  test("reconciles an idle thread status notification when completion was missed", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({ localSessionId: "s1", agentName: "codex", cwd: process.cwd(), permissionMode: "auto" });
+    await runtime.startTurn("s1", "start");
+    client.readResult = {
+      thread: {
+        id: "thr_1",
+        status: { type: "idle" },
+        turns: [{
+          id: "turn_1",
+          status: "completed",
+          startedAt: 1,
+          durationMs: 50,
+          items: [{ type: "agentMessage", phase: "final_answer", text: "recovered" }],
+        }],
+      },
+    };
+
+    client.emit("thread/status/changed", { threadId: "thr_1", status: { type: "idle" } });
+
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      turnId: "turn_1",
+      finalResponse: "recovered",
+    })));
   });
 
   test("auto approvals accept immediately and confirm approvals wait for a response", async () => {
@@ -386,24 +504,118 @@ describe("CodexRuntime", () => {
       params: { threadId: "thr_1", includeTurns: false },
     });
   });
+
+  test("discovers and inspects existing Codex sessions without resuming them", async () => {
+    const client = new FakeAppServerClient();
+    client.listResult = {
+      data: [{
+        id: "external_1",
+        name: "Desktop task",
+        preview: "first prompt",
+        cwd: "D:\\work\\desktop",
+        source: "vscode",
+        updatedAt: 100,
+        status: { type: "notLoaded" },
+        turns: [],
+      }],
+      nextCursor: "next",
+    };
+    client.readResult = {
+      thread: {
+        id: "external_1",
+        name: "Desktop task",
+        cwd: "D:\\work\\desktop",
+        source: "vscode",
+        updatedAt: 100,
+        status: { type: "notLoaded" },
+        turns: [{ id: "turn_external", status: "completed", items: [] }],
+      },
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.listRemoteSessions({ searchTerm: "Desktop", limit: 10 })).resolves.toEqual({
+      sessions: [expect.objectContaining({
+        id: "external_1",
+        title: "Desktop task",
+        source: "vscode",
+        lastTurnStatus: "completed",
+      })],
+      nextCursor: "next",
+    });
+    await expect(runtime.readRemoteSession("external_1")).resolves.toEqual(expect.objectContaining({
+      id: "external_1",
+      lastTurnId: "turn_external",
+      lastTurnStatus: "completed",
+    }));
+    expect(client.requests.filter((request) => request.method === "thread/resume")).toHaveLength(0);
+    expect(client.requests).toContainEqual({
+      method: "thread/read",
+      params: { threadId: "external_1", includeTurns: true },
+    });
+    expect(client.requests).toContainEqual(expect.objectContaining({
+      method: "thread/list",
+      params: expect.objectContaining({ searchTerm: "Desktop", limit: 10 }),
+    }));
+  });
+
+  test("does not treat a stale inProgress turn from an unloaded app-server as active", async () => {
+    const client = new FakeAppServerClient();
+    client.listResult = {
+      data: [{
+        id: "stale_external",
+        cwd: "D:\\work\\desktop",
+        source: "vscode",
+        status: { type: "notLoaded" },
+        turns: [{ id: "stale_turn", status: "inProgress", items: [] }],
+      }],
+    };
+    client.readResult = {
+      thread: {
+        id: "stale_external",
+        cwd: "D:\\work\\desktop",
+        source: "vscode",
+        status: { type: "notLoaded" },
+        turns: [{ id: "stale_turn", status: "inProgress", items: [] }],
+      },
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.listRemoteSessions()).resolves.toEqual({
+      sessions: [expect.objectContaining({
+        id: "stale_external",
+        status: "not_loaded",
+        lastTurnId: "stale_turn",
+        lastTurnStatus: undefined,
+      })],
+      nextCursor: undefined,
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/read",
+      params: { threadId: "stale_external", includeTurns: true },
+    });
+  });
 });
 
 class FakeAppServerClient {
   requests: Array<{ method: string; params: unknown }> = [];
+  timeouts: Array<{ method: string; timeoutMs: number | undefined }> = [];
   startResult: unknown = { thread: { id: "thr_1" }, model: "gpt-test", reasoningEffort: "medium" };
   resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
+  listResult: unknown = { data: [], nextCursor: null };
   private notificationListener?: (method: string, params: unknown) => void;
   private readonly requestHandlers = new Map<
     string,
     (params: unknown, id: string | number, method: string) => Promise<unknown>
   >();
 
-  async request<T>(method: string, params?: unknown): Promise<T> {
+  async request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     this.requests.push({ method, params });
+    this.timeouts.push({ method, timeoutMs });
     if (method === "thread/start") return this.startResult as T;
     if (method === "thread/resume") return this.resumeResult as T;
     if (method === "thread/read") return this.readResult as T;
+    if (method === "thread/list") return this.listResult as T;
     if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;
     if (method === "model/list") return { data: [{
       id: "gpt-test",

@@ -92,6 +92,10 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     return {};
   }
 
+  async synchronizeSession(sessionId: string): Promise<RuntimeSession> {
+    return this.requireSession(sessionId);
+  }
+
   async startTurn(sessionId: string, text: string): Promise<string> {
     const session = this.requireSession(sessionId);
     const turnId = createId("turn");

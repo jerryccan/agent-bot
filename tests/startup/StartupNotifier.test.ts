@@ -67,7 +67,8 @@ describe("StartupNotifier", () => {
 
     expect(sendInteractiveCard).toHaveBeenCalledOnce();
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:c1", expect.any(Object));
-    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("sess_1");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("thread_1");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).not.toContain("sess_1");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("Current task title");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("gpt-test");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("high");

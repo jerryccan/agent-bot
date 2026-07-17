@@ -32,6 +32,36 @@ describe("StateStore runtime metadata", () => {
     ]);
   });
 
+  test("persists the previous task and toggles it when the current task changes", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.getOrCreateUserContext("chat_id:c1", "codex");
+    first.setCurrentSession("chat_id:c1", "s1");
+    first.setCurrentSession("chat_id:c1", "s2");
+    expect(first.getOrCreateUserContext("chat_id:c1", "codex")).toMatchObject({
+      currentSessionId: "s2",
+      previousSessionId: "s1",
+    });
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.getOrCreateUserContext("chat_id:c1", "codex")).toMatchObject({
+      currentSessionId: "s2",
+      previousSessionId: "s1",
+    });
+    second.setCurrentSession("chat_id:c1", "s1");
+    expect(second.getOrCreateUserContext("chat_id:c1", "codex")).toMatchObject({
+      currentSessionId: "s1",
+      previousSessionId: "s2",
+    });
+  });
+
   test("persists Codex thread settings", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);
@@ -81,6 +111,41 @@ describe("StateStore runtime metadata", () => {
       finalMessageIds: ["om_final"],
       finalDelivered: true,
     });
+  });
+
+  test("reconciles ACP turns left running by a previous process", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.createSession({
+      localSessionId: "acp_stale",
+      contextKey: "chat_id:c1",
+      agentName: "coco-yolo",
+      cwd: process.cwd(),
+      status: "running",
+    });
+    store.updateRuntimeSession("acp_stale", {
+      runtimeKind: "acp",
+      remoteSessionId: "remote_acp",
+      lastTurnId: "turn_stale",
+      lastTurnStatus: "running",
+    });
+    store.saveTurnSnapshot("turn_stale", "acp_stale", {
+      sessionId: "acp_stale",
+      turnId: "turn_stale",
+      status: "tool_running",
+      startedAt: Date.now() - 1_000,
+      activeTool: { id: "tool", title: "bash", status: "running" },
+    });
+
+    expect(store.reconcileInterruptedAcpSessions(["coco-yolo"])).toHaveLength(1);
+    expect(store.getSession("acp_stale")).toMatchObject({ status: "failed", lastTurnStatus: "failed" });
+    expect(store.getTurnSnapshot("turn_stale")).toMatchObject({
+      status: "failed",
+      error: "acp-bot 已重启，原 ACP 进程中的执行无法继续。",
+    });
+    expect(store.getTurnSnapshot("turn_stale")).not.toHaveProperty("activeTool");
   });
 
   test("claims an inbound event only once across store restarts", () => {

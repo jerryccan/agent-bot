@@ -62,6 +62,28 @@ export interface RuntimeSessionMetadata {
   title?: string;
 }
 
+export type RemoteSessionStatus = "active" | "idle" | "not_loaded" | "error";
+
+export interface RemoteSessionSummary {
+  id: string;
+  title?: string;
+  preview?: string;
+  cwd: string;
+  source: string;
+  status: RemoteSessionStatus;
+  updatedAt?: number;
+  lastTurnId?: string;
+  lastTurnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
+  lastActivity?: string;
+  finalResponse?: string;
+  lastError?: string;
+}
+
+export interface RemoteSessionPage {
+  sessions: RemoteSessionSummary[];
+  nextCursor?: string;
+}
+
 export interface RuntimeSession {
   localSessionId: string;
   remoteSessionId: string;
@@ -87,6 +109,7 @@ export interface CreateRuntimeSessionInput {
 
 export interface ResumeRuntimeSessionInput extends CreateRuntimeSessionInput {
   remoteSessionId: string;
+  activeTurnId?: string;
 }
 
 export interface ModelOption {
@@ -108,9 +131,13 @@ export interface AgentRuntime {
   resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession>;
   getSession(localSessionId: string): RuntimeSession | undefined;
   readSessionMetadata(remoteSessionId: string): Promise<RuntimeSessionMetadata>;
+  listRemoteSessions?(input?: { searchTerm?: string; cursor?: string; limit?: number }): Promise<RemoteSessionPage>;
+  readRemoteSession?(remoteSessionId: string): Promise<RemoteSessionSummary>;
+  synchronizeSession(sessionId: string): Promise<RuntimeSession>;
   startTurn(sessionId: string, text: string): Promise<string>;
   steerTurn(sessionId: string, turnId: string, text: string): Promise<void>;
   cancelTurn(sessionId: string, turnId: string): Promise<void>;
+  interruptRemoteTurn?(remoteSessionId: string, turnId: string): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
   setModel(sessionId: string, model: string): Promise<void>;
   setReasoningEffort(sessionId: string, effort: string): Promise<void>;

@@ -5,6 +5,8 @@ import type {
   CreateRuntimeSessionInput,
   ModelOption,
   PermissionMode,
+  RemoteSessionPage,
+  RemoteSessionSummary,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
   RuntimeSession,
@@ -12,6 +14,7 @@ import type {
 } from "../runtime/types.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
+import { CodexLocalActivityDetector } from "./CodexLocalActivityDetector.js";
 import { detectProjectlessWorkspace } from "./ProjectlessWorkspace.js";
 
 const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
@@ -22,6 +25,10 @@ const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
   "Never crop a window with DPI-virtualized coordinates from an unaware process or with UI Automation BoundingRectangle coordinates.",
   "Call Graphics.CopyFromScreen with those physical coordinates and validate that the saved bitmap dimensions exactly equal the selected physical capture bounds.",
 ].join(" ");
+
+const SESSION_REQUEST_TIMEOUT_MS = 30_000;
+const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
+const SYNC_REQUEST_TIMEOUT_MS = 5_000;
 
 export interface AppServerClient {
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
@@ -35,6 +42,7 @@ export interface AppServerClient {
 
 export interface AppServerClientProvider {
   getClient(): Promise<AppServerClient>;
+  getCodexHome?(): string;
   onDisconnect?(listener: (error: Error) => void): () => void;
   close(): void;
 }
@@ -59,11 +67,15 @@ export class CodexRuntime implements AgentRuntime {
   private attachedClient?: AppServerClient;
   private unsubscribe?: () => void;
   private readonly unsubscribeDisconnect?: () => void;
+  private readonly sessionSyncs = new Map<string, Promise<RuntimeSession>>();
+  private readonly localActivityDetector?: CodexLocalActivityDetector;
 
   constructor(
     private readonly provider: AppServerClientProvider,
     private readonly logger: Logger,
   ) {
+    const codexHome = provider.getCodexHome?.();
+    if (codexHome) this.localActivityDetector = new CodexLocalActivityDetector(codexHome);
     this.unsubscribeDisconnect = provider.onDisconnect?.((error) => this.handleDisconnect(error));
   }
 
@@ -79,7 +91,7 @@ export class CodexRuntime implements AgentRuntime {
       threadSource: "user",
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
-    });
+    }, SESSION_REQUEST_TIMEOUT_MS);
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
     const session = this.makeSession(input, response, reasoningEffort);
     this.sessions.set(input.localSessionId, session);
@@ -94,7 +106,7 @@ export class CodexRuntime implements AgentRuntime {
       model: input.model,
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
-    });
+    }, SESSION_REQUEST_TIMEOUT_MS);
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
     const session = this.makeSession(input, response, reasoningEffort);
     this.sessions.set(input.localSessionId, session);
@@ -111,7 +123,7 @@ export class CodexRuntime implements AgentRuntime {
         model: session.model,
         ...threadLifecycleParams(session.cwd),
         ...permissionParams(session.permissionMode),
-      });
+      }, SESSION_REQUEST_TIMEOUT_MS);
       session.needsResume = false;
     }
     const response = await client.request<{ turn: { id: string } }>("turn/start", {
@@ -122,11 +134,10 @@ export class CodexRuntime implements AgentRuntime {
       effort: session.reasoningEffort,
       summary: "auto",
       approvalPolicy: session.permissionMode === "auto" ? "never" : "on-request",
-    });
-    session.activeTurnId = response.turn.id;
-    session.finalText = "";
-    session.messagePhases.clear();
-    this.emit({ type: "turn_started", sessionId, turnId: response.turn.id, startedAt: Date.now() });
+    }, SESSION_REQUEST_TIMEOUT_MS);
+    if (session.activeTurnId !== response.turn.id) {
+      this.adoptTurn(session, response.turn.id, Date.now());
+    }
     return response.turn.id;
   }
 
@@ -141,23 +152,103 @@ export class CodexRuntime implements AgentRuntime {
     };
   }
 
+  async listRemoteSessions(input: {
+    searchTerm?: string;
+    cursor?: string;
+    limit?: number;
+  } = {}): Promise<RemoteSessionPage> {
+    const client = await this.client();
+    const response = await client.request<ThreadListResponse>(
+      "thread/list",
+      {
+        cursor: input.cursor,
+        limit: input.limit ?? 20,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+        archived: false,
+        searchTerm: input.searchTerm,
+      },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    const sessions = await Promise.all(response.data.map(async (thread) => {
+      const listed = remoteSessionSummary(thread);
+      if (listed.status === "active" || listed.lastTurnStatus === "inProgress") return listed;
+      try {
+        const detail = await client.request<ThreadReadResponse>(
+          "thread/read",
+          { threadId: thread.id, includeTurns: true },
+          SYNC_REQUEST_TIMEOUT_MS,
+        );
+        return mergeRemoteSessionSummary(listed, remoteSessionSummary(detail.thread));
+      } catch {
+        return listed;
+      }
+    }));
+    const activeThreads = await this.localActivityDetector?.activeThreads(sessions.map((session) => session.id));
+    return {
+      sessions: activeThreads
+        ? sessions.map((session) => markLocallyDetectedActive(session, activeThreads))
+        : sessions,
+      nextCursor: response.nextCursor ?? undefined,
+    };
+  }
+
+  async readRemoteSession(remoteSessionId: string): Promise<RemoteSessionSummary> {
+    const response = await (await this.client()).request<ThreadReadResponse>(
+      "thread/read",
+      { threadId: remoteSessionId, includeTurns: true },
+      SYNC_REQUEST_TIMEOUT_MS,
+    );
+    const summary = remoteSessionSummary(response.thread);
+    const activeThreads = await this.localActivityDetector?.activeThreads([remoteSessionId]);
+    return activeThreads ? markLocallyDetectedActive(summary, activeThreads) : summary;
+  }
+
+  async synchronizeSession(sessionId: string): Promise<RuntimeSession> {
+    const existing = this.sessionSyncs.get(sessionId);
+    if (existing) return existing;
+    const synchronization = this.synchronizeSessionNow(sessionId);
+    this.sessionSyncs.set(sessionId, synchronization);
+    try {
+      return await synchronization;
+    } finally {
+      if (this.sessionSyncs.get(sessionId) === synchronization) this.sessionSyncs.delete(sessionId);
+    }
+  }
+
   async steerTurn(sessionId: string, turnId: string, text: string): Promise<void> {
     const session = this.requireActiveTurn(sessionId, turnId);
     await (await this.client()).request("turn/steer", {
       threadId: session.remoteSessionId,
       expectedTurnId: turnId,
       input: [{ type: "text", text }],
-    });
+    }, CONTROL_REQUEST_TIMEOUT_MS);
   }
 
   async cancelTurn(sessionId: string, turnId: string): Promise<void> {
     const session = this.requireActiveTurn(sessionId, turnId);
-    await (await this.client()).request("turn/interrupt", { threadId: session.remoteSessionId, turnId });
+    await this.interruptRemoteTurn(session.remoteSessionId, turnId, sessionId);
+  }
+
+  async interruptRemoteTurn(remoteSessionId: string, turnId: string, sessionId?: string): Promise<void> {
+    await (await this.client()).request(
+      "turn/interrupt",
+      { threadId: remoteSessionId, turnId },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    this.logger.info(
+      { ...(sessionId ? { sessionId } : {}), threadId: remoteSessionId, turnId },
+      "Codex accepted the turn interrupt request.",
+    );
   }
 
   async closeSession(sessionId: string): Promise<void> {
     const session = this.requireSession(sessionId);
-    await (await this.client()).request("thread/archive", { threadId: session.remoteSessionId });
+    await (await this.client()).request(
+      "thread/archive",
+      { threadId: session.remoteSessionId },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
     this.sessions.delete(sessionId);
   }
 
@@ -220,6 +311,7 @@ export class CodexRuntime implements AgentRuntime {
     this.unsubscribeDisconnect?.();
     for (const pending of this.approvals.values()) pending.resolve({ decision: "cancel" });
     this.approvals.clear();
+    this.sessionSyncs.clear();
     this.sessions.clear();
     this.provider.close();
   }
@@ -254,10 +346,37 @@ export class CodexRuntime implements AgentRuntime {
       this.emit({ type: "session_metadata_updated", sessionId: session.localSessionId, title });
       return;
     }
+    if (method === "thread/status/changed" && isRecord(params)) {
+      const threadId = stringValue(params.threadId);
+      const status = isRecord(params.status) ? stringValue(params.status.type) : undefined;
+      const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === threadId);
+      if (session?.activeTurnId && status && status !== "active") {
+        void this.synchronizeSession(session.localSessionId).catch((error: unknown) => {
+          this.logger.warn({ error, sessionId: session.localSessionId, status }, "Failed to reconcile Codex thread status.");
+        });
+      }
+      return;
+    }
     const mapped = mapCodexNotification(method, params);
     if (!mapped) return;
     const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === mapped.threadId);
-    if (!session || !session.activeTurnId || session.activeTurnId !== mapped.turnId) return;
+    if (!session) return;
+    if (mapped.kind === "turn_started") {
+      if (session.activeTurnId === mapped.turnId) return;
+      if (session.activeTurnId) this.supersedeTurn(session, session.activeTurnId);
+      this.adoptTurn(session, mapped.turnId, mapped.startedAt ?? Date.now());
+      return;
+    }
+    if (!session.activeTurnId || session.activeTurnId !== mapped.turnId) {
+      this.logger.debug(
+        { sessionId: session.localSessionId, activeTurnId: session.activeTurnId, notificationTurnId: mapped.turnId, method },
+        "Ignoring out-of-order Codex notification and scheduling reconciliation.",
+      );
+      void this.synchronizeSession(session.localSessionId).catch((error: unknown) => {
+        this.logger.warn({ error, sessionId: session.localSessionId }, "Failed to reconcile out-of-order Codex notification.");
+      });
+      return;
+    }
     const sessionId = session.localSessionId;
     if (mapped.kind === "agent_message_phase") {
       session.messagePhases.set(mapped.itemId, mapped.phase);
@@ -355,8 +474,99 @@ export class CodexRuntime implements AgentRuntime {
       ?? models.find((item) => item.isDefault)?.defaultReasoningEffort;
   }
 
+  private async synchronizeSessionNow(sessionId: string): Promise<RuntimeSession> {
+    const session = this.requireSession(sessionId);
+    const response = await (await this.client()).request<ThreadReadResponse>(
+      "thread/read",
+      { threadId: session.remoteSessionId, includeTurns: true },
+      SYNC_REQUEST_TIMEOUT_MS,
+    );
+    this.reconcileThreadSnapshot(session, response.thread);
+    return session;
+  }
+
+  private reconcileThreadSnapshot(session: CodexSession, thread: ThreadReadResponse["thread"]): void {
+    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    const latest = turns.at(-1);
+    const latestInProgress = [...turns].reverse().find((turn) => turn.status === "inProgress");
+    const activeTurnId = session.activeTurnId;
+
+    if (!activeTurnId) {
+      if (latestInProgress) this.adoptTurn(session, latestInProgress.id, turnStartedAt(latestInProgress));
+      return;
+    }
+
+    if (latestInProgress?.id === activeTurnId) return;
+    if (latestInProgress) {
+      this.supersedeTurn(session, activeTurnId);
+      this.adoptTurn(session, latestInProgress.id, turnStartedAt(latestInProgress));
+      return;
+    }
+
+    if (!latest) {
+      if (thread.status?.type !== "active") {
+        session.activeTurnId = undefined;
+        session.messagePhases.clear();
+        this.emit({
+          type: "turn_failed",
+          sessionId: session.localSessionId,
+          turnId: activeTurnId,
+          message: "Codex no longer reports this execution in the thread history.",
+        });
+      }
+      return;
+    }
+
+    if (latest.id !== activeTurnId) {
+      this.supersedeTurn(session, activeTurnId);
+      this.adoptTurn(session, latest.id, turnStartedAt(latest));
+    }
+    this.finishSnapshotTurn(session, latest);
+  }
+
+  private adoptTurn(session: CodexSession, turnId: string, startedAt: number): void {
+    session.activeTurnId = turnId;
+    session.finalText = "";
+    session.messagePhases.clear();
+    this.emit({ type: "turn_started", sessionId: session.localSessionId, turnId, startedAt });
+  }
+
+  private supersedeTurn(session: CodexSession, turnId: string): void {
+    if (session.activeTurnId === turnId) session.activeTurnId = undefined;
+    session.messagePhases.clear();
+    this.emit({ type: "turn_cancelled", sessionId: session.localSessionId, turnId });
+  }
+
+  private finishSnapshotTurn(session: CodexSession, turn: CodexTurnSnapshot): void {
+    if (session.activeTurnId !== turn.id) return;
+    session.activeTurnId = undefined;
+    session.messagePhases.clear();
+    if (turn.status === "interrupted") {
+      this.emit({ type: "turn_cancelled", sessionId: session.localSessionId, turnId: turn.id });
+      return;
+    }
+    if (turn.status === "failed") {
+      this.emit({
+        type: "turn_failed",
+        sessionId: session.localSessionId,
+        turnId: turn.id,
+        message: turn.error?.message ?? "Codex turn failed.",
+      });
+      return;
+    }
+    const finalResponse = extractFinalResponse(turn) || session.finalText;
+    session.finalText = finalResponse;
+    this.emit({
+      type: "turn_completed",
+      sessionId: session.localSessionId,
+      turnId: turn.id,
+      finalResponse,
+      durationMs: turn.durationMs ?? undefined,
+    });
+  }
+
   private makeSession(
-    input: CreateRuntimeSessionInput,
+    input: CreateRuntimeSessionInput | ResumeRuntimeSessionInput,
     response: ThreadResponse,
     reasoningEffort?: string,
   ): CodexSession {
@@ -372,6 +582,7 @@ export class CodexRuntime implements AgentRuntime {
       model: input.model ?? response.model,
       reasoningEffort,
       permissionMode: input.permissionMode,
+      activeTurnId: "activeTurnId" in input ? input.activeTurnId : undefined,
       finalText: "",
       messagePhases: new Map(),
       needsResume: false,
@@ -424,7 +635,32 @@ interface ThreadResponse {
 }
 
 interface ThreadReadResponse {
-  thread: { id: string; name?: string | null; preview?: string };
+  thread: CodexThreadSnapshot;
+}
+
+interface ThreadListResponse {
+  data: CodexThreadSnapshot[];
+  nextCursor?: string | null;
+}
+
+interface CodexThreadSnapshot {
+  id: string;
+  name?: string | null;
+  preview?: string;
+  cwd?: string;
+  source?: unknown;
+  updatedAt?: number;
+  status?: { type?: string };
+  turns?: CodexTurnSnapshot[];
+}
+
+interface CodexTurnSnapshot {
+  id: string;
+  status: "completed" | "interrupted" | "failed" | "inProgress";
+  items?: Array<{ type?: string; text?: string; phase?: string | null }>;
+  error?: { message?: string } | null;
+  startedAt?: number | null;
+  durationMs?: number | null;
 }
 
 function permissionParams(mode: PermissionMode): { approvalPolicy: "never" | "on-request"; sandbox: string } {
@@ -457,4 +693,98 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function turnStartedAt(turn: CodexTurnSnapshot): number {
+  return typeof turn.startedAt === "number" ? turn.startedAt * 1_000 : Date.now();
+}
+
+function extractFinalResponse(turn: CodexTurnSnapshot): string {
+  const messages = (turn.items ?? []).filter(
+    (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
+  );
+  const finalMessages = messages.filter((item) => item.phase === "final_answer");
+  return (finalMessages.length ? finalMessages : messages.slice(-1))
+    .map((item) => item.text!.trim())
+    .join("\n\n");
+}
+
+function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {
+  const lastTurn = thread.turns?.at(-1);
+  const status = remoteThreadStatus(thread.status?.type);
+  // A persisted inProgress turn can outlive the CLI/Desktop app-server process
+  // that owned it. Only the owning app-server's active thread status (or the
+  // rollout activity detector applied below) is evidence that it is still live.
+  const lastTurnStatus = lastTurn?.status === "inProgress" && status !== "active"
+    ? undefined
+    : lastTurn?.status;
+  const lastText = [...(lastTurn?.items ?? [])]
+    .reverse()
+    .find((item) => typeof item.text === "string" && item.text.trim())?.text?.trim();
+  return {
+    id: thread.id,
+    title: normalizeTaskTitle(thread.name) ?? normalizeTaskTitle(thread.preview),
+    preview: normalizeTaskTitle(thread.preview),
+    cwd: thread.cwd ?? "",
+    source: codexSourceLabel(thread.source),
+    status,
+    updatedAt: thread.updatedAt,
+    lastTurnId: lastTurn?.id,
+    lastTurnStatus,
+    lastActivity: lastText,
+    finalResponse: lastTurn && lastTurn.status !== "inProgress" ? extractFinalResponse(lastTurn) || undefined : undefined,
+    lastError: lastTurn?.error?.message,
+  };
+}
+
+function mergeRemoteSessionSummary(
+  listed: RemoteSessionSummary,
+  inspected: RemoteSessionSummary,
+): RemoteSessionSummary {
+  return {
+    ...listed,
+    ...inspected,
+    title: inspected.title ?? listed.title,
+    preview: inspected.preview ?? listed.preview,
+    cwd: inspected.cwd || listed.cwd,
+    source: inspected.source === "unknown" ? listed.source : inspected.source,
+    updatedAt: inspected.updatedAt ?? listed.updatedAt,
+    lastActivity: inspected.lastActivity ?? listed.lastActivity,
+    finalResponse: inspected.finalResponse ?? listed.finalResponse,
+    lastError: inspected.lastError ?? listed.lastError,
+  };
+}
+
+function markLocallyDetectedActive(
+  summary: RemoteSessionSummary,
+  activeThreads: Map<string, string | undefined>,
+): RemoteSessionSummary {
+  if (!activeThreads.has(summary.id)) return summary;
+  const detectedTurnId = activeThreads.get(summary.id);
+  if ((summary.status === "active" || summary.lastTurnStatus === "inProgress")
+    && (!detectedTurnId || summary.lastTurnId === detectedTurnId)) return summary;
+  return {
+    ...summary,
+    status: "active",
+    lastTurnId: detectedTurnId ?? summary.lastTurnId,
+    lastTurnStatus: "inProgress",
+    lastActivity: undefined,
+    finalResponse: undefined,
+  };
+}
+
+function remoteThreadStatus(value: string | undefined): RemoteSessionSummary["status"] {
+  if (value === "active") return "active";
+  if (value === "idle") return "idle";
+  if (value === "systemError") return "error";
+  return "not_loaded";
+}
+
+function codexSourceLabel(source: unknown): string {
+  if (typeof source === "string") return source;
+  if (isRecord(source)) {
+    if (typeof source.custom === "string") return source.custom;
+    if (source.subAgent !== undefined) return "subAgent";
+  }
+  return "unknown";
 }

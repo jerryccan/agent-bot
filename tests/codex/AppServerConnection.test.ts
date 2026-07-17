@@ -64,6 +64,18 @@ describe("AppServerConnection", () => {
     await rejection;
   });
 
+  test("applies a finite timeout when callers do not provide one", async () => {
+    vi.useFakeTimers();
+    const process = fakeChildProcess();
+    const connection = new AppServerConnection(process.child, logger());
+    const request = connection.request("turn/steer", {});
+    const rejection = expect(request).rejects.toThrow("App Server request timed out: turn/steer");
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await rejection;
+  });
+
   test("ignores malformed output and rejects pending requests when closed", async () => {
     const process = fakeChildProcess();
     const testLogger = logger();

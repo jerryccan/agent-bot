@@ -105,6 +105,7 @@ class FakeClient implements AppServerClient {
   readonly requests: Array<{ method: string; params: unknown }> = [];
   resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test" };
   private listener?: (method: string, params: unknown) => void;
+  private latestTurn?: { id: string; status: "completed" | "inProgress" };
 
   constructor(private readonly turnId: string) {}
 
@@ -112,7 +113,21 @@ class FakeClient implements AppServerClient {
     this.requests.push({ method, params });
     if (method === "thread/start") return { thread: { id: "thr_1" }, model: "gpt-test" } as T;
     if (method === "thread/resume") return this.resumeResult as T;
-    if (method === "turn/start") return { turn: { id: this.turnId } } as T;
+    if (method === "thread/read") {
+      return {
+        thread: {
+          id: "thr_1",
+          cwd: process.cwd(),
+          source: "acp-bot",
+          status: { type: this.latestTurn?.status === "inProgress" ? "active" : "idle" },
+          turns: this.latestTurn ? [this.latestTurn] : [],
+        },
+      } as T;
+    }
+    if (method === "turn/start") {
+      this.latestTurn = { id: this.turnId, status: "inProgress" };
+      return { turn: { id: this.turnId } } as T;
+    }
     if (method === "model/list") return { data: [] } as T;
     return {} as T;
   }
@@ -124,6 +139,12 @@ class FakeClient implements AppServerClient {
     return () => { this.listener = undefined; };
   }
   emit(method: string, params: unknown): void {
+    if (method === "turn/completed") {
+      const turn = (params as { turn?: { id?: string } }).turn;
+      if (turn?.id && this.latestTurn?.id === turn.id) {
+        this.latestTurn = { id: turn.id, status: "completed" };
+      }
+    }
     this.listener?.(method, params);
   }
 }
@@ -162,6 +183,7 @@ function inertRuntime(): AgentRuntime {
     resumeSession: async () => { throw new Error("unused"); },
     getSession: () => undefined,
     readSessionMetadata: async () => ({}),
+    synchronizeSession: async () => { throw new Error("unused"); },
     startTurn: async () => { throw new Error("unused"); },
     steerTurn: async () => { throw new Error("unused"); },
     cancelTurn: async () => undefined,
