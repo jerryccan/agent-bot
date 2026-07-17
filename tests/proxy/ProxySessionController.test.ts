@@ -624,8 +624,10 @@ describe("ProxySessionController", () => {
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("Desktop investigation");
     expect(serialized).toContain("external_1");
-    expect(serialized).toContain('"content":"Switch"');
+    expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain("<font color='blue'>Status</font>");
+    expect(serialized).toContain('"action":"session_status","sessionId":"external_1"');
     expect(serialized).not.toContain("Legacy ACP task");
     expect(serialized).not.toContain("remote_acp");
     expect(serialized).toContain("/switch [序号或任务 ID]");
@@ -654,7 +656,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("任务（1 个活跃）");
     expect(serialized).toContain("🟢 **活跃**");
     expect(serialized).toContain("外部执行中");
-    expect(serialized).toContain('"content":"Stop"');
+    expect(serialized).toContain("<font color='red'>Stop</font>");
     expect(serialized).toContain('"action":"session_stop","sessionId":"active_1","visibleCount":"5"');
     expect(serialized.indexOf("active_1")).toBeLessThan(serialized.indexOf("idle_1"));
   });
@@ -686,7 +688,7 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(updatedCard);
-    expect(serialized).toContain('"content":"Switch"');
+    expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"active_external","visibleCount":"5"');
     expect(serialized).not.toContain('"action":"session_stop","sessionId":"active_external","visibleCount":"5"');
   });
@@ -815,6 +817,8 @@ describe("ProxySessionController", () => {
     expect(serialized.indexOf("thr_1")).toBeLessThan(serialized.indexOf("active_external"));
     expect(serialized).not.toContain('"action":"session_switch","sessionId":"thr_1"');
     expect(serialized).not.toContain('"action":"session_stop","sessionId":"thr_1"');
+    expect(serialized).toContain('"action":"session_status","sessionId":"thr_1"');
+    expect(serialized).toContain('"action":"session_status","sessionId":"active_external"');
   });
 
   test("switches by the one-based order from the last sessions list", async () => {
@@ -867,6 +871,122 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     expect(JSON.stringify(updatedCard)).toContain("✅");
+  });
+
+  test("shows task status from a sessions card without switching tasks", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    remoteSessions.push({
+      id: "status_target",
+      title: "Status target",
+      cwd: "D:\\work\\status-target",
+      source: "vscode",
+      status: "idle",
+      lastTurnId: "turn_status",
+      lastTurnStatus: "completed",
+      finalResponse: "Status result",
+    });
+
+    await controller.onCardAction({
+      actionId: "sessions-task-status",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: { action: "session_status", sessionId: "status_target" },
+    });
+
+    expect(store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId).toBeUndefined();
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("Codex 状态：Status target");
+    expect(serialized).toContain("status_target");
+    expect(serialized).toContain("Status result");
+  });
+
+  test("switches back to a bot-owned task while its turn is still running", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("keep running"));
+    const runningTask = store.listSessions("chat_id:c1")[0]!;
+
+    store.createSession({
+      localSessionId: "local_idle",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: "D:\\work\\idle",
+      status: "ready",
+    });
+    store.updateRuntimeSession("local_idle", {
+      runtimeKind: "codex",
+      remoteSessionId: "remote_idle",
+      title: "Idle target",
+    });
+    remoteSessions.push({
+      id: "remote_idle",
+      title: "Idle target",
+      cwd: "D:\\work\\idle",
+      source: "vscode",
+      status: "idle",
+    });
+
+    await controller.onMessage(message("/switch remote_idle"));
+    await controller.onMessage(message("/sessions"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('"action":"session_switch","sessionId":"thr_1","visibleCount":"5"');
+    expect(serialized).not.toContain('"action":"session_stop","sessionId":"thr_1","visibleCount":"5"');
+
+    await controller.onCardAction({
+      actionId: "switch-back-running-bot-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: { action: "session_switch", sessionId: "thr_1", visibleCount: "5" },
+    });
+
+    expect(store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId).toBe(runningTask.localSessionId);
+    expect(runtime.interruptRemoteTurn).not.toHaveBeenCalled();
+  });
+
+  test("does not switch back when the active turn was triggered outside acp-bot", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    remoteSessions.push(
+      {
+        id: "external_origin",
+        title: "External origin",
+        cwd: "D:\\work\\external-origin",
+        source: "vscode",
+        status: "idle",
+      },
+      {
+        id: "idle_target",
+        title: "Idle target",
+        cwd: "D:\\work\\idle-target",
+        source: "vscode",
+        status: "idle",
+      },
+    );
+
+    await controller.onMessage({
+      messageId: "switch-back-external-turn",
+      contextKey: "chat_id:c1",
+      text: "/switch external_origin",
+    });
+    const external = remoteSessions.find((session) => session.id === "external_origin")!;
+    external.status = "active";
+    external.lastTurnId = "external_turn";
+    external.lastTurnStatus = "inProgress";
+    await controller.onMessage(message("/switch idle_target"));
+    const idleTask = store.findSessionByRemoteSessionId("idle_target")!;
+    await controller.onMessage(message("/sessions"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('"action":"session_stop","sessionId":"external_origin","visibleCount":"5"');
+    expect(serialized).not.toContain('"action":"session_switch","sessionId":"external_origin","visibleCount":"5"');
+
+    await controller.onMessage(message("/switch external_origin"));
+
+    expect(store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId).toBe(idleTask.localSessionId);
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", expect.stringContaining("不会接管或追加消息"));
   });
 
   test("rejects a switch position that is outside the last sessions list", async () => {

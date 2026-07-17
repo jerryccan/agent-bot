@@ -127,6 +127,7 @@ test("dispatches direct Feishu SDK card action events", async () => {
   await larkSdkMock.handlers["card.action.trigger"]({
     header: { event_id: "evt_card_1" },
     action: {
+      tag: "interactive_container",
       name: "approve",
       value: { action: "permission", permissionId: "perm_1", optionId: "allow" },
     },

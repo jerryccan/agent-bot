@@ -219,39 +219,94 @@ describe("CardRenderer", () => {
     expect(card.header.title.content).toBe("Codex 已完成：优化飞书交互体验");
   });
 
-  test("renders each task with a compact adjacent card action button", () => {
+  test("renders task actions as colored callback links below the body", () => {
     const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
       lines: ["**Task**", "就绪"],
-      action: {
-        text: "Switch",
-        value: { action: "session_switch", sessionId: "thr_1" },
-      },
+      actions: [
+        {
+          text: "Switch",
+          value: { action: "session_switch", sessionId: "thr_1" },
+        },
+        {
+          text: "Status",
+          value: { action: "session_status", sessionId: "thr_1" },
+        },
+      ],
     }], ["说明"]);
     const objects = collectObjects(card);
-    const button = objects.find((item) => item.tag === "button");
+    const links = objects.filter((item) => item.tag === "interactive_container");
 
-    expect(button).toMatchObject({
-      text: { tag: "plain_text", content: "Switch" },
-      width: "default",
-      size: "small",
+    expect(links).toContainEqual(expect.objectContaining({
+      margin: "0px",
+      padding: "0px",
+      has_border: false,
+      elements: [{
+        tag: "markdown",
+        content: "<font color='blue'>Switch</font>",
+      }],
       behaviors: [{
         type: "callback",
         value: { action: "session_switch", sessionId: "thr_1" },
       }],
-    });
+    }));
+    expect(links).toContainEqual(expect.objectContaining({
+      elements: [{
+        tag: "markdown",
+        content: "<font color='blue'>Status</font>",
+      }],
+      behaviors: [{
+        type: "callback",
+        value: { action: "session_status", sessionId: "thr_1" },
+      }],
+    }));
     expect(card).toMatchObject({ schema: "2.0", body: { elements: expect.any(Array) } });
     expect(objects).toContainEqual(expect.objectContaining({
+      tag: "column_set",
+      flex_mode: "flow",
+      horizontal_spacing: "8px",
+      margin: "2px 0 0 0",
+    }));
+    expect(objects.filter((item) => item.tag === "column")).toHaveLength(2);
+    expect(objects.filter((item) => item.tag === "column")).toEqual(expect.arrayContaining([expect.objectContaining({
       tag: "column",
       width: "auto",
+    })]));
+
+    const bodyElements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+    const taskBodyIndex = bodyElements.findIndex((item) => item.tag === "markdown" && item.content === "**Task**\n就绪");
+    const actionRowIndex = bodyElements.findIndex((item) => item.tag === "column_set");
+    expect(actionRowIndex).toBe(taskBodyIndex + 1);
+  });
+
+  test("renders destructive task actions as red callback links", () => {
+    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
+      lines: ["**Task**"],
+      actions: [{
+        text: "Stop",
+        type: "danger",
+        value: { action: "session_stop", sessionId: "thr_1" },
+      }],
+    }], []);
+
+    expect(collectObjects(card)).toContainEqual(expect.objectContaining({
+      tag: "interactive_container",
+      elements: [{
+        tag: "markdown",
+        content: "<font color='red'>Stop</font>",
+      }],
+      behaviors: [{
+        type: "callback",
+        value: { action: "session_stop", sessionId: "thr_1" },
+      }],
     }));
   });
 
-  test("allows the current task to render without an action button", () => {
+  test("allows the current task to render without an action control", () => {
     const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
       lines: ["✅ **Current task**", "执行中"],
     }], []);
 
-    expect(collectObjects(card).some((item) => item.tag === "button")).toBe(false);
+    expect(collectObjects(card).some((item) => item.tag === "button" || item.tag === "interactive_container")).toBe(false);
   });
 
   test("renders a full-width footer action for loading more tasks", () => {

@@ -34,7 +34,7 @@ export interface TaskListCardAction {
 
 export interface TaskListCardEntry {
   lines: string[];
-  action?: TaskListCardAction;
+  actions?: TaskListCardAction[];
 }
 
 export class CardRenderer {
@@ -189,39 +189,32 @@ export class CardRenderer {
       elements.push(markdown("无"));
     } else {
       entries.forEach((entry, index) => {
-        if (entry.action) {
+        elements.push(markdown(entry.lines.join("\n")));
+        if (entry.actions?.length) {
           elements.push({
             tag: "column_set",
-            flex_mode: "none",
+            flex_mode: "flow",
             horizontal_spacing: "8px",
-            columns: [
-              {
-                tag: "column",
-                width: "weighted",
-                weight: 1,
-                vertical_align: "center",
-                elements: [markdown(entry.lines.join("\n"))],
-              },
-              {
-                tag: "column",
-                width: "auto",
-                vertical_align: "center",
-                elements: [{
-                  tag: "button",
-                  text: { tag: "plain_text", content: entry.action.text },
-                  type: entry.action.type ?? "default",
-                  width: "default",
-                  size: "small",
-                  behaviors: [{
-                    type: "callback",
-                    value: entry.action.value,
-                  }],
+            margin: "2px 0 0 0",
+            columns: entry.actions.map((action) => ({
+              tag: "column",
+              width: "auto",
+              vertical_align: "center",
+              elements: [{
+                tag: "interactive_container",
+                margin: "0px",
+                padding: "0px",
+                has_border: false,
+                elements: [markdown(
+                  `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardHtml(action.text)}</font>`,
+                )],
+                behaviors: [{
+                  type: "callback",
+                  value: action.value,
                 }],
-              },
-            ],
+              }],
+            })),
           });
-        } else {
-          elements.push(markdown(entry.lines.join("\n")));
         }
         if (index < entries.length - 1) elements.push({ tag: "hr" });
       });
@@ -432,6 +425,15 @@ function markdown(content: string): Record<string, unknown> {
     tag: "markdown",
     content,
   };
+}
+
+function escapeCardHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function formatUpdate(update: Record<string, JsonValue>): string {

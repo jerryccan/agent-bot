@@ -5,7 +5,7 @@ import type { AppConfig } from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
 import type { CardAction, IncomingMessage } from "../feishu/types.js";
-import { CardRenderer, type CardSection } from "../feishu/CardRenderer.js";
+import { CardRenderer, type CardSection, type TaskListCardAction } from "../feishu/CardRenderer.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
 import type { AgentRuntimeRegistry } from "../runtime/AgentRuntimeRegistry.js";
@@ -171,6 +171,8 @@ export class ProxySessionController {
         const sessionId = String(action.value.sessionId ?? "");
         await this.stopSessionReference(action.contextKey, sessionId);
         await this.refreshSessionsCardFromAction(action, sessionId);
+      } else if (kind === "session_status") {
+        await this.status(action.contextKey, String(action.value.sessionId ?? ""));
       } else if (kind === "approval") {
         await this.resolveApproval(action);
       }
@@ -790,21 +792,29 @@ export class ProxySessionController {
     const cardEntries = visibleEntries.map((entry, index) => {
       const marker = entry.current ? "✅" : entry.active ? "🟢 **活跃**" : "•";
       const showStop = entry.status === "外部执行中" && entry.id !== options.forceSwitchTaskId;
+      const actions: TaskListCardAction[] = entry.current ? [] : [{
+        text: showStop ? "Stop" : "Switch",
+        type: showStop ? "danger" as const : "default" as const,
+        value: {
+          action: showStop ? "session_stop" : "session_switch",
+          sessionId: entry.id,
+          ...(searchTerm ? { searchTerm } : {}),
+          visibleCount: String(visibleCount),
+        },
+      }];
+      actions.push({
+        text: "Status",
+        value: {
+          action: "session_status",
+          sessionId: entry.id,
+        },
+      });
       return {
         lines: [
           `**${index + 1}.**　${marker}　**${cardText(entry.title)}**　${cardText(entry.id)}`,
           `${entry.status} · ${entry.updatedLabel} · ${cardText(entry.cwd || "目录未知")}`,
         ],
-        action: entry.current ? undefined : {
-          text: showStop ? "Stop" : "Switch",
-          type: showStop ? "danger" as const : "default" as const,
-          value: {
-            action: showStop ? "session_stop" : "session_switch",
-            sessionId: entry.id,
-            ...(searchTerm ? { searchTerm } : {}),
-            visibleCount: String(visibleCount),
-          },
-        },
+        actions,
       };
     });
     const card = this.cardRenderer.renderTaskListCard(
@@ -815,7 +825,7 @@ export class ProxySessionController {
         ...(remoteHint ? [remoteHint] : []),
         "点击 **Switch** 快速切换；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
         "也可发送 **/switch [序号或任务 ID]**；不带参数切回上一个任务。外部正在执行的回合不会被接管。",
-        "发送 **/status [序号或任务 ID]** 查看当前或指定任务状态。",
+        "点击 **Status**，或发送 **/status [序号或任务 ID]**，查看当前或指定任务状态。",
       ],
       hasMore ? {
         text: "更多任务",
