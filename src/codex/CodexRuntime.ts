@@ -650,6 +650,7 @@ interface CodexThreadSnapshot {
   cwd?: string;
   source?: unknown;
   updatedAt?: number;
+  recencyAt?: number;
   status?: { type?: string };
   turns?: CodexTurnSnapshot[];
 }
@@ -729,6 +730,7 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     source: codexSourceLabel(thread.source),
     status,
     updatedAt: thread.updatedAt,
+    recencyAt: thread.recencyAt,
     lastTurnId: lastTurn?.id,
     lastTurnStatus,
     lastActivity: lastText,
@@ -749,6 +751,7 @@ function mergeRemoteSessionSummary(
     cwd: inspected.cwd || listed.cwd,
     source: inspected.source === "unknown" ? listed.source : inspected.source,
     updatedAt: inspected.updatedAt ?? listed.updatedAt,
+    recencyAt: inspected.recencyAt ?? listed.recencyAt,
     lastActivity: inspected.lastActivity ?? listed.lastActivity,
     finalResponse: inspected.finalResponse ?? listed.finalResponse,
     lastError: inspected.lastError ?? listed.lastError,

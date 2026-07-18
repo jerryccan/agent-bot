@@ -124,14 +124,19 @@ export class CardRenderer {
     return this.baseCard("ACP Gateway 状态", "blue", [markdown(status)]);
   }
 
-  renderSectionsCard(title: string, sections: CardSection[]): Record<string, unknown> {
+  renderSectionsCard(
+    title: string,
+    sections: CardSection[],
+    actions: TaskListCardAction[] = [],
+  ): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [];
     sections.forEach((section, index) => {
       if (index > 0) elements.push({ tag: "hr" });
       const heading = section.title ? `**${section.title}**\n` : "";
       elements.push(markdown(`${heading}${section.lines.join("\n")}`));
     });
-    return this.baseCard(title, "blue", elements);
+    if (actions.length > 0) elements.push({ tag: "hr" }, taskActionRow(actions));
+    return sectionCard(title, elements);
   }
 
   renderTaskListCard(
@@ -148,30 +153,7 @@ export class CardRenderer {
       entries.forEach((entry, index) => {
         elements.push(markdown(entry.lines.join("\n")));
         if (entry.actions?.length) {
-          elements.push({
-            tag: "column_set",
-            flex_mode: "flow",
-            horizontal_spacing: "8px",
-            margin: "2px 0 0 0",
-            columns: entry.actions.map((action) => ({
-              tag: "column",
-              width: "auto",
-              vertical_align: "center",
-              elements: [{
-                tag: "interactive_container",
-                margin: "0px",
-                padding: "0px",
-                has_border: false,
-                elements: [markdown(
-                  `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardHtml(action.text)}</font>`,
-                )],
-                behaviors: [{
-                  type: "callback",
-                  value: action.value,
-                }],
-              }],
-            })),
-          });
+          elements.push(taskActionRow(entry.actions));
         }
         if (index < entries.length - 1) elements.push({ tag: "hr" });
       });
@@ -333,9 +315,16 @@ function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
     if (!text) return [];
     const content = truncateText(text, 2_000);
     if (activity.id.startsWith("commentary:")) return [markdown(content)];
-    return [markdown(`> 💭 ${content.replaceAll("\n", "\n> ")}`)];
+    const plainReasoning = removeMarkdownBold(content);
+    return [markdown(`> 💭 ${plainReasoning.replaceAll("\n", "\n> ")}`)];
   }
   return [toolPanel(activity.tool)];
+}
+
+function removeMarkdownBold(value: string): string {
+  return value
+    .replace(/\*\*([\s\S]+?)\*\*/g, "$1")
+    .replace(/__([\s\S]+?)__/g, "$1");
 }
 
 function turnActivities(state: TurnViewState): TurnActivity[] {
@@ -400,8 +389,25 @@ function renderToolDetails(tool: ToolState): string {
 
 function toolPanelTitle(tool: ToolState): string {
   const icon = tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅";
-  const title = truncateText(tool.title.replace(/\s+/g, " ").trim(), 100);
+  const command = stripAnsi(tool.command ?? tool.title).trim();
+  const meaningfulCommand = unwrapPowerShellCommand(command) ?? tool.title;
+  const title = truncateText(meaningfulCommand.replace(/\s+/g, " ").trim(), 100);
   return `${icon} ${title}`;
+}
+
+function unwrapPowerShellCommand(command: string): string | undefined {
+  const executable = command.match(
+    /^(?:"[^"]*(?:pwsh|powershell)\.exe"|(?:\S*[\\/])?(?:pwsh|powershell)(?:\.exe)?)(?=\s|$)/i,
+  );
+  if (!executable) return undefined;
+  const args = command.slice(executable[0].length);
+  const commandFlag = /(?:^|\s)-(?:Command|c)(?:\s+|$)/i.exec(args);
+  if (!commandFlag) return undefined;
+  const payload = args.slice(commandFlag.index + commandFlag[0].length).trim();
+  if (!payload) return undefined;
+  const quote = payload[0];
+  if ((quote === "\"" || quote === "'") && payload.at(-1) === quote) return payload.slice(1, -1).trim();
+  return payload;
 }
 
 function codeBlock(value: string, maxLength: number): string {
@@ -488,6 +494,33 @@ function escapeCardHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+function taskActionRow(actions: TaskListCardAction[]): Record<string, unknown> {
+  return {
+    tag: "column_set",
+    flex_mode: "flow",
+    horizontal_spacing: "8px",
+    margin: "2px 0 0 0",
+    columns: actions.map((action) => ({
+      tag: "column",
+      width: "auto",
+      vertical_align: "center",
+      elements: [{
+        tag: "interactive_container",
+        margin: "0px",
+        padding: "0px",
+        has_border: false,
+        elements: [markdown(
+          `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardHtml(action.text)}</font>`,
+        )],
+        behaviors: [{
+          type: "callback",
+          value: action.value,
+        }],
+      }],
+    })),
+  };
+}
+
 function turnCard(
   title: string,
   template: string,
@@ -508,6 +541,29 @@ function turnCard(
       subtitle: {
         tag: "plain_text",
         content: subtitle,
+      },
+      padding: "12px 12px 12px 12px",
+    },
+    body: {
+      direction: "vertical",
+      vertical_spacing: "8px",
+      padding: "12px 12px 12px 12px",
+      elements,
+    },
+  };
+}
+
+function sectionCard(title: string, elements: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+    },
+    header: {
+      template: "blue",
+      title: {
+        tag: "plain_text",
+        content: title,
       },
       padding: "12px 12px 12px 12px",
     },

@@ -72,6 +72,7 @@ export interface RemoteSessionSummary {
   source: string;
   status: RemoteSessionStatus;
   updatedAt?: number;
+  recencyAt?: number;
   lastTurnId?: string;
   lastTurnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
   lastActivity?: string;

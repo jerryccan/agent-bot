@@ -50,6 +50,11 @@ interface SessionsCardOptions {
   visibleCount?: number;
 }
 
+interface StatusCardOptions {
+  updateMessageId?: string;
+  forceSwitchTaskId?: string;
+}
+
 export interface ProxyLifecycle {
   supervised?: boolean;
   restart(contextKey: string): Promise<void>;
@@ -165,12 +170,15 @@ export class ProxySessionController {
       } else if (kind === "session_more") {
         await this.refreshSessionsCardFromAction(action, undefined, true);
       } else if (kind === "session_switch") {
-        await this.switchSession(action.contextKey, String(action.value.sessionId ?? ""));
-        await this.refreshSessionsCardFromAction(action);
+        const sessionId = String(action.value.sessionId ?? "");
+        await this.switchSession(action.contextKey, sessionId);
+        if (action.value.cardView === "status") await this.refreshStatusCardFromAction(action);
+        else await this.refreshSessionsCardFromAction(action);
       } else if (kind === "session_stop") {
         const sessionId = String(action.value.sessionId ?? "");
         await this.stopSessionReference(action.contextKey, sessionId);
-        await this.refreshSessionsCardFromAction(action, sessionId);
+        if (action.value.cardView === "status") await this.refreshStatusCardFromAction(action, sessionId);
+        else await this.refreshSessionsCardFromAction(action, sessionId);
       } else if (kind === "session_status") {
         await this.status(action.contextKey, String(action.value.sessionId ?? ""));
       } else if (kind === "approval") {
@@ -861,6 +869,14 @@ export class ProxySessionController {
     });
   }
 
+  private async refreshStatusCardFromAction(action: CardAction, forceSwitchTaskId?: string): Promise<void> {
+    if (!action.messageId) return;
+    await this.status(action.contextKey, String(action.value.sessionId ?? ""), {
+      updateMessageId: action.messageId,
+      forceSwitchTaskId,
+    });
+  }
+
   private async switchSession(contextKey: string, reference?: string): Promise<void> {
     this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const taskId = this.resolveSessionReference(contextKey, reference);
@@ -985,7 +1001,11 @@ export class ProxySessionController {
     await this.outbound.sendText(contextKey, `默认 agent 已切换为：${agentName}`);
   }
 
-  private async status(contextKey: string, sessionId?: string): Promise<void> {
+  private async status(
+    contextKey: string,
+    sessionId?: string,
+    options: StatusCardOptions = {},
+  ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const targetSessionId = sessionId === undefined ? undefined : this.resolveSessionReference(contextKey, sessionId);
     let current: SessionRecord | undefined;
@@ -993,7 +1013,7 @@ export class ProxySessionController {
       current = this.store.getSession(targetSessionId) ?? this.store.findSessionByRemoteSessionId(targetSessionId);
       if (current && current.contextKey !== contextKey) throw new Error(`找不到任务：${targetSessionId}`);
       if (!current) {
-        await this.statusForCodexTask(contextKey, targetSessionId);
+        await this.statusForCodexTask(contextKey, targetSessionId, options);
         return;
       }
     } else {
@@ -1079,10 +1099,30 @@ export class ProxySessionController {
     const title = targetSessionId && current
       ? `Codex 状态：${truncateText((current.title ?? current.remoteSessionId ?? current.localSessionId).replace(/\s+/g, " "), 40)}`
       : "Codex 状态";
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard(title, sections));
+    const taskId = current?.remoteSessionId ?? current?.localSessionId;
+    const isCurrent = Boolean(current && current.localSessionId === context.currentSessionId);
+    const remoteActive = isRemoteSessionActive(remote);
+    const botOwnsActiveTurn = Boolean(current && remote && isBotOwnedActiveTurn(current, remote));
+    const active = Boolean(activeTurnId || current?.status === "running" || remoteActive);
+    const forceSwitch = Boolean(taskId && options.forceSwitchTaskId === taskId);
+    const actions: TaskListCardAction[] = !taskId ? []
+      : remoteActive && !botOwnsActiveTurn && !forceSwitch
+        ? [statusCardAction("Stop", "danger", "session_stop", taskId)]
+        : isCurrent && active && !forceSwitch
+          ? [statusCardAction("Stop", "danger", "session_stop", taskId)]
+          : !isCurrent
+            ? [statusCardAction("Switch", "default", "session_switch", taskId)]
+            : [];
+    const card = this.cardRenderer.renderSectionsCard(title, sections, actions);
+    if (options.updateMessageId) await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+    else await this.outbound.sendInteractiveCard(contextKey, card);
   }
 
-  private async statusForCodexTask(contextKey: string, remoteSessionId: string): Promise<void> {
+  private async statusForCodexTask(
+    contextKey: string,
+    remoteSessionId: string,
+    options: StatusCardOptions = {},
+  ): Promise<void> {
     const runtime = this.runtimes.get("codex");
     if (!runtime.readRemoteSession) throw new Error("当前 Codex 运行时不支持读取外部任务状态。");
     const remote = await runtime.readRemoteSession(remoteSessionId);
@@ -1111,7 +1151,16 @@ export class ProxySessionController {
       { title: "最终结果", lines: finalResultLines(undefined, remote) },
     ];
     const title = `Codex 状态：${truncateText((remote.title ?? remote.preview ?? remote.id).replace(/\s+/g, " "), 40)}`;
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard(title, sections));
+    const showStop = isRemoteSessionActive(remote) && options.forceSwitchTaskId !== remote.id;
+    const actions = [statusCardAction(
+      showStop ? "Stop" : "Switch",
+      showStop ? "danger" : "default",
+      showStop ? "session_stop" : "session_switch",
+      remote.id,
+    )];
+    const card = this.cardRenderer.renderSectionsCard(title, sections, actions);
+    if (options.updateMessageId) await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+    else await this.outbound.sendInteractiveCard(contextKey, card);
   }
 
   private async help(contextKey: string): Promise<void> {
@@ -1211,6 +1260,19 @@ function sessionStatusLabel(status: SessionRecord["status"], activeTurnId?: stri
   return labels[status];
 }
 
+function statusCardAction(
+  text: "Stop" | "Switch",
+  type: "danger" | "default",
+  action: "session_stop" | "session_switch",
+  sessionId: string,
+): TaskListCardAction {
+  return {
+    text,
+    type,
+    value: { action, sessionId, cardView: "status" },
+  };
+}
+
 interface UnifiedTaskListEntry {
   id: string;
   title: string;
@@ -1240,6 +1302,7 @@ function mergeTaskList(
     const status = remote.status === "active" || remote.lastTurnStatus === "inProgress"
       ? local && isBotOwnedActiveTurn(local, remote) ? "执行中" : "外部执行中"
       : remoteSessionStatusLabel(remote.status);
+    const recencyAt = remote.recencyAt ?? remote.updatedAt;
     return {
       id: remote.id,
       title: remote.title ?? remote.preview ?? local?.title ?? "未命名任务",
@@ -1247,8 +1310,8 @@ function mergeTaskList(
       status,
       active,
       current: Boolean(local && local.localSessionId === currentLocalSessionId),
-      updatedAt: (remote.updatedAt ?? 0) * 1_000,
-      updatedLabel: formatRemoteTime(remote.updatedAt),
+      updatedAt: (recencyAt ?? 0) * 1_000,
+      updatedLabel: formatRemoteTime(recencyAt),
     };
   });
 

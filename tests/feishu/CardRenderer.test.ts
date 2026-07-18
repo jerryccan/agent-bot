@@ -196,6 +196,33 @@ describe("CardRenderer", () => {
     expect(panelTitle(panel ?? {})).not.toContain("已截断");
   });
 
+  test("unwraps PowerShell launchers in tool titles while preserving the full command in details", () => {
+    const running = state();
+    const command = '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -Command "Get-Content src/index.ts | Select-Object -First 20"';
+    const active = { id: "wrapped", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: active.id, tool: active }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel" && panelTitle(item).includes("Get-Content"));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(panelTitle(panel ?? {})).toBe("⏳ Get-Content src/index.ts | Select-Object -First 20");
+    expect(panelTitle(panel ?? {})).not.toMatch(/powershell|pwsh/i);
+    expect(details).toContain(`$ ${command}`);
+  });
+
+  test("unwraps single-quoted multiline PowerShell commands into compact titles", () => {
+    const running = state();
+    const command = "powershell.exe -Command 'npm test -- --run\nif ($LASTEXITCODE -ne 0) { exit 1 }'";
+    const tool = { id: "multiline", title: command, kind: "command", status: "completed" as const, command };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel" && panelTitle(item).includes("npm test"));
+
+    expect(panelTitle(panel ?? {})).toBe("✅ npm test -- --run if ($LASTEXITCODE -ne 0) { exit 1 }");
+  });
+
   test("keeps a stable identity for the trailing file panel as activities are inserted before it", () => {
     const running = state();
     const renderer = new CardRenderer();
@@ -364,6 +391,27 @@ describe("CardRenderer", () => {
     ]);
   });
 
+  test("renders reasoning lines without Markdown bold styling", () => {
+    const running = state();
+    running.activities = [{
+      kind: "reasoning",
+      id: "reasoning:bold:0",
+      text: "**规划实现步骤**\n继续 __检查测试__",
+    }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const reasoning = collectObjects(card).find(
+      (item) => item.tag === "markdown" && String(item.content).startsWith("> 💭"),
+    );
+
+    expect(reasoning).toEqual({
+      tag: "markdown",
+      content: "> 💭 规划实现步骤\n> 继续 检查测试",
+    });
+    expect(String(reasoning?.content)).not.toContain("**");
+    expect(String(reasoning?.content)).not.toContain("__");
+  });
+
   test("renders task actions as colored callback links below the body", () => {
     const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
       lines: ["**Task**", "就绪"],
@@ -421,6 +469,32 @@ describe("CardRenderer", () => {
     const taskBodyIndex = bodyElements.findIndex((item) => item.tag === "markdown" && item.content === "**Task**\n就绪");
     const actionRowIndex = bodyElements.findIndex((item) => item.tag === "column_set");
     expect(actionRowIndex).toBe(taskBodyIndex + 1);
+  });
+
+  test("renders status card actions as callback links after the sections", () => {
+    const card = new CardRenderer().renderSectionsCard("Codex 状态", [{
+      title: "指定任务",
+      lines: ["空闲"],
+    }], [{
+      text: "Switch",
+      value: { action: "session_switch", sessionId: "thr_1", cardView: "status" },
+    }]);
+    const bodyElements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+
+    expect(bodyElements.at(-1)).toMatchObject({
+      tag: "column_set",
+      columns: [expect.objectContaining({
+        elements: [expect.objectContaining({
+          tag: "interactive_container",
+          elements: [{ tag: "markdown", content: "<font color='blue'>Switch</font>" }],
+          behaviors: [{
+            type: "callback",
+            value: { action: "session_switch", sessionId: "thr_1", cardView: "status" },
+          }],
+        })],
+      })],
+    });
+    expect(bodyElements.at(-2)).toEqual({ tag: "hr" });
   });
 
   test("renders destructive task actions as red callback links", () => {

@@ -612,7 +612,8 @@ describe("ProxySessionController", () => {
       cwd: "D:\\work\\desktop",
       source: "vscode",
       status: "not_loaded",
-      updatedAt: 100,
+      updatedAt: 946_684_800,
+      recencyAt: 1_893_456_000,
       lastTurnId: "turn_external",
       lastTurnStatus: "completed",
     });
@@ -624,6 +625,9 @@ describe("ProxySessionController", () => {
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("Desktop investigation");
     expect(serialized).toContain("external_1");
+    expect(serialized).toContain("2030");
+    expect(serialized).not.toContain("2000");
+    expect(serialized).not.toContain("最后更新：");
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Status</font>");
@@ -900,6 +904,65 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("Codex 状态：Status target");
     expect(serialized).toContain("status_target");
     expect(serialized).toContain("Status result");
+    expect(serialized).toContain("<font color='blue'>Switch</font>");
+    expect(serialized).toContain('"action":"session_switch","sessionId":"status_target","cardView":"status"');
+  });
+
+  test("stops an active external task from its status card and changes the action to Switch", async () => {
+    const { controller, remoteSessions, runtime, outbound } = fixture();
+    remoteSessions.push({
+      id: "active_status_target",
+      title: "Active status target",
+      cwd: "D:\\work\\active-status",
+      source: "vscode",
+      status: "active",
+      lastTurnId: "turn_active_status",
+      lastTurnStatus: "inProgress",
+    });
+
+    await controller.onCardAction({
+      actionId: "show-active-task-status",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: { action: "session_status", sessionId: "active_status_target" },
+    });
+    const statusCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    expect(JSON.stringify(statusCard)).toContain(
+      '"action":"session_stop","sessionId":"active_status_target","cardView":"status"',
+    );
+
+    await controller.onCardAction({
+      actionId: "stop-from-task-status",
+      contextKey: "chat_id:c1",
+      messageId: "om_status",
+      value: { action: "session_stop", sessionId: "active_status_target", cardView: "status" },
+    });
+
+    expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("active_status_target", "turn_active_status");
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_status", expect.any(Object));
+    const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(updatedCard);
+    expect(serialized).toContain("<font color='blue'>Switch</font>");
+    expect(serialized).toContain(
+      '"action":"session_switch","sessionId":"active_status_target","cardView":"status"',
+    );
+    expect(serialized).not.toContain(
+      '"action":"session_stop","sessionId":"active_status_target","cardView":"status"',
+    );
+  });
+
+  test("shows Stop on the current running task status card", async () => {
+    const { controller, outbound } = fixture();
+    await controller.onMessage(message("keep running"));
+    await controller.onMessage(message("/status"));
+
+    const statusCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(statusCard);
+    expect(serialized).toContain("<font color='red'>Stop</font>");
+    expect(serialized).toContain(
+      '"action":"session_stop","sessionId":"thr_1","cardView":"status"',
+    );
+    expect(serialized).not.toContain('"action":"session_switch","sessionId":"thr_1","cardView":"status"');
   });
 
   test("switches back to a bot-owned task while its turn is still running", async () => {
