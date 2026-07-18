@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
 import type { JsonValue } from "../acp/acpTypes.js";
 import type { RuntimeSession } from "../acp/AcpSessionManager.js";
 import type { ToolState } from "../runtime/types.js";
 import type { TurnActivity, TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
 import { truncateMiddle, truncateText } from "../utils/markdown.js";
+import { localCardImage } from "./LocalCardImage.js";
 
 export interface StartupStatusView {
   startedAt: Date;
@@ -24,6 +27,8 @@ export interface StartupStatusView {
 export interface CardSection {
   title?: string;
   lines: string[];
+  collapsible?: boolean;
+  elementId?: string;
 }
 
 export interface TaskListCardAction {
@@ -60,14 +65,22 @@ export class CardRenderer {
       lines.push("**当前任务**：无，下一条普通消息会创建新任务");
     }
     lines.push("发送普通消息继续当前任务；发送 `/new` 创建新任务；发送 `/status` 查看详情。");
-    return this.baseCard("acp-bot 已启动", "green", [markdown(lines.join("\n"))]);
+    return sectionCard("acp-bot 已启动", [markdown(lines.join("\n"))], "green");
   }
 
   renderTurn(state: TurnViewState): Record<string, unknown> {
+    const elements = renderTurnElements(state, "hidden");
+    if (isTurnStoppable(state.status)) {
+      elements.push({ tag: "hr" }, taskActionRow([{
+        text: "Stop",
+        type: "danger",
+        value: { action: "turn_cancel", sessionId: state.sessionId, turnId: state.turnId },
+      }]));
+    }
     return turnCard(
       turnTitle(state.status, state.taskTitle),
       turnTemplate(state.status),
-      renderTurnElements(state, "hidden"),
+      elements,
       renderTurnSubtitle(state),
     );
   }
@@ -132,8 +145,13 @@ export class CardRenderer {
     const elements: Record<string, unknown>[] = [];
     sections.forEach((section, index) => {
       if (index > 0) elements.push({ tag: "hr" });
-      const heading = section.title ? `**${section.title}**\n` : "";
-      elements.push(markdown(`${heading}${section.lines.join("\n")}`));
+      const content = section.lines.join("\n");
+      if (section.collapsible && section.title) {
+        elements.push(collapsiblePanel(section.title, content, { elementId: section.elementId }));
+      } else {
+        const heading = section.title ? `**${section.title}**\n` : "";
+        elements.push(markdown(`${heading}${content}`));
+      }
     });
     if (actions.length > 0) elements.push({ tag: "hr" }, taskActionRow(actions));
     return sectionCard(title, elements);
@@ -222,10 +240,15 @@ function renderTurnSubtitle(state: TurnViewState): string {
   const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
   const activityTools = turnActivities(state).filter((activity) => activity.kind === "tool").length;
   return [
-    `耗时 ${formatDuration(elapsed)}`,
+    `耗时 ${formatCompactDuration(elapsed)}`,
+    state.totalTokens !== undefined ? `${formatTokenCount(state.totalTokens)} tokens` : undefined,
     activityTools > 0 ? `${activityTools} 个工具` : undefined,
     state.fileSummary.length > 0 ? `${state.fileSummary.length} 个文件` : undefined,
   ].filter(Boolean).join(" · ");
+}
+
+function isTurnStoppable(status: TurnViewStatus): boolean {
+  return status === "running" || status === "tool_running" || status === "waiting_for_approval";
 }
 
 function renderTurnElements(
@@ -234,7 +257,8 @@ function renderTurnElements(
 ): Record<string, unknown>[] {
   const elements: Record<string, unknown>[] = [];
   if (state.plan.length > 0) elements.push(planPanel(state.plan));
-  elements.push(...turnActivities(state).flatMap(renderActivity));
+  if (state.activitiesTruncated) elements.push(markdown("…"));
+  elements.push(...turnActivities(state).flatMap((activity) => renderActivity(activity, state.projectCwd)));
   if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
 
   if (state.approval) {
@@ -299,7 +323,9 @@ function planPanel(plan: TurnViewState["plan"]): Record<string, unknown> {
 function fileSummaryPanel(state: TurnViewState): Record<string, unknown> {
   return collapsiblePanel(
     `文件变更 · ${state.fileSummary.length}`,
-    state.fileSummary.map((file) => `- ${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n"),
+    state.fileSummary
+      .map((file) => `- ${displayFilePath(file.path, state.projectCwd)}  +${file.additions ?? 0} -${file.deletions ?? 0}`)
+      .join("\n"),
     { elementId: "turn_files" },
   );
 }
@@ -309,7 +335,7 @@ function renderPlanStep(step: TurnViewState["plan"][number]): string {
   return `${marker} ${step.text}`;
 }
 
-function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
+function renderActivity(activity: TurnActivity, projectCwd?: string): Record<string, unknown>[] {
   if (activity.kind === "reasoning") {
     const text = activity.text.trim();
     if (!text) return [];
@@ -318,7 +344,7 @@ function renderActivity(activity: TurnActivity): Record<string, unknown>[] {
     const plainReasoning = removeMarkdownBold(content);
     return [markdown(`> 💭 ${plainReasoning.replaceAll("\n", "\n> ")}`)];
   }
-  return [toolPanel(activity.tool)];
+  return [toolPanel(activity.tool, projectCwd)];
 }
 
 function removeMarkdownBold(value: string): string {
@@ -346,13 +372,22 @@ function turnActivities(state: TurnViewState): TurnActivity[] {
   return activities;
 }
 
-function toolPanel(tool: ToolState): Record<string, unknown> {
-  return collapsiblePanel(toolPanelTitle(tool), renderToolDetails(tool));
+function toolPanel(tool: ToolState, projectCwd?: string): Record<string, unknown> {
+  const elements = [markdown(renderToolDetails(tool, projectCwd))];
+  if (tool.kind === "image_view" && tool.imagePath) {
+    elements.push(localCardImage(tool.imagePath, "view_image 图片"));
+  }
+  return collapsiblePanel(toolPanelTitle(tool), elements, { elementId: toolPanelElementId(tool.id) });
+}
+
+function toolPanelElementId(toolId: string): string {
+  const digest = createHash("sha256").update(toolId).digest("hex").slice(0, 16);
+  return `turn_tool_${digest}`;
 }
 
 function collapsiblePanel(
   title: string,
-  content: string,
+  content: string | Record<string, unknown>[],
   options: { expanded?: boolean; borderColor?: string; elementId?: string } = {},
 ): Record<string, unknown> {
   return {
@@ -372,14 +407,16 @@ function collapsiblePanel(
       color: options.borderColor ?? "grey",
       corner_radius: "5px",
     },
-    elements: [markdown(content)],
+    elements: typeof content === "string" ? [markdown(content)] : content,
   };
 }
 
-function renderToolDetails(tool: ToolState): string {
+function renderToolDetails(tool: ToolState, projectCwd?: string): string {
   const command = tool.command ?? tool.title;
   const fileSummary = tool.files?.length
-    ? tool.files.map((file) => `${file.path}  +${file.additions ?? 0} -${file.deletions ?? 0}`).join("\n")
+    ? tool.files
+      .map((file) => `${displayFilePath(file.path, projectCwd)}  +${file.additions ?? 0} -${file.deletions ?? 0}`)
+      .join("\n")
     : undefined;
   const result = tool.error ?? tool.output ?? fileSummary;
   const commandText = truncateText(stripAnsi(command).trim(), 800);
@@ -387,12 +424,60 @@ function renderToolDetails(tool: ToolState): string {
   return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
 }
 
+function displayFilePath(filePath: string, projectCwd?: string): string {
+  if (!projectCwd) return filePath;
+  const pathApi = usesWindowsPaths(projectCwd, filePath) ? path.win32 : path;
+  const normalizedCwd = pathApi.resolve(projectCwd);
+  const absolutePath = pathApi.isAbsolute(filePath)
+    ? pathApi.normalize(filePath)
+    : pathApi.resolve(normalizedCwd, filePath);
+  const relativePath = pathApi.relative(normalizedCwd, absolutePath);
+  const isInsideProject = relativePath === ""
+    || (!pathApi.isAbsolute(relativePath)
+      && relativePath !== ".."
+      && !relativePath.startsWith(`..${pathApi.sep}`));
+  return isInsideProject ? relativePath || "." : absolutePath;
+}
+
+function usesWindowsPaths(...values: string[]): boolean {
+  return values.some((value) => /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value));
+}
+
 function toolPanelTitle(tool: ToolState): string {
   const icon = tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅";
   const command = stripAnsi(tool.command ?? tool.title).trim();
   const meaningfulCommand = unwrapPowerShellCommand(command) ?? tool.title;
-  const title = truncateText(meaningfulCommand.replace(/\s+/g, " ").trim(), 100);
-  return `${icon} ${title}`;
+  const duration = toolDuration(tool);
+  const prefix = `${icon} `;
+  const suffix = duration ? ` · ${duration}` : "";
+  const title = truncateText(
+    meaningfulCommand.replace(/\s+/g, " ").trim(),
+    Math.max(20, 100 - prefix.length - suffix.length),
+  );
+  return `${prefix}${title}${suffix}`;
+}
+
+function toolDuration(tool: ToolState): string | undefined {
+  if (tool.startedAt === undefined) return undefined;
+  const endedAt = tool.status === "running" ? Date.now() : tool.completedAt;
+  if (endedAt === undefined) return undefined;
+  return formatCompactDuration(endedAt - tool.startedAt);
+}
+
+function formatCompactDuration(durationMs: number): string {
+  const totalTenths = Math.max(0, Math.round(durationMs / 100));
+  const tenths = totalTenths % 10;
+  const totalSeconds = Math.floor(totalTenths / 10);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const secondsText = `${String(seconds).padStart(2, "0")}.${tenths}s`;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${secondsText}`;
+  }
+  if (totalMinutes > 0) return `${String(totalMinutes).padStart(2, "0")}:${secondsText}`;
+  return `${seconds}.${tenths}s`;
 }
 
 function unwrapPowerShellCommand(command: string): string | undefined {
@@ -472,10 +557,8 @@ function turnTemplate(status: TurnViewStatus): string {
   return "blue";
 }
 
-function formatDuration(milliseconds: number): string {
-  if (milliseconds < 1_000) return `${milliseconds}ms`;
-  const seconds = Math.round(milliseconds / 100) / 10;
-  return `${seconds}s`;
+function formatTokenCount(tokens: number): string {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(Math.max(0, Math.round(tokens)));
 }
 
 function markdown(content: string): Record<string, unknown> {
@@ -553,14 +636,18 @@ function turnCard(
   };
 }
 
-function sectionCard(title: string, elements: Record<string, unknown>[]): Record<string, unknown> {
+function sectionCard(
+  title: string,
+  elements: Record<string, unknown>[],
+  template = "blue",
+): Record<string, unknown> {
   return {
     schema: "2.0",
     config: {
       update_multi: true,
     },
     header: {
-      template: "blue",
+      template,
       title: {
         tag: "plain_text",
         content: title,

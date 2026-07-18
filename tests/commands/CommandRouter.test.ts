@@ -36,6 +36,19 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/new codex D:\\work")).toThrow("Agent 使用当前默认值");
   });
 
+  test("parses fork with an optional session reference", () => {
+    expect(router.parse("/fork")).toEqual({ type: "fork" });
+    expect(router.parse("/fork 2")).toEqual({ type: "fork", sessionId: "2" });
+    expect(router.parse("/fork 019f-thread")).toEqual({ type: "fork", sessionId: "019f-thread" });
+    expect(() => router.parse("/fork 1 extra")).toThrow("只接受一个");
+  });
+
+  test("parses a title containing spaces", () => {
+    expect(router.parse("/title 修复会话列表时间")).toEqual({ type: "title", title: "修复会话列表时间" });
+    expect(router.parse('/title "Fix session title"')).toEqual({ type: "title", title: "Fix session title" });
+    expect(() => router.parse("/title")).toThrow("请输入新标题");
+  });
+
   test("parses stop without a cancel compatibility alias", () => {
     expect(router.parse("/stop")).toEqual({ type: "stop" });
     expect(router.parse("/cancel")).toEqual({ type: "prompt", text: "/cancel" });

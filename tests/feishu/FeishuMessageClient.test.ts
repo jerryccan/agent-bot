@@ -16,6 +16,30 @@ afterEach(() => {
 });
 
 describe("FeishuMessageClient", () => {
+  test("downloads a Feishu message image into the bot data directory and caches it", async () => {
+    const clientConfig = config();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(clientConfig, logger());
+
+    const first = await client.downloadImage("om_input", "img_input");
+    const second = await client.downloadImage("om_input", "img_input");
+
+    expect(first).toBe(second);
+    expect(path.dirname(first)).toBe(path.join(path.dirname(clientConfig.storage.sqlitePath), "inbound-images"));
+    expect(path.extname(first)).toBe(".png");
+    expect([...fs.readFileSync(first)]).toEqual([1, 2, 3, 4]);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_input/resources/img_input?type=image",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   test("adds an OnIt reaction to acknowledge an incoming message", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
@@ -64,6 +88,78 @@ describe("FeishuMessageClient", () => {
     await client.sendMarkdown("chat_id:c1", "answer", "stable-uuid");
     const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
     expect(body.uuid).toBe("stable-uuid");
+    expect(JSON.parse(String(body.content))).toMatchObject({
+      schema: "2.0",
+      body: {
+        elements: [{ tag: "markdown", content: "answer" }],
+      },
+    });
+  });
+
+  test("uses the base chat id when sending for a thread-scoped task context", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_1" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await client.sendText("chat_id:oc_private:thread_id:omt_topic", "fallback");
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    expect(body.receive_id).toBe("oc_private");
+  });
+
+  test("replies with an interactive card inside the source message thread", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_progress" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.replyInteractiveCard(
+      "chat_id:oc_group",
+      { messageId: "om_question", replyInThread: true },
+      { schema: "2.0", body: { elements: [] } },
+      "stable-progress-uuid",
+    )).resolves.toBe("om_progress");
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_question/reply",
+    );
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      msg_type: "interactive",
+      reply_in_thread: true,
+      uuid: "stable-progress-uuid",
+    });
+    expect(JSON.parse(String(body.content))).toEqual({ schema: "2.0", body: { elements: [] } });
+  });
+
+  test("uses a Card 2.0 markdown component for final answers in message threads", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_final" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+    const markdown = "调用 `/fork <任务 ID>`，并检查 `aria_role`。";
+
+    await client.replyMarkdown(
+      "chat_id:oc_group",
+      { messageId: "om_question", replyInThread: true },
+      markdown,
+      "stable-final-uuid",
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    const card = JSON.parse(String(body.content)) as {
+      schema: string;
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    expect(card).toEqual({
+      schema: "2.0",
+      config: { update_multi: true },
+      body: { elements: [{ tag: "markdown", content: markdown }] },
+    });
   });
 
   test("classifies network failures during card update as retryable", async () => {
@@ -92,10 +188,158 @@ describe("FeishuMessageClient", () => {
     expect(uploadBody).toBeInstanceOf(FormData);
     expect((uploadBody as FormData).get("image_type")).toBe("message");
     const messageBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as Record<string, unknown>;
-    const card = JSON.parse(String(messageBody.content)) as { elements: Array<Record<string, unknown>> };
+    const card = JSON.parse(String(messageBody.content)) as { body: { elements: Array<Record<string, unknown>> } };
     expect(messageBody.uuid).toBe("image-uuid");
-    expect(card.elements.map((element) => element.tag)).toEqual(["markdown", "img", "markdown"]);
-    expect(card.elements[1]).toEqual(expect.objectContaining({ img_key: "img_screen", preview: true }));
+    expect(card.body.elements.map((element) => element.tag)).toEqual(["markdown", "img", "markdown"]);
+    expect(card.body.elements[1]).toEqual(expect.objectContaining({ img_key: "img_screen", preview: true }));
+  });
+
+  test("uploads angle-wrapped slash-prefixed Windows screenshot paths from restored Codex answers", async () => {
+    const imagePath = createImage("restored.png");
+    const slashPrefixedPath = `/${markdownPath(imagePath)}`;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { image_key: "img_restored" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_restored" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await client.sendMarkdown(
+      "chat_id:c1",
+      `截图：\n\n![恢复截图](<${slashPrefixedPath}>)`,
+      "restored-image-uuid",
+    );
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/open-apis/im/v1/images");
+    const messageBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as Record<string, unknown>;
+    const card = JSON.parse(String(messageBody.content)) as { body: { elements: Array<Record<string, unknown>> } };
+    expect(card.body.elements.at(-1)).toEqual(expect.objectContaining({ tag: "img", img_key: "img_restored" }));
+    expect(messageBody.uuid).toBe("restored-image-uuid");
+  });
+
+  test("removes unsupported image syntax before sending a Feishu card", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_fallback" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await client.sendMarkdown(
+      "chat_id:c1",
+      "截图：![已删除](</D:/missing/screenshot.png>)，远程图：![查看](https://example.com/image.png)",
+    );
+
+    const messageBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    const content = String(messageBody.content);
+    expect(content).toContain("图片不可用：已删除");
+    expect(content).toContain("[查看](https://example.com/image.png)");
+    expect(content).not.toContain("![");
+    expect(content).not.toContain('"tag":"img"');
+  });
+
+  test("uploads view_image previews in cards once and reuses the image key on updates", async () => {
+    const imagePath = createImage("view.png");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { image_key: "img_view" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_view" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok" }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+    const card = {
+      schema: "2.0",
+      body: {
+        elements: [{
+          tag: "collapsible_panel",
+          expanded: false,
+          elements: [{
+            tag: "img",
+            img_key: "",
+            __acp_local_image_path: imagePath,
+            alt: { tag: "plain_text", content: "view_image 图片" },
+            preview: true,
+          }],
+        }],
+      },
+    };
+
+    await client.sendInteractiveCard("chat_id:c1", card);
+    await client.updateInteractiveCard("om_view", card);
+
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes("/im/v1/images"))).toHaveLength(1);
+    const sent = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { content: string };
+    const updated = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body)) as { content: string };
+    for (const content of [sent.content, updated.content]) {
+      expect(content).toContain('"img_key":"img_view"');
+      expect(content).not.toContain("__acp_local_image_path");
+    }
+  });
+
+  test("uploads a replacement image when the same file path has a newer modification time", async () => {
+    const imagePath = createImage("replaced-view.png");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { image_key: "img_old" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_replaced_view" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { image_key: "img_new" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok" }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+    const card = {
+      schema: "2.0",
+      body: {
+        elements: [{
+          tag: "img",
+          img_key: "",
+          __acp_local_image_path: imagePath,
+          alt: { tag: "plain_text", content: "view_image 图片" },
+          preview: true,
+        }],
+      },
+    };
+
+    await client.sendInteractiveCard("chat_id:c1", card);
+    fs.writeFileSync(imagePath, "replacement image");
+    const newer = new Date(Date.now() + 2_000);
+    fs.utimesSync(imagePath, newer, newer);
+    await client.updateInteractiveCard("om_replaced_view", card);
+
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes("/im/v1/images"))).toHaveLength(2);
+    const sent = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { content: string };
+    const updated = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body)) as { content: string };
+    expect(sent.content).toContain('"img_key":"img_old"');
+    expect(updated.content).toContain('"img_key":"img_new"');
+  });
+
+  test("keeps the tool card usable when a view_image preview cannot be uploaded", async () => {
+    const imagePath = createImage("unavailable.png");
+    const testLogger = logger();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 234001, msg: "bad image" }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_fallback" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), testLogger);
+
+    await client.sendInteractiveCard("chat_id:c1", {
+      schema: "2.0",
+      body: {
+        elements: [{
+          tag: "collapsible_panel",
+          elements: [{
+            tag: "img",
+            img_key: "",
+            __acp_local_image_path: imagePath,
+            alt: { tag: "plain_text", content: "view_image 图片" },
+          }],
+        }],
+      },
+    });
+
+    const sent = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { content: string };
+    expect(sent.content).toContain("图片加载失败：view_image 图片");
+    expect(sent.content).not.toContain("__acp_local_image_path");
+    expect(testLogger.warn).toHaveBeenCalled();
   });
 
   test("sends the remaining answer with a visible notice when image upload fails", async () => {
@@ -123,7 +367,12 @@ function response(payload: unknown) {
 }
 
 function config(): AppConfig {
-  return { feishu: { appId: "cli_app", appSecret: "secret" } } as unknown as AppConfig;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-client-data-"));
+  temporaryDirectories.push(directory);
+  return {
+    feishu: { appId: "cli_app", appSecret: "secret" },
+    storage: { sqlitePath: path.join(directory, "state.sqlite") },
+  } as unknown as AppConfig;
 }
 
 function logger(): Logger {

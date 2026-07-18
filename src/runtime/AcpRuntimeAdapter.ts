@@ -10,6 +10,7 @@ import type {
   ResumeRuntimeSessionInput,
   RuntimeSession,
   RuntimeEvent,
+  RuntimePrompt,
   RuntimeSessionMetadata,
   ToolState,
 } from "./types.js";
@@ -96,7 +97,9 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     return this.requireSession(sessionId);
   }
 
-  async startTurn(sessionId: string, text: string): Promise<string> {
+  async startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string> {
+    const { text, localImagePaths } = normalizeRuntimePrompt(prompt);
+    if (localImagePaths.length > 0) throw new Error("当前 ACP Agent 不支持图片输入，请切换到 Codex 后重试。");
     const session = this.requireSession(sessionId);
     const turnId = createId("turn");
     session.activeTurnId = turnId;
@@ -127,7 +130,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     return turnId;
   }
 
-  async steerTurn(_sessionId: string, _turnId: string, _text: string): Promise<void> {
+  async steerTurn(_sessionId: string, _turnId: string, _prompt: RuntimePrompt): Promise<void> {
     throw new Error("ACP runtime does not support steering an active turn.");
   }
 
@@ -145,6 +148,10 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     this.sessions.delete(sessionId);
     this.activeTurns.delete(sessionId);
     this.toolsBySession.delete(sessionId);
+  }
+
+  async setTitle(sessionId: string, title: string): Promise<void> {
+    this.requireSession(sessionId).title = title;
   }
 
   async setModel(): Promise<void> {
@@ -308,4 +315,10 @@ function extractToolError(
 function extractExitCode(update: Record<string, JsonValue>): number | undefined {
   const output = recordField(recordField(update, "rawOutput"), "output") ?? recordField(update, "rawOutput");
   return numberField(output, "exitCode") ?? numberField(output, "code");
+}
+
+function normalizeRuntimePrompt(prompt: RuntimePrompt): { text: string; localImagePaths: string[] } {
+  return typeof prompt === "string"
+    ? { text: prompt, localImagePaths: [] }
+    : { text: prompt.text, localImagePaths: prompt.localImagePaths ?? [] };
 }

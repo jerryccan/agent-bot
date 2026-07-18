@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const MARKDOWN_LINK = /!?\[([^\]]*)\]\(([^)\r\n]+)\)/g;
+const MARKDOWN_LINK = /(!?)\[([^\]]*)\]\(([^)\r\n]+)\)/g;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".tiff", ".bmp", ".ico"]);
 
 export async function renderMarkdownWithLocalImages(
@@ -16,13 +16,20 @@ export async function renderMarkdownWithLocalImages(
 
   for (const match of markdown.matchAll(MARKDOWN_LINK)) {
     const matchIndex = match.index;
-    const target = match[2];
+    const target = match[3];
     if (matchIndex === undefined || target === undefined) continue;
     const filePath = localImagePath(target);
-    if (!filePath) continue;
+    const imageSyntax = match[1] === "!";
+    const label = match[2]?.trim() || path.basename(unwrapTarget(target.trim()));
+    if (!filePath) {
+      if (!imageSyntax) continue;
+      appendMarkdown(elements, markdown.slice(cursor, matchIndex));
+      appendMarkdown(elements, unsupportedImageFallback(label, target));
+      cursor = matchIndex + match[0].length;
+      continue;
+    }
 
     appendMarkdown(elements, markdown.slice(cursor, matchIndex));
-    const label = match[1]?.trim() || path.basename(filePath);
     try {
       let upload = uploads.get(filePath);
       if (!upload) {
@@ -57,6 +64,7 @@ function localImagePath(rawTarget: string): string | undefined {
   } catch {
     return undefined;
   }
+  if (/^\/[a-z]:[\\/]/i.test(candidate)) candidate = candidate.slice(1);
   if (!path.isAbsolute(candidate) && !path.win32.isAbsolute(candidate)) return undefined;
   const resolved = path.resolve(candidate);
   if (!IMAGE_EXTENSIONS.has(path.extname(resolved).toLowerCase())) return undefined;
@@ -69,6 +77,13 @@ function localImagePath(rawTarget: string): string | undefined {
 
 function unwrapTarget(target: string): string {
   return target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+}
+
+function unsupportedImageFallback(label: string, rawTarget: string): string {
+  const target = unwrapTarget(rawTarget.trim());
+  return /^https?:\/\//i.test(target)
+    ? `[${label || "图片"}](${target})`
+    : `图片不可用：${label || "本地图片"}`;
 }
 
 function appendMarkdown(elements: Array<Record<string, unknown>>, content: string): void {

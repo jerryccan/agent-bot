@@ -53,6 +53,25 @@ describe("mapCodexNotification", () => {
     });
   });
 
+  test("maps the current turn token usage rather than the thread total", () => {
+    expect(
+      mapCodexNotification("thread/tokenUsage/updated", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        tokenUsage: {
+          total: { totalTokens: 98_765 },
+          last: { totalTokens: 12_345 },
+          modelContextWindow: 200_000,
+        },
+      }),
+    ).toEqual({
+      kind: "token_usage",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      totalTokens: 12_345,
+    });
+  });
+
   test("maps command lifecycle items", () => {
     expect(
       mapCodexNotification("item/completed", {
@@ -85,6 +104,23 @@ describe("mapCodexNotification", () => {
     });
   });
 
+  test("maps command output deltas without marking the tool complete", () => {
+    expect(
+      mapCodexNotification("item/commandExecution/outputDelta", {
+        threadId: "thr_1",
+        turnId: "turn_1",
+        itemId: "item_1",
+        delta: "running test 3/10\n",
+      }),
+    ).toEqual({
+      kind: "tool_output_delta",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      toolId: "item_1",
+      delta: "running test 3/10\n",
+    });
+  });
+
   test("maps image view lifecycle using the notification phase", () => {
     const item = {
       type: "imageView",
@@ -102,6 +138,7 @@ describe("mapCodexNotification", () => {
         kind: "image_view",
         status: "running",
         command: "view_image D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+        imagePath: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
       }),
     });
     expect(mapCodexNotification("item/completed", { threadId: "thr_1", turnId: "turn_1", item })).toEqual({
@@ -114,6 +151,7 @@ describe("mapCodexNotification", () => {
         kind: "image_view",
         status: "completed",
         command: "view_image D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+        imagePath: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
       }),
     });
   });

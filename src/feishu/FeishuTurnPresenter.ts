@@ -4,7 +4,7 @@ import { splitMarkdown } from "../presentation/splitMarkdown.js";
 import type { TurnViewState } from "../presentation/turnViewTypes.js";
 import { CardRenderer } from "./CardRenderer.js";
 import { CardUpdateScheduler } from "./CardUpdateScheduler.js";
-import type { FeishuOutbound } from "./types.js";
+import type { FeishuOutbound, MessageReplyTarget } from "./types.js";
 import { createId } from "../utils/id.js";
 import { createHash } from "node:crypto";
 
@@ -42,6 +42,7 @@ interface TurnEntry {
 export class FeishuTurnPresenter {
   private readonly sessionContexts = new Map<string, string>();
   private readonly sessionTitles = new Map<string, string>();
+  private readonly sessionCwds = new Map<string, string>();
   private readonly entries = new Map<string, TurnEntry>();
   private readonly pendingEntries = new Map<string, TurnEntry>();
   private readonly renderer: CardRenderer;
@@ -55,9 +56,10 @@ export class FeishuTurnPresenter {
     this.renderer = renderer ?? new CardRenderer();
   }
 
-  registerSession(sessionId: string, contextKey: string, taskTitle?: string): void {
+  registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void {
     this.sessionContexts.set(sessionId, contextKey);
     if (taskTitle) this.sessionTitles.set(sessionId, taskTitle);
+    if (projectCwd) this.sessionCwds.set(sessionId, projectCwd);
   }
 
   updateSessionTitle(sessionId: string, taskTitle: string): void {
@@ -73,9 +75,15 @@ export class FeishuTurnPresenter {
   unregisterSession(sessionId: string): void {
     this.sessionContexts.delete(sessionId);
     this.sessionTitles.delete(sessionId);
+    this.sessionCwds.delete(sessionId);
   }
 
-  async startPendingTurn(sessionId: string, contextKey: string, taskTitle?: string): Promise<void> {
+  async startPendingTurn(
+    sessionId: string,
+    contextKey: string,
+    taskTitle?: string,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void> {
     const existing = this.pendingEntries.get(sessionId);
     if (existing) {
       await existing.initializing;
@@ -88,6 +96,8 @@ export class FeishuTurnPresenter {
       createId("pending"),
       Date.now(),
       taskTitle ?? this.sessionTitles.get(sessionId),
+      replyTarget,
+      this.sessionCwds.get(sessionId),
     );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(state.turnId, entry);
@@ -126,7 +136,14 @@ export class FeishuTurnPresenter {
         this.pendingEntries.delete(event.sessionId);
         this.entries.delete(pending.state.turnId);
         pending.state = reduceTurnEvent(
-          createTurnViewState(event.sessionId, event.turnId, event.startedAt, pending.state.taskTitle),
+          createTurnViewState(
+            event.sessionId,
+            event.turnId,
+            event.startedAt,
+            pending.state.taskTitle,
+            pending.state.replyTarget,
+            pending.state.projectCwd,
+          ),
           event,
         );
         this.entries.set(event.turnId, pending);
@@ -192,7 +209,14 @@ export class FeishuTurnPresenter {
     if (!contextKey) return undefined;
     const startedAt = event.type === "turn_started" ? event.startedAt : Date.now();
     const state = reduceTurnEvent(
-      createTurnViewState(event.sessionId, event.turnId, startedAt, this.sessionTitles.get(event.sessionId)),
+      createTurnViewState(
+        event.sessionId,
+        event.turnId,
+        startedAt,
+        this.sessionTitles.get(event.sessionId),
+        undefined,
+        this.sessionCwds.get(event.sessionId),
+      ),
       event,
     );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
@@ -204,7 +228,15 @@ export class FeishuTurnPresenter {
 
   private async initializeEntry(entry: TurnEntry): Promise<void> {
     const sentState = entry.state;
-    const messageId = await this.outbound.sendInteractiveCard(entry.contextKey, this.renderer.renderTurn(sentState));
+    const card = this.renderer.renderTurn(sentState);
+    const messageId = sentState.replyTarget && this.outbound.replyInteractiveCard
+      ? await this.outbound.replyInteractiveCard(
+          entry.contextKey,
+          sentState.replyTarget,
+          card,
+          progressMessageKey(sentState.turnId),
+        )
+      : await this.outbound.sendInteractiveCard(entry.contextKey, card);
     entry.messageId = messageId;
     if (!messageId) return;
     this.store.saveTurnDelivery(entry.state.turnId, { progressMessageId: messageId });
@@ -237,17 +269,30 @@ export class FeishuTurnPresenter {
     for (let index = messageIds.length; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       if (chunk === undefined) continue;
-      const messageId = await this.sendFinalChunk(contextKey, chunk, finalMessageKey(state.turnId, index));
+      const messageId = await this.sendFinalChunk(
+        contextKey,
+        state.replyTarget,
+        chunk,
+        finalMessageKey(state.turnId, index),
+      );
       messageIds.push(messageId ?? `delivered-chunk-${index}`);
       this.store.saveFinalDeliveryProgress(state.turnId, messageIds);
     }
     this.store.markFinalDelivered(state.turnId, messageIds);
   }
 
-  private async sendFinalChunk(contextKey: string, chunk: string, idempotencyKey: string): Promise<string | undefined> {
+  private async sendFinalChunk(
+    contextKey: string,
+    replyTarget: MessageReplyTarget | undefined,
+    chunk: string,
+    idempotencyKey: string,
+  ): Promise<string | undefined> {
     const backoffs = this.options.finalRetryBackoffMs ?? [2_000, 4_000, 8_000];
     for (let attempt = 0; ; attempt += 1) {
       try {
+        if (replyTarget && this.outbound.replyMarkdown) {
+          return await this.outbound.replyMarkdown(contextKey, replyTarget, chunk, idempotencyKey);
+        }
         return await this.outbound.sendMarkdown(contextKey, chunk, idempotencyKey);
       } catch (error) {
         if (!isRetryableError(error) || attempt >= backoffs.length) throw error;
@@ -298,4 +343,9 @@ function delay(milliseconds: number): Promise<void> {
 function finalMessageKey(turnId: string, index: number): string {
   const digest = createHash("sha256").update(`${turnId}:${index}`).digest("hex").slice(0, 32);
   return `codex-final-${digest}`;
+}
+
+function progressMessageKey(turnId: string): string {
+  const digest = createHash("sha256").update(`progress:${turnId}`).digest("hex").slice(0, 32);
+  return `codex-progress-${digest}`;
 }

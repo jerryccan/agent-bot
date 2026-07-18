@@ -47,6 +47,11 @@ export interface MessageReactionRecord {
   updatedAt: string;
 }
 
+export interface TurnAnchorRecord {
+  turnId: string;
+  localSessionId: string;
+}
+
 interface UserContextRow {
   context_key: string;
   default_agent: string;
@@ -133,11 +138,35 @@ export class StateStore {
     };
   }
 
+  getUserContext(contextKey: string): UserContextRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM user_contexts WHERE context_key = ?")
+      .get(contextKey) as UserContextRow | undefined;
+    return row ? mapUserContext(row) : undefined;
+  }
+
   listUserContexts(): UserContextRecord[] {
     const rows = this.db
       .prepare("SELECT * FROM user_contexts ORDER BY created_at ASC")
       .all() as UserContextRow[];
     return rows.map(mapUserContext);
+  }
+
+  nextForkTitle(sourceTitle?: string): string {
+    const baseTitle = forkBaseTitle(sourceTitle);
+    const allocate = this.db.transaction(() => {
+      const existing = this.db
+        .prepare("SELECT last_sequence FROM fork_title_sequences WHERE base_title = ?")
+        .get(baseTitle) as { last_sequence: number } | undefined;
+      const nextSequence = (existing?.last_sequence ?? 0) + 1;
+      this.db.prepare(`
+        INSERT INTO fork_title_sequences (base_title, last_sequence)
+        VALUES (?, ?)
+        ON CONFLICT(base_title) DO UPDATE SET last_sequence = excluded.last_sequence
+      `).run(baseTitle, nextSequence);
+      return nextSequence;
+    });
+    return formatForkTitle(baseTitle, allocate());
   }
 
   reconcileInterruptedAcpSessions(acpAgentNames: string[]): SessionRecord[] {
@@ -464,10 +493,22 @@ export class StateStore {
     return rows.map(mapSession);
   }
 
-  findSessionByRemoteSessionId(remoteSessionId: string): SessionRecord | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM sessions WHERE remote_session_id = ? AND status != 'closed' ORDER BY created_at ASC LIMIT 1")
-      .get(remoteSessionId) as SessionRow | undefined;
+  findSessionByRemoteSessionId(remoteSessionId: string, contextKey?: string): SessionRecord | undefined {
+    const row = contextKey
+      ? this.db
+          .prepare(`
+            SELECT * FROM sessions
+            WHERE remote_session_id = ? AND context_key = ? AND status != 'closed'
+            ORDER BY created_at ASC LIMIT 1
+          `)
+          .get(remoteSessionId, contextKey) as SessionRow | undefined
+      : this.db
+          .prepare(`
+            SELECT * FROM sessions
+            WHERE remote_session_id = ? AND status != 'closed'
+            ORDER BY created_at ASC LIMIT 1
+          `)
+          .get(remoteSessionId) as SessionRow | undefined;
     return row ? mapSession(row) : undefined;
   }
 
@@ -515,6 +556,18 @@ export class StateStore {
       SET local_session_id = ?, turn_id = ?, updated_at = ?
       WHERE message_id = ? AND status = 'pending'
     `).run(localSessionId, turnId, new Date().toISOString(), messageId);
+  }
+
+  bindMessageToTurn(messageId: string, localSessionId: string, turnId: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO message_turn_bindings (message_id, local_session_id, turn_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        local_session_id = excluded.local_session_id,
+        turn_id = excluded.turn_id,
+        updated_at = excluded.updated_at
+    `).run(messageId, localSessionId, turnId, now, now);
   }
 
   claimMessageReactionsForTurn(turnId: string): MessageReactionRecord[] {
@@ -580,6 +633,45 @@ export class StateStore {
     return row ? mapMessageReaction(row) : undefined;
   }
 
+  findTurnAnchorByMessageId(messageId: string): TurnAnchorRecord | undefined {
+    const binding = this.db.prepare(`
+      SELECT turn_id, local_session_id
+      FROM message_turn_bindings
+      WHERE message_id = ?
+      LIMIT 1
+    `).get(messageId) as { turn_id: string; local_session_id: string } | undefined;
+    if (binding) {
+      return { turnId: binding.turn_id, localSessionId: binding.local_session_id };
+    }
+
+    const reaction = this.db.prepare(`
+      SELECT turn_id, local_session_id
+      FROM message_reactions
+      WHERE message_id = ? AND turn_id IS NOT NULL AND local_session_id IS NOT NULL
+      LIMIT 1
+    `).get(messageId) as { turn_id: string; local_session_id: string } | undefined;
+    if (reaction) {
+      return { turnId: reaction.turn_id, localSessionId: reaction.local_session_id };
+    }
+
+    const delivery = this.db.prepare(`
+      SELECT deliveries.turn_id, snapshots.local_session_id
+      FROM turn_deliveries AS deliveries
+      JOIN turn_snapshots AS snapshots ON snapshots.turn_id = deliveries.turn_id
+      WHERE deliveries.progress_message_id = ?
+         OR EXISTS (
+           SELECT 1
+           FROM json_each(deliveries.final_message_ids_json)
+           WHERE json_each.value = ?
+         )
+      ORDER BY deliveries.updated_at DESC
+      LIMIT 1
+    `).get(messageId, messageId) as { turn_id: string; local_session_id: string } | undefined;
+    return delivery
+      ? { turnId: delivery.turn_id, localSessionId: delivery.local_session_id }
+      : undefined;
+  }
+
   private ensureSessionColumns(): void {
     const existing = new Set(
       (this.db.pragma("table_info(sessions)") as Array<{ name: string }>).map((column) => column.name),
@@ -609,6 +701,22 @@ export class StateStore {
       this.db.exec("ALTER TABLE user_contexts ADD COLUMN previous_session_id TEXT");
     }
   }
+}
+
+const MAX_TASK_TITLE_LENGTH = 120;
+const FORK_TITLE_SUFFIX = /\s*（分支\s+(\d+)）$/u;
+
+function forkBaseTitle(sourceTitle?: string): string {
+  let title = sourceTitle?.replace(/\s+/g, " ").trim() || "未命名任务";
+  while (FORK_TITLE_SUFFIX.test(title)) title = title.replace(FORK_TITLE_SUFFIX, "").trim();
+  return title || "未命名任务";
+}
+
+function formatForkTitle(baseTitle: string, sequence: number): string {
+  const suffix = `（分支 ${sequence}）`;
+  const available = Math.max(1, MAX_TASK_TITLE_LENGTH - suffix.length);
+  const truncatedBase = baseTitle.length <= available ? baseTitle : baseTitle.slice(0, available).trimEnd();
+  return `${truncatedBase}${suffix}`;
 }
 
 function mapUserContext(row: UserContextRow): UserContextRecord {

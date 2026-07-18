@@ -3,6 +3,11 @@ export type PermissionMode = "auto" | "confirm";
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 export type ToolStatus = "running" | "completed" | "failed";
 
+export type RuntimePrompt = string | {
+  text: string;
+  localImagePaths?: string[];
+};
+
 export interface PlanStep {
   text: string;
   status: "pending" | "in_progress" | "completed";
@@ -19,6 +24,7 @@ export interface ToolState {
   exitCode?: number;
   startedAt?: number;
   completedAt?: number;
+  imagePath?: string;
   files?: Array<{ path: string; additions?: number; deletions?: number }>;
 }
 
@@ -33,6 +39,7 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: "turn_started"; sessionId: string; turnId: string; startedAt: number }
   | { type: "agent_text_delta"; sessionId: string; turnId: string; text: string }
+  | { type: "token_usage_updated"; sessionId: string; turnId: string; totalTokens: number }
   | {
       type: "progress";
       sessionId: string;
@@ -44,6 +51,7 @@ export type AgentEvent =
   | { type: "plan_updated"; sessionId: string; turnId: string; steps: PlanStep[] }
   | { type: "tool_started"; sessionId: string; turnId: string; tool: ToolState }
   | { type: "tool_updated"; sessionId: string; turnId: string; tool: ToolState }
+  | { type: "tool_output_delta"; sessionId: string; turnId: string; toolId: string; delta: string }
   | { type: "approval_requested"; sessionId: string; turnId: string; request: ApprovalRequest }
   | { type: "approval_resolved"; sessionId: string; turnId: string; requestId: string; decision: ApprovalDecision }
   | { type: "turn_completed"; sessionId: string; turnId: string; finalResponse: string; durationMs?: number }
@@ -113,6 +121,11 @@ export interface ResumeRuntimeSessionInput extends CreateRuntimeSessionInput {
   activeTurnId?: string;
 }
 
+export interface ForkRuntimeSessionInput extends CreateRuntimeSessionInput {
+  remoteSessionId: string;
+  lastTurnId: string;
+}
+
 export interface ModelOption {
   id: string;
   displayName?: string;
@@ -130,16 +143,18 @@ export interface AgentRuntime {
   readonly kind: RuntimeKind;
   createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession>;
+  forkSession?(input: ForkRuntimeSessionInput): Promise<RuntimeSession>;
   getSession(localSessionId: string): RuntimeSession | undefined;
   readSessionMetadata(remoteSessionId: string): Promise<RuntimeSessionMetadata>;
   listRemoteSessions?(input?: { searchTerm?: string; cursor?: string; limit?: number }): Promise<RemoteSessionPage>;
   readRemoteSession?(remoteSessionId: string): Promise<RemoteSessionSummary>;
   synchronizeSession(sessionId: string): Promise<RuntimeSession>;
-  startTurn(sessionId: string, text: string): Promise<string>;
-  steerTurn(sessionId: string, turnId: string, text: string): Promise<void>;
+  startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string>;
+  steerTurn(sessionId: string, turnId: string, prompt: RuntimePrompt): Promise<void>;
   cancelTurn(sessionId: string, turnId: string): Promise<void>;
   interruptRemoteTurn?(remoteSessionId: string, turnId: string): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
+  setTitle?(sessionId: string, title: string): Promise<void>;
   setModel(sessionId: string, model: string): Promise<void>;
   setReasoningEffort(sessionId: string, effort: string): Promise<void>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void>;

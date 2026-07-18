@@ -3,12 +3,14 @@ import type {
   AgentRuntime,
   ApprovalDecision,
   CreateRuntimeSessionInput,
+  ForkRuntimeSessionInput,
   ModelOption,
   PermissionMode,
   RemoteSessionPage,
   RemoteSessionSummary,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
+  RuntimePrompt,
   RuntimeSession,
   RuntimeSessionMetadata,
 } from "../runtime/types.js";
@@ -113,7 +115,32 @@ export class CodexRuntime implements AgentRuntime {
     return session;
   }
 
-  async startTurn(sessionId: string, text: string): Promise<string> {
+  async forkSession(input: ForkRuntimeSessionInput): Promise<RuntimeSession> {
+    const client = await this.client();
+    const response = await client.request<ThreadResponse>("thread/fork", {
+      threadId: input.remoteSessionId,
+      lastTurnId: input.lastTurnId,
+      cwd: input.cwd,
+      model: input.model,
+      threadSource: "user",
+      ...threadLifecycleParams(input.cwd),
+      ...permissionParams(input.permissionMode),
+    }, SESSION_REQUEST_TIMEOUT_MS);
+    const requestedTitle = normalizeTaskTitle(input.title);
+    if (requestedTitle) {
+      await client.request("thread/name/set", {
+        threadId: response.thread.id,
+        name: requestedTitle,
+      }, SESSION_REQUEST_TIMEOUT_MS);
+    }
+    const reasoningEffort = await this.resolveReasoningEffort(input, response);
+    const session = this.makeSession(input, response, reasoningEffort);
+    if (requestedTitle) session.title = requestedTitle;
+    this.sessions.set(input.localSessionId, session);
+    return session;
+  }
+
+  async startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string> {
     const session = this.requireSession(sessionId);
     const client = await this.client();
     if (session.needsResume) {
@@ -128,7 +155,7 @@ export class CodexRuntime implements AgentRuntime {
     }
     const response = await client.request<{ turn: { id: string } }>("turn/start", {
       threadId: session.remoteSessionId,
-      input: [{ type: "text", text }],
+      input: codexUserInput(prompt),
       cwd: session.cwd,
       model: session.model,
       effort: session.reasoningEffort,
@@ -216,12 +243,12 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
-  async steerTurn(sessionId: string, turnId: string, text: string): Promise<void> {
+  async steerTurn(sessionId: string, turnId: string, prompt: RuntimePrompt): Promise<void> {
     const session = this.requireActiveTurn(sessionId, turnId);
     await (await this.client()).request("turn/steer", {
       threadId: session.remoteSessionId,
       expectedTurnId: turnId,
-      input: [{ type: "text", text }],
+      input: codexUserInput(prompt),
     }, CONTROL_REQUEST_TIMEOUT_MS);
   }
 
@@ -250,6 +277,18 @@ export class CodexRuntime implements AgentRuntime {
       CONTROL_REQUEST_TIMEOUT_MS,
     );
     this.sessions.delete(sessionId);
+  }
+
+  async setTitle(sessionId: string, title: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    const normalizedTitle = normalizeTaskTitle(title);
+    if (!normalizedTitle) throw new Error("任务标题不能为空。");
+    await (await this.client()).request(
+      "thread/name/set",
+      { threadId: session.remoteSessionId, name: normalizedTitle },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    session.title = normalizedTitle;
   }
 
   async setModel(sessionId: string, model: string): Promise<void> {
@@ -378,7 +417,14 @@ export class CodexRuntime implements AgentRuntime {
       return;
     }
     const sessionId = session.localSessionId;
-    if (mapped.kind === "agent_message_phase") {
+    if (mapped.kind === "token_usage") {
+      this.emit({
+        type: "token_usage_updated",
+        sessionId,
+        turnId: mapped.turnId,
+        totalTokens: mapped.totalTokens,
+      });
+    } else if (mapped.kind === "agent_message_phase") {
       session.messagePhases.set(mapped.itemId, mapped.phase);
     } else if (mapped.kind === "agent_delta") {
       if (session.messagePhases.get(mapped.itemId) === "commentary") {
@@ -411,6 +457,14 @@ export class CodexRuntime implements AgentRuntime {
         sessionId,
         turnId: mapped.turnId,
         tool: mapped.tool,
+      });
+    } else if (mapped.kind === "tool_output_delta") {
+      this.emit({
+        type: "tool_output_delta",
+        sessionId,
+        turnId: mapped.turnId,
+        toolId: mapped.toolId,
+        delta: mapped.delta,
       });
     } else if (mapped.kind === "terminal") {
       session.activeTurnId = undefined;
@@ -566,7 +620,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private makeSession(
-    input: CreateRuntimeSessionInput | ResumeRuntimeSessionInput,
+    input: CreateRuntimeSessionInput | ResumeRuntimeSessionInput | ForkRuntimeSessionInput,
     response: ThreadResponse,
     reasoningEffort?: string,
   ): CodexSession {
@@ -774,6 +828,17 @@ function markLocallyDetectedActive(
     lastActivity: undefined,
     finalResponse: undefined,
   };
+}
+
+function codexUserInput(prompt: RuntimePrompt): Array<Record<string, unknown>> {
+  const normalized = typeof prompt === "string" ? { text: prompt, localImagePaths: [] } : {
+    text: prompt.text,
+    localImagePaths: prompt.localImagePaths ?? [],
+  };
+  return [
+    ...(normalized.text.trim() ? [{ type: "text", text: normalized.text, text_elements: [] }] : []),
+    ...normalized.localImagePaths.map((imagePath) => ({ type: "localImage", path: imagePath })),
+  ];
 }
 
 function remoteThreadStatus(value: string | undefined): RemoteSessionSummary["status"] {

@@ -2,6 +2,8 @@ import type { PermissionMode } from "../runtime/types.js";
 
 export type Command =
   | { type: "new"; cwd?: string }
+  | { type: "fork"; sessionId?: string }
+  | { type: "title"; title: string }
   | { type: "ask"; text: string }
   | { type: "sessions"; searchTerm?: string }
   | { type: "switch"; sessionId?: string }

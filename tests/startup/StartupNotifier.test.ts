@@ -42,6 +42,7 @@ describe("StartupNotifier", () => {
   test("sends one session-aware card to each persisted Feishu chat and skips console contexts", async () => {
     const store = createStore();
     store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.getOrCreateUserContext("chat_id:c1:thread_id:omt_topic", "codex");
     store.getOrCreateUserContext("console:local", "codex");
     store.createSession({
       localSessionId: "sess_1",
@@ -67,6 +68,11 @@ describe("StartupNotifier", () => {
 
     expect(sendInteractiveCard).toHaveBeenCalledOnce();
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:c1", expect.any(Object));
+    expect(sendInteractiveCard.mock.calls[0]?.[1]).toMatchObject({
+      schema: "2.0",
+      header: { template: "green" },
+      body: { elements: expect.any(Array) },
+    });
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("thread_1");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).not.toContain("sess_1");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("Current task title");

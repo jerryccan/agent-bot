@@ -70,4 +70,21 @@ export const migrations = [
   CREATE INDEX IF NOT EXISTS idx_message_reactions_turn_status
     ON message_reactions(turn_id, status);
   `,
+  `
+  CREATE TABLE IF NOT EXISTS message_turn_bindings (
+    message_id TEXT PRIMARY KEY,
+    local_session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_turn_bindings_turn
+    ON message_turn_bindings(turn_id);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS fork_title_sequences (
+    base_title TEXT PRIMARY KEY,
+    last_sequence INTEGER NOT NULL
+  );
+  `,
 ] as const;

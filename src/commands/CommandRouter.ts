@@ -16,6 +16,12 @@ export class CommandRouter {
       case "new":
         if (args.length > 1) throw new Error("/new 只接受一个可选工作目录；Agent 使用当前默认值。");
         return { type: "new", cwd: args[0] };
+      case "fork":
+        if (args.length > 1) throw new Error("/fork 只接受一个可选的任务序号或任务 ID。");
+        return args[0] ? { type: "fork", sessionId: args[0] } : { type: "fork" };
+      case "title":
+        if (args.length === 0) throw new Error("请输入新标题，例如：/title 修复会话列表。");
+        return { type: "title", title: args.join(" ") };
       case "ask":
         return { type: "ask", text: trimmed.slice(rawCommand.length).trim() };
       case "sessions":

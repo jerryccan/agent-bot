@@ -4,5 +4,6 @@ dist/
 .tmp/
 data/*.sqlite
 data/*.sqlite-*
+data/inbound-images/
 logs/*.log
 .env

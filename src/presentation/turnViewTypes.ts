@@ -1,3 +1,4 @@
+import type { MessageReplyTarget } from "../feishu/types.js";
 import type { ApprovalRequest, PlanStep, ToolState } from "../runtime/types.js";
 
 export type TurnViewStatus =
@@ -23,14 +24,18 @@ export interface TurnViewState {
   sessionId: string;
   turnId: string;
   taskTitle?: string;
+  projectCwd?: string;
+  replyTarget?: MessageReplyTarget;
   status: TurnViewStatus;
   startedAt: number;
   completedAt?: number;
   durationMs?: number;
+  totalTokens?: number;
   progressText?: string;
   assistantText: string;
   plan: PlanStep[];
   activities: TurnActivity[];
+  activitiesTruncated?: boolean;
   activeTool?: ToolState;
   completedTools: ToolState[];
   failedTools: ToolState[];

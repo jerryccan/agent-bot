@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { CardRenderer } from "../feishu/CardRenderer.js";
+import { isThreadContextKey } from "../feishu/contextKey.js";
 import type { FeishuOutbound } from "../feishu/types.js";
 import type { SessionRecord, StateStore } from "../state/StateStore.js";
 
@@ -27,7 +28,9 @@ export class StartupNotifier {
   async notify(startedAt: Date): Promise<void> {
     let contexts;
     try {
-      contexts = this.store.listUserContexts().filter((context) => context.contextKey.startsWith("chat_id:"));
+      contexts = this.store.listUserContexts().filter((context) =>
+        context.contextKey.startsWith("chat_id:") && !isThreadContextKey(context.contextKey),
+      );
     } catch (error) {
       this.logger.warn({ error }, "Failed to load startup notification targets.");
       return;

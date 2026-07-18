@@ -1,4 +1,5 @@
 import type { AgentEvent, ToolState } from "../runtime/types.js";
+import type { MessageReplyTarget } from "../feishu/types.js";
 import type { FileSummary, TurnActivity, TurnViewState } from "./turnViewTypes.js";
 
 const MAX_TEXT = 6_000;
@@ -12,11 +13,15 @@ export function createTurnViewState(
   turnId: string,
   startedAt: number,
   taskTitle?: string,
+  replyTarget?: MessageReplyTarget,
+  projectCwd?: string,
 ): TurnViewState {
   return {
     sessionId,
     turnId,
     taskTitle,
+    projectCwd,
+    replyTarget,
     status: "starting",
     startedAt,
     assistantText: "",
@@ -36,29 +41,41 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
       return { ...state, status: "running", startedAt: event.startedAt };
     case "agent_text_delta":
       return { ...state, assistantText: bound(`${state.assistantText}${event.text}`) };
-    case "progress":
+    case "token_usage_updated":
+      return { ...state, totalTokens: Math.max(0, Math.round(event.totalTokens)) };
+    case "progress": {
+      const activityUpdate = upsertReasoningActivity(
+        state.activities ?? [],
+        event.activityId ?? "progress",
+        event.text,
+        event.append === true,
+      );
       return {
         ...state,
         progressText: bound(event.text),
-        activities: upsertReasoningActivity(
-          state.activities ?? [],
-          event.activityId ?? "progress",
-          event.text,
-          event.append === true,
-        ),
+        activities: activityUpdate.activities,
+        activitiesTruncated: state.activitiesTruncated || activityUpdate.truncated,
       };
+    }
     case "plan_updated":
       return { ...state, plan: event.steps.slice(0, 30).map((step) => ({ ...step, text: bound(step.text) })) };
-    case "tool_started":
+    case "tool_started": {
+      const tool = withToolTiming(state, event.tool);
+      const bounded = boundTool(tool);
+      const activityUpdate = upsertToolActivity(state.activities ?? [], bounded);
       return {
         ...state,
         status: "tool_running",
-        activeTool: boundTool(event.tool),
-        activities: upsertToolActivity(state.activities ?? [], boundTool(event.tool)),
-        fileSummary: mergeFiles(state.fileSummary, event.tool.files),
+        activeTool: bounded,
+        activities: activityUpdate.activities,
+        activitiesTruncated: state.activitiesTruncated || activityUpdate.truncated,
+        fileSummary: mergeFiles(state.fileSummary, tool.files),
       };
+    }
     case "tool_updated":
       return reduceToolUpdate(state, event.tool);
+    case "tool_output_delta":
+      return reduceToolOutputDelta(state, event.toolId, event.delta);
     case "approval_requested":
       return { ...state, status: "waiting_for_approval", approval: event.request };
     case "approval_resolved":
@@ -87,9 +104,46 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
   }
 }
 
+function reduceToolOutputDelta(state: TurnViewState, toolId: string, delta: string): TurnViewState {
+  if (!delta) return state;
+  const tool = findTool(state, toolId);
+  if (!tool || tool.status !== "running" || tool.kind !== "command") return state;
+  return reduceToolUpdate(state, {
+    ...tool,
+    output: appendBoundedOutput(tool.output, delta),
+  });
+}
+
+function findTool(state: TurnViewState, toolId: string): ToolState | undefined {
+  if (state.activeTool?.id === toolId) return state.activeTool;
+  const activity = [...(state.activities ?? [])].reverse().find((candidate) =>
+    candidate.kind === "tool" && candidate.tool.id === toolId);
+  if (activity?.kind === "tool") return activity.tool;
+  return state.failedTools.find((tool) => tool.id === toolId)
+    ?? state.completedTools.find((tool) => tool.id === toolId);
+}
+
+function withToolTiming(state: TurnViewState, tool: ToolState): ToolState {
+  const previous = findTool(state, tool.id);
+  const now = Date.now();
+  const startedAt = tool.startedAt ?? previous?.startedAt ?? tool.completedAt ?? now;
+  return {
+    ...tool,
+    startedAt,
+    completedAt: tool.status === "running" ? tool.completedAt : tool.completedAt ?? now,
+  };
+}
+
+function appendBoundedOutput(previous: string | undefined, delta: string): string {
+  const combined = `${previous ?? ""}${delta}`;
+  if (combined.length <= MAX_TEXT) return combined;
+  return `…${combined.slice(-(MAX_TEXT - 1))}`;
+}
+
 function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState {
+  tool = withToolTiming(state, tool);
   const bounded = boundTool(tool);
-  const activities = upsertToolActivity(state.activities ?? [], bounded);
+  const activityUpdate = upsertToolActivity(state.activities ?? [], bounded);
   const withoutCompleted = state.completedTools.filter((item) => item.id !== tool.id);
   const withoutFailed = state.failedTools.filter((item) => item.id !== tool.id);
   const activeTool = state.activeTool?.id === tool.id ? undefined : state.activeTool;
@@ -99,7 +153,8 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
       ...state,
       status: "tool_running",
       activeTool: bounded,
-      activities,
+      activities: activityUpdate.activities,
+      activitiesTruncated: state.activitiesTruncated || activityUpdate.truncated,
       completedTools: withoutCompleted,
       failedTools: withoutFailed,
       fileSummary: mergeFiles(state.fileSummary, tool.files),
@@ -111,7 +166,8 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
       ...state,
       status: activeTool ? "tool_running" : "running",
       activeTool,
-      activities,
+      activities: activityUpdate.activities,
+      activitiesTruncated: state.activitiesTruncated || activityUpdate.truncated,
       completedTools: withoutCompleted,
       failedTools: [...withoutFailed, bounded].slice(-MAX_FAILED_TOOLS),
       fileSummary: mergeFiles(state.fileSummary, tool.files),
@@ -122,7 +178,8 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
     ...state,
     status: activeTool ? "tool_running" : "running",
     activeTool,
-    activities,
+    activities: activityUpdate.activities,
+    activitiesTruncated: state.activitiesTruncated || activityUpdate.truncated,
     failedTools: withoutFailed,
     completedTools: [...withoutCompleted, bounded].slice(-MAX_COMPLETED_TOOLS),
     fileSummary: mergeFiles(state.fileSummary, tool.files),
@@ -134,7 +191,7 @@ function upsertReasoningActivity(
   id: string,
   text: string,
   append: boolean,
-): TurnActivity[] {
+): ActivityUpdate {
   const index = activities.findIndex((activity) => activity.id === id);
   const existing = index >= 0 ? activities[index] : undefined;
   const previousText = existing?.kind === "reasoning" ? existing.text : "";
@@ -146,16 +203,24 @@ function upsertReasoningActivity(
   return upsertActivity(activities, index, next);
 }
 
-function upsertToolActivity(activities: TurnActivity[], tool: ToolState): TurnActivity[] {
+function upsertToolActivity(activities: TurnActivity[], tool: ToolState): ActivityUpdate {
   const index = activities.findIndex((activity) => activity.id === tool.id);
   return upsertActivity(activities, index, { kind: "tool", id: tool.id, tool });
 }
 
-function upsertActivity(activities: TurnActivity[], index: number, activity: TurnActivity): TurnActivity[] {
+interface ActivityUpdate {
+  activities: TurnActivity[];
+  truncated: boolean;
+}
+
+function upsertActivity(activities: TurnActivity[], index: number, activity: TurnActivity): ActivityUpdate {
   const updated = [...activities];
   if (index >= 0) updated[index] = activity;
   else updated.push(activity);
-  return updated.slice(-MAX_ACTIVITIES);
+  return {
+    activities: updated.slice(-MAX_ACTIVITIES),
+    truncated: updated.length > MAX_ACTIVITIES,
+  };
 }
 
 function boundTool(tool: ToolState): ToolState {

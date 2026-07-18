@@ -62,6 +62,24 @@ describe("StateStore runtime metadata", () => {
     });
   });
 
+  test("allocates persistent fork title sequences by root title", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    expect(first.nextForkTitle("Inspect sessions")).toBe("Inspect sessions（分支 1）");
+    expect(first.nextForkTitle("Inspect sessions（分支 1）")).toBe("Inspect sessions（分支 2）");
+    expect(first.nextForkTitle("Another task")).toBe("Another task（分支 1）");
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.nextForkTitle("Inspect sessions")).toBe("Inspect sessions（分支 3）");
+  });
+
   test("persists Codex thread settings", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);
@@ -92,6 +110,8 @@ describe("StateStore runtime metadata", () => {
       reasoningEffort: "high",
       permissionMode: "auto",
     });
+    expect(store.findSessionByRemoteSessionId("thr_1", "chat_id:c1")?.localSessionId).toBe("s1");
+    expect(store.findSessionByRemoteSessionId("thr_1", "chat_id:other")).toBeUndefined();
   });
 
   test("stores bounded turn snapshots and final delivery state", () => {
@@ -111,6 +131,32 @@ describe("StateStore runtime metadata", () => {
       finalMessageIds: ["om_final"],
       finalDelivered: true,
     });
+  });
+
+  test("resolves fork anchors from inbound, progress, and final message ids", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.bindMessageToTurn("om_user", "session_1", "turn_1");
+    store.saveTurnSnapshot("turn_1", "session_1", { status: "completed" });
+    store.saveTurnDelivery("turn_1", { progressMessageId: "om_progress" });
+    store.markFinalDelivered("turn_1", ["om_final_1", "om_final_2"]);
+
+    expect(store.findTurnAnchorByMessageId("om_user")).toEqual({
+      turnId: "turn_1",
+      localSessionId: "session_1",
+    });
+    expect(store.findTurnAnchorByMessageId("om_progress")).toEqual({
+      turnId: "turn_1",
+      localSessionId: "session_1",
+    });
+    expect(store.findTurnAnchorByMessageId("om_final_2")).toEqual({
+      turnId: "turn_1",
+      localSessionId: "session_1",
+    });
+    expect(store.findTurnAnchorByMessageId("om_unknown")).toBeUndefined();
   });
 
   test("reconciles ACP turns left running by a previous process", () => {
@@ -171,6 +217,7 @@ describe("StateStore runtime metadata", () => {
     const first = new StateStore(dbPath);
     stores.push(first);
     first.saveMessageReaction("om_1", "chat_id:c1", "reaction_on_it", "OnIt");
+    first.bindMessageToTurn("om_1", "session_1", "turn_1");
     first.bindMessageReaction("om_1", "session_1", "turn_1");
     first.close();
     stores.pop();
@@ -186,6 +233,10 @@ describe("StateStore runtime metadata", () => {
         status: "pending",
       }),
     ]);
+    expect(second.findTurnAnchorByMessageId("om_1")).toEqual({
+      localSessionId: "session_1",
+      turnId: "turn_1",
+    });
     expect(second.claimMessageReactionsForTurn("turn_1")).toEqual([
       expect.objectContaining({ messageId: "om_1", status: "updating" }),
     ]);

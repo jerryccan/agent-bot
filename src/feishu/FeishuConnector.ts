@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
+import { threadContextKey } from "./contextKey.js";
 import type { FeishuEventHandler, IncomingMessage } from "./types.js";
 
 export class FeishuConnector {
@@ -33,11 +34,11 @@ export class FeishuConnector {
           return;
         }
 
-        try {
-          await this.handler.onMessage(message);
-        } catch (error) {
-          this.logger.error({ error, messageId: message.messageId }, "Failed to handle Feishu message event.");
-        }
+        void Promise.resolve()
+          .then(() => this.handler.onMessage(message))
+          .catch((error: unknown) => {
+            this.logger.error({ error, messageId: message.messageId }, "Failed to handle Feishu message event.");
+          });
       },
       "card.action.trigger": async (data: unknown) => {
         const action = toCardAction(data);
@@ -73,13 +74,15 @@ function toIncomingMessage(data: unknown): IncomingMessage | undefined {
   }
 
   const messageType = message.message_type;
-  if (messageType !== "text") {
-    return undefined;
-  }
-
   const content = parseJsonObject(message.content);
-  const text = typeof content.text === "string" ? content.text : "";
+  const parsed = parseMessageContent(messageType, content, message.mentions);
+  if (!parsed) return undefined;
   const chatId = message.chat_id;
+  const chatType = message.chat_type === "group" ? "group" : "p2p";
+  const threadId = typeof message.thread_id === "string" && message.thread_id ? message.thread_id : undefined;
+  const rootMessageId = typeof message.root_id === "string" && message.root_id ? message.root_id : undefined;
+  const parentMessageId = typeof message.parent_id === "string" && message.parent_id ? message.parent_id : undefined;
+  const threadContext = Boolean(chatId && threadId);
   const senderId =
     event.sender?.sender_id?.open_id ??
     event.sender?.sender_id?.user_id ??
@@ -91,11 +94,88 @@ function toIncomingMessage(data: unknown): IncomingMessage | undefined {
 
   return {
     messageId: message.message_id ?? `${Date.now()}`,
-    contextKey: chatId ? `chat_id:${chatId}` : `open_id:${senderId}`,
+    contextKey: chatId
+      ? threadContext
+        ? threadContextKey(chatId, threadId!)
+        : `chat_id:${chatId}`
+      : `open_id:${senderId}`,
     chatId,
+    chatType,
     userId: senderId,
-    text,
+    ...(threadId ? { replyInThread: true as const } : {}),
+    ...(threadContext ? { threadContext: true as const } : {}),
+    ...(threadId ? { threadId } : {}),
+    ...(rootMessageId ? { rootMessageId } : {}),
+    ...(parentMessageId ? { parentMessageId } : {}),
+    text: parsed.text,
+    ...(parsed.images.length > 0 ? { images: parsed.images.map((imageKey) => ({ imageKey })) } : {}),
   };
+}
+
+function parseMessageContent(
+  messageType: unknown,
+  content: Record<string, unknown>,
+  mentions: unknown,
+): { text: string; images: string[] } | undefined {
+  if (messageType === "text") {
+    const rawText = typeof content.text === "string" ? content.text : "";
+    return { text: stripLeadingMentions(rawText, mentions), images: [] };
+  }
+  if (messageType === "image") {
+    const imageKey = typeof content.image_key === "string" ? content.image_key : undefined;
+    return imageKey ? { text: "", images: [imageKey] } : undefined;
+  }
+  if (messageType !== "post") return undefined;
+
+  const locale = selectPostLocale(content);
+  if (!locale) return undefined;
+  const paragraphs: string[] = [];
+  const title = typeof locale.title === "string" ? locale.title.trim() : "";
+  if (title) paragraphs.push(title);
+  const images: string[] = [];
+  if (Array.isArray(locale.content)) {
+    for (const row of locale.content) {
+      if (!Array.isArray(row)) continue;
+      let rowText = "";
+      for (const element of row) {
+        if (!isRecord(element)) continue;
+        if ((element.tag === "text" || element.tag === "a") && typeof element.text === "string") {
+          rowText += element.text;
+        } else if (element.tag === "img" && typeof element.image_key === "string") {
+          images.push(element.image_key);
+        }
+      }
+      if (rowText.trim()) paragraphs.push(rowText.trim());
+    }
+  }
+  return { text: paragraphs.join("\n"), images: [...new Set(images)] };
+}
+
+function selectPostLocale(content: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (Array.isArray(content.content)) return content;
+  for (const locale of ["zh_cn", "en_us", "ja_jp"]) {
+    if (isRecord(content[locale])) return content[locale];
+  }
+  return Object.values(content).find(isRecord);
+}
+
+function stripLeadingMentions(text: string, value: unknown): string {
+  if (!Array.isArray(value)) return text;
+  const mentionKeys = value.flatMap((mention): string[] => {
+    if (!isRecord(mention) || typeof mention.key !== "string" || !mention.key) return [];
+    return [mention.key];
+  });
+  let remaining = text.trimStart();
+  while (remaining) {
+    const key = mentionKeys.find((candidate) => {
+      if (!remaining.startsWith(candidate)) return false;
+      const next = remaining[candidate.length];
+      return next === undefined || /\s/u.test(next);
+    });
+    if (!key) break;
+    remaining = remaining.slice(key.length).trimStart();
+  }
+  return remaining;
 }
 
 function toCardAction(data: unknown) {

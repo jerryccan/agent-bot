@@ -5,6 +5,43 @@ import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
 
 describe("CodexRuntime", () => {
+  test("sends text and local images as Codex app-server user input blocks", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    const turnId = await runtime.startTurn("s1", {
+      text: "检查这张截图",
+      localImagePaths: ["D:\\captures\\screen.png"],
+    });
+    await runtime.steerTurn("s1", turnId, {
+      text: "再看这张",
+      localImagePaths: ["D:\\captures\\detail.jpg"],
+    });
+
+    expect(client.requests.find((request) => request.method === "turn/start")?.params).toEqual(
+      expect.objectContaining({
+        input: [
+          { type: "text", text: "检查这张截图", text_elements: [] },
+          { type: "localImage", path: "D:\\captures\\screen.png" },
+        ],
+      }),
+    );
+    expect(client.requests.find((request) => request.method === "turn/steer")?.params).toEqual(
+      expect.objectContaining({
+        input: [
+          { type: "text", text: "再看这张", text_elements: [] },
+          { type: "localImage", path: "D:\\captures\\detail.jpg" },
+        ],
+      }),
+    );
+  });
+
   test("adds DPI-aware Windows screenshot instructions to every thread lifecycle request", async () => {
     const client = new FakeAppServerClient();
     let disconnect: ((error: Error) => void) | undefined;
@@ -75,6 +112,69 @@ describe("CodexRuntime", () => {
     expect(request?.params).not.toHaveProperty("runtimeWorkspaceRoots");
   });
 
+  test("forks a thread through the requested completed turn", async () => {
+    const client = new FakeAppServerClient();
+    client.forkResult = {
+      thread: { id: "thr_forked", name: "Forked task" },
+      model: "gpt-test",
+      reasoningEffort: "high",
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    const session = await runtime.forkSession({
+      localSessionId: "forked_local",
+      remoteSessionId: "thr_source",
+      lastTurnId: "turn_anchor",
+      agentName: "codex",
+      cwd: process.cwd(),
+      title: "Forked task（分支 1）",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    });
+
+    expect(session).toMatchObject({
+      localSessionId: "forked_local",
+      remoteSessionId: "thr_forked",
+      title: "Forked task（分支 1）",
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/fork",
+      params: expect.objectContaining({
+        threadId: "thr_source",
+        lastTurnId: "turn_anchor",
+        cwd: process.cwd(),
+        model: "gpt-test",
+        threadSource: "user",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }),
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/name/set",
+      params: { threadId: "thr_forked", name: "Forked task（分支 1）" },
+    });
+  });
+
+  test("renames a thread through thread/name/set", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "renamed_local",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    await runtime.setTitle("renamed_local", "  Renamed   task  ");
+
+    expect(client.requests).toContainEqual({
+      method: "thread/name/set",
+      params: { threadId: "thr_1", name: "Renamed task" },
+    });
+    expect(runtime.getSession("renamed_local")?.title).toBe("Renamed task");
+  });
+
   test("creates a thread and emits active turn deltas and completion", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
@@ -97,6 +197,26 @@ describe("CodexRuntime", () => {
       itemId: "item_1",
       delta: "hello",
     });
+    client.emit("thread/tokenUsage/updated", {
+      threadId: "thr_1",
+      turnId,
+      tokenUsage: {
+        total: { totalTokens: 98_765 },
+        last: { totalTokens: 12_345 },
+        modelContextWindow: 200_000,
+      },
+    });
+    client.emit("item/started", {
+      threadId: "thr_1",
+      turnId,
+      item: { type: "commandExecution", id: "command_1", command: "npm test", status: "inProgress" },
+    });
+    client.emit("item/commandExecution/outputDelta", {
+      threadId: "thr_1",
+      turnId,
+      itemId: "command_1",
+      delta: "running tests\n",
+    });
     client.emit("turn/completed", {
       threadId: "thr_1",
       turn: { id: turnId, status: "completed", durationMs: 1200 },
@@ -105,6 +225,24 @@ describe("CodexRuntime", () => {
     expect(session.remoteSessionId).toBe("thr_1");
     expect(session.reasoningEffort).toBe("medium");
     expect(events).toContainEqual(expect.objectContaining({ type: "agent_text_delta", text: "hello", turnId }));
+    expect(events).toContainEqual({
+      type: "token_usage_updated",
+      sessionId: "s1",
+      turnId,
+      totalTokens: 12_345,
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_started",
+      turnId,
+      tool: expect.objectContaining({ id: "command_1", status: "running" }),
+    }));
+    expect(events).toContainEqual({
+      type: "tool_output_delta",
+      sessionId: "s1",
+      turnId,
+      toolId: "command_1",
+      delta: "running tests\n",
+    });
     expect(events).toContainEqual(
       expect.objectContaining({ type: "turn_completed", finalResponse: "hello", durationMs: 1200 }),
     );
@@ -603,6 +741,7 @@ class FakeAppServerClient {
   timeouts: Array<{ method: string; timeoutMs: number | undefined }> = [];
   startResult: unknown = { thread: { id: "thr_1" }, model: "gpt-test", reasoningEffort: "medium" };
   resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
+  forkResult: unknown = { thread: { id: "thr_forked", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
   listResult: unknown = { data: [], nextCursor: null };
   private notificationListener?: (method: string, params: unknown) => void;
@@ -616,6 +755,7 @@ class FakeAppServerClient {
     this.timeouts.push({ method, timeoutMs });
     if (method === "thread/start") return this.startResult as T;
     if (method === "thread/resume") return this.resumeResult as T;
+    if (method === "thread/fork") return this.forkResult as T;
     if (method === "thread/read") return this.readResult as T;
     if (method === "thread/list") return this.listResult as T;
     if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;

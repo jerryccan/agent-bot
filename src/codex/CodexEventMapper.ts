@@ -2,6 +2,7 @@ import type { PlanStep, ToolState } from "../runtime/types.js";
 
 export type MappedCodexNotification =
   | { kind: "turn_started"; threadId: string; turnId: string; startedAt?: number }
+  | { kind: "token_usage"; threadId: string; turnId: string; totalTokens: number }
   | { kind: "agent_delta"; threadId: string; turnId: string; itemId: string; text: string }
   | {
       kind: "agent_message_phase";
@@ -20,6 +21,7 @@ export type MappedCodexNotification =
     }
   | { kind: "plan"; threadId: string; turnId: string; steps: PlanStep[] }
   | { kind: "tool"; phase: "started" | "updated"; threadId: string; turnId: string; tool: ToolState }
+  | { kind: "tool_output_delta"; threadId: string; turnId: string; toolId: string; delta: string }
   | {
       kind: "terminal";
       threadId: string;
@@ -44,10 +46,23 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
     };
   }
 
+  if (method === "thread/tokenUsage/updated" && isRecord(params.tokenUsage) && isRecord(params.tokenUsage.last)) {
+    const totalTokens = numberValue(params.tokenUsage.last.totalTokens);
+    if (totalTokens === undefined) return undefined;
+    return { kind: "token_usage", threadId, turnId, totalTokens };
+  }
+
   if (method === "item/agentMessage/delta") {
     const text = stringValue(params.delta);
     const itemId = stringValue(params.itemId);
     return text === undefined || !itemId ? undefined : { kind: "agent_delta", threadId, turnId, itemId, text };
+  }
+  if (method === "item/commandExecution/outputDelta") {
+    const delta = stringValue(params.delta);
+    const toolId = stringValue(params.itemId);
+    return delta === undefined || !toolId
+      ? undefined
+      : { kind: "tool_output_delta", threadId, turnId, toolId, delta };
   }
   if (method === "item/reasoning/summaryTextDelta") {
     const text = stringValue(params.delta);
@@ -169,6 +184,7 @@ function mapTool(
       kind: "image_view",
       status,
       command: `view_image ${imagePath}`,
+      imagePath,
       startedAt,
       completedAt,
     };

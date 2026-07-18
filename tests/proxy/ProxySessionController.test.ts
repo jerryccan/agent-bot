@@ -24,6 +24,37 @@ function message(text: string): IncomingMessage {
   return { messageId: `m-${text}`, contextKey: "chat_id:c1", text };
 }
 
+function groupMessage(chatId: string, text: string): IncomingMessage {
+  return {
+    messageId: `m-${chatId}-${text}`,
+    contextKey: `chat_id:${chatId}`,
+    chatId,
+    chatType: "group",
+    text,
+  };
+}
+
+function threadMessage(
+  chatId: string,
+  chatType: "p2p" | "group",
+  threadId: string,
+  rootMessageId: string,
+  text: string,
+): IncomingMessage {
+  return {
+    messageId: `m-${threadId}-${text}`,
+    contextKey: `chat_id:${chatId}:thread_id:${threadId}`,
+    chatId,
+    chatType,
+    replyInThread: true,
+    threadContext: true,
+    threadId,
+    rootMessageId,
+    parentMessageId: rootMessageId,
+    text,
+  };
+}
+
 function fixture() {
   const sessions = new Map<string, RuntimeSession>();
   const remoteSessions: RemoteSessionSummary[] = [];
@@ -61,6 +92,27 @@ function fixture() {
       sessions.set(input.localSessionId, session);
       return session;
     }),
+    forkSession: vi.fn(async (input) => {
+      const remoteSessionId = `${input.remoteSessionId}_fork`;
+      const session: RuntimeSession = {
+        ...input,
+        remoteSessionId,
+        runtimeKind: "codex",
+        model: input.model ?? "gpt-test",
+        reasoningEffort: input.reasoningEffort ?? "high",
+      };
+      sessions.set(input.localSessionId, session);
+      remoteSessions.push({
+        id: remoteSessionId,
+        title: input.title,
+        cwd: input.cwd,
+        source: "acp-bot",
+        status: "idle",
+        lastTurnId: input.lastTurnId,
+        lastTurnStatus: "completed",
+      });
+      return session;
+    }),
     getSession: vi.fn((id) => sessions.get(id)),
     readSessionMetadata: vi.fn(async () => ({})),
     listRemoteSessions: vi.fn(async ({ searchTerm, limit = 20 }: { searchTerm?: string; limit?: number } = {}) => {
@@ -92,6 +144,9 @@ function fixture() {
     cancelTurn: vi.fn(async () => undefined),
     interruptRemoteTurn: vi.fn(async () => undefined),
     closeSession: vi.fn(async () => undefined),
+    setTitle: vi.fn(async (sessionId, title) => {
+      sessions.get(sessionId)!.title = title;
+    }),
     setModel: vi.fn(async (sessionId, model) => {
       sessions.get(sessionId)!.model = model;
     }),
@@ -128,9 +183,13 @@ function fixture() {
   const outbound: FeishuOutbound = {
     addReaction: vi.fn(async () => undefined),
     deleteReaction: vi.fn(async () => undefined),
+    downloadImage: vi.fn(async (_messageId, imageKey) => path.join(process.cwd(), `${imageKey}.png`)),
     sendText: vi.fn(async () => "text"),
     sendMarkdown: vi.fn(async () => "markdown"),
     sendInteractiveCard: vi.fn(async () => "card"),
+    replyText: vi.fn(async () => "thread_text"),
+    replyMarkdown: vi.fn(async () => "thread_markdown"),
+    replyInteractiveCard: vi.fn(async () => "thread_card"),
     updateInteractiveCard: vi.fn(async () => undefined),
   };
   const presenter: TurnPresenter = {
@@ -179,7 +238,12 @@ describe("ProxySessionController", () => {
 
     expect(outbound.addReaction).toHaveBeenCalledWith("m-inspect this repo", "OnIt");
     expect(runtime.createSession).toHaveBeenCalledOnce();
-    expect(presenter.startPendingTurn).toHaveBeenCalledWith(expect.any(String), "chat_id:c1", "inspect this repo");
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "chat_id:c1",
+      "inspect this repo",
+      undefined,
+    );
     expect((presenter.startPendingTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
       (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
     );
@@ -187,8 +251,375 @@ describe("ProxySessionController", () => {
       (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
     );
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), "inspect this repo");
-    expect(presenter.registerSession).toHaveBeenCalledWith(expect.any(String), "chat_id:c1", "inspect this repo");
+    expect(presenter.registerSession).toHaveBeenCalledWith(
+      expect.any(String),
+      "chat_id:c1",
+      "inspect this repo",
+      expect.any(String),
+    );
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
+  });
+
+  test("downloads a pure image and starts Codex with a default text prompt plus localImage input", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage({
+      messageId: "om_image_input",
+      contextKey: "chat_id:c1",
+      text: "",
+      images: [{ imageKey: "img_input" }],
+    });
+
+    expect(outbound.downloadImage).toHaveBeenCalledWith("om_image_input", "img_input");
+    expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), {
+      text: "请分析这张图片。",
+      localImagePaths: [expect.stringContaining("img_input.png")],
+    });
+  });
+
+  test("keeps current tasks and stop operations isolated between groups", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, store, presenter, listeners } = fixture();
+    let created = 0;
+    (runtime.createSession as ReturnType<typeof vi.fn>).mockImplementation(async (input) => {
+      created += 1;
+      const session: RuntimeSession = {
+        ...input,
+        remoteSessionId: `thr_group_${created}`,
+        runtimeKind: "codex",
+        model: "gpt-test",
+        reasoningEffort: "high",
+      };
+      sessions.set(input.localSessionId, session);
+      remoteSessions.push({
+        id: session.remoteSessionId,
+        cwd: input.cwd,
+        source: "acp-bot",
+        status: "idle",
+      });
+      return session;
+    });
+    (runtime.startTurn as ReturnType<typeof vi.fn>).mockImplementation(async (sessionId: string) => {
+      const session = sessions.get(sessionId)!;
+      const turnId = `turn_${session.remoteSessionId}`;
+      session.activeTurnId = turnId;
+      const remote = remoteSessions.find((candidate) => candidate.id === session.remoteSessionId)!;
+      remote.status = "active";
+      remote.lastTurnId = turnId;
+      remote.lastTurnStatus = "inProgress";
+      for (const listener of listeners) listener({ type: "turn_started", sessionId, turnId, startedAt: 1 });
+      return turnId;
+    });
+
+    await controller.onMessage(groupMessage("group_1", "first group task"));
+    await controller.onMessage(groupMessage("group_2", "second group task"));
+
+    const first = store.getOrCreateUserContext("chat_id:group_1", "codex").currentSessionId;
+    const second = store.getOrCreateUserContext("chat_id:group_2", "codex").currentSessionId;
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(first).not.toBe(second);
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      first,
+      "chat_id:group_1",
+      "first group task",
+      undefined,
+    );
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      second,
+      "chat_id:group_2",
+      "second group task",
+      undefined,
+    );
+
+    await controller.onMessage(groupMessage("group_1", "/sessions"));
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:group_1",
+      expect.objectContaining({ header: expect.any(Object) }),
+    );
+
+    await controller.onMessage(groupMessage("group_1", "/stop"));
+
+    expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_group_1", "turn_thr_group_1");
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:group_1",
+      "已向 Codex 发送 Interrupt 请求：turn_thr_group_1",
+    );
+    expect(sessions.get(second!)?.activeTurnId).toBe("turn_thr_group_2");
+    expect(store.getOrCreateUserContext("chat_id:group_2", "codex").currentSessionId).toBe(second);
+  });
+
+  test("forks a completed private-chat turn into an isolated topic task", async () => {
+    const { controller, runtime, store, listeners, outbound, presenter } = fixture();
+    const sourceMessage: IncomingMessage = {
+      messageId: "om_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "build the base task",
+    };
+
+    await controller.onMessage(sourceMessage);
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "base complete",
+      });
+    }
+
+    await controller.onMessage(threadMessage("c1", "p2p", "omt_branch", "om_source", "continue differently"));
+
+    const topicContextKey = "chat_id:c1:thread_id:omt_branch";
+    const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
+    expect(topicSessionId).toBeDefined();
+    expect(topicSessionId).not.toBe(sourceSessionId);
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBe(sourceSessionId);
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: topicSessionId,
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+      title: "build the base task（分支 1）",
+    }));
+    expect(store.getSession(topicSessionId!)).toMatchObject({
+      contextKey: topicContextKey,
+      remoteSessionId: "thr_1_fork",
+      title: "build the base task（分支 1）",
+      status: "running",
+    });
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      topicSessionId,
+      topicContextKey,
+      "build the base task（分支 1）",
+      { messageId: "m-omt_branch-continue differently", replyInThread: true },
+    );
+    expect(outbound.sendText).not.toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("continue differently"),
+    );
+
+    await controller.onCardAction({
+      actionId: "action_topic_stop",
+      contextKey: "chat_id:c1",
+      messageId: "om_topic_status_card",
+      value: {
+        action: "session_stop",
+        sessionId: "thr_1_fork",
+        contextKey: topicContextKey,
+        cardView: "status",
+      },
+    });
+
+    expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1_fork", "turn_1");
+    expect(outbound.replyText).toHaveBeenCalledWith(
+      topicContextKey,
+      { messageId: "om_topic_status_card", replyInThread: true },
+      "已向 Codex 发送 Interrupt 请求：turn_1",
+    );
+  });
+
+  test("forks a completed group-main turn into an isolated group-topic task", async () => {
+    const { controller, runtime, store, listeners, presenter } = fixture();
+    await controller.onMessage({
+      messageId: "om_group_source",
+      contextKey: "chat_id:group_fork",
+      chatId: "group_fork",
+      chatType: "group",
+      text: "group base task",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:group_fork")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "group base complete",
+      });
+    }
+
+    await controller.onMessage(threadMessage(
+      "group_fork",
+      "group",
+      "omt_group_branch",
+      "om_group_source",
+      "continue in group topic",
+    ));
+
+    const topicContextKey = "chat_id:group_fork:thread_id:omt_group_branch";
+    const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
+    expect(topicSessionId).toBeDefined();
+    expect(topicSessionId).not.toBe(sourceSessionId);
+    expect(store.getUserContext("chat_id:group_fork")?.currentSessionId).toBe(sourceSessionId);
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: topicSessionId,
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+      title: "group base task（分支 1）",
+    }));
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      topicSessionId,
+      topicContextKey,
+      "group base task（分支 1）",
+      { messageId: "m-omt_group_branch-continue in group topic", replyInThread: true },
+    );
+  });
+
+  test("does not fork a private-chat topic while its anchor turn is still running", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage({
+      messageId: "om_running_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "long task",
+    });
+
+    await controller.onMessage(threadMessage("c1", "p2p", "omt_running", "om_running_source", "branch now"));
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(outbound.replyText).toHaveBeenCalledWith(
+      "chat_id:c1:thread_id:omt_running",
+      { messageId: "m-omt_running-branch now", replyInThread: true },
+      expect.stringContaining("轮次仍在执行"),
+    );
+  });
+
+  test("forks the current completed Codex task and switches to the new branch", async () => {
+    const { controller, runtime, sessions, remoteSessions, store, listeners, outbound, presenter } = fixture();
+    await controller.onMessage(message("build the source task"));
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    const sourceRuntimeSession = sessions.get(sourceSessionId!);
+    if (sourceRuntimeSession) sourceRuntimeSession.activeTurnId = undefined;
+    const sourceRemote = remoteSessions.find((session) => session.id === "thr_1")!;
+    sourceRemote.status = "idle";
+    sourceRemote.lastTurnId = "turn_1";
+    sourceRemote.lastTurnStatus = "completed";
+
+    await controller.onMessage(message("/fork"));
+
+    const context = store.getUserContext("chat_id:c1");
+    const forkedSessionId = context?.currentSessionId;
+    expect(forkedSessionId).toBeDefined();
+    expect(forkedSessionId).not.toBe(sourceSessionId);
+    expect(context?.previousSessionId).toBe(sourceSessionId);
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: forkedSessionId,
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+      title: "build the source task（分支 1）",
+      cwd: store.getSession(sourceSessionId!)?.cwd,
+    }));
+    expect(store.getSession(forkedSessionId!)).toMatchObject({
+      contextKey: "chat_id:c1",
+      remoteSessionId: "thr_1_fork",
+      title: "build the source task（分支 1）",
+      status: "ready",
+      lastTurnId: "turn_1",
+      lastTurnStatus: "completed",
+    });
+    expect(presenter.registerSession).toHaveBeenLastCalledWith(
+      forkedSessionId,
+      "chat_id:c1",
+      "build the source task（分支 1）",
+      store.getSession(sourceSessionId!)?.cwd,
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "已从当前任务创建分支并切换到新任务：build the source task（分支 1）（thr_1_fork）",
+    );
+  });
+
+  test("forks an external Codex task by task ID without switching to it first", async () => {
+    const { controller, runtime, remoteSessions, store, outbound } = fixture();
+    remoteSessions.push({
+      id: "external_fork_source",
+      title: "External fork source",
+      cwd: "D:\\work\\external-source",
+      source: "cli",
+      status: "idle",
+      lastTurnId: "turn_external_done",
+      lastTurnStatus: "completed",
+    });
+
+    await controller.onMessage(message("/fork external_fork_source"));
+
+    const forkedSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: forkedSessionId,
+      remoteSessionId: "external_fork_source",
+      lastTurnId: "turn_external_done",
+      title: "External fork source（分支 1）",
+      cwd: "D:\\work\\external-source",
+    }));
+    expect(store.getSession(forkedSessionId!)).toMatchObject({
+      remoteSessionId: "external_fork_source_fork",
+      title: "External fork source（分支 1）",
+      status: "ready",
+    });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "已从指定任务创建分支并切换到新任务：External fork source（分支 1）（external_fork_source_fork）",
+    );
+  });
+
+  test("resolves a fork source by its latest sessions-list sequence number", async () => {
+    const { controller, runtime, remoteSessions, store } = fixture();
+    remoteSessions.push(
+      {
+        id: "fork_list_first",
+        title: "First fork candidate",
+        cwd: "D:\\work\\first",
+        source: "cli",
+        status: "idle",
+        lastTurnId: "turn_first",
+        lastTurnStatus: "completed",
+      },
+      {
+        id: "fork_list_second",
+        title: "Second fork candidate",
+        cwd: "D:\\work\\second",
+        source: "desktop",
+        status: "idle",
+        lastTurnId: "turn_second",
+        lastTurnStatus: "completed",
+      },
+    );
+    await controller.onMessage(message("/sessions"));
+
+    await controller.onMessage(message("/fork 2"));
+
+    const forkedSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: forkedSessionId,
+      remoteSessionId: "fork_list_second",
+      lastTurnId: "turn_second",
+      title: "Second fork candidate（分支 1）",
+      cwd: "D:\\work\\second",
+    }));
+  });
+
+  test("refuses to fork the current task while its latest turn is running", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("long-running source"));
+
+    await controller.onMessage(message("/fork"));
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("轮次仍在执行"),
+    );
   });
 
   test("new always uses the current default agent and treats its only argument as cwd", async () => {
@@ -286,6 +717,28 @@ describe("ProxySessionController", () => {
     await vi.waitFor(() => expect(store.getSession(sessionId)?.title).toBe("Generated title"));
     expect(presenter.onEvent).not.toHaveBeenCalled();
     expect(presenter.updateSessionTitle).toHaveBeenCalledWith(sessionId, "Generated title");
+  });
+
+  test("renames the current task and refreshes its presentation", async () => {
+    const { controller, runtime, store, presenter, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+    const sessionId = store.listSessions("chat_id:c1")[0]!.localSessionId;
+
+    await controller.onMessage(message("/title 修复会话列表时间"));
+
+    expect(runtime.setTitle).toHaveBeenCalledWith(sessionId, "修复会话列表时间");
+    expect(store.getSession(sessionId)?.title).toBe("修复会话列表时间");
+    expect(presenter.updateSessionTitle).toHaveBeenCalledWith(sessionId, "修复会话列表时间");
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已将当前任务标题修改为：修复会话列表时间");
+  });
+
+  test("rejects title changes when there is no current task", async () => {
+    const { controller, runtime, outbound } = fixture();
+
+    await controller.onMessage(message("/title 尚不存在的任务"));
+
+    expect(runtime.setTitle).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", expect.stringContaining("当前没有任务"));
   });
 
   test("ignores a duplicate inbound message id", async () => {
@@ -533,6 +986,46 @@ describe("ProxySessionController", () => {
     expect(runtime.steerTurn).toHaveBeenCalledWith("running", "turn_saved", "latest progress");
   });
 
+  test("continues a restarted task when restoring the previous final answer fails", async () => {
+    const { controller, runtime, store, remoteSessions, presenter } = fixture();
+    remoteSessions.push({
+      id: "thr_restored",
+      cwd: process.cwd(),
+      source: "acp-bot",
+      status: "idle",
+      lastTurnId: "turn_previous",
+      lastTurnStatus: "completed",
+    });
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "restored",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("restored", {
+      runtimeKind: "codex",
+      remoteSessionId: "thr_restored",
+      lastTurnId: "turn_previous",
+      lastTurnStatus: "completed",
+      permissionMode: "auto",
+    });
+    store.setCurrentSession("chat_id:c1", "restored");
+    (presenter.resumeDelivery as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("invalid persisted image card"),
+    );
+
+    await controller.onMessage(message("continue after restart"));
+
+    expect(presenter.resumeDelivery).toHaveBeenCalledWith("restored", "chat_id:c1", "turn_previous");
+    expect(runtime.resumeSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: "restored",
+      remoteSessionId: "thr_restored",
+    }));
+    expect(runtime.startTurn).toHaveBeenCalledWith("restored", "continue after restart");
+  });
+
   test("starts the first turn of a new Codex thread before it is materialized", async () => {
     const { controller, runtime } = fixture();
     await controller.onMessage(message("/new"));
@@ -630,6 +1123,8 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("最后更新：");
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain("<font color='blue'>Fork</font>");
+    expect(serialized).toContain('"action":"session_fork","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Status</font>");
     expect(serialized).toContain('"action":"session_status","sessionId":"external_1"');
     expect(serialized).not.toContain("Legacy ACP task");
@@ -695,6 +1190,47 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"active_external","visibleCount":"5"');
     expect(serialized).not.toContain('"action":"session_stop","sessionId":"active_external","visibleCount":"5"');
+  });
+
+  test("forks a completed task from the sessions card and refreshes the current task", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    remoteSessions.push({
+      id: "card_fork_source",
+      title: "Card fork source",
+      cwd: "D:\\work\\card-fork-source",
+      source: "desktop",
+      status: "idle",
+      lastTurnId: "turn_card_fork_source",
+      lastTurnStatus: "completed",
+    });
+    await controller.onMessage(message("/sessions"));
+
+    await controller.onCardAction({
+      actionId: "fork-card-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: {
+        action: "session_fork",
+        sessionId: "card_fork_source",
+        visibleCount: "5",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    const forkedSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: forkedSessionId,
+      remoteSessionId: "card_fork_source",
+      lastTurnId: "turn_card_fork_source",
+      title: "Card fork source（分支 1）",
+    }));
+    expect(store.getSession(forkedSessionId!)).toMatchObject({
+      remoteSessionId: "card_fork_source_fork",
+      title: "Card fork source（分支 1）",
+    });
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
+    const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    expect(JSON.stringify(updatedCard)).toContain("Card fork source（分支 1）");
   });
 
   test("loads five more tasks into the same sessions card on demand", async () => {
@@ -821,6 +1357,7 @@ describe("ProxySessionController", () => {
     expect(serialized.indexOf("thr_1")).toBeLessThan(serialized.indexOf("active_external"));
     expect(serialized).not.toContain('"action":"session_switch","sessionId":"thr_1"');
     expect(serialized).not.toContain('"action":"session_stop","sessionId":"thr_1"');
+    expect(serialized).toContain('"action":"session_fork","sessionId":"thr_1"');
     expect(serialized).toContain('"action":"session_status","sessionId":"thr_1"');
     expect(serialized).toContain('"action":"session_status","sessionId":"active_external"');
   });
@@ -904,6 +1441,9 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("Codex 状态：Status target");
     expect(serialized).toContain("status_target");
     expect(serialized).toContain("Status result");
+    expect(serialized).toContain('"element_id":"status_execution_details"');
+    expect(serialized).toContain('"expanded":false');
+    expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"status_target","cardView":"status"');
   });
@@ -959,6 +1499,9 @@ describe("ProxySessionController", () => {
     const statusCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(statusCard);
     expect(serialized).toContain("<font color='red'>Stop</font>");
+    expect(serialized).toContain('"element_id":"status_execution_details"');
+    expect(serialized).toContain('"expanded":false');
+    expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
     expect(serialized).toContain(
       '"action":"session_stop","sessionId":"thr_1","cardView":"status"',
     );
@@ -1124,6 +1667,54 @@ describe("ProxySessionController", () => {
     expect(runtime.resumeSession).not.toHaveBeenCalled();
   });
 
+  test("switches to a Codex task already mapped by another chat context", async () => {
+    const { controller, runtime, remoteSessions, store, outbound } = fixture();
+    store.getOrCreateUserContext("chat_id:other", "codex");
+    store.createSession({
+      localSessionId: "other_local",
+      contextKey: "chat_id:other",
+      agentName: "codex",
+      cwd: "D:\\work\\shared",
+      status: "ready",
+    });
+    store.updateRuntimeSession("other_local", {
+      runtimeKind: "codex",
+      remoteSessionId: "shared_remote",
+      title: "Shared Codex task",
+      lastTurnId: "turn_shared",
+      lastTurnStatus: "completed",
+    });
+    remoteSessions.push({
+      id: "shared_remote",
+      title: "Shared Codex task",
+      cwd: "D:\\work\\shared",
+      source: "acp-bot",
+      status: "idle",
+      lastTurnId: "turn_shared",
+      lastTurnStatus: "completed",
+    });
+
+    await controller.onMessage(groupMessage("group_switch", "/switch shared_remote"));
+
+    const current = store.getUserContext("chat_id:group_switch")?.currentSessionId;
+    expect(current).toBeDefined();
+    expect(current).not.toBe("other_local");
+    expect(store.getSession(current!)).toMatchObject({
+      contextKey: "chat_id:group_switch",
+      remoteSessionId: "shared_remote",
+      status: "ready",
+    });
+    expect(store.findSessionByRemoteSessionId("shared_remote", "chat_id:other")?.localSessionId)
+      .toBe("other_local");
+    expect(store.findSessionByRemoteSessionId("shared_remote", "chat_id:group_switch")?.localSessionId)
+      .toBe(current);
+    expect(runtime.resumeSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:group_switch",
+      expect.stringContaining("已切换到任务：Shared Codex task"),
+    );
+  });
+
   test("refuses to switch or resume a task that is running in another Codex client", async () => {
     const { controller, runtime, remoteSessions, store, outbound } = fixture();
     const external: RemoteSessionSummary = {
@@ -1172,6 +1763,22 @@ describe("ProxySessionController", () => {
     expect(runtime.setPermissionMode).toHaveBeenCalledWith(sessionId, "confirm");
     expect(presenter.showDetails).toHaveBeenCalledWith("chat_id:c1", "turn_1");
     expect(runtime.respondToApproval).toHaveBeenCalledWith(sessionId, "req_1", "accept");
+  });
+
+  test("stops the task identified by a thinking-card callback", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("start stoppable task"));
+    const sessionId = (runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+
+    await controller.onCardAction({
+      actionId: "stop-thinking-card-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_thinking_card",
+      value: { action: "turn_cancel", sessionId, turnId: "turn_1" },
+    });
+
+    expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Codex 发送 Interrupt 请求：turn_1");
   });
 
   test("shows every supported model and marks the current model", async () => {
@@ -1450,6 +2057,7 @@ describe("ProxySessionController", () => {
     expect(serialized.match(/\/thinking \[level\]/g)).toHaveLength(1);
     expect(serialized.match(/\/restart/g)).toHaveLength(1);
     expect(serialized.match(/\/status \[序号或任务 ID\]/g)).toHaveLength(1);
+    expect(serialized.match(/\/fork \[序号或任务 ID\]/g)).toHaveLength(1);
     expect(serialized.match(/\/stop/g)).toHaveLength(1);
     expect(serialized.match(/\/agent \[name\]/g)).toHaveLength(1);
     expect(serialized).not.toContain("/attach");

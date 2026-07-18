@@ -13,6 +13,8 @@ function createFixture(delivered = false) {
     sendText: vi.fn(async () => "text_1"),
     sendMarkdown: vi.fn(async () => "final_1"),
     sendInteractiveCard: vi.fn(async () => "progress_1"),
+    replyMarkdown: vi.fn(async () => "thread_final_1"),
+    replyInteractiveCard: vi.fn(async () => "thread_progress_1"),
     updateInteractiveCard: vi.fn(async () => undefined),
   };
   const store = {
@@ -27,7 +29,7 @@ function createFixture(delivered = false) {
     normalIntervalMs: 1,
     criticalGapMs: 0,
   });
-  presenter.registerSession("s1", "chat_id:c1");
+  presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\acp-bot");
   return { presenter, outbound, store };
 }
 
@@ -41,6 +43,11 @@ describe("FeishuTurnPresenter", () => {
     expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
     expect(store.markFinalDelivered).toHaveBeenCalledOnce();
     expect(store.markFinalDelivered).toHaveBeenCalledWith("turn_1", ["final_1"]);
+    expect(store.saveTurnSnapshot).toHaveBeenCalledWith(
+      "turn_1",
+      "s1",
+      expect.objectContaining({ projectCwd: "D:\\dev\\acp-bot" }),
+    );
   });
 
   test("reuses the immediate starting card when the real turn id arrives", async () => {
@@ -49,6 +56,35 @@ describe("FeishuTurnPresenter", () => {
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() - 1_000 });
     expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalled());
+  });
+
+  test("keeps a group turn progress card and final answer inside the triggering message thread", async () => {
+    const { presenter, outbound, store } = createFixture();
+    const target = { messageId: "om_question", replyInThread: true as const };
+
+    await presenter.startPendingTurn("s1", "chat_id:c1", "Group question", target);
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed("thread answer"));
+
+    expect(outbound.replyInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:c1",
+      target,
+      expect.any(Object),
+      expect.stringMatching(/^codex-progress-/),
+    );
+    expect(outbound.replyMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      target,
+      "thread answer",
+      expect.stringMatching(/^codex-final-/),
+    );
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
+    expect(outbound.sendMarkdown).not.toHaveBeenCalled();
+    expect(store.saveTurnSnapshot).toHaveBeenCalledWith(
+      "turn_1",
+      "s1",
+      expect.objectContaining({ replyTarget: target }),
+    );
   });
 
   test("updates the active card when Codex generates a new task title", async () => {
@@ -66,6 +102,45 @@ describe("FeishuTurnPresenter", () => {
           title: expect.objectContaining({ content: "Codex 正在处理：Generated title" }),
         }),
       }),
+    );
+  });
+
+  test("coalesces command output deltas into an incremental tool panel update", async () => {
+    const { presenter, outbound, store } = createFixture();
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent({
+      type: "tool_started",
+      sessionId: "s1",
+      turnId: "turn_1",
+      tool: { id: "command_1", title: "npm test", kind: "command", status: "running", command: "npm test" },
+    });
+    await presenter.flushAll();
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await presenter.onEvent({
+      type: "tool_output_delta",
+      sessionId: "s1",
+      turnId: "turn_1",
+      toolId: "command_1",
+      delta: "test 1 passed\n",
+    });
+    await presenter.onEvent({
+      type: "tool_output_delta",
+      sessionId: "s1",
+      turnId: "turn_1",
+      toolId: "command_1",
+      delta: "test 2 passed\n",
+    });
+    await presenter.flushAll();
+
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
+    expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1])).toContain(
+      "test 1 passed\\ntest 2 passed",
+    );
+    expect(store.saveTurnSnapshot).toHaveBeenLastCalledWith(
+      "turn_1",
+      "s1",
+      expect.objectContaining({ activeTool: expect.objectContaining({ output: "test 1 passed\ntest 2 passed\n" }) }),
     );
   });
 

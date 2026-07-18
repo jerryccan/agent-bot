@@ -1,11 +1,17 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentEvent } from "../runtime/types.js";
-import type { FeishuOutbound } from "../feishu/types.js";
+import type { FeishuOutbound, MessageReplyTarget } from "../feishu/types.js";
 
 export interface TurnPresenter {
-  registerSession(sessionId: string, contextKey: string, taskTitle?: string): void;
+  registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void;
   updateSessionTitle(sessionId: string, taskTitle: string): void;
   unregisterSession(sessionId: string): void;
-  startPendingTurn(sessionId: string, contextKey: string, taskTitle?: string): Promise<void>;
+  startPendingTurn(
+    sessionId: string,
+    contextKey: string,
+    taskTitle?: string,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void>;
   failPendingTurn(sessionId: string, message: string): Promise<void>;
   onEvent(event: AgentEvent): Promise<void>;
   showDetails(contextKey: string, turnId: string): Promise<void>;
@@ -21,15 +27,16 @@ export interface OutboundRoute {
 
 export class OutboundRouter {
   private readonly sessionRoutes = new Map<string, OutboundRoute>();
+  private readonly replyTargets = new AsyncLocalStorage<{ contextKey: string; target: MessageReplyTarget }>();
 
   constructor(private readonly routes: OutboundRoute[]) {
     if (routes.length === 0) throw new Error("At least one outbound route is required.");
   }
 
-  registerSession(sessionId: string, contextKey: string, taskTitle?: string): void {
+  registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void {
     const route = this.route(contextKey);
     this.sessionRoutes.set(sessionId, route);
-    route.presenter.registerSession(sessionId, contextKey, taskTitle);
+    route.presenter.registerSession(sessionId, contextKey, taskTitle, projectCwd);
   }
 
   updateSessionTitle(sessionId: string, taskTitle: string): void {
@@ -42,8 +49,13 @@ export class OutboundRouter {
     this.sessionRoutes.delete(sessionId);
   }
 
-  async startPendingTurn(sessionId: string, contextKey: string, taskTitle?: string): Promise<void> {
-    await this.route(contextKey).presenter.startPendingTurn(sessionId, contextKey, taskTitle);
+  async startPendingTurn(
+    sessionId: string,
+    contextKey: string,
+    taskTitle?: string,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void> {
+    await this.route(contextKey).presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget);
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {
@@ -70,16 +82,44 @@ export class OutboundRouter {
     await this.route(contextKey).outbound.deleteReaction?.(messageId, reactionId);
   }
 
+  async downloadImage(contextKey: string, messageId: string, imageKey: string): Promise<string> {
+    const outbound = this.route(contextKey).outbound;
+    const download = outbound.downloadImage;
+    if (!download) throw new Error("当前消息通道不支持下载图片。");
+    return download.call(outbound, messageId, imageKey);
+  }
+
+  withReplyTarget<T>(
+    contextKey: string,
+    target: MessageReplyTarget | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!target) return operation();
+    return this.replyTargets.run({ contextKey, target }, operation);
+  }
+
   sendText(contextKey: string, text: string): Promise<string | undefined> {
-    return this.route(contextKey).outbound.sendText(contextKey, text);
+    const outbound = this.route(contextKey).outbound;
+    const target = this.currentReplyTarget(contextKey);
+    return target && outbound.replyText
+      ? outbound.replyText(contextKey, target, text)
+      : outbound.sendText(contextKey, text);
   }
 
   sendMarkdown(contextKey: string, markdown: string): Promise<string | undefined> {
-    return this.route(contextKey).outbound.sendMarkdown(contextKey, markdown);
+    const outbound = this.route(contextKey).outbound;
+    const target = this.currentReplyTarget(contextKey);
+    return target && outbound.replyMarkdown
+      ? outbound.replyMarkdown(contextKey, target, markdown)
+      : outbound.sendMarkdown(contextKey, markdown);
   }
 
   sendInteractiveCard(contextKey: string, card: Record<string, unknown>): Promise<string | undefined> {
-    return this.route(contextKey).outbound.sendInteractiveCard(contextKey, card);
+    const outbound = this.route(contextKey).outbound;
+    const target = this.currentReplyTarget(contextKey);
+    return target && outbound.replyInteractiveCard
+      ? outbound.replyInteractiveCard(contextKey, target, card)
+      : outbound.sendInteractiveCard(contextKey, card);
   }
 
   async updateInteractiveCard(
@@ -99,5 +139,10 @@ export class OutboundRouter {
     const route = this.routes.find((candidate) => candidate.matches(contextKey));
     if (!route) throw new Error(`No outbound route for context: ${contextKey}`);
     return route;
+  }
+
+  private currentReplyTarget(contextKey: string): MessageReplyTarget | undefined {
+    const current = this.replyTargets.getStore();
+    return current?.contextKey === contextKey ? current.target : undefined;
   }
 }

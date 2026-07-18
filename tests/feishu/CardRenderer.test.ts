@@ -69,6 +69,13 @@ describe("CardRenderer", () => {
     const serialized = JSON.stringify(card);
     const objects = collectObjects(card);
 
+    expect(card).toMatchObject({
+      schema: "2.0",
+      config: { update_multi: true },
+      header: { template: "green" },
+      body: { elements: expect.any(Array) },
+    });
+    expect(card).not.toHaveProperty("elements");
     expect(serialized).toContain("acp-bot 已启动");
     expect(serialized).toContain("在线");
     expect(serialized).toContain("Codex");
@@ -177,10 +184,48 @@ describe("CardRenderer", () => {
     expect(markdownContents).not.toContain("完整内容请查看本地日志");
     expect(serialized).not.toContain("turn_details");
     expect(serialized).not.toContain("查看详情");
-    expect(serialized).not.toContain("turn_cancel");
+    expect(serialized).toContain("<font color='red'>Stop</font>");
+    expect(serialized).toContain('"action":"turn_cancel","sessionId":"s1","turnId":"turn_1"');
     expect(serialized).not.toContain("已完成的工具（");
     expect(serialized).not.toContain("失败的工具（");
     expect(serialized).not.toContain("/cancel");
+  });
+
+  test.each([
+    [850, "耗时 0.9s"],
+    [188_000, "耗时 03:08.0s"],
+    [4_320_000, "耗时 01:12:00.0s"],
+    [93_600_000, "耗时 26:00:00.0s"],
+  ])("formats a %i ms turn duration like a tool duration", (durationMs, expectedDuration) => {
+    const current = { ...state(), durationMs, totalTokens: 12_345 };
+    const card = new CardRenderer().renderTurn(current) as { header: { subtitle: { content: string } } };
+
+    expect(card.header.subtitle.content).toBe(`${expectedDuration} · 12,345 tokens · 2 个工具 · 1 个文件`);
+  });
+
+  test.each([
+    [12_400, "12.4s"],
+    [72_400, "01:12.4s"],
+    [7_272_400, "02:01:12.4s"],
+    [59_960, "01:00.0s"],
+  ])("adds a compact %s ms duration to completed tool titles", (durationMs, expectedDuration) => {
+    const current = state();
+    const completed = {
+      id: "timed",
+      title: "npm test",
+      kind: "command",
+      status: "completed" as const,
+      command: "npm test",
+      startedAt: 1_000,
+      completedAt: 1_000 + durationMs,
+    };
+    current.activities = [{ kind: "tool", id: completed.id, tool: completed }];
+
+    const card = new CardRenderer().renderTurn(current);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes("npm test"));
+
+    expect(panelTitle(panel ?? {})).toBe(`✅ npm test · ${expectedDuration}`);
   });
 
   test("uses a compact trailing ellipsis in long tool headers", () => {
@@ -223,6 +268,33 @@ describe("CardRenderer", () => {
     expect(panelTitle(panel ?? {})).toBe("✅ npm test -- --run if ($LASTEXITCODE -ne 0) { exit 1 }");
   });
 
+  test("renders a view_image preview inside the collapsed tool panel", () => {
+    const running = state();
+    const imagePath = "D:\\dev\\acp-bot\\.tmp\\preview.png";
+    const tool = {
+      id: "image_1",
+      title: `查看图片 ${imagePath}`,
+      kind: "image_view",
+      status: "completed" as const,
+      command: `view_image ${imagePath}`,
+      imagePath,
+    };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => panelTitle(item).includes("查看图片"));
+    const elements = panel?.elements as Array<Record<string, unknown>> | undefined;
+
+    expect(panel).toMatchObject({ tag: "collapsible_panel", expanded: false });
+    expect(elements?.map((element) => element.tag)).toEqual(["markdown", "img"]);
+    expect(elements?.[1]).toMatchObject({
+      tag: "img",
+      img_key: "",
+      __acp_local_image_path: imagePath,
+      preview: true,
+    });
+  });
+
   test("keeps a stable identity for the trailing file panel as activities are inserted before it", () => {
     const running = state();
     const renderer = new CardRenderer();
@@ -233,6 +305,52 @@ describe("CardRenderer", () => {
 
     expect(before).toMatchObject({ element_id: "turn_files" });
     expect(after).toMatchObject({ element_id: "turn_files" });
+  });
+
+  test("shows project files as relative paths and external files as absolute paths", () => {
+    const running = state();
+    running.projectCwd = "D:\\dev\\acp-bot";
+    const files = [
+      { path: "D:\\dev\\acp-bot\\src\\index.ts", additions: 1 },
+      { path: "src/relative.ts", additions: 2 },
+      { path: "..\\shared\\config.ts", deletions: 1 },
+      { path: "E:\\external\\other.ts", additions: 3 },
+    ];
+    const tool = {
+      id: "file_change_1",
+      title: "更新文件",
+      kind: "file_change",
+      status: "completed" as const,
+      files,
+    };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+    running.fileSummary = files;
+
+    const card = new CardRenderer().renderTurn(running);
+    const markdownContents = collectObjects(card)
+      .filter((item) => item.tag === "markdown")
+      .map((item) => String(item.content ?? ""))
+      .join("\n");
+
+    expect(markdownContents).toContain("src\\index.ts  +1 -0");
+    expect(markdownContents).toContain("src\\relative.ts  +2 -0");
+    expect(markdownContents).toContain("D:\\dev\\shared\\config.ts  +0 -1");
+    expect(markdownContents).toContain("E:\\external\\other.ts  +3 -0");
+    expect(markdownContents).not.toContain("D:\\dev\\acp-bot\\src\\index.ts");
+  });
+
+  test("keeps a stable identity for a tool panel while command output is updated", () => {
+    const running = state();
+    const renderer = new CardRenderer();
+    const command = { id: "command:with/slashes", title: "npm test", kind: "command", status: "running" as const, command: "npm test" };
+    running.activities = [{ kind: "tool", id: command.id, tool: command }];
+    const before = collectObjects(renderer.renderTurn(running)).find((item) => panelTitle(item).includes("npm test"));
+
+    running.activities = [{ kind: "tool", id: command.id, tool: { ...command, output: "test 1 passed" } }];
+    const after = collectObjects(renderer.renderTurn(running)).find((item) => panelTitle(item).includes("npm test"));
+
+    expect(before?.element_id).toMatch(/^turn_tool_[a-f0-9]{16}$/);
+    expect(after?.element_id).toBe(before?.element_id);
   });
 
   test("preserves raw command formatting and both ends of oversized tool results", () => {
@@ -270,7 +388,9 @@ describe("CardRenderer", () => {
     expect(runningPanel).toMatchObject({ border: { color: "grey", corner_radius: "5px" } });
 
     const completed = { ...state(), status: "completed" as const, completedAt: 4_000, durationMs: 3_000 };
-    expect(JSON.stringify(new CardRenderer().renderTurn(completed))).toContain("已完成");
+    const completedCard = JSON.stringify(new CardRenderer().renderTurn(completed));
+    expect(completedCard).toContain("已完成");
+    expect(completedCard).not.toContain("turn_cancel");
   });
 
   test("includes the current task title in every turn card header", () => {
@@ -367,10 +487,11 @@ describe("CardRenderer", () => {
     const runningCard = new CardRenderer().renderTurn(generating) as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    expect(runningCard.body.elements).toEqual([{
+    expect(runningCard.body.elements[0]).toEqual({
       tag: "markdown",
       content: "正在组织回答",
-    }]);
+    });
+    expect(JSON.stringify(runningCard.body.elements)).toContain('"action":"turn_cancel"');
 
     generating.status = "completed";
     const completedCard = new CardRenderer().renderTurn(generating) as {
@@ -410,6 +531,22 @@ describe("CardRenderer", () => {
     });
     expect(String(reasoning?.content)).not.toContain("**");
     expect(String(reasoning?.content)).not.toContain("__");
+  });
+
+  test("shows an ellipsis before retained activities when older history was discarded", () => {
+    const running = state();
+    running.plan = [];
+    running.activitiesTruncated = true;
+    running.activities = [{ kind: "reasoning", id: "reasoning:recent", text: "最近的思考" }];
+
+    const card = new CardRenderer().renderTurn(running) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+
+    expect(card.body.elements.slice(0, 2)).toEqual([
+      { tag: "markdown", content: "…" },
+      { tag: "markdown", content: "> 💭 最近的思考" },
+    ]);
   });
 
   test("renders task actions as colored callback links below the body", () => {
@@ -472,15 +609,31 @@ describe("CardRenderer", () => {
   });
 
   test("renders status card actions as callback links after the sections", () => {
-    const card = new CardRenderer().renderSectionsCard("Codex 状态", [{
-      title: "指定任务",
-      lines: ["空闲"],
-    }], [{
+    const card = new CardRenderer().renderSectionsCard("Codex 状态", [
+      {
+        title: "指定任务",
+        lines: ["空闲"],
+      },
+      {
+        title: "执行详情",
+        lines: ["最近步骤"],
+        collapsible: true,
+        elementId: "status_execution_details",
+      },
+    ], [{
       text: "Switch",
       value: { action: "session_switch", sessionId: "thr_1", cardView: "status" },
     }]);
     const bodyElements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
 
+    expect(collectObjects(card)).toContainEqual(expect.objectContaining({
+      tag: "collapsible_panel",
+      element_id: "status_execution_details",
+      expanded: false,
+      header: expect.objectContaining({
+        title: { tag: "plain_text", content: "执行详情" },
+      }),
+    }));
     expect(bodyElements.at(-1)).toMatchObject({
       tag: "column_set",
       columns: [expect.objectContaining({
