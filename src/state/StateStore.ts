@@ -493,6 +493,40 @@ export class StateStore {
     return rows.map(mapSession);
   }
 
+  listAllSessions(): SessionRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM sessions ORDER BY updated_at DESC, created_at DESC")
+      .all() as SessionRow[];
+    return rows.map(mapSession);
+  }
+
+  getServerActivityState(): {
+    runningSessions: number;
+    pendingFinalDeliveries: number;
+    latestInboundAt?: string;
+  } {
+    const running = this.db
+      .prepare("SELECT COUNT(*) AS count FROM sessions WHERE status = 'running'")
+      .get() as { count: number };
+    const pending = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions x
+      JOIN turn_snapshots s ON s.turn_id = x.last_turn_id
+      LEFT JOIN turn_deliveries d ON d.turn_id = s.turn_id
+      WHERE json_extract(s.snapshot_json, '$.status') = 'completed'
+        AND length(coalesce(json_extract(s.snapshot_json, '$.finalResponse'), '')) > 0
+        AND d.final_delivered_at IS NULL
+    `).get() as { count: number };
+    const inbound = this.db
+      .prepare("SELECT max(created_at) AS latest FROM inbound_event_receipts")
+      .get() as { latest: string | null };
+    return {
+      runningSessions: running.count,
+      pendingFinalDeliveries: pending.count,
+      latestInboundAt: inbound.latest ?? undefined,
+    };
+  }
+
   findSessionByRemoteSessionId(remoteSessionId: string, contextKey?: string): SessionRecord | undefined {
     const row = contextKey
       ? this.db

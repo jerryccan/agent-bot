@@ -64,7 +64,7 @@ describe("StartupNotifier", () => {
     const logger = { warn: vi.fn() };
     const notifier = new StartupNotifier(store, createOutbound(sendInteractiveCard), new CardRenderer(), logger, options);
 
-    await notifier.notify(new Date("2026-07-15T05:45:00.000Z"));
+    await notifier.notify(new Date("2026-07-15T05:45:00.000Z"), "用户执行 /restart 命令");
 
     expect(sendInteractiveCard).toHaveBeenCalledOnce();
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:c1", expect.any(Object));
@@ -78,6 +78,7 @@ describe("StartupNotifier", () => {
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("Current task title");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("gpt-test");
     expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("high");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("用户执行 /restart 命令");
   });
 
   test("continues startup delivery when legacy metadata hydration fails", async () => {
@@ -104,7 +105,10 @@ describe("StartupNotifier", () => {
       hydrator,
     );
 
-    await expect(notifier.notify(new Date("2026-07-15T05:45:00.000Z"))).resolves.toBeUndefined();
+    await expect(notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "Supervisor 启动",
+    )).resolves.toBeUndefined();
 
     expect(sendInteractiveCard).toHaveBeenCalledOnce();
     expect(logger.warn).toHaveBeenCalledWith(
@@ -124,7 +128,10 @@ describe("StartupNotifier", () => {
     const logger = { warn: vi.fn() };
     const notifier = new StartupNotifier(store, createOutbound(sendInteractiveCard), new CardRenderer(), logger, options);
 
-    await expect(notifier.notify(new Date("2026-07-15T05:45:00.000Z"))).resolves.toBeUndefined();
+    await expect(notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "Supervisor 启动",
+    )).resolves.toBeUndefined();
 
     expect(sendInteractiveCard).toHaveBeenCalledTimes(2);
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:c2", expect.any(Object));

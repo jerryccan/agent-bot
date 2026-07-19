@@ -25,7 +25,7 @@ export class StartupNotifier {
     private readonly metadataHydrator?: StartupTaskMetadataHydrator,
   ) {}
 
-  async notify(startedAt: Date): Promise<void> {
+  async notify(startedAt: Date, restartReason: string): Promise<void> {
     let contexts;
     try {
       contexts = this.store.listUserContexts().filter((context) =>
@@ -50,6 +50,7 @@ export class StartupNotifier {
       }
       const card = this.renderer.renderStartupStatus({
         startedAt,
+        restartReason,
         defaultAgentName: this.options.defaultAgentName,
         defaultAgentTitle: this.options.defaultAgentTitle,
         cwd: this.options.cwd,

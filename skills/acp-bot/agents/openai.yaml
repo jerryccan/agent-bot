@@ -1,0 +1,4 @@
+interface:
+  display_name: "ACP Bot"
+  short_description: "Manage acp-bot services, sessions, and tasks safely"
+  default_prompt: "Use $acp-bot to inspect and safely manage the local acp-bot service."

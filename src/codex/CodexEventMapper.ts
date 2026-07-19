@@ -2,7 +2,13 @@ import type { PlanStep, ToolState } from "../runtime/types.js";
 
 export type MappedCodexNotification =
   | { kind: "turn_started"; threadId: string; turnId: string; startedAt?: number }
-  | { kind: "token_usage"; threadId: string; turnId: string; totalTokens: number }
+  | {
+      kind: "token_usage";
+      threadId: string;
+      turnId: string;
+      lastTokens: number;
+      cumulativeTokens: number;
+    }
   | { kind: "agent_delta"; threadId: string; turnId: string; itemId: string; text: string }
   | {
       kind: "agent_message_phase";
@@ -46,10 +52,16 @@ export function mapCodexNotification(method: string, params: unknown): MappedCod
     };
   }
 
-  if (method === "thread/tokenUsage/updated" && isRecord(params.tokenUsage) && isRecord(params.tokenUsage.last)) {
-    const totalTokens = numberValue(params.tokenUsage.last.totalTokens);
-    if (totalTokens === undefined) return undefined;
-    return { kind: "token_usage", threadId, turnId, totalTokens };
+  if (
+    method === "thread/tokenUsage/updated"
+    && isRecord(params.tokenUsage)
+    && isRecord(params.tokenUsage.last)
+    && isRecord(params.tokenUsage.total)
+  ) {
+    const lastTokens = effectiveTokenCount(params.tokenUsage.last);
+    const cumulativeTokens = effectiveTokenCount(params.tokenUsage.total);
+    if (lastTokens === undefined || cumulativeTokens === undefined) return undefined;
+    return { kind: "token_usage", threadId, turnId, lastTokens, cumulativeTokens };
   }
 
   if (method === "item/agentMessage/delta") {
@@ -174,7 +186,7 @@ function mapTool(
     };
   }
   if (type === "webSearch") {
-    return { id, title: "网页搜索", kind: "web_search", status, startedAt, completedAt };
+    return mapWebSearchTool(item, id, status, startedAt, completedAt);
   }
   if (type === "imageView") {
     const imagePath = stringValue(item.path) ?? "image";
@@ -190,6 +202,100 @@ function mapTool(
     };
   }
   return undefined;
+}
+
+function mapWebSearchTool(
+  item: Record<string, unknown>,
+  id: string,
+  status: ToolState["status"],
+  startedAt?: number,
+  completedAt?: number,
+): ToolState {
+  const action = isRecord(item.action) ? item.action : undefined;
+  const actionType = stringValue(action?.type);
+  const itemQuery = nonEmptyString(item.query);
+
+  if (actionType === "openPage" || actionType === "open_page") {
+    const url = nonEmptyString(action?.url);
+    const target = displayWebTarget(url);
+    return {
+      id,
+      title: target ? `打开网页 · ${target}` : "打开网页",
+      kind: "web_search",
+      status,
+      command: url ? `open_page ${url}` : "open_page",
+      startedAt,
+      completedAt,
+    };
+  }
+
+  if (actionType === "findInPage" || actionType === "find_in_page") {
+    const url = nonEmptyString(action?.url);
+    const pattern = nonEmptyString(action?.pattern);
+    const target = displayWebTarget(url);
+    const summary = pattern ?? target;
+    return {
+      id,
+      title: summary ? `页内查找 · ${summary}` : "页内查找",
+      kind: "web_search",
+      status,
+      command: [
+        pattern ? `find_in_page ${JSON.stringify(pattern)}` : "find_in_page",
+        url,
+      ].filter((part): part is string => part !== undefined).join("\n"),
+      startedAt,
+      completedAt,
+    };
+  }
+
+  const actionQueries = stringArray(action?.queries);
+  const actionQuery = nonEmptyString(action?.query);
+  const queries = actionQueries.length > 0
+    ? actionQueries
+    : actionQuery
+      ? [actionQuery]
+      : itemQuery
+        ? [itemQuery]
+        : [];
+  const summary = queries.join("；");
+  return {
+    id,
+    title: summary ? `网页搜索 · ${summary}` : "网页搜索",
+    kind: "web_search",
+    status,
+    command: queries.length > 1
+      ? `web_search\n${queries.map((query) => `- ${query}`).join("\n")}`
+      : queries[0]
+        ? `web_search ${JSON.stringify(queries[0])}`
+        : "web_search",
+    startedAt,
+    completedAt,
+  };
+}
+
+function displayWebTarget(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.host}${path}`;
+  } catch {
+    return url;
+  }
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  const text = stringValue(value)?.trim();
+  return text || undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((item) => {
+        const text = nonEmptyString(item);
+        return text ? [text] : [];
+      })
+    : [];
 }
 
 function mapPlanStatus(value: unknown): PlanStep["status"] {
@@ -218,6 +324,16 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function effectiveTokenCount(usage: Record<string, unknown>): number | undefined {
+  const inputTokens = numberValue(usage.inputTokens);
+  const cachedInputTokens = numberValue(usage.cachedInputTokens) ?? 0;
+  const outputTokens = numberValue(usage.outputTokens);
+  if (inputTokens !== undefined || outputTokens !== undefined) {
+    return Math.max(0, (inputTokens ?? 0) - cachedInputTokens) + Math.max(0, outputTokens ?? 0);
+  }
+  return numberValue(usage.totalTokens);
 }
 
 function secondsToMilliseconds(value: number | undefined): number | undefined {

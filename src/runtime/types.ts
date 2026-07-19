@@ -2,6 +2,30 @@ export type RuntimeKind = "acp" | "codex";
 export type PermissionMode = "auto" | "confirm";
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 export type ToolStatus = "running" | "completed" | "failed";
+export type RuntimeGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface RuntimeGoal {
+  threadId: string;
+  objective: string;
+  status: RuntimeGoalStatus;
+  tokenBudget?: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuntimeGoalUpdate {
+  objective?: string;
+  status?: RuntimeGoalStatus;
+  tokenBudget?: number | null;
+}
 
 export type RuntimePrompt = string | {
   text: string;
@@ -39,7 +63,13 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: "turn_started"; sessionId: string; turnId: string; startedAt: number }
   | { type: "agent_text_delta"; sessionId: string; turnId: string; text: string }
-  | { type: "token_usage_updated"; sessionId: string; turnId: string; totalTokens: number }
+  | {
+      type: "token_usage_updated";
+      sessionId: string;
+      turnId: string;
+      lastTokens: number;
+      cumulativeTokens: number;
+    }
   | {
       type: "progress";
       sessionId: string;
@@ -86,6 +116,10 @@ export interface RemoteSessionSummary {
   lastActivity?: string;
   finalResponse?: string;
   lastError?: string;
+  lastTurnToolCount?: number;
+  lastTurnCompletedToolCount?: number;
+  lastTurnFailedToolCount?: number;
+  lastTurnRunningToolCount?: number;
 }
 
 export interface RemoteSessionPage {
@@ -155,6 +189,9 @@ export interface AgentRuntime {
   interruptRemoteTurn?(remoteSessionId: string, turnId: string): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
   setTitle?(sessionId: string, title: string): Promise<void>;
+  getGoal?(sessionId: string): Promise<RuntimeGoal | undefined>;
+  setGoal?(sessionId: string, update: RuntimeGoalUpdate): Promise<RuntimeGoal>;
+  clearGoal?(sessionId: string): Promise<boolean>;
   setModel(sessionId: string, model: string): Promise<void>;
   setReasoningEffort(sessionId: string, effort: string): Promise<void>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void>;

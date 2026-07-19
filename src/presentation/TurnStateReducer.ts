@@ -6,7 +6,6 @@ const MAX_TEXT = 6_000;
 const MAX_COMPLETED_TOOLS = 20;
 const MAX_FAILED_TOOLS = 5;
 const MAX_FILES = 30;
-const MAX_ACTIVITIES = 40;
 
 export function createTurnViewState(
   sessionId: string,
@@ -27,6 +26,10 @@ export function createTurnViewState(
     assistantText: "",
     plan: [],
     activities: [],
+    totalToolCount: 0,
+    completedToolCount: 0,
+    failedToolCount: 0,
+    toolStatuses: {},
     completedTools: [],
     failedTools: [],
     fileSummary: [],
@@ -41,14 +44,26 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
       return { ...state, status: "running", startedAt: event.startedAt };
     case "agent_text_delta":
       return { ...state, assistantText: bound(`${state.assistantText}${event.text}`) };
-    case "token_usage_updated":
-      return { ...state, totalTokens: Math.max(0, Math.round(event.totalTokens)) };
+    case "token_usage_updated": {
+      const lastTokens = normalizeTokenCount(event.lastTokens);
+      const cumulativeTokens = normalizeTokenCount(event.cumulativeTokens);
+      const previousCumulative = state.tokenUsageCumulative;
+      const delta = previousCumulative === undefined
+        ? lastTokens
+        : Math.max(0, cumulativeTokens - previousCumulative);
+      return {
+        ...state,
+        totalTokens: (state.totalTokens ?? 0) + delta,
+        tokenUsageCumulative: Math.max(previousCumulative ?? 0, cumulativeTokens),
+      };
+    }
     case "progress": {
       const activityUpdate = upsertReasoningActivity(
         state.activities ?? [],
         event.activityId ?? "progress",
         event.text,
         event.append === true,
+        event.activityId?.startsWith("commentary:") ? "assistant" : "reasoning",
       );
       return {
         ...state,
@@ -63,8 +78,10 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
       const tool = withToolTiming(state, event.tool);
       const bounded = boundTool(tool);
       const activityUpdate = upsertToolActivity(state.activities ?? [], bounded);
+      const tracking = trackToolStatus(state, tool);
       return {
         ...state,
+        ...tracking,
         status: "tool_running",
         activeTool: bounded,
         activities: activityUpdate.activities,
@@ -142,6 +159,7 @@ function appendBoundedOutput(previous: string | undefined, delta: string): strin
 
 function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState {
   tool = withToolTiming(state, tool);
+  const tracking = trackToolStatus(state, tool);
   const bounded = boundTool(tool);
   const activityUpdate = upsertToolActivity(state.activities ?? [], bounded);
   const withoutCompleted = state.completedTools.filter((item) => item.id !== tool.id);
@@ -151,6 +169,7 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
   if (tool.status === "running") {
     return {
       ...state,
+      ...tracking,
       status: "tool_running",
       activeTool: bounded,
       activities: activityUpdate.activities,
@@ -164,6 +183,7 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
   if (tool.status === "failed") {
     return {
       ...state,
+      ...tracking,
       status: activeTool ? "tool_running" : "running",
       activeTool,
       activities: activityUpdate.activities,
@@ -176,6 +196,7 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
 
   return {
     ...state,
+    ...tracking,
     status: activeTool ? "tool_running" : "running",
     activeTool,
     activities: activityUpdate.activities,
@@ -186,19 +207,57 @@ function reduceToolUpdate(state: TurnViewState, tool: ToolState): TurnViewState 
   };
 }
 
+function trackToolStatus(
+  state: TurnViewState,
+  tool: ToolState,
+): Pick<TurnViewState, "totalToolCount" | "completedToolCount" | "failedToolCount" | "toolStatuses"> {
+  const toolStatuses = state.toolStatuses
+    ? { ...state.toolStatuses }
+    : legacyToolStatuses(state);
+  const previous = toolStatuses[tool.id];
+  let totalToolCount = state.totalToolCount ?? Object.keys(toolStatuses).length;
+  let completedToolCount = state.completedToolCount
+    ?? Object.values(toolStatuses).filter((status) => status === "completed").length;
+  let failedToolCount = state.failedToolCount
+    ?? Object.values(toolStatuses).filter((status) => status === "failed").length;
+
+  if (previous === undefined) totalToolCount += 1;
+  if (previous !== tool.status) {
+    if (previous === "completed") completedToolCount = Math.max(0, completedToolCount - 1);
+    if (previous === "failed") failedToolCount = Math.max(0, failedToolCount - 1);
+    if (tool.status === "completed") completedToolCount += 1;
+    if (tool.status === "failed") failedToolCount += 1;
+  }
+  toolStatuses[tool.id] = tool.status;
+  return { totalToolCount, completedToolCount, failedToolCount, toolStatuses };
+}
+
+function legacyToolStatuses(state: TurnViewState): Record<string, ToolState["status"]> {
+  const statuses: Record<string, ToolState["status"]> = {};
+  for (const tool of state.completedTools ?? []) statuses[tool.id] = tool.status;
+  for (const tool of state.failedTools ?? []) statuses[tool.id] = tool.status;
+  for (const activity of state.activities ?? []) {
+    if (activity.kind === "tool") statuses[activity.tool.id] = activity.tool.status;
+  }
+  if (state.activeTool) statuses[state.activeTool.id] = state.activeTool.status;
+  return statuses;
+}
+
 function upsertReasoningActivity(
   activities: TurnActivity[],
   id: string,
   text: string,
   append: boolean,
+  kind: "assistant" | "reasoning",
 ): ActivityUpdate {
   const index = activities.findIndex((activity) => activity.id === id);
   const existing = index >= 0 ? activities[index] : undefined;
-  const previousText = existing?.kind === "reasoning" ? existing.text : "";
+  const previousText = existing?.kind === "reasoning" || existing?.kind === "assistant" ? existing.text : "";
+  const combined = append ? `${previousText}${text}` : text;
   const next: TurnActivity = {
-    kind: "reasoning",
+    kind,
     id,
-    text: bound(append ? `${previousText}${text}` : text),
+    text: kind === "assistant" ? combined : bound(combined),
   };
   return upsertActivity(activities, index, next);
 }
@@ -218,8 +277,8 @@ function upsertActivity(activities: TurnActivity[], index: number, activity: Tur
   if (index >= 0) updated[index] = activity;
   else updated.push(activity);
   return {
-    activities: updated.slice(-MAX_ACTIVITIES),
-    truncated: updated.length > MAX_ACTIVITIES,
+    activities: updated,
+    truncated: false,
   };
 }
 
@@ -256,4 +315,8 @@ function addOptional(left: number | undefined, right: number | undefined): numbe
 function bound(value: string): string {
   if (value.length <= MAX_TEXT) return value;
   return `${value.slice(0, MAX_TEXT - 1)}…`;
+}
+
+function normalizeTokenCount(value: number): number {
+  return Math.max(0, Math.round(value));
 }

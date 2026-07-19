@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import type { RuntimeEvent } from "../../src/runtime/types.js";
+import type { RuntimeEvent, RuntimeGoal } from "../../src/runtime/types.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
 
 describe("CodexRuntime", () => {
@@ -156,6 +156,25 @@ describe("CodexRuntime", () => {
     });
   });
 
+  test("sets an explicit title immediately after creating a thread", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    const session = await runtime.createSession({
+      localSessionId: "titled_local",
+      agentName: "codex",
+      cwd: process.cwd(),
+      title: "  修复   会话列表  ",
+      permissionMode: "auto",
+    });
+
+    expect(client.requests).toContainEqual({
+      method: "thread/name/set",
+      params: { threadId: "thr_1", name: "修复 会话列表" },
+    });
+    expect(session.title).toBe("修复 会话列表");
+  });
+
   test("renames a thread through thread/name/set", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
@@ -173,6 +192,56 @@ describe("CodexRuntime", () => {
       params: { threadId: "thr_1", name: "Renamed task" },
     });
     expect(runtime.getSession("renamed_local")?.title).toBe("Renamed task");
+  });
+
+  test("manages a persisted thread goal and adopts its automatic continuation turn", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "goal_local",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    await expect(runtime.getGoal("goal_local")).resolves.toBeUndefined();
+    const goal = await runtime.setGoal("goal_local", {
+      objective: "完成迁移并通过全部测试",
+      status: "active",
+    });
+    expect(goal).toMatchObject({ objective: "完成迁移并通过全部测试", status: "active" });
+    await runtime.setGoal("goal_local", { status: "paused" });
+
+    client.emit("turn/started", {
+      threadId: "thr_1",
+      turn: { id: "goal_turn_1", status: "inProgress", startedAt: 42 },
+    });
+    expect(events).toContainEqual({
+      type: "turn_started",
+      sessionId: "goal_local",
+      turnId: "goal_turn_1",
+      startedAt: 42_000,
+    });
+
+    await expect(runtime.clearGoal("goal_local")).resolves.toBe(true);
+    expect(client.requests).toContainEqual({
+      method: "thread/goal/get",
+      params: { threadId: "thr_1" },
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/goal/set",
+      params: { threadId: "thr_1", objective: "完成迁移并通过全部测试", status: "active" },
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/goal/set",
+      params: { threadId: "thr_1", status: "paused" },
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/goal/clear",
+      params: { threadId: "thr_1" },
+    });
   });
 
   test("creates a thread and emits active turn deltas and completion", async () => {
@@ -201,8 +270,8 @@ describe("CodexRuntime", () => {
       threadId: "thr_1",
       turnId,
       tokenUsage: {
-        total: { totalTokens: 98_765 },
-        last: { totalTokens: 12_345 },
+        total: { inputTokens: 98_765, cachedInputTokens: 90_000, outputTokens: 500, totalTokens: 99_265 },
+        last: { inputTokens: 12_345, cachedInputTokens: 10_000, outputTokens: 100, totalTokens: 12_445 },
         modelContextWindow: 200_000,
       },
     });
@@ -229,7 +298,8 @@ describe("CodexRuntime", () => {
       type: "token_usage_updated",
       sessionId: "s1",
       turnId,
-      totalTokens: 12_345,
+      lastTokens: 2_445,
+      cumulativeTokens: 9_265,
     });
     expect(events).toContainEqual(expect.objectContaining({
       type: "tool_started",
@@ -667,7 +737,15 @@ describe("CodexRuntime", () => {
         source: "vscode",
         updatedAt: 100,
         status: { type: "notLoaded" },
-        turns: [{ id: "turn_external", status: "completed", items: [] }],
+        turns: [{
+          id: "turn_external",
+          status: "completed",
+          items: [
+            { type: "commandExecution", status: "completed" },
+            { type: "mcpToolCall", status: "failed" },
+            { type: "agentMessage", phase: "final_answer", text: "done" },
+          ],
+        }],
       },
     };
     const runtime = new CodexRuntime(provider(client), logger());
@@ -686,6 +764,10 @@ describe("CodexRuntime", () => {
       id: "external_1",
       lastTurnId: "turn_external",
       lastTurnStatus: "completed",
+      lastTurnToolCount: 2,
+      lastTurnCompletedToolCount: 1,
+      lastTurnFailedToolCount: 1,
+      lastTurnRunningToolCount: 0,
     }));
     expect(client.requests.filter((request) => request.method === "thread/resume")).toHaveLength(0);
     expect(client.requests).toContainEqual({
@@ -744,6 +826,7 @@ class FakeAppServerClient {
   forkResult: unknown = { thread: { id: "thr_forked", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
   listResult: unknown = { data: [], nextCursor: null };
+  goalResult: RuntimeGoal | null = null;
   private notificationListener?: (method: string, params: unknown) => void;
   private readonly requestHandlers = new Map<
     string,
@@ -758,6 +841,26 @@ class FakeAppServerClient {
     if (method === "thread/fork") return this.forkResult as T;
     if (method === "thread/read") return this.readResult as T;
     if (method === "thread/list") return this.listResult as T;
+    if (method === "thread/goal/get") return { goal: this.goalResult } as T;
+    if (method === "thread/goal/set") {
+      const update = params as Partial<RuntimeGoal>;
+      this.goalResult = {
+        threadId: "thr_1",
+        objective: update.objective ?? this.goalResult?.objective ?? "",
+        status: update.status ?? this.goalResult?.status ?? "active",
+        tokenBudget: update.tokenBudget ?? this.goalResult?.tokenBudget ?? null,
+        tokensUsed: this.goalResult?.tokensUsed ?? 0,
+        timeUsedSeconds: this.goalResult?.timeUsedSeconds ?? 0,
+        createdAt: this.goalResult?.createdAt ?? 1_776_272_400,
+        updatedAt: 1_776_272_460,
+      };
+      return { goal: this.goalResult } as T;
+    }
+    if (method === "thread/goal/clear") {
+      const cleared = this.goalResult !== null;
+      this.goalResult = null;
+      return { cleared } as T;
+    }
     if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;
     if (method === "model/list") return { data: [{
       id: "gpt-test",

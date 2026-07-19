@@ -1,7 +1,8 @@
 import type { PermissionMode } from "../runtime/types.js";
 
 export type Command =
-  | { type: "new"; cwd?: string }
+  | { type: "shell"; command: string }
+  | { type: "new"; title?: string; cwd?: string }
   | { type: "fork"; sessionId?: string }
   | { type: "title"; title: string }
   | { type: "ask"; text: string }
@@ -11,6 +12,9 @@ export type Command =
   | { type: "use"; agent: string; cwd?: string }
   | { type: "stop" }
   | { type: "status"; sessionId?: string }
+  | { type: "goal"; action: "show" }
+  | { type: "goal"; action: "set" | "edit"; objective: string }
+  | { type: "goal"; action: "pause" | "resume" | "clear" }
   | { type: "restart" }
   | { type: "modes" }
   | { type: "mode"; value: string }

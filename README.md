@@ -16,6 +16,18 @@ codex login status
 
 App Server 直接复用本机 Codex 的登录状态，不需要机器人用户或飞书侧再次登录 ChatGPT。若通过服务账号启动，需要确保它与登录 Codex 时使用相同的 `CODEX_HOME` 和凭证目录。
 
+## 系统 Skill
+
+项目内置了标准 `acp-bot` Skill，可通过 CLI 注册到系统通用的 `~/.agents/skills`：
+
+```powershell
+acp-bot skills install
+acp-bot skills status
+acp-bot skills uninstall
+```
+
+`register`/`unregister` 分别是 `install`/`uninstall` 的别名。注册采用受管复制；更新会覆盖旧的受管版本，反注册不会删除非 acp-bot 创建的同名目录。可用 `--target <skills目录>` 或 `ACP_BOT_SKILLS_DIR` 修改目标根目录。
+
 ## 启动
 
 ```powershell
@@ -26,6 +38,52 @@ npm start
 ```
 
 `npm start` 通过常驻 supervisor 启动 acp-bot。acp-bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。开发调试可使用 `npm run dev` 直接运行单进程。
+
+## acp-bot 命令行工具
+
+构建后可以通过 npm 注册本地 `acp-bot` 命令，或直接使用 `npm run cli --`：
+
+```powershell
+npm run build
+npm link
+acp-bot --help
+# 未执行 npm link 时：npm run cli -- server status
+```
+
+Console UI：
+
+```powershell
+acp-bot console
+```
+
+Console UI 默认拒绝与已运行的 server 争用同一份任务状态；只有明确需要并理解风险时才使用 `acp-bot console --force`。
+
+Server 管理：
+
+```powershell
+acp-bot server status
+acp-bot server start
+acp-bot server stop
+acp-bot server restart                         # 默认安全重启
+acp-bot server restart --safe --reason "部署卡片更新"
+acp-bot server restart --immediate --reason "修复阻塞进程"
+```
+
+安全重启会等待所有群聊、话题和私聊任务结束，确认最终回答完成投递，并连续 15 秒没有新消息后再重启。等待期间新任务会重置空闲计时。`--immediate`（或 `--force`）跳过任务空闲判断，适合明确需要立刻替换 worker 的场景。
+
+任务查询和管理：
+
+```powershell
+acp-bot task list
+acp-bot task list --status running
+acp-bot task list --context "chat_id:oc_xxx"
+acp-bot task status 2
+acp-bot task status 019f... --json
+acp-bot task stop 019f...
+acp-bot task title 2 "新的任务标题"
+```
+
+序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止和改标题通过运行中 worker 的本地控制端点执行，以保证 Interrupt 和运行时状态一致。
 
 填入 `.env`：
 
@@ -66,7 +124,7 @@ defaults:
   cwd: "."
 ```
 
-`cwd` 是 ACP agent 的默认工作目录。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new D:\dev\project` 显式指定项目目录。已有任务的工作目录不会在运行中改变。
+`cwd` 是 ACP agent 的默认工作目录。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new 新任务标题 --dir D:\dev\project` 同时指定标题和项目目录。已有任务的工作目录不会在运行中改变。
 
 ## 飞书应用配置
 
@@ -98,9 +156,11 @@ defaults:
 ## 命令
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
-- `/new [cwd]`：使用当前默认 Agent 创建新任务；未指定目录时继承当前任务的项目或 Projectless 形态
+- `/new [title] [--dir <cwd>]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，未指定目录时继承当前任务的项目或 Projectless 形态
 - `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务的最新已结束轮次创建分支任务，并立即切换到新分支；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
 - `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
+- `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑
+- `! <命令>`：在当前任务的工作目录直接执行本地命令；没有当前任务时使用默认工作目录
 - `/sessions [关键词]`：用交互卡片列出同一 `CODEX_HOME` 下的 Codex 任务，默认显示 5 条，可通过 `更多任务` 每次继续展开 5 条；每个任务的正文末尾都有链接式文字操作，点击 `Status` 查看详情，当前任务不显示 `Switch`，其他空闲任务可点击 `Switch` 快速切换，外部运行中的任务可点击 `Stop` 发送 Interrupt
 - `/switch [序号或 Codex 任务 ID]`：不带参数切回上一个任务；也可按最近一次 `/sessions` 的序号或任务 ID 切换空闲任务
 - `/model`：显示全部支持的模型、当前模型和思考强度
@@ -126,7 +186,7 @@ SQLite 默认位于 `./data/acp-bot.sqlite`，保存入口当前任务、上一�
 
 进程重启时会恢复持久化的活动 turn，并通过 `thread/read` 与 Codex 的真实状态校准。运行中收到新的 turn ID、线程终态通知或控制请求失败时也会重新校准；投递账本会阻止已经成功发送的最终回复被重复发送。App Server 请求均有有限超时，不会永久占住飞书消息队列。
 
-supervisor 使用退出码 `75` 区分 `/restart` 发起的主动重启；其他意外退出同样会自动拉起。`/status` 会显示当前保活机制是否已启用。
+supervisor 使用退出码 `75` 区分 `/restart` 发起的主动重启；其他意外退出同样会自动拉起。重启后的 Card 2.0 启动状态卡会显示本次重启原因，包括 `/restart`、退出码或退出信号。`/status` 会显示当前保活机制是否已启用。
 
 ### 统一 Codex 任务
 

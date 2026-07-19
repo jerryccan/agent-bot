@@ -1,27 +1,36 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "./config/loadConfig.js";
 import {
   crashRestartDelayMs,
+  describeRestartReason,
   INTENTIONAL_RESTART_DELAY_MS,
   RESTART_EXIT_CODE,
   STABLE_UPTIME_MS,
+  STOP_EXIT_CODE,
 } from "./supervision/restartPolicy.js";
+import { takeRestartReason } from "./supervision/restartReasonStore.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
+const sqlitePath = loadConfig().storage.sqlitePath;
 let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
 let stopping = false;
 let consecutiveFailures = 0;
+const storedStartReason = takeRestartReason(sqlitePath);
+let nextStartReason = process.env.ACP_BOT_RESTART_REASON?.trim() || storedStartReason || "Supervisor 启动";
 
 function startChild(): void {
   const startedAt = Date.now();
+  const restartReason = nextStartReason;
+  nextStartReason = "Supervisor 重新拉起进程";
   child = spawn(process.execPath, [childEntry], {
     cwd: process.cwd(),
-    env: { ...process.env, ACP_BOT_SUPERVISED: "1" },
+    env: { ...process.env, ACP_BOT_SUPERVISED: "1", ACP_BOT_RESTART_REASON: restartReason },
     stdio: "inherit",
     windowsHide: true,
   });
-  writeSupervisorLog("started", { pid: child.pid });
+  writeSupervisorLog("started", { pid: child.pid, restartReason });
 
   child.once("error", (error) => {
     writeSupervisorLog("spawn_error", { error: error.message });
@@ -34,8 +43,14 @@ function startChild(): void {
       process.exit(0);
       return;
     }
+    if (code === STOP_EXIT_CODE) {
+      writeSupervisorLog("stopped_by_request", { code });
+      process.exit(0);
+      return;
+    }
 
     const intentional = code === RESTART_EXIT_CODE;
+    nextStartReason = takeRestartReason(sqlitePath) ?? describeRestartReason(code, signal, intentional);
     if (intentional || uptimeMs >= STABLE_UPTIME_MS) consecutiveFailures = 0;
     else consecutiveFailures += 1;
     const delayMs = intentional

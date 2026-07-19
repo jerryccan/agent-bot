@@ -53,14 +53,14 @@ describe("mapCodexNotification", () => {
     });
   });
 
-  test("maps the current turn token usage rather than the thread total", () => {
+  test("maps effective last-request and cumulative token usage without cached input", () => {
     expect(
       mapCodexNotification("thread/tokenUsage/updated", {
         threadId: "thr_1",
         turnId: "turn_1",
         tokenUsage: {
-          total: { totalTokens: 98_765 },
-          last: { totalTokens: 12_345 },
+          total: { inputTokens: 98_765, cachedInputTokens: 90_000, outputTokens: 500, totalTokens: 99_265 },
+          last: { inputTokens: 12_345, cachedInputTokens: 10_000, outputTokens: 100, totalTokens: 12_445 },
           modelContextWindow: 200_000,
         },
       }),
@@ -68,7 +68,8 @@ describe("mapCodexNotification", () => {
       kind: "token_usage",
       threadId: "thr_1",
       turnId: "turn_1",
-      totalTokens: 12_345,
+      lastTokens: 2_445,
+      cumulativeTokens: 9_265,
     });
   });
 
@@ -154,6 +155,63 @@ describe("mapCodexNotification", () => {
         imagePath: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
       }),
     });
+  });
+
+  test("maps web search actions with useful titles and expandable details", () => {
+    const search = mapCodexNotification("item/started", {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      item: {
+        type: "webSearch",
+        id: "web_1",
+        query: "fallback query",
+        action: { type: "search", queries: ["Codex App Server", "WebSearchItem schema"] },
+      },
+    });
+    const openPage = mapCodexNotification("item/completed", {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      item: {
+        type: "webSearch",
+        id: "web_2",
+        action: { type: "openPage", url: "https://developers.openai.com/codex/app-server?source=test" },
+      },
+    });
+    const findInPage = mapCodexNotification("item/completed", {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      item: {
+        type: "webSearch",
+        id: "web_3",
+        action: {
+          type: "findInPage",
+          url: "https://developers.openai.com/codex/app-server",
+          pattern: "thread/start",
+        },
+      },
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      kind: "tool",
+      tool: expect.objectContaining({
+        title: "网页搜索 · Codex App Server；WebSearchItem schema",
+        command: "web_search\n- Codex App Server\n- WebSearchItem schema",
+      }),
+    }));
+    expect(openPage).toEqual(expect.objectContaining({
+      kind: "tool",
+      tool: expect.objectContaining({
+        title: "打开网页 · developers.openai.com/codex/app-server",
+        command: "open_page https://developers.openai.com/codex/app-server?source=test",
+      }),
+    }));
+    expect(findInPage).toEqual(expect.objectContaining({
+      kind: "tool",
+      tool: expect.objectContaining({
+        title: "页内查找 · thread/start",
+        command: "find_in_page \"thread/start\"\nhttps://developers.openai.com/codex/app-server",
+      }),
+    }));
   });
 
   test("preserves MCP and dynamic tool arguments and successful results", () => {

@@ -4,6 +4,15 @@ import { CommandRouter } from "../../src/commands/CommandRouter.js";
 describe("CommandRouter", () => {
   const router = new CommandRouter();
 
+  test("parses local shell commands before prompt routing", () => {
+    expect(router.parse("! ls")).toEqual({ type: "shell", command: "ls" });
+    expect(router.parse("  ! Get-ChildItem | Select-Object -First 5  ")).toEqual({
+      type: "shell",
+      command: "Get-ChildItem | Select-Object -First 5",
+    });
+    expect(() => router.parse("!")).toThrow("请输入要执行的命令");
+  });
+
   test("parses Codex permission commands", () => {
     expect(router.parse("/permissions confirm")).toEqual({ type: "permissions", mode: "confirm" });
     expect(router.parse("/permissions auto")).toEqual({ type: "permissions", mode: "auto" });
@@ -30,10 +39,49 @@ describe("CommandRouter", () => {
     expect(router.parse("/status sess_1")).toEqual({ type: "status", sessionId: "sess_1" });
   });
 
-  test("creates new tasks with only an optional working directory", () => {
-    expect(router.parse("/new")).toEqual({ type: "new", cwd: undefined });
-    expect(router.parse('/new "D:\\work space\\repo"')).toEqual({ type: "new", cwd: "D:\\work space\\repo" });
-    expect(() => router.parse("/new codex D:\\work")).toThrow("Agent 使用当前默认值");
+  test("parses goal lifecycle commands", () => {
+    expect(router.parse("/goal")).toEqual({ type: "goal", action: "show" });
+    expect(router.parse("/goal 完成迁移并通过全部测试")).toEqual({
+      type: "goal",
+      action: "set",
+      objective: "完成迁移并通过全部测试",
+    });
+    expect(router.parse('/goal edit "完成新的迁移"')).toEqual({
+      type: "goal",
+      action: "edit",
+      objective: "完成新的迁移",
+    });
+    expect(router.parse("/goal pause")).toEqual({ type: "goal", action: "pause" });
+    expect(router.parse("/goal resume")).toEqual({ type: "goal", action: "resume" });
+    expect(router.parse("/goal clear")).toEqual({ type: "goal", action: "clear" });
+    expect(() => router.parse("/goal edit")).toThrow("修改后的 Goal");
+    expect(() => router.parse("/goal pause now")).toThrow("不接受额外参数");
+  });
+
+  test("creates new tasks with a title and an optional --dir working directory", () => {
+    expect(router.parse("/new")).toEqual({ type: "new", title: undefined, cwd: undefined });
+    expect(router.parse("/new 修复会话列表时间")).toEqual({
+      type: "new",
+      title: "修复会话列表时间",
+      cwd: undefined,
+    });
+    expect(router.parse('/new "修复 会话列表" --dir "D:\\work space\\repo"')).toEqual({
+      type: "new",
+      title: "修复 会话列表",
+      cwd: "D:\\work space\\repo",
+    });
+    expect(router.parse('/new --dir "D:\\work space\\repo" 修复会话列表')).toEqual({
+      type: "new",
+      title: "修复会话列表",
+      cwd: "D:\\work space\\repo",
+    });
+    expect(router.parse('/new --dir "D:\\work space\\repo"')).toEqual({
+      type: "new",
+      title: undefined,
+      cwd: "D:\\work space\\repo",
+    });
+    expect(() => router.parse("/new title --dir")).toThrow("--dir 后指定工作目录");
+    expect(() => router.parse("/new --dir D:\\work --dir D:\\other")).toThrow("只能指定一次");
   });
 
   test("parses fork with an optional session reference", () => {

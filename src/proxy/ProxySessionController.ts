@@ -15,6 +15,7 @@ import type {
   ApprovalDecision,
   PermissionMode,
   RemoteSessionSummary,
+  RuntimeGoal,
   RuntimeEvent,
   RuntimePrompt,
   RuntimeSession,
@@ -26,8 +27,12 @@ import {
   type SessionRecord,
 } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
-import { asInlineCode, truncateMiddle, truncateText } from "../utils/markdown.js";
+import { asInlineCode, codeBlock, truncateMiddle, truncateText } from "../utils/markdown.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
+import {
+  executeShellCommand,
+  type ShellCommandResult,
+} from "../utils/executeShellCommand.js";
 
 interface LoadedSession {
   record: SessionRecord;
@@ -64,6 +69,8 @@ export interface ProxyLifecycle {
   restart(contextKey: string): Promise<void>;
 }
 
+export type ShellCommandExecutor = (command: string, cwd: string) => Promise<ShellCommandResult>;
+
 export class ProxySessionController {
   private readonly router = new CommandRouter();
   private readonly cardRenderer = new CardRenderer();
@@ -81,6 +88,7 @@ export class ProxySessionController {
     private readonly outbound: OutboundRouter,
     private readonly logger: Logger,
     private readonly lifecycle?: ProxyLifecycle,
+    private readonly shellCommandExecutor: ShellCommandExecutor = executeShellCommand,
   ) {
     const interruptedAcpSessions = this.store.reconcileInterruptedAcpSessions(
       Object.entries(this.config.agents)
@@ -210,6 +218,12 @@ export class ProxySessionController {
         const kind = String(scopedAction.value.action ?? "");
         if (kind === "turn_details") {
           await this.outbound.showDetails(contextKey, String(scopedAction.value.turnId ?? ""));
+        } else if (kind === "activity_history") {
+          await this.showActivityHistory(
+            contextKey,
+            String(scopedAction.value.turnId ?? ""),
+            Number(scopedAction.value.page ?? 0),
+          );
         } else if (kind === "turn_cancel") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.cancelSession(this.requireSession(contextKey, sessionId));
@@ -246,6 +260,31 @@ export class ProxySessionController {
     this.lastSessionListings.clear();
   }
 
+  async controlStopTask(localSessionId: string): Promise<string> {
+    const record = this.store.getSession(localSessionId);
+    if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
+    await this.cancelSession(record);
+    return `已请求停止任务：${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+  }
+
+  async controlSetTaskTitle(localSessionId: string, title: string): Promise<string> {
+    const normalizedTitle = normalizeTaskTitle(title);
+    if (!normalizedTitle) throw new Error("任务标题不能为空。");
+    const record = this.store.getSession(localSessionId);
+    if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
+    const loaded = await this.loadSession(record);
+    if (loaded.runtime.setTitle) await loaded.runtime.setTitle(record.localSessionId, normalizedTitle);
+    else loaded.session.title = normalizedTitle;
+    this.store.updateRuntimeSession(record.localSessionId, { title: normalizedTitle });
+    this.outbound.updateSessionTitle(record.localSessionId, normalizedTitle);
+    this.store.audit(record.contextKey, "session_title_changed", {
+      localSessionId: record.localSessionId,
+      title: normalizedTitle,
+      source: "cli",
+    });
+    return `任务标题已修改为：${normalizedTitle}`;
+  }
+
   private cardActionContextKey(action: CardAction): string {
     const explicit = typeof action.value.contextKey === "string" ? action.value.contextKey : undefined;
     if (explicit && baseChatContextKey(explicit) === baseChatContextKey(action.contextKey)) return explicit;
@@ -266,6 +305,15 @@ export class ProxySessionController {
       : action.contextKey;
   }
 
+  private async showActivityHistory(contextKey: string, turnId: string, page: number): Promise<void> {
+    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(turnId));
+    if (!snapshot) throw new Error("未找到这次执行的活动历史。");
+    await this.outbound.sendInteractiveCard(
+      contextKey,
+      this.cardRenderer.renderActivityHistory(snapshot, Number.isFinite(page) ? page : 0),
+    );
+  }
+
   private async execute(
     contextKey: string,
     command: Command,
@@ -275,6 +323,9 @@ export class ProxySessionController {
   ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     switch (command.type) {
+      case "shell":
+        await this.runShellCommand(contextKey, command.command);
+        return;
       case "new":
         await this.createSession(
           contextKey,
@@ -282,6 +333,9 @@ export class ProxySessionController {
           command.cwd ?? this.inheritedNewTaskCwd(contextKey),
           true,
           false,
+          undefined,
+          undefined,
+          command.title,
         );
         return;
       case "fork":
@@ -310,6 +364,9 @@ export class ProxySessionController {
         return;
       case "status":
         await this.status(contextKey, command.sessionId);
+        return;
+      case "goal":
+        await this.goal(contextKey, command);
         return;
       case "restart":
         if (!this.lifecycle) throw new Error("当前运行方式不支持自动重启。");
@@ -714,14 +771,15 @@ export class ProxySessionController {
     prepareTurn: boolean,
     prompt?: string,
     replyTarget?: MessageReplyTarget,
+    requestedTitle?: string,
   ): Promise<SessionRecord> {
     const agent = this.ensureAgent(agentName);
     const localSessionId = createId("sess");
+    const initialTitle = normalizeTaskTitle(requestedTitle ?? prompt ?? "");
     const sessionCwd = cwd === undefined && agent.kind === "codex"
-      ? createProjectlessWorkspace({ prompt }).cwd
+      ? createProjectlessWorkspace({ prompt: initialTitle }).cwd
       : path.resolve(cwd ?? this.config.defaults.cwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
-    const initialTitle = normalizeTaskTitle(prompt ?? "");
     if (initialTitle) this.store.updateRuntimeSession(localSessionId, { title: initialTitle });
     this.store.setCurrentSession(contextKey, localSessionId);
     this.outbound.registerSession(localSessionId, contextKey, initialTitle, sessionCwd);
@@ -732,11 +790,15 @@ export class ProxySessionController {
         localSessionId,
         agentName,
         cwd: sessionCwd,
+        title: initialTitle,
         permissionMode: "auto",
       });
       this.persistRuntimeSession(record, session, session.activeTurnId ? "running" : "ready");
       const saved = this.store.getSession(localSessionId) ?? record;
-      if (announce) await this.outbound.sendText(contextKey, `已创建 ${agent.title} 任务：${session.remoteSessionId}`);
+      if (announce) {
+        const task = initialTitle ? `${initialTitle}（${session.remoteSessionId}）` : session.remoteSessionId;
+        await this.outbound.sendText(contextKey, `已创建 ${agent.title} 任务：${task}`);
+      }
       return saved;
     } catch (error) {
       this.store.updateSession(localSessionId, { status: "failed" });
@@ -957,6 +1019,18 @@ export class ProxySessionController {
   private async cancelSession(record: SessionRecord): Promise<void> {
     const runtime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
     if (runtime.kind === "codex" && record.remoteSessionId && runtime.interruptRemoteTurn) {
+      if (runtime.getGoal && runtime.setGoal) {
+        try {
+          if (!runtime.getSession(record.localSessionId)) await this.loadSession(record);
+          const goal = await runtime.getGoal(record.localSessionId);
+          if (goal?.status === "active") await runtime.setGoal(record.localSessionId, { status: "paused" });
+        } catch (error) {
+          this.logger.warn(
+            { error, sessionId: record.localSessionId },
+            "Failed to pause the active Codex goal before interrupting its turn.",
+          );
+        }
+      }
       let turnId = runtime.getSession(record.localSessionId)?.activeTurnId;
       if (runtime.readRemoteSession) {
         try {
@@ -1044,6 +1118,131 @@ export class ProxySessionController {
       ? `，思考强度已自动调整为 ${nextEffort}`
       : "";
     await this.outbound.sendText(contextKey, `模型已切换为 ${model}${effortMessage}，从下一次请求生效。`);
+  }
+
+  private async goal(contextKey: string, command: Extract<Command, { type: "goal" }>): Promise<void> {
+    const objective = command.action === "set" || command.action === "edit" ? command.objective : undefined;
+    if (objective !== undefined) validateGoalObjective(objective);
+    let record = this.currentSession(contextKey);
+    if (!record) {
+      if (command.action !== "set") {
+        throw new Error("当前没有任务。请使用 /goal <目标> 创建 Goal，或先发送消息创建任务。");
+      }
+      const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
+      const agent = this.ensureAgent(context.defaultAgent);
+      if (agent.kind !== "codex") throw new Error("Goal 模式仅支持 Codex App Server 任务。");
+      record = await this.createSession(
+        contextKey,
+        context.defaultAgent,
+        this.inheritedNewTaskCwd(contextKey),
+        false,
+        false,
+        objective,
+      );
+    }
+
+    const loaded = await this.loadSession(record);
+    if (loaded.runtime.kind !== "codex" || !loaded.runtime.getGoal || !loaded.runtime.setGoal || !loaded.runtime.clearGoal) {
+      throw new Error("当前任务不支持 Codex Goal 模式。");
+    }
+
+    if (command.action === "show") {
+      await this.sendGoalCard(contextKey, await loaded.runtime.getGoal(record.localSessionId));
+      return;
+    }
+    if (command.action === "clear") {
+      const cleared = await loaded.runtime.clearGoal(record.localSessionId);
+      if (!cleared) {
+        await this.outbound.sendText(contextKey, "当前任务没有 Goal。");
+        return;
+      }
+      await this.sendGoalCard(contextKey, undefined, "Goal 已清除；当前正在执行的轮次不会被中断。", record);
+      return;
+    }
+
+    const current = await loaded.runtime.getGoal(record.localSessionId);
+    if (command.action === "pause" || command.action === "resume") {
+      if (!current) throw new Error("当前任务没有 Goal。使用 /goal <目标> 创建一个 Goal。");
+      const status = command.action === "pause" ? "paused" : "active";
+      const goal = await loaded.runtime.setGoal(record.localSessionId, { status });
+      await this.sendGoalCard(
+        contextKey,
+        goal,
+        command.action === "pause"
+          ? "Goal 已暂停；当前轮次可以完成，但不会继续自动执行。"
+          : "Goal 已恢复，Codex 会继续自动执行。",
+        record,
+      );
+      return;
+    }
+
+    if (objective === undefined) throw new Error("无效的 Goal 命令。");
+    if (command.action === "set" && current && current.status !== "complete") {
+      throw new Error("当前已有未完成的 Goal。使用 /goal edit <新目标> 修改，或先使用 /goal clear 清除。");
+    }
+    if (command.action === "edit" && !current) {
+      throw new Error("当前任务没有可修改的 Goal。使用 /goal <目标> 创建一个 Goal。");
+    }
+    const goal = await loaded.runtime.setGoal(record.localSessionId, {
+      objective,
+      status: command.action === "edit" ? current!.status : "active",
+      ...(command.action === "edit" ? { tokenBudget: current!.tokenBudget } : {}),
+    });
+    await this.sendGoalCard(
+      contextKey,
+      goal,
+      command.action === "edit" ? "Goal 已更新。" : "Goal 已启动，Codex 会持续执行直到完成、暂停或遇到阻塞。",
+      record,
+    );
+  }
+
+  private async sendGoalCard(
+    contextKey: string,
+    goal: RuntimeGoal | undefined,
+    notice?: string,
+    record = this.currentSession(contextKey),
+  ): Promise<void> {
+    const sections: CardSection[] = [];
+    if (notice) sections.push({ lines: [cardText(notice)] });
+    sections.push(goal
+      ? { title: "当前 Goal", lines: goalDetailLines(goal) }
+      : { title: "当前 Goal", lines: ["未设置。使用 **/goal &#60;目标&#62;** 创建一个长任务。"] });
+    if (record) {
+      sections.push({
+        title: "任务",
+        lines: [
+          `**标题**：${cardText(record.title ?? "未命名任务")}`,
+          `**Codex 任务 ID**：${cardText(record.remoteSessionId ?? "尚未创建")}`,
+        ],
+      });
+    }
+    sections.push({
+      title: "命令",
+      lines: [
+        "**/goal**　查看　　**/goal pause**　暂停　　**/goal resume**　恢复",
+        "**/goal edit &#60;新目标&#62;**　修改　　**/goal clear**　清除",
+      ],
+    });
+    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Codex Goal", sections));
+  }
+
+  private async runShellCommand(contextKey: string, command: string): Promise<void> {
+    const cwd = this.currentSession(contextKey)?.cwd ?? this.config.defaults.cwd;
+    const result = await this.shellCommandExecutor(command, cwd);
+    const outputParts = [
+      result.stdout.trimEnd(),
+      result.stderr.trimEnd() ? `[stderr]\n${result.stderr.trimEnd()}` : "",
+    ].filter(Boolean);
+    const output = truncateMiddle(outputParts.join("\n"), 6_000);
+    const status = result.timedOut
+      ? "已超时（120s）"
+      : `退出码 ${result.exitCode ?? "未知"}`;
+    await this.outbound.sendMarkdown(contextKey, [
+      `**目录**：${asInlineCode(cwd)}`,
+      `**命令**：${asInlineCode(command.replace(/\s+/g, " ").trim())}`,
+      codeBlock(output || "（无输出）", "text"),
+      `${status}${result.outputTruncated ? " · 输出已截断" : ""}`,
+    ].join("\n"));
   }
 
   private async setTitle(contextKey: string, title: string): Promise<void> {
@@ -1399,6 +1598,7 @@ export class ProxySessionController {
     }
 
     let remote: RemoteSessionSummary | undefined;
+    let goal: RuntimeGoal | undefined;
     if (current?.remoteSessionId) {
       const runtime = this.runtimes.forAgent(this.ensureAgent(current.agentName));
       if (runtime.readRemoteSession) {
@@ -1406,6 +1606,14 @@ export class ProxySessionController {
           remote = await runtime.readRemoteSession(current.remoteSessionId);
         } catch (error) {
           this.logger.warn({ error, sessionId: current.localSessionId }, "Failed to inspect Codex task status.");
+        }
+      }
+      if (runtime.kind === "codex" && runtime.getGoal) {
+        try {
+          const loaded = runtime.getSession(current.localSessionId) ?? (await this.loadSession(current)).session;
+          goal = await runtime.getGoal(loaded.localSessionId);
+        } catch (error) {
+          this.logger.warn({ error, sessionId: current.localSessionId }, "Failed to inspect Codex goal status.");
         }
       }
     }
@@ -1444,6 +1652,10 @@ export class ProxySessionController {
 
     const sections: CardSection[] = [
       { title: targetSessionId ? "指定任务" : "当前任务", lines: taskLines },
+      ...(current ? [{
+        title: "Goal",
+        lines: goal ? goalDetailLines(goal) : ["未设置。"],
+      }] : []),
       ...(current ? [{
         title: "最终结果",
         lines: finalResultLines(snapshot, remote),
@@ -1545,7 +1757,7 @@ export class ProxySessionController {
       {
         title: "任务管理",
         lines: [
-          "**/new [cwd]**　使用默认 Agent 创建任务；省略目录时继承当前项目形态",
+          "**/new [title] [--dir <cwd>]**　使用默认 Agent 创建任务；普通参数作为标题，省略目录时继承当前项目形态",
           "**/fork [序号或任务 ID]**　从当前或指定任务的最新已结束轮次创建分支并切换过去",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
           "**/sessions [关键词]**　查找本机任务",
@@ -1555,7 +1767,9 @@ export class ProxySessionController {
       {
         title: "执行设置",
         lines: [
+          "**! &#60;命令&#62;**　在当前任务目录直接执行本地命令",
           "**/stop**　停止当前执行",
+          "**/goal [目标]**　查看或创建长任务 Goal；支持 pause、resume、edit、clear",
           "**/model [name]**　查看或切换模型",
           "**/thinking [level]**　查看或设置思考强度",
           "**/permissions [auto|confirm]**　查看或切换确认模式",
@@ -1744,14 +1958,24 @@ function executionDetailLines(
     `**当前 / 最后步骤**：${statusExcerpt(currentOrLastStep(relevantSnapshot, remote), 600)}`,
   ];
 
-  if (relevantSnapshot) {
-    const lastTool = [...(relevantSnapshot.activities ?? [])]
+  const remoteCountsApply = remote?.lastTurnId === turnId && remote.lastTurnToolCount !== undefined;
+  if (relevantSnapshot || remoteCountsApply) {
+    const lastTool = [...(relevantSnapshot?.activities ?? [])]
       .reverse()
       .find((activity): activity is Extract<TurnActivity, { kind: "tool" }> => activity.kind === "tool")?.tool;
-    const tool = relevantSnapshot.activeTool ?? lastTool;
-    lines.push(`**工具执行**：完成 ${relevantSnapshot.completedTools?.length ?? 0}，失败 ${relevantSnapshot.failedTools?.length ?? 0}${relevantSnapshot.activeTool ? "，当前 1" : ""}`);
+    const tool = relevantSnapshot?.activeTool ?? lastTool;
+    const completedTools = remoteCountsApply
+      ? remote.lastTurnCompletedToolCount ?? 0
+      : relevantSnapshot?.completedToolCount ?? relevantSnapshot?.completedTools?.length ?? 0;
+    const failedTools = remoteCountsApply
+      ? remote.lastTurnFailedToolCount ?? 0
+      : relevantSnapshot?.failedToolCount ?? relevantSnapshot?.failedTools?.length ?? 0;
+    const runningTools = remoteCountsApply
+      ? remote.lastTurnRunningToolCount ?? 0
+      : relevantSnapshot?.activeTool ? 1 : 0;
+    lines.push(`**工具执行**：完成 ${completedTools}，失败 ${failedTools}${runningTools > 0 ? `，当前 ${runningTools}` : ""}`);
     if (tool) lines.push(`**当前 / 最后工具**：${statusExcerpt(tool.title, 400)}（${toolStatusLabel(tool.status)}）`);
-    if (relevantSnapshot.durationMs !== undefined) lines.push(`**耗时**：${formatDuration(relevantSnapshot.durationMs)}`);
+    if (relevantSnapshot?.durationMs !== undefined) lines.push(`**耗时**：${formatDuration(relevantSnapshot.durationMs)}`);
   }
   if (queued > 0) lines.push(`**排队消息**：${queued} 条`);
   return lines;
@@ -1926,7 +2150,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["stop", "status", "restart", "help", "sessions"].includes(command.type)) return true;
+  if (["stop", "status", "restart", "help", "sessions", "goal"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (command.type === "model") return command.model === undefined;
   if (command.type === "thinking") return command.effort === undefined;
@@ -1945,4 +2169,61 @@ function isPromptCommand(command: Command): boolean {
 
 function runtimePrompt(text: string, localImagePaths?: string[]): RuntimePrompt {
   return localImagePaths?.length ? { text, localImagePaths } : text;
+}
+
+function validateGoalObjective(objective: string): void {
+  const length = Array.from(objective.trim()).length;
+  if (length === 0) throw new Error("Goal 不能为空。");
+  if (length > 4_000) {
+    throw new Error("Goal 最多 4000 个字符。请把详细说明写入文件，并在 Goal 中引用该文件。");
+  }
+}
+
+function goalDetailLines(goal: RuntimeGoal): string[] {
+  return [
+    `**状态**：${goalStatusLabel(goal.status)}`,
+    `**目标**：${statusExcerpt(goal.objective, 2_800)}`,
+    `**消耗**：${formatGoalTokenCount(goal.tokensUsed)} tokens / ${formatGoalElapsed(goal.timeUsedSeconds)}`,
+    ...(goal.tokenBudget === null || goal.tokenBudget === undefined
+      ? []
+      : [`**Token 预算**：${formatGoalTokenCount(goal.tokenBudget)}`]),
+    `**更新时间**：${formatUnixTime(goal.updatedAt)}`,
+  ];
+}
+
+function goalStatusLabel(status: RuntimeGoal["status"]): string {
+  const labels: Record<RuntimeGoal["status"], string> = {
+    active: "执行中",
+    paused: "已暂停",
+    blocked: "已阻塞",
+    usageLimited: "额度受限",
+    budgetLimited: "Token 预算受限",
+    complete: "已完成",
+  };
+  return labels[status];
+}
+
+function formatGoalTokenCount(tokens: number): string {
+  const rounded = Math.max(0, Math.round(tokens));
+  if (rounded < 10_000) return new Intl.NumberFormat("zh-CN").format(rounded);
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    compactDisplay: "short",
+    maximumSignificantDigits: 3,
+  }).format(rounded);
+}
+
+function formatGoalElapsed(seconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const second = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minute = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) return `${String(hours).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+  if (totalMinutes > 0) return `${String(totalMinutes).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+  return `${totalSeconds}s`;
+}
+
+function formatUnixTime(seconds: number): string {
+  return formatStatusTime(new Date(seconds * 1_000).toISOString());
 }

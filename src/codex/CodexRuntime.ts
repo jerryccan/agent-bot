@@ -9,6 +9,8 @@ import type {
   RemoteSessionPage,
   RemoteSessionSummary,
   ResumeRuntimeSessionInput,
+  RuntimeGoal,
+  RuntimeGoalUpdate,
   RuntimeEvent,
   RuntimePrompt,
   RuntimeSession,
@@ -94,8 +96,16 @@ export class CodexRuntime implements AgentRuntime {
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
     }, SESSION_REQUEST_TIMEOUT_MS);
+    const requestedTitle = normalizeTaskTitle(input.title);
+    if (requestedTitle) {
+      await client.request("thread/name/set", {
+        threadId: response.thread.id,
+        name: requestedTitle,
+      }, SESSION_REQUEST_TIMEOUT_MS);
+    }
     const reasoningEffort = await this.resolveReasoningEffort(input, response);
     const session = this.makeSession(input, response, reasoningEffort);
+    if (requestedTitle) session.title = requestedTitle;
     this.sessions.set(input.localSessionId, session);
     return session;
   }
@@ -143,16 +153,7 @@ export class CodexRuntime implements AgentRuntime {
   async startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string> {
     const session = this.requireSession(sessionId);
     const client = await this.client();
-    if (session.needsResume) {
-      await client.request("thread/resume", {
-        threadId: session.remoteSessionId,
-        cwd: session.cwd,
-        model: session.model,
-        ...threadLifecycleParams(session.cwd),
-        ...permissionParams(session.permissionMode),
-      }, SESSION_REQUEST_TIMEOUT_MS);
-      session.needsResume = false;
-    }
+    await this.ensureSessionResumed(session, client);
     const response = await client.request<{ turn: { id: string } }>("turn/start", {
       threadId: session.remoteSessionId,
       input: codexUserInput(prompt),
@@ -291,6 +292,42 @@ export class CodexRuntime implements AgentRuntime {
     session.title = normalizedTitle;
   }
 
+  async getGoal(sessionId: string): Promise<RuntimeGoal | undefined> {
+    const session = this.requireSession(sessionId);
+    const client = await this.client();
+    await this.ensureSessionResumed(session, client);
+    const response = await client.request<{ goal?: RuntimeGoal | null }>(
+      "thread/goal/get",
+      { threadId: session.remoteSessionId },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    return response.goal ?? undefined;
+  }
+
+  async setGoal(sessionId: string, update: RuntimeGoalUpdate): Promise<RuntimeGoal> {
+    const session = this.requireSession(sessionId);
+    const client = await this.client();
+    await this.ensureSessionResumed(session, client);
+    const response = await client.request<{ goal: RuntimeGoal }>(
+      "thread/goal/set",
+      { threadId: session.remoteSessionId, ...update },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    return response.goal;
+  }
+
+  async clearGoal(sessionId: string): Promise<boolean> {
+    const session = this.requireSession(sessionId);
+    const client = await this.client();
+    await this.ensureSessionResumed(session, client);
+    const response = await client.request<{ cleared: boolean }>(
+      "thread/goal/clear",
+      { threadId: session.remoteSessionId },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    return response.cleared;
+  }
+
   async setModel(sessionId: string, model: string): Promise<void> {
     this.requireSession(sessionId).model = model;
   }
@@ -422,7 +459,8 @@ export class CodexRuntime implements AgentRuntime {
         type: "token_usage_updated",
         sessionId,
         turnId: mapped.turnId,
-        totalTokens: mapped.totalTokens,
+        lastTokens: mapped.lastTokens,
+        cumulativeTokens: mapped.cumulativeTokens,
       });
     } else if (mapped.kind === "agent_message_phase") {
       session.messagePhases.set(mapped.itemId, mapped.phase);
@@ -526,6 +564,18 @@ export class CodexRuntime implements AgentRuntime {
     const models = await this.listModels();
     return models.find((item) => item.id === model)?.defaultReasoningEffort
       ?? models.find((item) => item.isDefault)?.defaultReasoningEffort;
+  }
+
+  private async ensureSessionResumed(session: CodexSession, client: AppServerClient): Promise<void> {
+    if (!session.needsResume) return;
+    await client.request("thread/resume", {
+      threadId: session.remoteSessionId,
+      cwd: session.cwd,
+      model: session.model,
+      ...threadLifecycleParams(session.cwd),
+      ...permissionParams(session.permissionMode),
+    }, SESSION_REQUEST_TIMEOUT_MS);
+    session.needsResume = false;
   }
 
   private async synchronizeSessionNow(sessionId: string): Promise<RuntimeSession> {
@@ -712,7 +762,7 @@ interface CodexThreadSnapshot {
 interface CodexTurnSnapshot {
   id: string;
   status: "completed" | "interrupted" | "failed" | "inProgress";
-  items?: Array<{ type?: string; text?: string; phase?: string | null }>;
+  items?: Array<{ type?: string; text?: string; phase?: string | null; status?: string }>;
   error?: { message?: string } | null;
   startedAt?: number | null;
   durationMs?: number | null;
@@ -766,6 +816,7 @@ function extractFinalResponse(turn: CodexTurnSnapshot): string {
 
 function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {
   const lastTurn = thread.turns?.at(-1);
+  const toolCounts = lastTurn ? summarizeTurnTools(lastTurn) : undefined;
   const status = remoteThreadStatus(thread.status?.type);
   // A persisted inProgress turn can outlive the CLI/Desktop app-server process
   // that owned it. Only the owning app-server's active thread status (or the
@@ -790,7 +841,38 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     lastActivity: lastText,
     finalResponse: lastTurn && lastTurn.status !== "inProgress" ? extractFinalResponse(lastTurn) || undefined : undefined,
     lastError: lastTurn?.error?.message,
+    lastTurnToolCount: toolCounts?.total,
+    lastTurnCompletedToolCount: toolCounts?.completed,
+    lastTurnFailedToolCount: toolCounts?.failed,
+    lastTurnRunningToolCount: toolCounts?.running,
   };
+}
+
+function summarizeTurnTools(turn: CodexTurnSnapshot): {
+  total: number;
+  completed: number;
+  failed: number;
+  running: number;
+} {
+  const tools = (turn.items ?? []).filter((item) => isToolItemType(item.type));
+  let completed = 0;
+  let failed = 0;
+  let running = 0;
+  for (const tool of tools) {
+    if (tool.status === "failed" || tool.status === "declined") failed += 1;
+    else if (tool.status === "inProgress" || tool.status === "running") running += 1;
+    else completed += 1;
+  }
+  return { total: tools.length, completed, failed, running };
+}
+
+function isToolItemType(type: string | undefined): boolean {
+  return type === "commandExecution"
+    || type === "fileChange"
+    || type === "mcpToolCall"
+    || type === "dynamicToolCall"
+    || type === "webSearch"
+    || type === "imageView";
 }
 
 function mergeRemoteSessionSummary(

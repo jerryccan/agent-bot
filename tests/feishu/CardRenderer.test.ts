@@ -53,6 +53,7 @@ describe("CardRenderer", () => {
   test("renders a callback-free startup status card with resumable task state", () => {
     const card = new CardRenderer().renderStartupStatus({
       startedAt: new Date("2026-07-15T05:45:00.000Z"),
+      restartReason: "用户执行 /restart 命令",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
       cwd: "D:\\dev\\acp-bot",
@@ -78,6 +79,8 @@ describe("CardRenderer", () => {
     expect(card).not.toHaveProperty("elements");
     expect(serialized).toContain("acp-bot 已启动");
     expect(serialized).toContain("在线");
+    expect(serialized).toContain("重启原因");
+    expect(serialized).toContain("用户执行 /restart 命令");
     expect(serialized).toContain("Codex");
     expect(serialized).toContain("D:\\\\dev\\\\acp-bot");
     expect(serialized).toContain("sess_1");
@@ -96,6 +99,7 @@ describe("CardRenderer", () => {
   test("renders default model and automatic effort when there is no current task", () => {
     const card = new CardRenderer().renderStartupStatus({
       startedAt: new Date("2026-07-15T05:45:00.000Z"),
+      restartReason: "Supervisor 启动",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
       cwd: "D:\\dev\\acp-bot",
@@ -154,7 +158,7 @@ describe("CardRenderer", () => {
     expect(card).toMatchObject({
       schema: "2.0",
       header: {
-        subtitle: { tag: "plain_text", content: "耗时 51.6s · 2 个工具 · 1 个文件" },
+        subtitle: { tag: "plain_text", content: "耗时 52s · 2 个工具 · 1 个文件" },
         padding: "12px 12px 12px 12px",
       },
       body: {
@@ -193,14 +197,39 @@ describe("CardRenderer", () => {
 
   test.each([
     [850, "耗时 0.9s"],
-    [188_000, "耗时 03:08.0s"],
-    [4_320_000, "耗时 01:12:00.0s"],
-    [93_600_000, "耗时 26:00:00.0s"],
-  ])("formats a %i ms turn duration like a tool duration", (durationMs, expectedDuration) => {
+    [9_849, "耗时 9.8s"],
+    [9_950, "耗时 10s"],
+    [10_400, "耗时 10s"],
+    [10_500, "耗时 11s"],
+    [188_000, "耗时 03:08"],
+    [4_320_000, "耗时 01:12:00"],
+    [93_600_000, "耗时 26:00:00"],
+  ])("formats a %i ms turn duration with adaptive precision", (durationMs, expectedDuration) => {
     const current = { ...state(), durationMs, totalTokens: 12_345 };
     const card = new CardRenderer().renderTurn(current) as { header: { subtitle: { content: string } } };
 
-    expect(card.header.subtitle.content).toBe(`${expectedDuration} · 12,345 tokens · 2 个工具 · 1 个文件`);
+    expect(card.header.subtitle.content).toBe(`${expectedDuration} · 12.3K tokens · 2 个工具 · 1 个文件`);
+  });
+
+  test.each([
+    [9_999, "9,999 tokens"],
+    [10_000, "10K tokens"],
+    [12_345, "12.3K tokens"],
+    [2_242_908, "2.24M tokens"],
+    [117_476_956, "117M tokens"],
+    [1_234_567_890, "1.23B tokens"],
+  ])("formats %i tokens compactly as %s", (totalTokens, expected) => {
+    const current = { ...state(), totalTokens };
+    const card = new CardRenderer().renderTurn(current) as { header: { subtitle: { content: string } } };
+
+    expect(card.header.subtitle.content).toContain(expected);
+  });
+
+  test("uses the unbounded tool counter in the subtitle", () => {
+    const current = { ...state(), totalToolCount: 778 };
+    const card = new CardRenderer().renderTurn(current) as { header: { subtitle: { content: string } } };
+
+    expect(card.header.subtitle.content).toContain("778 个工具");
   });
 
   test.each([
@@ -266,6 +295,25 @@ describe("CardRenderer", () => {
     const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel" && panelTitle(item).includes("npm test"));
 
     expect(panelTitle(panel ?? {})).toBe("✅ npm test -- --run if ($LASTEXITCODE -ne 0) { exit 1 }");
+  });
+
+  test("uses the useful web-search action title while keeping full details expandable", () => {
+    const running = state();
+    const tool = {
+      id: "web_1",
+      title: "打开网页 · developers.openai.com/codex/app-server",
+      kind: "web_search",
+      status: "completed" as const,
+      command: "open_page https://developers.openai.com/codex/app-server?source=test",
+    };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => panelTitle(item).includes("打开网页"));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(panelTitle(panel ?? {})).toBe("✅ 打开网页 · developers.openai.com/codex/app-server");
+    expect(details).toContain("$ open_page https://developers.openai.com/codex/app-server?source=test");
   });
 
   test("renders a view_image preview inside the collapsed tool panel", () => {
@@ -547,6 +595,62 @@ describe("CardRenderer", () => {
       { tag: "markdown", content: "…" },
       { tag: "markdown", content: "> 💭 最近的思考" },
     ]);
+  });
+
+  test("shows the latest 40 mixed activities and links to uniform chronological pages", () => {
+    const running = state();
+    running.plan = [];
+    running.fileSummary = [];
+    running.activities = Array.from({ length: 45 }, (_value, index) => {
+      const position = index + 1;
+      if (position % 3 === 1) {
+        return { kind: "assistant" as const, id: `commentary:${position}`, text: `Assistant ${position}` };
+      }
+      if (position % 3 === 2) {
+        return {
+          kind: "tool" as const,
+          id: `tool:${position}`,
+          tool: { ...running.completedTools[0]!, id: `tool:${position}`, title: `Tool ${position}` },
+        };
+      }
+      return { kind: "reasoning" as const, id: `reasoning:${position}`, text: `Reasoning ${position}` };
+    });
+
+    const card = new CardRenderer().renderTurn(running);
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).not.toContain("Tool 5");
+    expect(serialized).toContain("Reasoning 6");
+    expect(serialized).toContain("Assistant 7");
+    expect(serialized).toContain("Tool 44");
+    expect(serialized).toContain("Reasoning 45");
+    expect(serialized).toContain("查看较早活动（共 2 页）");
+    expect(serialized).toContain('"action":"activity_history"');
+  });
+
+  test("paginates all activity types from oldest to newest in 40-item pages", () => {
+    const running = state();
+    running.activities = Array.from({ length: 81 }, (_value, index) => ({
+      kind: "assistant" as const,
+      id: `commentary:${index + 1}`,
+      text: index === 0 ? `FIRST-${"a".repeat(5_000)}` : index === 80 ? "LAST-81" : `Activity ${index + 1}`,
+    }));
+    const renderer = new CardRenderer();
+    const firstPage = JSON.stringify(renderer.renderActivityHistory(running, 0));
+    const middlePage = JSON.stringify(renderer.renderActivityHistory(running, 1));
+    const lastPage = JSON.stringify(renderer.renderActivityHistory(running, 2));
+
+    expect(firstPage).toContain("思考活动历史 · 1/3");
+    expect(firstPage).toContain("FIRST-");
+    expect(firstPage).not.toContain("Activity 2");
+    expect(firstPage).toContain("下一页");
+    expect(middlePage).toContain("Activity 2");
+    expect(middlePage).toContain("Activity 41");
+    expect(middlePage).not.toContain("Activity 42");
+    expect(lastPage).toContain("思考活动历史 · 3/3");
+    expect(lastPage).toContain("Activity 42");
+    expect(lastPage).toContain("LAST-81");
+    expect(lastPage).toContain("上一页");
   });
 
   test("renders task actions as colored callback links below the body", () => {

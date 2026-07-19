@@ -3,6 +3,11 @@ import type { Command } from "./commandTypes.js";
 export class CommandRouter {
   parse(text: string): Command {
     const trimmed = text.trim();
+    if (trimmed.startsWith("!")) {
+      const command = trimmed.slice(1).trim();
+      if (!command) throw new Error("请输入要执行的命令，例如：! ls");
+      return { type: "shell", command };
+    }
     if (!trimmed.startsWith("/")) {
       return { type: "prompt", text };
     }
@@ -14,8 +19,7 @@ export class CommandRouter {
       case "agents":
         return { type: "agent" };
       case "new":
-        if (args.length > 1) throw new Error("/new 只接受一个可选工作目录；Agent 使用当前默认值。");
-        return { type: "new", cwd: args[0] };
+        return parseNewCommand(args);
       case "fork":
         if (args.length > 1) throw new Error("/fork 只接受一个可选的任务序号或任务 ID。");
         return args[0] ? { type: "fork", sessionId: args[0] } : { type: "fork" };
@@ -36,6 +40,20 @@ export class CommandRouter {
         return { type: "stop" };
       case "status":
         return args[0] ? { type: "status", sessionId: args[0] } : { type: "status" };
+      case "goal": {
+        if (args.length === 0) return { type: "goal", action: "show" };
+        const action = args[0]!.toLowerCase();
+        if (action === "pause" || action === "resume" || action === "clear") {
+          if (args.length > 1) throw new Error(`/goal ${action} 不接受额外参数。`);
+          return { type: "goal", action };
+        }
+        if (action === "edit") {
+          const objective = args.slice(1).join(" ").trim();
+          if (!objective) throw new Error("请输入修改后的 Goal，例如：/goal edit 完成迁移并通过全部测试。");
+          return { type: "goal", action: "edit", objective };
+        }
+        return { type: "goal", action: "set", objective: args.join(" ") };
+      }
       case "restart":
         return { type: "restart" };
       case "modes":
@@ -67,6 +85,30 @@ function requireArg<T>(value: string | undefined, name: string, create: (value: 
   }
 
   return create(value);
+}
+
+function parseNewCommand(args: string[]): Extract<Command, { type: "new" }> {
+  const titleParts: string[] = [];
+  let cwd: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument !== "--dir") {
+      titleParts.push(argument);
+      continue;
+    }
+    if (cwd !== undefined) throw new Error("/new 只能指定一次 --dir。");
+    const directory = args[index + 1];
+    if (!directory || directory === "--dir") {
+      throw new Error("请在 --dir 后指定工作目录，例如：/new 修复会话列表 --dir D:\\dev\\project。");
+    }
+    cwd = directory;
+    index += 1;
+  }
+  return {
+    type: "new",
+    title: titleParts.join(" ").trim() || undefined,
+    cwd,
+  };
 }
 
 function splitArgs(input: string): string[] {

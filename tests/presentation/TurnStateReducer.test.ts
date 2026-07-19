@@ -37,6 +37,19 @@ describe("TurnStateReducer", () => {
     }
     expect(state.completedTools).toHaveLength(20);
     expect(state.completedTools[0]?.id).toBe("t6");
+    expect(state.totalToolCount).toBe(25);
+    expect(state.completedToolCount).toBe(25);
+    expect(state.failedToolCount).toBe(0);
+  });
+
+  test("does not double count repeated tool updates and tracks status transitions", () => {
+    let state = createTurnViewState("s1", "turn_1", 1_000);
+    state = reduceTurnEvent(state, event("tool_started", { tool: tool("t1", "npm test", "running") }));
+    state = reduceTurnEvent(state, event("tool_updated", { tool: tool("t1", "npm test", "running") }));
+    state = reduceTurnEvent(state, event("tool_updated", { tool: tool("t1", "npm test", "failed") }));
+    state = reduceTurnEvent(state, event("tool_updated", { tool: tool("t1", "npm test", "failed") }));
+
+    expect(state).toMatchObject({ totalToolCount: 1, completedToolCount: 0, failedToolCount: 1 });
   });
 
   test("appends bounded command output while running and trusts the final aggregated output", () => {
@@ -123,12 +136,14 @@ describe("TurnStateReducer", () => {
     expect(state.progressText?.length).toBeLessThanOrEqual(6_000);
   });
 
-  test("retains the latest current-turn token usage", () => {
+  test("accumulates current-turn token usage from cumulative notifications without double counting", () => {
     let state = createTurnViewState("s1", "turn_1", 1_000);
-    state = reduceTurnEvent(state, event("token_usage_updated", { totalTokens: 12_345 }));
-    state = reduceTurnEvent(state, event("token_usage_updated", { totalTokens: 13_579 }));
+    state = reduceTurnEvent(state, event("token_usage_updated", { lastTokens: 123, cumulativeTokens: 1_000 }));
+    state = reduceTurnEvent(state, event("token_usage_updated", { lastTokens: 123, cumulativeTokens: 1_000 }));
+    state = reduceTurnEvent(state, event("token_usage_updated", { lastTokens: 456, cumulativeTokens: 1_456 }));
 
-    expect(state.totalTokens).toBe(13_579);
+    expect(state.totalTokens).toBe(579);
+    expect(state.tokenUsageCumulative).toBe(1_456);
   });
 
   test("preserves reasoning and tool activity order while updating entries in place", () => {
@@ -170,7 +185,7 @@ describe("TurnStateReducer", () => {
     });
   });
 
-  test("marks the activity history when older entries are discarded", () => {
+  test("retains activity history beyond the 40-item display page", () => {
     let state = createTurnViewState("s1", "turn_1", 1_000);
     for (let index = 1; index <= 41; index += 1) {
       state = reduceTurnEvent(
@@ -179,9 +194,54 @@ describe("TurnStateReducer", () => {
       );
     }
 
-    expect(state.activities).toHaveLength(40);
-    expect(state.activities[0]?.id).toBe("reasoning:2");
+    expect(state.activities).toHaveLength(41);
+    expect(state.activities[0]?.id).toBe("reasoning:1");
     expect(state.activities.at(-1)?.id).toBe("reasoning:41");
-    expect(state.activitiesTruncated).toBe(true);
+    expect(state.activitiesTruncated).toBe(false);
+  });
+
+  test("retains assistant, reasoning, and tool activities uniformly for pagination", () => {
+    let state = createTurnViewState("s1", "turn_1", 1_000);
+    for (let index = 1; index <= 25; index += 1) {
+      state = reduceTurnEvent(state, event("progress", {
+        activityId: `commentary:${index}`,
+        text: `Assistant ${index}`,
+      }));
+    }
+    for (let index = 1; index <= 30; index += 1) {
+      state = reduceTurnEvent(state, event("progress", {
+        activityId: `reasoning:${index}`,
+        text: `Reasoning ${index}`,
+      }));
+    }
+    for (let index = 1; index <= 20; index += 1) {
+      state = reduceTurnEvent(state, event("tool_updated", {
+        tool: tool(`tool:${index}`, `Tool ${index}`, "completed"),
+      }));
+    }
+
+    expect(state.activities.filter((activity) => activity.kind === "assistant")).toHaveLength(25);
+    expect(state.activities.filter((activity) => activity.kind === "tool")).toHaveLength(20);
+    expect(state.activities.filter((activity) => activity.kind === "reasoning")).toHaveLength(30);
+    expect(state.activities.some((activity) => activity.id === "reasoning:1")).toBe(true);
+    expect(state.activities.some((activity) => activity.id === "tool:1")).toBe(true);
+    expect(state.activitiesTruncated).toBe(false);
+  });
+
+  test("does not truncate a long assistant activity in the saved timeline", () => {
+    let state = createTurnViewState("s1", "turn_1", 1_000);
+    state = reduceTurnEvent(state, event("progress", {
+      activityId: "commentary:long",
+      text: "a".repeat(4_000),
+      append: true,
+    }));
+    state = reduceTurnEvent(state, event("progress", {
+      activityId: "commentary:long",
+      text: "b".repeat(4_000),
+      append: true,
+    }));
+
+    expect(state.activities[0]).toMatchObject({ kind: "assistant", id: "commentary:long" });
+    expect((state.activities[0] as { text: string }).text).toHaveLength(8_000);
   });
 });

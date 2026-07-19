@@ -17,6 +17,7 @@ export interface FileSummary {
 }
 
 export type TurnActivity =
+  | { kind: "assistant"; id: string; text: string }
   | { kind: "reasoning"; id: string; text: string }
   | { kind: "tool"; id: string; tool: ToolState };
 
@@ -31,11 +32,16 @@ export interface TurnViewState {
   completedAt?: number;
   durationMs?: number;
   totalTokens?: number;
+  tokenUsageCumulative?: number;
   progressText?: string;
   assistantText: string;
   plan: PlanStep[];
   activities: TurnActivity[];
   activitiesTruncated?: boolean;
+  totalToolCount?: number;
+  completedToolCount?: number;
+  failedToolCount?: number;
+  toolStatuses?: Record<string, ToolState["status"]>;
   activeTool?: ToolState;
   completedTools: ToolState[];
   failedTools: ToolState[];

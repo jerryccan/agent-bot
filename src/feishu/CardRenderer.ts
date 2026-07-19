@@ -9,6 +9,7 @@ import { localCardImage } from "./LocalCardImage.js";
 
 export interface StartupStatusView {
   startedAt: Date;
+  restartReason: string;
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
@@ -47,6 +48,7 @@ export class CardRenderer {
     const lines = [
       "**状态**：🟢 在线",
       `**启动时间**：${formatStartupTime(view.startedAt)}`,
+      `**重启原因**：${inlineCode(view.restartReason)}`,
       `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
       view.workspaceKind === "projectless"
         ? "**任务范围**：未指定项目"
@@ -90,6 +92,28 @@ export class CardRenderer {
       ? `Codex 执行详情：${truncateText(state.taskTitle.replace(/\s+/g, " ").trim(), 60)}`
       : "Codex 执行详情";
     return turnCard(title, "blue", renderTurnElements(state, "always"), renderTurnSubtitle(state));
+  }
+
+  renderActivityHistory(state: TurnViewState, requestedPage: number): Record<string, unknown> {
+    const pages = activityPages(turnActivities(state));
+    if (pages.length === 0) {
+      return this.renderSectionsCard("思考活动历史", [{ lines: ["没有保存到活动记录。"] }]);
+    }
+    const page = Math.max(0, Math.min(Math.trunc(requestedPage), pages.length - 1));
+    const actions: TaskListCardAction[] = [
+      ...(page > 0 ? [{
+        text: "← 上一页",
+        value: { action: "activity_history", turnId: state.turnId, page: String(page - 1) },
+      }] : []),
+      ...(page < pages.length - 1 ? [{
+        text: "下一页 →",
+        value: { action: "activity_history", turnId: state.turnId, page: String(page + 1) },
+      }] : []),
+    ];
+    const elements = (pages[page] ?? [])
+      .flatMap((activity) => renderActivity(activity, state.projectCwd, true));
+    if (actions.length > 0) elements.push({ tag: "hr" }, taskActionRow(actions));
+    return sectionCard(`思考活动历史 · ${page + 1}/${pages.length}`, elements.length > 0 ? elements : [markdown("无")]);
   }
 
   renderSessionStarted(session: RuntimeSession): Record<string, unknown> {
@@ -239,10 +263,11 @@ export class CardRenderer {
 function renderTurnSubtitle(state: TurnViewState): string {
   const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
   const activityTools = turnActivities(state).filter((activity) => activity.kind === "tool").length;
+  const totalTools = state.totalToolCount ?? activityTools;
   return [
-    `耗时 ${formatCompactDuration(elapsed)}`,
+    `耗时 ${formatTurnDuration(elapsed)}`,
     state.totalTokens !== undefined ? `${formatTokenCount(state.totalTokens)} tokens` : undefined,
-    activityTools > 0 ? `${activityTools} 个工具` : undefined,
+    totalTools > 0 ? `${totalTools} 个工具` : undefined,
     state.fileSummary.length > 0 ? `${state.fileSummary.length} 个文件` : undefined,
   ].filter(Boolean).join(" · ");
 }
@@ -256,9 +281,22 @@ function renderTurnElements(
   assistantTextMode: "hidden" | "always",
 ): Record<string, unknown>[] {
   const elements: Record<string, unknown>[] = [];
+  const allActivities = turnActivities(state);
+  const pages = activityPages(allActivities);
+  const visibleActivities = pages.at(-1) ?? [];
   if (state.plan.length > 0) elements.push(planPanel(state.plan));
-  if (state.activitiesTruncated) elements.push(markdown("…"));
-  elements.push(...turnActivities(state).flatMap((activity) => renderActivity(activity, state.projectCwd)));
+  if (state.activitiesTruncated || pages.length > 1) elements.push(markdown("…"));
+  elements.push(...visibleActivities.flatMap((activity) => renderActivity(activity, state.projectCwd)));
+  if (pages.length > 1) {
+    elements.push(taskActionRow([{
+      text: `查看较早活动（共 ${pages.length} 页）`,
+      value: {
+        action: "activity_history",
+        turnId: state.turnId,
+        page: String(pages.length - 2),
+      },
+    }]));
+  }
   if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
 
   if (state.approval) {
@@ -335,16 +373,51 @@ function renderPlanStep(step: TurnViewState["plan"][number]): string {
   return `${marker} ${step.text}`;
 }
 
-function renderActivity(activity: TurnActivity, projectCwd?: string): Record<string, unknown>[] {
+function renderActivity(
+  activity: TurnActivity,
+  projectCwd?: string,
+  fullAssistantText = false,
+): Record<string, unknown>[] {
+  if (activity.kind === "assistant" || (activity.kind === "reasoning" && activity.id.startsWith("commentary:"))) {
+    const text = activity.text.trim();
+    if (!text) return [];
+    return fullAssistantText
+      ? splitText(text, ACTIVITY_TEXT_CHUNK).map(markdown)
+      : [markdown(truncateText(text, MAX_LIVE_ASSISTANT_TEXT))];
+  }
   if (activity.kind === "reasoning") {
     const text = activity.text.trim();
     if (!text) return [];
     const content = truncateText(text, 2_000);
-    if (activity.id.startsWith("commentary:")) return [markdown(content)];
     const plainReasoning = removeMarkdownBold(content);
     return [markdown(`> 💭 ${plainReasoning.replaceAll("\n", "\n> ")}`)];
   }
   return [toolPanel(activity.tool, projectCwd)];
+}
+
+const ACTIVITIES_PER_PAGE = 40;
+const MAX_LIVE_ASSISTANT_TEXT = 2_000;
+const ACTIVITY_TEXT_CHUNK = 2_500;
+
+function activityPages(activities: TurnActivity[]): TurnActivity[][] {
+  if (activities.length === 0) return [];
+  if (activities.length <= ACTIVITIES_PER_PAGE) return [activities];
+  const pages: TurnActivity[][] = [];
+  const firstPageSize = activities.length % ACTIVITIES_PER_PAGE || ACTIVITIES_PER_PAGE;
+  pages.push(activities.slice(0, firstPageSize));
+  for (let index = firstPageSize; index < activities.length; index += ACTIVITIES_PER_PAGE) {
+    pages.push(activities.slice(index, index + ACTIVITIES_PER_PAGE));
+  }
+  return pages;
+}
+
+function splitText(value: string, maxLength: number): string[] {
+  if (!value) return [];
+  const chunks: string[] = [];
+  for (let offset = 0; offset < value.length; offset += maxLength) {
+    chunks.push(value.slice(offset, offset + maxLength));
+  }
+  return chunks;
 }
 
 function removeMarkdownBold(value: string): string {
@@ -446,7 +519,9 @@ function usesWindowsPaths(...values: string[]): boolean {
 function toolPanelTitle(tool: ToolState): string {
   const icon = tool.status === "failed" ? "❌" : tool.status === "running" ? "⏳" : "✅";
   const command = stripAnsi(tool.command ?? tool.title).trim();
-  const meaningfulCommand = unwrapPowerShellCommand(command) ?? tool.title;
+  const meaningfulCommand = tool.kind === "web_search"
+    ? tool.title
+    : unwrapPowerShellCommand(command) ?? tool.title;
   const duration = toolDuration(tool);
   const prefix = `${icon} `;
   const suffix = duration ? ` · ${duration}` : "";
@@ -478,6 +553,21 @@ function formatCompactDuration(durationMs: number): string {
   }
   if (totalMinutes > 0) return `${String(totalMinutes).padStart(2, "0")}:${secondsText}`;
   return `${seconds}.${tenths}s`;
+}
+
+function formatTurnDuration(durationMs: number): string {
+  const normalized = Math.max(0, durationMs);
+  if (Math.round(normalized / 100) < 100) return formatCompactDuration(normalized);
+  const totalSeconds = Math.round(normalized / 1_000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  if (totalMinutes > 0) return `${String(totalMinutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${seconds}s`;
 }
 
 function unwrapPowerShellCommand(command: string): string | undefined {
@@ -558,7 +648,15 @@ function turnTemplate(status: TurnViewStatus): string {
 }
 
 function formatTokenCount(tokens: number): string {
-  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(Math.max(0, Math.round(tokens)));
+  const rounded = Math.max(0, Math.round(tokens));
+  if (rounded < 10_000) {
+    return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(rounded);
+  }
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    compactDisplay: "short",
+    maximumSignificantDigits: 3,
+  }).format(rounded);
 }
 
 function markdown(content: string): Record<string, unknown> {

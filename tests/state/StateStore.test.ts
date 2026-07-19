@@ -114,6 +114,43 @@ describe("StateStore runtime metadata", () => {
     expect(store.findSessionByRemoteSessionId("thr_1", "chat_id:other")).toBeUndefined();
   });
 
+  test("reports global task and delivery activity for CLI management", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.createSession({
+      localSessionId: "running",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "running",
+    });
+    store.createSession({
+      localSessionId: "waiting-delivery",
+      contextKey: "chat_id:c2",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("waiting-delivery", { lastTurnId: "turn_2", lastTurnStatus: "completed" });
+    store.saveTurnSnapshot("turn_2", "waiting-delivery", {
+      status: "completed",
+      finalResponse: "done",
+    });
+    store.saveTurnDelivery("turn_2", { progressMessageId: "om_progress" });
+    store.claimInboundEvent("message_1", "message");
+
+    expect(store.listAllSessions().map((session) => session.localSessionId)).toEqual(
+      expect.arrayContaining(["running", "waiting-delivery"]),
+    );
+    expect(store.getServerActivityState()).toMatchObject({
+      runningSessions: 1,
+      pendingFinalDeliveries: 1,
+      latestInboundAt: expect.any(String),
+    });
+  });
+
   test("stores bounded turn snapshots and final delivery state", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);

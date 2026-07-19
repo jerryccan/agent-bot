@@ -9,7 +9,7 @@ import type { TurnPresenter } from "../../src/presentation/OutboundRouter.js";
 import { OutboundRouter } from "../../src/presentation/OutboundRouter.js";
 import { ProxySessionController } from "../../src/proxy/ProxySessionController.js";
 import { AgentRuntimeRegistry } from "../../src/runtime/AgentRuntimeRegistry.js";
-import type { AgentRuntime, RemoteSessionSummary, RuntimeEvent, RuntimeSession } from "../../src/runtime/types.js";
+import type { AgentRuntime, RemoteSessionSummary, RuntimeEvent, RuntimeGoal, RuntimeSession } from "../../src/runtime/types.js";
 import { StateStore } from "../../src/state/StateStore.js";
 
 const tempDirs: string[] = [];
@@ -58,6 +58,7 @@ function threadMessage(
 function fixture() {
   const sessions = new Map<string, RuntimeSession>();
   const remoteSessions: RemoteSessionSummary[] = [];
+  const goals = new Map<string, RuntimeGoal>();
   const listeners = new Set<(event: RuntimeEvent) => void>();
   const runtime: AgentRuntime = {
     kind: "codex",
@@ -147,6 +148,23 @@ function fixture() {
     setTitle: vi.fn(async (sessionId, title) => {
       sessions.get(sessionId)!.title = title;
     }),
+    getGoal: vi.fn(async (sessionId) => goals.get(sessionId)),
+    setGoal: vi.fn(async (sessionId, update) => {
+      const current = goals.get(sessionId);
+      const goal: RuntimeGoal = {
+        threadId: sessions.get(sessionId)!.remoteSessionId,
+        objective: update.objective ?? current?.objective ?? "",
+        status: update.status ?? current?.status ?? "active",
+        tokenBudget: update.tokenBudget ?? current?.tokenBudget ?? null,
+        tokensUsed: current?.tokensUsed ?? 0,
+        timeUsedSeconds: current?.timeUsedSeconds ?? 0,
+        createdAt: current?.createdAt ?? 1_776_272_400,
+        updatedAt: 1_776_272_460,
+      };
+      goals.set(sessionId, goal);
+      return goal;
+    }),
+    clearGoal: vi.fn(async (sessionId) => goals.delete(sessionId)),
     setModel: vi.fn(async (sessionId, model) => {
       sessions.get(sessionId)!.model = model;
     }),
@@ -216,6 +234,13 @@ function fixture() {
   } as unknown as AppConfig;
   const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } as unknown as Logger;
   const restart = vi.fn(async () => undefined);
+  const shellCommandExecutor = vi.fn(async () => ({
+    stdout: "README.md\nsrc\ntests\n",
+    stderr: "",
+    exitCode: 0,
+    timedOut: false,
+    outputTruncated: false,
+  }));
   const controller = new ProxySessionController(
     config,
     store,
@@ -223,15 +248,131 @@ function fixture() {
     outboundRouter,
     logger,
     { restart, supervised: true },
+    shellCommandExecutor,
   );
   cleanups.push(() => {
     controller.close();
     store.close();
   });
-  return { controller, runtime, sessions, remoteSessions, outbound, presenter, store, listeners, restart };
+  return {
+    controller,
+    runtime,
+    sessions,
+    goals,
+    remoteSessions,
+    outbound,
+    presenter,
+    store,
+    listeners,
+    restart,
+    shellCommandExecutor,
+  };
 }
 
 describe("ProxySessionController", () => {
+  test("creates, displays, edits, pauses, resumes, and clears a Codex goal", async () => {
+    const { controller, runtime, outbound, store, listeners, presenter } = fixture();
+
+    await controller.onMessage(message("/goal 完成迁移并通过全部测试"));
+
+    const currentId = store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId!;
+    expect(runtime.setGoal).toHaveBeenCalledWith(currentId, {
+      objective: "完成迁移并通过全部测试",
+      status: "active",
+    });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    let card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("Goal 已启动");
+    expect(JSON.stringify(card)).toContain("完成迁移并通过全部测试");
+
+    await controller.onMessage(message("/goal"));
+    card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("当前 Goal");
+    expect(JSON.stringify(card)).toContain("执行中");
+
+    await controller.onMessage(message("/goal pause"));
+    expect(runtime.setGoal).toHaveBeenLastCalledWith(currentId, { status: "paused" });
+    await controller.onMessage(message("/goal resume"));
+    expect(runtime.setGoal).toHaveBeenLastCalledWith(currentId, { status: "active" });
+    await controller.onMessage(message("/goal edit 完成迁移、文档和回归测试"));
+    expect(runtime.setGoal).toHaveBeenLastCalledWith(currentId, expect.objectContaining({
+      objective: "完成迁移、文档和回归测试",
+      status: "active",
+    }));
+
+    await controller.onMessage(message("/status"));
+    card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("完成迁移、文档和回归测试");
+
+    for (const listener of listeners) {
+      listener({ type: "turn_started", sessionId: currentId, turnId: "goal_turn_1", startedAt: 42 });
+    }
+    await vi.waitFor(() => expect(presenter.onEvent).toHaveBeenCalledWith({
+      type: "turn_started",
+      sessionId: currentId,
+      turnId: "goal_turn_1",
+      startedAt: 42,
+    }));
+    expect(store.getSession(currentId)).toMatchObject({ status: "running", lastTurnId: "goal_turn_1" });
+
+    await controller.onMessage(message("/goal clear"));
+    expect(runtime.clearGoal).toHaveBeenCalledWith(currentId);
+    card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("Goal 已清除");
+  });
+
+  test("pauses an active goal before stopping its Codex turn", async () => {
+    const { controller, runtime, store, remoteSessions } = fixture();
+    await controller.onMessage(message("/goal 持续优化测试覆盖率"));
+    const currentId = store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId!;
+    const session = runtime.getSession(currentId)!;
+    session.activeTurnId = "goal_turn_active";
+    Object.assign(remoteSessions.find((remote) => remote.id === "thr_1")!, {
+      status: "active",
+      lastTurnId: "goal_turn_active",
+      lastTurnStatus: "inProgress",
+    });
+
+    await controller.onMessage(message("/stop"));
+
+    expect(runtime.setGoal).toHaveBeenLastCalledWith(currentId, { status: "paused" });
+    expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "goal_turn_active");
+  });
+
+  test("rejects oversized goals before creating a task", async () => {
+    const { controller, runtime, store, outbound } = fixture();
+    await controller.onMessage(message(`/goal ${"长".repeat(4_001)}`));
+
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(store.listSessions("chat_id:c1")).toHaveLength(0);
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("最多 4000 个字符"),
+    );
+  });
+
+  test("executes bang commands in the current task directory and returns their output", async () => {
+    const { controller, outbound, shellCommandExecutor } = fixture();
+    const cwd = "D:\\work space\\shell-project";
+    await controller.onMessage(message(`/new --dir "${cwd}"`));
+
+    await controller.onMessage(message("! ls"));
+
+    expect(shellCommandExecutor).toHaveBeenCalledWith("ls", cwd);
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringMatching(/\*\*目录\*\*：`D:\\work space\\shell-project`[\s\S]*\*\*命令\*\*：`ls`[\s\S]*```text\nREADME\.md\nsrc\ntests\n```[\s\S]*退出码 0/),
+    );
+  });
+
+  test("uses the configured default directory for bang commands without a current task", async () => {
+    const { controller, shellCommandExecutor } = fixture();
+
+    await controller.onMessage(message("! Get-ChildItem"));
+
+    expect(shellCommandExecutor).toHaveBeenCalledWith("Get-ChildItem", process.cwd());
+  });
+
   test("plain text creates the default Codex session and starts a turn", async () => {
     const { controller, runtime, store, presenter, outbound } = fixture();
     await controller.onMessage(message("inspect this repo"));
@@ -622,10 +763,10 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("new always uses the current default agent and treats its only argument as cwd", async () => {
+  test("new always uses the current default agent and accepts cwd through --dir", async () => {
     const { controller, runtime, store } = fixture();
     await controller.onMessage(message("/agent acp"));
-    await controller.onMessage(message('/new "D:\\work space\\repo"'));
+    await controller.onMessage(message('/new --dir "D:\\work space\\repo"'));
 
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
       agentName: "acp",
@@ -635,6 +776,29 @@ describe("ProxySessionController", () => {
       agentName: "acp",
       cwd: "D:\\work space\\repo",
     });
+  });
+
+  test("creates a task with an explicit title and synchronizes it with the runtime", async () => {
+    const { controller, runtime, store, presenter, outbound } = fixture();
+
+    await controller.onMessage(message("/new 修复会话列表时间 --dir D:\\work"));
+
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: "修复会话列表时间",
+      cwd: "D:\\work",
+    }));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    expect(session.title).toBe("修复会话列表时间");
+    expect(presenter.registerSession).toHaveBeenCalledWith(
+      session.localSessionId,
+      "chat_id:c1",
+      "修复会话列表时间",
+      "D:\\work",
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("修复会话列表时间"),
+    );
   });
 
   test("lists every agent through agent and marks the current default", async () => {
@@ -671,7 +835,7 @@ describe("ProxySessionController", () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-project-"));
     tempDirs.push(project);
 
-    await controller.onMessage(message(`/new "${project}"`));
+    await controller.onMessage(message(`/new --dir "${project}"`));
     await controller.onMessage({ messageId: "new-in-project", contextKey: "chat_id:c1", text: "/new" });
 
     expect((runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[1]?.[0]).toMatchObject({
@@ -1765,6 +1929,33 @@ describe("ProxySessionController", () => {
     expect(runtime.respondToApproval).toHaveBeenCalledWith(sessionId, "req_1", "accept");
   });
 
+  test("opens a requested activity history page from a thinking-card callback", async () => {
+    const { controller, outbound, store } = fixture();
+    store.saveTurnSnapshot("turn_history", "s1", {
+      sessionId: "s1",
+      turnId: "turn_history",
+      status: "completed",
+      startedAt: 1,
+      assistantText: "",
+      plan: [],
+      activities: [{ kind: "assistant", id: "commentary:1", text: "saved assistant text" }],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    });
+
+    await controller.onCardAction({
+      actionId: "activity-history-page",
+      contextKey: "chat_id:c1",
+      value: { action: "activity_history", turnId: "turn_history", page: "0" },
+    });
+
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.objectContaining({ header: expect.objectContaining({ title: expect.objectContaining({ content: "思考活动历史 · 1/1" }) }) }),
+    );
+  });
+
   test("stops the task identified by a thinking-card callback", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("start stoppable task"));
@@ -1779,6 +1970,19 @@ describe("ProxySessionController", () => {
 
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Codex 发送 Interrupt 请求：turn_1");
+  });
+
+  test("supports local CLI task stop and title controls", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(message("start task for CLI"));
+    const localSessionId = (runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+
+    await expect(controller.controlSetTaskTitle(localSessionId, "CLI title")).resolves.toContain("CLI title");
+    expect(runtime.setTitle).toHaveBeenCalledWith(localSessionId, "CLI title");
+    expect(store.getSession(localSessionId)?.title).toBe("CLI title");
+
+    await expect(controller.controlStopTask(localSessionId)).resolves.toContain("CLI title");
+    expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
   });
 
   test("shows every supported model and marks the current model", async () => {
@@ -1950,6 +2154,10 @@ describe("ProxySessionController", () => {
       status: "idle",
       lastTurnId: "turn_1",
       lastTurnStatus: "completed",
+      lastTurnToolCount: 37,
+      lastTurnCompletedToolCount: 35,
+      lastTurnFailedToolCount: 2,
+      lastTurnRunningToolCount: 0,
     });
     store.saveTurnSnapshot("turn_1", task.localSessionId, {
       sessionId: task.localSessionId,
@@ -1979,7 +2187,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("指定任务");
     expect(serialized).toContain("执行详情");
     expect(serialized).toContain("**当前 / 最后步骤**：整理测试结果");
-    expect(serialized).toContain("**工具执行**：完成 1，失败 0");
+    expect(serialized).toContain("**工具执行**：完成 35，失败 2");
     expect(serialized).toContain("**耗时**：2.5s");
     expect(serialized).toContain("最终结果");
     expect(serialized).toContain("全部检查完成，测试通过。");

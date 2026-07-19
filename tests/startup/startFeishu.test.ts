@@ -8,8 +8,15 @@ describe("startFeishu", () => {
 
     await startFeishu(
       { start: async () => { order.push("connector"); } },
-      { notify: async (received) => { expect(received).toBe(startedAt); order.push("notification"); } },
+      {
+        notify: async (received, reason) => {
+          expect(received).toBe(startedAt);
+          expect(reason).toBe("test restart");
+          order.push("notification");
+        },
+      },
       startedAt,
+      "test restart",
     );
 
     expect(order).toEqual(["connector", "notification"]);

@@ -7,7 +7,7 @@ import { appConfigSchema, type AppConfig } from "./schema.js";
 const ENV_PATTERN = /\$\{([A-Z0-9_]+)\}/gi;
 
 export function loadConfig(configPath = process.env.ACP_BOT_CONFIG ?? "./agents.yaml"): AppConfig {
-  loadDotEnv();
+  loadDotEnv({ quiet: true });
 
   const absolutePath = path.resolve(configPath);
   if (!fs.existsSync(absolutePath)) {

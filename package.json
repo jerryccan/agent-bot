@@ -4,12 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Feishu-first gateway for local Codex App Server and ACP agents.",
+  "bin": {
+    "acp-bot": "dist/cli.js"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "start": "node dist/supervisor.js",
     "start:once": "node dist/index.js",
+    "cli": "node dist/cli.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },

@@ -3,14 +3,15 @@ export interface StartableFeishuConnector {
 }
 
 export interface StartupNotificationSender {
-  notify(startedAt: Date): Promise<void>;
+  notify(startedAt: Date, restartReason: string): Promise<void>;
 }
 
 export async function startFeishu(
   connector: StartableFeishuConnector,
   notifier: StartupNotificationSender,
   startedAt: Date,
+  restartReason: string,
 ): Promise<void> {
   await connector.start();
-  await notifier.notify(startedAt);
+  await notifier.notify(startedAt, restartReason);
 }
