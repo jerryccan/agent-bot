@@ -111,6 +111,61 @@ test("dispatches direct Feishu SDK message events", async () => {
   });
 });
 
+test("dispatches Feishu chat name changes", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn(), onChatUpdated: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.chat.updated_v1"]({
+    chat_id: "oc_group",
+    before_change: { name: "[codex] old title" },
+    after_change: { name: "[codex] abc" },
+  });
+
+  await vi.waitFor(() => expect(handler.onChatUpdated).toHaveBeenCalledWith({
+    chatId: "oc_group",
+    beforeName: "[codex] old title",
+    afterName: "[codex] abc",
+  }));
+});
+
+test("ignores chat update events that do not change the group name", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn(), onChatUpdated: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.chat.updated_v1"]({
+    chat_id: "oc_group",
+    before_change: { name: "[codex] same" },
+    after_change: { name: "[codex] same", description: "updated" },
+  });
+  await larkSdkMock.handlers["im.chat.updated_v1"]({
+    chat_id: "oc_group",
+    before_change: { description: "before" },
+    after_change: { description: "after" },
+  });
+
+  expect(handler.onChatUpdated).not.toHaveBeenCalled();
+});
+
 test("dispatches an image message with its Feishu image key", async () => {
   const config = {
     feishu: {

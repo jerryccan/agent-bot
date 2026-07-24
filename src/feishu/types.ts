@@ -22,6 +22,16 @@ export interface MessageReplyTarget {
   replyInThread: true;
 }
 
+export interface CreateGroupInput {
+  name: string;
+  userOpenId: string;
+}
+
+export interface CreatedGroup {
+  chatId: string;
+  name: string;
+}
+
 export interface CardAction {
   actionId: string;
   contextKey: string;
@@ -30,7 +40,14 @@ export interface CardAction {
   value: Record<string, unknown>;
 }
 
+export interface ChatUpdatedEvent {
+  chatId: string;
+  beforeName?: string;
+  afterName: string;
+}
+
 export interface FeishuOutbound {
+  createGroup?(input: CreateGroupInput): Promise<CreatedGroup>;
   addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
   deleteReaction?(messageId: string, reactionId: string): Promise<void>;
   downloadImage?(messageId: string, imageKey: string): Promise<string>;
@@ -61,4 +78,5 @@ export interface FeishuOutbound {
 export interface FeishuEventHandler {
   onMessage(message: IncomingMessage): Promise<void>;
   onCardAction(action: CardAction): Promise<void>;
+  onChatUpdated?(event: ChatUpdatedEvent): Promise<void>;
 }

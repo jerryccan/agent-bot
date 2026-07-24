@@ -1,6 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentEvent } from "../runtime/types.js";
-import type { FeishuOutbound, MessageReplyTarget } from "../feishu/types.js";
+import type {
+  CreatedGroup,
+  CreateGroupInput,
+  FeishuOutbound,
+  MessageReplyTarget,
+} from "../feishu/types.js";
 
 export interface TurnPresenter {
   registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void;
@@ -13,8 +18,15 @@ export interface TurnPresenter {
     replyTarget?: MessageReplyTarget,
   ): Promise<void>;
   failPendingTurn(sessionId: string, message: string): Promise<void>;
+  appendSteerMessage(sessionId: string, turnId: string, text: string, messageId?: string): Promise<void>;
   onEvent(event: AgentEvent): Promise<void>;
   showDetails(contextKey: string, turnId: string): Promise<void>;
+  showActivityPage(
+    contextKey: string,
+    turnId: string,
+    page: number | "latest",
+    messageId?: string,
+  ): Promise<void>;
   resumeDelivery(sessionId: string, contextKey: string, turnId: string): Promise<void>;
   flushAll(): Promise<void>;
 }
@@ -27,6 +39,8 @@ export interface OutboundRoute {
 
 export class OutboundRouter {
   private readonly sessionRoutes = new Map<string, OutboundRoute>();
+  private readonly sessionContextKeys = new Map<string, string>();
+  private readonly sessionReplyTargets = new Map<string, MessageReplyTarget>();
   private readonly replyTargets = new AsyncLocalStorage<{ contextKey: string; target: MessageReplyTarget }>();
 
   constructor(private readonly routes: OutboundRoute[]) {
@@ -36,7 +50,16 @@ export class OutboundRouter {
   registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void {
     const route = this.route(contextKey);
     this.sessionRoutes.set(sessionId, route);
+    this.sessionContextKeys.set(sessionId, contextKey);
     route.presenter.registerSession(sessionId, contextKey, taskTitle, projectCwd);
+  }
+
+  getSessionContextKey(sessionId: string): string | undefined {
+    return this.sessionContextKeys.get(sessionId);
+  }
+
+  getSessionReplyTarget(sessionId: string): MessageReplyTarget | undefined {
+    return this.sessionReplyTargets.get(sessionId);
   }
 
   updateSessionTitle(sessionId: string, taskTitle: string): void {
@@ -47,6 +70,8 @@ export class OutboundRouter {
     const route = this.sessionRoutes.get(sessionId);
     route?.presenter.unregisterSession(sessionId);
     this.sessionRoutes.delete(sessionId);
+    this.sessionContextKeys.delete(sessionId);
+    this.sessionReplyTargets.delete(sessionId);
   }
 
   async startPendingTurn(
@@ -55,11 +80,25 @@ export class OutboundRouter {
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
   ): Promise<void> {
-    await this.route(contextKey).presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget);
+    const route = this.route(contextKey);
+    this.sessionRoutes.set(sessionId, route);
+    this.sessionContextKeys.set(sessionId, contextKey);
+    if (replyTarget) this.sessionReplyTargets.set(sessionId, replyTarget);
+    else this.sessionReplyTargets.delete(sessionId);
+    await route.presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget);
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {
     await this.sessionRoutes.get(sessionId)?.presenter.failPendingTurn(sessionId, message);
+  }
+
+  async appendSteerMessage(
+    sessionId: string,
+    turnId: string,
+    text: string,
+    messageId?: string,
+  ): Promise<void> {
+    await this.sessionRoutes.get(sessionId)?.presenter.appendSteerMessage(sessionId, turnId, text, messageId);
   }
 
   async onEvent(event: AgentEvent): Promise<void> {
@@ -68,6 +107,15 @@ export class OutboundRouter {
 
   async showDetails(contextKey: string, turnId: string): Promise<void> {
     await this.route(contextKey).presenter.showDetails(contextKey, turnId);
+  }
+
+  async showActivityPage(
+    contextKey: string,
+    turnId: string,
+    page: number | "latest",
+    messageId?: string,
+  ): Promise<void> {
+    await this.route(contextKey).presenter.showActivityPage(contextKey, turnId, page, messageId);
   }
 
   async resumeDelivery(sessionId: string, contextKey: string, turnId: string): Promise<void> {
@@ -87,6 +135,13 @@ export class OutboundRouter {
     const download = outbound.downloadImage;
     if (!download) throw new Error("当前消息通道不支持下载图片。");
     return download.call(outbound, messageId, imageKey);
+  }
+
+  async createGroup(contextKey: string, input: CreateGroupInput): Promise<CreatedGroup> {
+    const outbound = this.route(contextKey).outbound;
+    const createGroup = outbound.createGroup;
+    if (!createGroup) throw new Error("当前消息通道不支持创建飞书群。");
+    return createGroup.call(outbound, input);
   }
 
   withReplyTarget<T>(

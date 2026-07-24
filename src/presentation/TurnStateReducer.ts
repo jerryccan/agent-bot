@@ -121,6 +121,23 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
   }
 }
 
+export function appendSteerMessage(state: TurnViewState, id: string, text: string): TurnViewState {
+  const normalized = text.trim();
+  if (!normalized) return state;
+  const activities = state.activities ?? [];
+  const index = activities.findIndex((activity) => activity.id === id);
+  const activityUpdate = upsertActivity(activities, index, {
+    kind: "user",
+    id,
+    text: bound(normalized),
+  });
+  return {
+    ...state,
+    activities: activityUpdate.activities,
+    activitiesTruncated: state.activitiesTruncated || activityUpdate.truncated,
+  };
+}
+
 function reduceToolOutputDelta(state: TurnViewState, toolId: string, delta: string): TurnViewState {
   if (!delta) return state;
   const tool = findTool(state, toolId);

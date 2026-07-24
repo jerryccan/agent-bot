@@ -27,6 +27,8 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     if (contextKey) await this.outbound.sendText(contextKey, `Codex failed to start: ${message}`);
   }
 
+  async appendSteerMessage(): Promise<void> {}
+
   async onEvent(event: AgentEvent): Promise<void> {
     const contextKey = this.contexts.get(event.sessionId);
     if (!contextKey) return;
@@ -50,6 +52,10 @@ export class ConsoleTurnPresenter implements TurnPresenter {
 
   async showDetails(contextKey: string, turnId: string): Promise<void> {
     await this.outbound.sendText(contextKey, `Turn details are available in Feishu (${turnId}).`);
+  }
+
+  async showActivityPage(contextKey: string, turnId: string): Promise<void> {
+    await this.outbound.sendText(contextKey, `Turn activity pages are available in Feishu (${turnId}).`);
   }
 
   async resumeDelivery(): Promise<void> {}

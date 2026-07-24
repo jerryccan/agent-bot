@@ -47,6 +47,7 @@ describe("FeishuTurnPresenter", () => {
       "turn_1",
       "s1",
       expect.objectContaining({ projectCwd: "D:\\dev\\acp-bot" }),
+      "chat_id:c1",
     );
   });
 
@@ -84,6 +85,7 @@ describe("FeishuTurnPresenter", () => {
       "turn_1",
       "s1",
       expect.objectContaining({ replyTarget: target }),
+      "chat_id:c1",
     );
   });
 
@@ -103,6 +105,27 @@ describe("FeishuTurnPresenter", () => {
         }),
       }),
     );
+  });
+
+  test("persists a steer message and updates the active thinking card", async () => {
+    const { presenter, outbound, store } = createFixture();
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+
+    await presenter.appendSteerMessage("s1", "turn_1", "同时补充测试", "om_steer");
+    await presenter.flushAll();
+
+    expect(store.saveTurnSnapshot).toHaveBeenLastCalledWith(
+      "turn_1",
+      "s1",
+      expect.objectContaining({
+        activities: expect.arrayContaining([
+          { kind: "user", id: "steer:om_steer", text: "同时补充测试" },
+        ]),
+      }),
+      "chat_id:c1",
+    );
+    expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1]))
+      .toContain("用户追加");
   });
 
   test("coalesces command output deltas into an incremental tool panel update", async () => {
@@ -141,6 +164,92 @@ describe("FeishuTurnPresenter", () => {
       "turn_1",
       "s1",
       expect.objectContaining({ activeTool: expect.objectContaining({ output: "test 1 passed\ntest 2 passed\n" }) }),
+      "chat_id:c1",
+    );
+  });
+
+  test("freezes in-place history pages and resumes live updates on the latest page", async () => {
+    const { presenter, outbound } = createFixture();
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    for (let index = 1; index <= 45; index += 1) {
+      await presenter.onEvent({
+        type: "progress",
+        sessionId: "s1",
+        turnId: "turn_1",
+        activityId: `reasoning:${index}`,
+        text: `Activity ${index}`,
+      });
+    }
+    await presenter.flushAll();
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await presenter.showActivityPage("chat_id:c1", "turn_1", 0, "progress_1");
+
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
+    let rendered = JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]);
+    expect(rendered).toContain("思考活动历史 · 1/2");
+    expect(rendered).toContain("Activity 1");
+    expect(rendered).not.toContain("Activity 45");
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await presenter.onEvent({
+      type: "progress",
+      sessionId: "s1",
+      turnId: "turn_1",
+      activityId: "reasoning:46",
+      text: "Activity 46",
+    });
+    await presenter.flushAll();
+    expect(outbound.updateInteractiveCard).not.toHaveBeenCalled();
+
+    await presenter.showActivityPage("chat_id:c1", "turn_1", "latest", "progress_1");
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
+    rendered = JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]);
+    expect(rendered).toContain("Activity 46");
+    expect(rendered).toContain("Codex 正在处理");
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await presenter.onEvent({
+      type: "progress",
+      sessionId: "s1",
+      turnId: "turn_1",
+      activityId: "reasoning:47",
+      text: "Activity 47",
+    });
+    await presenter.flushAll();
+    expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1])).toContain(
+      "Activity 47",
+    );
+  });
+
+  test("delivers a terminal answer without replacing the history page until latest is selected", async () => {
+    const { presenter, outbound } = createFixture();
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() - 1_000 });
+    for (let index = 1; index <= 41; index += 1) {
+      await presenter.onEvent({
+        type: "progress",
+        sessionId: "s1",
+        turnId: "turn_1",
+        activityId: `reasoning:${index}`,
+        text: `Activity ${index}`,
+      });
+    }
+    await presenter.flushAll();
+    await presenter.showActivityPage("chat_id:c1", "turn_1", 0, "progress_1");
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await presenter.onEvent(completed("terminal answer"));
+
+    expect(outbound.updateInteractiveCard).not.toHaveBeenCalled();
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "terminal answer",
+      expect.stringMatching(/^codex-final-/),
+    );
+
+    await presenter.showActivityPage("chat_id:c1", "turn_1", "latest", "progress_1");
+    expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1])).toContain(
+      "Codex 已完成",
     );
   });
 

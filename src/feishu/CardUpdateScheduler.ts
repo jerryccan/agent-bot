@@ -46,6 +46,10 @@ export class CardUpdateScheduler<T> {
     this.lastWriteAt = Date.now();
   }
 
+  invalidateRenderedCard(): void {
+    this.lastHash = undefined;
+  }
+
   update(state: T, priority: CardUpdatePriority = "normal"): void {
     if (this.disposed) return;
     this.latestState = state;

@@ -28,6 +28,7 @@ import { startFeishu } from "./startup/startFeishu.js";
 import { RESTART_EXIT_CODE, STOP_EXIT_CODE } from "./supervision/restartPolicy.js";
 import { saveRestartReason } from "./supervision/restartReasonStore.js";
 import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
+import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
 
 const processStartedAt = new Date();
 const startupReason = process.env.ACP_BOT_RESTART_REASON?.trim()
@@ -55,6 +56,7 @@ const routes: OutboundRoute[] = [];
 let feishuConnector: FeishuConnector | undefined;
 let consoleConnector: ConsoleConnector | undefined;
 let startupNotifier: StartupNotifier | undefined;
+let safeRestartNotifier: SafeRestartNotifier | undefined;
 let controlServer: LocalControlServer | undefined;
 
 const feishuOutbound = transport === "sdk" ? new FeishuMessageClient(config, logger) : undefined;
@@ -75,6 +77,7 @@ if (feishuOutbound) {
     cwd: path.resolve(config.defaults.cwd),
     workspaceKind: defaultAgent?.kind === "codex" ? "projectless" : "project",
   }, metadataHydrator);
+  safeRestartNotifier = new SafeRestartNotifier(store, feishuOutbound, renderer, logger);
 }
 
 const consoleEnabled = consoleOnly || config.console.enabled || transport === "console";
@@ -98,6 +101,8 @@ const controller = new ProxySessionController(config, store, runtimes, outbound,
 const safeRestart = new SafeRestartScheduler({
   readActivity: () => store.getServerActivityState(),
   onReady: (reason) => initiateRestart(reason),
+  onStatus: (status) => safeRestartNotifier?.update(status),
+  onStatusError: (error) => logger.warn({ error }, "Failed to publish safe restart status."),
 });
 
 if (feishuOutbound) feishuConnector = new FeishuConnector(config, controller, logger);
@@ -106,21 +111,23 @@ if (consoleEnabled) consoleConnector = new ConsoleConnector(controller, logger);
 process.on("SIGINT", () => void shutdown(0));
 process.on("SIGTERM", () => void shutdown(0));
 
-if (feishuConnector && startupNotifier) {
-  await startFeishu(feishuConnector, startupNotifier, processStartedAt, startupReason);
-} else {
-  await feishuConnector?.start();
-}
-consoleConnector?.start();
-
-if (!consoleOnly) {
+const startControlServer = async (): Promise<void> => {
+  if (consoleOnly || controlServer) return;
   controlServer = new LocalControlServer(
     controlEndpoint(config.storage.sqlitePath),
     handleControlRequest,
   );
   await controlServer.start();
   logger.info({ endpoint: controlEndpoint(config.storage.sqlitePath) }, "Local acp-bot control endpoint started.");
+};
+
+if (feishuConnector && startupNotifier) {
+  await startFeishu(feishuConnector, startupNotifier, processStartedAt, startupReason, startControlServer);
+} else {
+  await startControlServer();
+  await feishuConnector?.start();
 }
+consoleConnector?.start();
 
 async function requestRestart(contextKey: string): Promise<void> {
   await initiateRestart("用户执行 /restart 命令", contextKey);
@@ -133,6 +140,7 @@ async function initiateRestart(reason: string, contextKey?: string): Promise<voi
   }
   restartRequested = true;
   safeRestart.cancel();
+  await safeRestartNotifier?.flush();
   saveRestartReason(config.storage.sqlitePath, reason);
   if (contextKey) {
     await outbound.sendText(contextKey, "acp-bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
@@ -191,10 +199,14 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       safeRestart.cancel();
       setTimeout(() => void shutdown(STOP_EXIT_CODE), 25);
       return { ok: true, message: "已请求停止 acp-bot server。" };
+    case "task_status":
+      return { ok: true, data: await controller.controlGetTaskStatus(request.localSessionId) };
     case "task_stop":
       return { ok: true, message: await controller.controlStopTask(request.localSessionId) };
     case "task_title":
       return { ok: true, message: await controller.controlSetTaskTitle(request.localSessionId, request.title) };
+    case "task_prompt":
+      return { ok: true, message: await controller.controlSendTaskPrompt(request.localSessionId, request.text) };
   }
 }
 

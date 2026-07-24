@@ -199,6 +199,7 @@ function fixture() {
   };
   const acp = { ...runtime, kind: "acp" as const } as AgentRuntime;
   const outbound: FeishuOutbound = {
+    createGroup: vi.fn(async (input) => ({ chatId: "oc_new_group", name: input.name })),
     addReaction: vi.fn(async () => undefined),
     deleteReaction: vi.fn(async () => undefined),
     downloadImage: vi.fn(async (_messageId, imageKey) => path.join(process.cwd(), `${imageKey}.png`)),
@@ -216,8 +217,10 @@ function fixture() {
     unregisterSession: vi.fn(),
     startPendingTurn: vi.fn(async () => undefined),
     failPendingTurn: vi.fn(async () => undefined),
+    appendSteerMessage: vi.fn(async () => undefined),
     onEvent: vi.fn(async () => undefined),
     showDetails: vi.fn(async () => undefined),
+    showActivityPage: vi.fn(async () => undefined),
     resumeDelivery: vi.fn(async () => undefined),
     flushAll: vi.fn(async () => undefined),
   };
@@ -261,6 +264,7 @@ function fixture() {
     goals,
     remoteSessions,
     outbound,
+    outboundRouter,
     presenter,
     store,
     listeners,
@@ -399,6 +403,30 @@ describe("ProxySessionController", () => {
       expect.any(String),
     );
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
+  });
+
+  test("records base Feishu chat types for restart notification routing", async () => {
+    const { controller, store } = fixture();
+
+    await controller.onMessage({
+      ...message("private prompt"),
+      chatId: "private",
+      chatType: "p2p",
+      contextKey: "chat_id:private:thread_id:topic",
+      threadContext: true,
+      threadId: "topic",
+    });
+    await controller.onMessage(groupMessage("group", "! ls"));
+    await controller.onMessage(groupMessage("slash", "/status"));
+
+    expect(store.listChatContexts("p2p").map((context) => context.contextKey)).toEqual(["chat_id:private"]);
+    expect(store.listChatContexts("group").map((context) => context.contextKey)).toEqual([
+      "chat_id:slash",
+      "chat_id:group",
+    ]);
+    const activeContexts = store.listRecentlyActiveChatContexts(new Date(0)).map((context) => context.contextKey);
+    expect(activeContexts).toEqual(expect.arrayContaining(["chat_id:group", "chat_id:private"]));
+    expect(activeContexts).not.toContain("chat_id:slash");
   });
 
   test("downloads a pure image and starts Codex with a default text prompt plus localImage input", async () => {
@@ -801,6 +829,68 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("creates a Feishu group for the current user without initializing a task", async () => {
+    const { controller, runtime, store, outbound, presenter } = fixture();
+
+    await controller.onMessage({
+      messageId: "new-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup 广州天气",
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: "[codex] 广州天气",
+      userOpenId: "ou_current_user",
+    });
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    const groupContext = store.getUserContext("chat_id:oc_new_group");
+    expect(groupContext).toMatchObject({ defaultAgent: "codex", currentSessionId: undefined });
+    expect(store.listSessions("chat_id:oc_new_group")).toHaveLength(0);
+    expect(presenter.registerSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      "群已创建。直接发送消息即可在本群开始一个新任务。",
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "已创建飞书群：[codex] 广州天气，并邀请你加入。",
+    );
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
+  });
+
+  test("uses the local yy-mm-dd hh:mm time when newgroup omits the title", async () => {
+    const { controller, runtime, outbound } = fixture();
+
+    await controller.onMessage({
+      messageId: "new-group-default-title",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup",
+    });
+
+    const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(groupInput.name).toMatch(/^\[codex\] \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(runtime.createSession).not.toHaveBeenCalled();
+  });
+
+  test("rejects newgroup when the message does not contain a Feishu open_id", async () => {
+    const { controller, runtime, outbound } = fixture();
+
+    await controller.onMessage(message("/newgroup 广州天气"));
+
+    expect(outbound.createGroup).not.toHaveBeenCalled();
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("具有 open_id 的飞书用户"),
+    );
+  });
+
   test("lists every agent through agent and marks the current default", async () => {
     const { controller, outbound } = fixture();
     await controller.onMessage(message("/agent acp"));
@@ -896,6 +986,54 @@ describe("ProxySessionController", () => {
     expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已将当前任务标题修改为：修复会话列表时间");
   });
 
+  test("renames the group-bound current task when the Feishu group name changes", async () => {
+    const { controller, runtime, store, presenter, outbound } = fixture();
+    await controller.onMessage(groupMessage("rename_group", "old title"));
+    const sessionId = store.getUserContext("chat_id:rename_group")!.currentSessionId!;
+    const sentMessageCount = (outbound.sendText as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    await controller.onChatUpdated({
+      chatId: "rename_group",
+      beforeName: "[codex] old title",
+      afterName: "[Codex] abc",
+    });
+
+    expect(runtime.setTitle).toHaveBeenCalledWith(sessionId, "abc");
+    expect(store.getSession(sessionId)?.title).toBe("abc");
+    expect(presenter.updateSessionTitle).toHaveBeenCalledWith(sessionId, "abc");
+    expect(outbound.sendText).toHaveBeenCalledTimes(sentMessageCount);
+  });
+
+  test("ignores group names that do not match the current task agent or have no bound task", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(groupMessage("rename_guard", "current title"));
+    const sessionId = store.getUserContext("chat_id:rename_guard")!.currentSessionId!;
+
+    await controller.onChatUpdated({
+      chatId: "rename_guard",
+      beforeName: "[codex] current title",
+      afterName: "[acp] should not apply",
+    });
+    await controller.onChatUpdated({
+      chatId: "rename_guard",
+      beforeName: "[acp] should not apply",
+      afterName: "missing agent prefix",
+    });
+    await controller.onChatUpdated({
+      chatId: "empty_group",
+      beforeName: "[codex] old",
+      afterName: "[codex] no task",
+    });
+    await controller.onChatUpdated({
+      chatId: "rename_guard",
+      beforeName: "[codex] anything",
+      afterName: "[codex] current title",
+    });
+
+    expect(runtime.setTitle).not.toHaveBeenCalled();
+    expect(store.getSession(sessionId)?.title).toBe("current title");
+  });
+
   test("rejects title changes when there is no current task", async () => {
     const { controller, runtime, outbound } = fixture();
 
@@ -947,6 +1085,36 @@ describe("ProxySessionController", () => {
     expect(outbound.deleteReaction).toHaveBeenCalledWith("m-also update docs", "reaction_2");
   });
 
+  test("keeps a completed turn active until its final response has been delivered", async () => {
+    const { controller, sessions, store, listeners, presenter } = fixture();
+    let releaseFinalDelivery!: () => void;
+    const finalDelivery = new Promise<void>((resolve) => { releaseFinalDelivery = resolve; });
+    (presenter.onEvent as ReturnType<typeof vi.fn>).mockImplementation(async (event: RuntimeEvent) => {
+      if (event.type === "turn_completed") await finalDelivery;
+    });
+
+    await controller.onMessage(message("build it safely"));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    sessions.get(session.localSessionId)!.activeTurnId = undefined;
+    for (const listener of listeners) {
+      listener({ type: "turn_completed", sessionId: session.localSessionId, turnId: "turn_1", finalResponse: "done" });
+    }
+
+    await vi.waitFor(() => expect(presenter.onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "turn_completed",
+      turnId: "turn_1",
+    })));
+    expect(store.getServerActivityState().runningSessions).toBe(1);
+    expect(store.getSession(session.localSessionId)).toMatchObject({
+      status: "running",
+      lastTurnStatus: "completed",
+    });
+
+    releaseFinalDelivery();
+    await vi.waitFor(() => expect(store.getSession(session.localSessionId)?.status).toBe("ready"));
+    expect(store.getServerActivityState().runningSessions).toBe(0);
+  });
+
   test("uses CrossMark for the original prompt when its turn is cancelled", async () => {
     const { controller, sessions, store, outbound, listeners } = fixture();
     (outbound.addReaction as ReturnType<typeof vi.fn>)
@@ -965,13 +1133,20 @@ describe("ProxySessionController", () => {
     expect(outbound.deleteReaction).toHaveBeenCalledWith("m-long task", "reaction_on_it");
   });
 
-  test("plain text steers an active turn and stop bypasses prompt completion", async () => {
-    const { controller, runtime, outbound } = fixture();
+  test("plain text steers an active turn, inserts it into the thinking card, and stop bypasses prompt completion", async () => {
+    const { controller, runtime, outbound, presenter, store } = fixture();
     await controller.onMessage(message("build it"));
     await controller.onMessage(message("also update docs"));
     await controller.onMessage(message("/stop"));
 
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
     expect(runtime.steerTurn).toHaveBeenCalledWith(expect.any(String), "turn_1", "also update docs");
+    expect(presenter.appendSteerMessage).toHaveBeenCalledWith(
+      sessionId,
+      "turn_1",
+      "also update docs",
+      "m-also update docs",
+    );
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
@@ -1058,6 +1233,36 @@ describe("ProxySessionController", () => {
     expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
       "chat_id:c1",
       expect.objectContaining({ header: expect.objectContaining({ title: expect.objectContaining({ content: "Codex 使用帮助" }) }) }),
+    );
+    releaseSteer();
+    await blockedPrompt;
+  });
+
+  test("/nosteer can enqueue while a normal steer request is blocked", async () => {
+    const { controller, runtime, outbound, presenter, store } = fixture();
+    await controller.onMessage(message("build it"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    let releaseSteer!: () => void;
+    (runtime.steerTurn as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseSteer = resolve; }),
+    );
+
+    const blockedPrompt = controller.onMessage(message("also update docs"));
+    await vi.waitFor(() => expect(runtime.steerTurn).toHaveBeenCalled());
+    await controller.onMessage(message("/nosteer run tests afterwards"));
+
+    expect(store.listQueuedPrompts(sessionId).map((prompt) => prompt.text)).toEqual([
+      "run tests afterwards",
+    ]);
+    expect(presenter.appendSteerMessage).not.toHaveBeenCalledWith(
+      sessionId,
+      expect.any(String),
+      "run tests afterwards",
+      expect.any(String),
+    );
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.objectContaining({ header: expect.objectContaining({ title: expect.objectContaining({ content: "排队 Prompt · 1" }) }) }),
     );
     releaseSteer();
     await blockedPrompt;
@@ -1831,7 +2036,7 @@ describe("ProxySessionController", () => {
     expect(runtime.resumeSession).not.toHaveBeenCalled();
   });
 
-  test("switches to a Codex task already mapped by another chat context", async () => {
+  test("links another chat context to the same canonical Codex task", async () => {
     const { controller, runtime, remoteSessions, store, outbound } = fixture();
     store.getOrCreateUserContext("chat_id:other", "codex");
     store.createSession({
@@ -1862,12 +2067,14 @@ describe("ProxySessionController", () => {
 
     const current = store.getUserContext("chat_id:group_switch")?.currentSessionId;
     expect(current).toBeDefined();
-    expect(current).not.toBe("other_local");
-    expect(store.getSession(current!)).toMatchObject({
+    expect(current).toBe("other_local");
+    expect(store.getSessionForContext(current!, "chat_id:group_switch")).toMatchObject({
       contextKey: "chat_id:group_switch",
       remoteSessionId: "shared_remote",
       status: "ready",
     });
+    expect(store.listAllSessions().filter((session) => session.remoteSessionId === "shared_remote"))
+      .toHaveLength(1);
     expect(store.findSessionByRemoteSessionId("shared_remote", "chat_id:other")?.localSessionId)
       .toBe("other_local");
     expect(store.findSessionByRemoteSessionId("shared_remote", "chat_id:group_switch")?.localSessionId)
@@ -1877,6 +2084,115 @@ describe("ProxySessionController", () => {
       "chat_id:group_switch",
       expect.stringContaining("已切换到任务：Shared Codex task"),
     );
+
+    await controller.onMessage(groupMessage("group_switch", "/fork"));
+
+    const forked = store.getUserContext("chat_id:group_switch")?.currentSessionId;
+    expect(forked).toBeDefined();
+    expect(forked).not.toBe("other_local");
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "shared_remote",
+      lastTurnId: "turn_shared",
+      localSessionId: forked,
+    }));
+    expect(store.getSession(forked!)).toMatchObject({
+      remoteSessionId: "shared_remote_fork",
+      contextKey: "chat_id:group_switch",
+    });
+    expect(store.listAllSessions().filter((session) => session.remoteSessionId === "shared_remote"))
+      .toHaveLength(1);
+  });
+
+  test("queues a prompt from another chat instead of steering its active turn", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(message("first chat turn"));
+
+    const task = store.listSessions("chat_id:c1")[0]!;
+    store.saveTurnSnapshot("turn_1", task.localSessionId, {
+      sessionId: task.localSessionId,
+      turnId: "turn_1",
+      status: "running",
+      startedAt: 1,
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, "chat_id:c1");
+
+    await controller.onMessage(groupMessage("second", "/switch thr_1"));
+    await controller.onMessage(groupMessage("second", "second chat turn"));
+
+    expect(store.getUserContext("chat_id:second")?.currentSessionId).toBe(task.localSessionId);
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(runtime.steerTurn).not.toHaveBeenCalled();
+  });
+
+  test("queues multiple /nosteer prompts, cancels one, and starts the rest in FIFO order", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, store, listeners } = fixture();
+    await controller.onMessage(message("active turn"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+
+    await controller.onMessage({ messageId: "nosteer-1", contextKey: "chat_id:c1", text: "/nosteer run tests" });
+    await controller.onMessage({ messageId: "nosteer-2", contextKey: "chat_id:c1", text: "/nosteer update docs" });
+    await controller.onMessage({ messageId: "nosteer-3", contextKey: "chat_id:c1", text: "/nosteer report result" });
+
+    expect(runtime.steerTurn).not.toHaveBeenCalled();
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(store.listQueuedPrompts(sessionId).map((prompt) => prompt.text)).toEqual([
+      "run tests",
+      "update docs",
+      "report result",
+    ]);
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledTimes(2);
+    let card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("排队 Prompt · 3");
+    expect(JSON.stringify(card).match(/Cancel/g)).toHaveLength(3);
+
+    const cancelled = store.listQueuedPrompts(sessionId)[1]!;
+    await controller.onCardAction({
+      actionId: "cancel-nosteer-2",
+      contextKey: "chat_id:c1",
+      messageId: "card",
+      value: {
+        action: "queued_prompt_cancel",
+        promptId: cancelled.promptId,
+        sessionId,
+        contextKey: "chat_id:c1",
+      },
+    });
+    expect(store.listQueuedPrompts(sessionId).map((prompt) => prompt.text)).toEqual([
+      "run tests",
+      "report result",
+    ]);
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("排队 Prompt · 2");
+    expect(JSON.stringify(card)).not.toContain("update docs");
+
+    sessions.get(sessionId)!.activeTurnId = undefined;
+    Object.assign(remoteSessions.find((remote) => remote.id === "thr_1")!, {
+      status: "idle",
+      lastTurnStatus: "completed",
+    });
+    for (const listener of listeners) {
+      listener({ type: "turn_completed", sessionId, turnId: "turn_1", finalResponse: "done" });
+    }
+    await vi.waitFor(() => expect(runtime.startTurn).toHaveBeenCalledTimes(2));
+    expect((runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[1]?.[1]).toBe("run tests");
+    expect(store.listQueuedPrompts(sessionId).map((prompt) => prompt.text)).toEqual(["report result"]);
+
+    sessions.get(sessionId)!.activeTurnId = undefined;
+    Object.assign(remoteSessions.find((remote) => remote.id === "thr_1")!, {
+      status: "idle",
+      lastTurnStatus: "completed",
+    });
+    for (const listener of listeners) {
+      listener({ type: "turn_completed", sessionId, turnId: "turn_1", finalResponse: "done again" });
+    }
+    await vi.waitFor(() => expect(runtime.startTurn).toHaveBeenCalledTimes(3));
+    expect((runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toBe("report result");
+    expect(store.countQueuedPrompts(sessionId)).toBe(0);
   });
 
   test("refuses to switch or resume a task that is running in another Codex client", async () => {
@@ -1929,8 +2245,8 @@ describe("ProxySessionController", () => {
     expect(runtime.respondToApproval).toHaveBeenCalledWith(sessionId, "req_1", "accept");
   });
 
-  test("opens a requested activity history page from a thinking-card callback", async () => {
-    const { controller, outbound, store } = fixture();
+  test("switches the thinking card to an in-place activity history page", async () => {
+    const { controller, presenter, store } = fixture();
     store.saveTurnSnapshot("turn_history", "s1", {
       sessionId: "s1",
       turnId: "turn_history",
@@ -1947,12 +2263,28 @@ describe("ProxySessionController", () => {
     await controller.onCardAction({
       actionId: "activity-history-page",
       contextKey: "chat_id:c1",
+      messageId: "om_thinking_card",
       value: { action: "activity_history", turnId: "turn_history", page: "0" },
     });
 
-    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+    expect(presenter.showActivityPage).toHaveBeenCalledWith(
       "chat_id:c1",
-      expect.objectContaining({ header: expect.objectContaining({ title: expect.objectContaining({ content: "思考活动历史 · 1/1" }) }) }),
+      "turn_history",
+      0,
+      "om_thinking_card",
+    );
+
+    await controller.onCardAction({
+      actionId: "activity-history-latest",
+      contextKey: "chat_id:c1",
+      messageId: "om_thinking_card",
+      value: { action: "activity_history", turnId: "turn_history", page: "latest" },
+    });
+    expect(presenter.showActivityPage).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      "turn_history",
+      "latest",
+      "om_thinking_card",
     );
   });
 
@@ -1983,6 +2315,135 @@ describe("ProxySessionController", () => {
 
     await expect(controller.controlStopTask(localSessionId)).resolves.toContain("CLI title");
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
+  });
+
+  test("sends a CLI prompt to the task's existing response context without switching that context", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, presenter, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start task for targeted CLI prompt"));
+    const localSessionId = (runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const runtimeSession = sessions.get(localSessionId)!;
+    runtimeSession.activeTurnId = undefined;
+    const remote = remoteSessions.find((candidate) => candidate.id === runtimeSession.remoteSessionId)!;
+    remote.status = "idle";
+    remote.lastTurnStatus = "completed";
+    store.updateSession(localSessionId, { status: "ready" });
+    store.saveTurnSnapshot("turn_latest", localSessionId, {}, "chat_id:latest");
+    store.updateRuntimeSession(localSessionId, {
+      lastTurnId: "turn_latest",
+      lastTurnStatus: "completed",
+    });
+    store.attachSessionToContext("chat_id:latest", localSessionId);
+    store.getOrCreateUserContext("chat_id:latest", "codex");
+    store.createSession({
+      localSessionId: "other_current_task",
+      contextKey: "chat_id:latest",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.setCurrentSession("chat_id:latest", "other_current_task");
+
+    await expect(controller.controlSendTaskPrompt(localSessionId, "continue from CLI"))
+      .resolves.toContain("已通过机器人向原会话发送 Prompt");
+
+    expect(outbound.sendText).toHaveBeenLastCalledWith("chat_id:latest", "continue from CLI");
+    expect(runtime.startTurn).toHaveBeenLastCalledWith(localSessionId, "continue from CLI");
+    expect((outbound.sendText as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1))
+      .toBeLessThan((runtime.startTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1)!);
+    expect(presenter.registerSession).toHaveBeenLastCalledWith(
+      localSessionId,
+      "chat_id:latest",
+      "start task for targeted CLI prompt",
+      expect.any(String),
+    );
+    expect(presenter.startPendingTurn).toHaveBeenLastCalledWith(
+      localSessionId,
+      "chat_id:latest",
+      "start task for targeted CLI prompt",
+      undefined,
+    );
+    expect(store.getUserContext("chat_id:latest")?.currentSessionId).toBe("other_current_task");
+  });
+
+  test("uses the live task route when an active turn context has not been persisted yet", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, outboundRouter, presenter, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start task before route race"));
+    const localSessionId = (runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const runtimeSession = sessions.get(localSessionId)!;
+    runtimeSession.activeTurnId = "turn_racing";
+    const remote = remoteSessions.find((candidate) => candidate.id === runtimeSession.remoteSessionId)!;
+    remote.status = "active";
+    remote.lastTurnId = "turn_racing";
+    remote.lastTurnStatus = "inProgress";
+    store.updateRuntimeSession(localSessionId, {
+      lastTurnId: "turn_racing",
+      lastTurnStatus: "running",
+    });
+    store.attachSessionToContext("chat_id:latest", localSessionId);
+    outboundRouter.registerSession(localSessionId, "chat_id:latest", "start task before route race", process.cwd());
+
+    await controller.controlSendTaskPrompt(localSessionId, "steer from CLI");
+
+    expect(outbound.sendText).toHaveBeenLastCalledWith("chat_id:latest", "steer from CLI");
+    expect(runtime.steerTurn).toHaveBeenCalledWith(localSessionId, "turn_racing", "steer from CLI");
+    expect((outbound.sendText as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1))
+      .toBeLessThan((runtime.steerTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1)!);
+    expect(presenter.registerSession).toHaveBeenLastCalledWith(
+      localSessionId,
+      "chat_id:latest",
+      "start task before route race",
+      expect.any(String),
+    );
+  });
+
+  test("posts a CLI prompt inside the task's existing thread and anchors the new turn to that post", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, presenter, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start task before threaded CLI prompt"));
+    const localSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    sessions.get(localSessionId)!.activeTurnId = undefined;
+    Object.assign(remoteSessions[0]!, { status: "idle", lastTurnStatus: "completed" });
+    store.updateSession(localSessionId, { status: "ready" });
+    const threadContextKey = "chat_id:group:thread_id:omt_thread";
+    store.saveTurnSnapshot("turn_thread", localSessionId, {
+      sessionId: localSessionId,
+      turnId: "turn_thread",
+      status: "completed",
+      replyTarget: { messageId: "om_previous", replyInThread: true },
+    }, threadContextKey);
+    store.updateRuntimeSession(localSessionId, {
+      lastTurnId: "turn_thread",
+      lastTurnStatus: "completed",
+    });
+    store.attachSessionToContext(threadContextKey, localSessionId);
+    (outbound.replyText as ReturnType<typeof vi.fn>).mockResolvedValueOnce("om_cli_prompt");
+
+    await controller.controlSendTaskPrompt(localSessionId, "continue in this thread");
+
+    expect(outbound.replyText).toHaveBeenCalledWith(
+      threadContextKey,
+      { messageId: "om_previous", replyInThread: true },
+      "continue in this thread",
+    );
+    expect(runtime.startTurn).toHaveBeenLastCalledWith(localSessionId, "continue in this thread");
+    expect(presenter.startPendingTurn).toHaveBeenLastCalledWith(
+      localSessionId,
+      threadContextKey,
+      "start task before threaded CLI prompt",
+      { messageId: "om_cli_prompt", replyInThread: true },
+    );
+  });
+
+  test("does not start or steer a CLI prompt when posting it to the task route fails", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start task before failed CLI post"));
+    const localSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    (outbound.sendText as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("Feishu unavailable"));
+
+    await expect(controller.controlSendTaskPrompt(localSessionId, "must be visible first"))
+      .rejects.toThrow("Feishu unavailable");
+
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(runtime.steerTurn).not.toHaveBeenCalled();
   });
 
   test("shows every supported model and marks the current model", async () => {
@@ -2065,28 +2526,40 @@ describe("ProxySessionController", () => {
   });
 
   test("shows a rich status summary for the current task", async () => {
-    const { controller, outbound } = fixture();
+    const { controller, outbound, remoteSessions, store } = fixture();
     await controller.onMessage(message("inspect this repo"));
+    Object.assign(remoteSessions[0]!, {
+      createdAt: 1_776_272_400,
+      updatedAt: 1_776_272_460,
+      recencyAt: 1_785_000_000,
+    });
     const cardsBeforeStatus = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.length;
 
     await controller.onMessage(message("/status"));
 
+    const task = store.listSessions("chat_id:c1")[0]!;
+    const live = await controller.controlGetTaskStatus(task.localSessionId);
+    expect(live.session.createdAt).toBe(new Date(1_776_272_400_000).toISOString());
+    expect(live.session.updatedAt).toBe(new Date(1_785_000_000_000).toISOString());
     expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(cardsBeforeStatus + 1);
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
     expect(card).toMatchObject({ header: { title: { content: "Codex 状态" } } });
     expect(serialized).toContain("当前任务");
-    expect(serialized).toContain("**标题**：inspect this repo");
-    expect(serialized).toContain("**状态**：执行中");
-    expect(serialized).toContain("**模型 / 思考强度**：gpt-test / high");
-    expect(serialized).toContain("**权限模式**：自动执行");
-    expect(serialized).toContain("**任务范围**：未指定项目");
-    expect(serialized).toContain("**Codex 任务 ID**：thr_1");
+    expect(serialized).toContain("**标题**：`inspect this repo`");
+    expect(serialized).toContain("**工作目录**：");
+    expect(serialized).toContain("**模型 / 思考强度**：`gpt-test` / `high`");
+    expect(serialized).toContain("**状态 / 最近结果**：执行中 / 执行中");
+    expect(serialized).toContain("**权限 / 任务范围**：自动执行 / 未指定项目");
+    expect(serialized).toContain("**Agent**：`Codex`");
+    expect(serialized).not.toContain("Agent / 运行时");
+    expect(serialized).toContain("**Codex 任务 ID**：`thr_1`");
+    expect(serialized).toContain("**创建时间 / 最近活动**：");
+    expect(serialized).not.toContain("**创建 / 更新**：");
     expect(serialized).toContain("acp-bot");
-    expect(serialized).toContain("**保活机制**：已启用（异常退出自动重启）");
-    expect(serialized).toContain("**任务统计**：共 1 个");
+    expect(serialized).toContain("**默认 Agent / 保活**：`codex` / 已启用");
+    expect(serialized).not.toContain("任务统计");
     expect(serialized).not.toContain("###");
-    expect(serialized).not.toContain("`");
   });
 
   test("shows the remote active turn for the current externally executing task", async () => {
@@ -2132,14 +2605,79 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("**状态**：外部执行中");
-    expect(serialized).toContain("**当前执行**：turn_external_active");
-    expect(serialized).toContain("**最近结果**：执行中");
+    expect(serialized).toContain("**状态 / 最近结果**：外部执行中 / 执行中");
+    expect(serialized).toContain("**当前执行 / 排队消息**：`turn_external_active` / 0 条");
     expect(serialized).toContain("**回合 ID**：turn_external_active");
     expect(serialized).toContain("Running external integration tests");
     expect(serialized).toContain("任务仍在执行，尚无最终结果");
     expect(serialized).not.toContain("turn_old");
     expect(serialized).not.toContain("stale local tool");
+    expect(serialized).not.toContain("stale local result");
+  });
+
+  test("shows the latest externally completed turn instead of a stale local snapshot", async () => {
+    const { controller, outbound, remoteSessions, store } = fixture();
+    remoteSessions.push({
+      id: "external_completed_status",
+      title: "External completed task",
+      cwd: "D:\\work\\external-completed",
+      source: "cli",
+      status: "idle",
+      lastTurnId: "turn_local_old",
+      lastTurnStatus: "completed",
+    });
+    await controller.onMessage(message("/switch external_completed_status"));
+    const current = store.listSessions("chat_id:c1").find(
+      (session) => session.remoteSessionId === "external_completed_status",
+    )!;
+    store.updateRuntimeSession(current.localSessionId, {
+      lastTurnId: "turn_local_old",
+      lastTurnStatus: "completed",
+    });
+    store.saveTurnSnapshot("turn_local_old", current.localSessionId, {
+      sessionId: current.localSessionId,
+      turnId: "turn_local_old",
+      status: "completed",
+      startedAt: 1,
+      plan: [],
+      activities: [{ kind: "reasoning", id: "old_reasoning", text: "stale local step" }],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+      finalResponse: "stale local result",
+    });
+    Object.assign(remoteSessions.find((remote) => remote.id === "external_completed_status")!, {
+      status: "idle",
+      lastTurnId: "turn_external_latest",
+      lastTurnStatus: "completed",
+      lastActivity: "Latest external step",
+      finalResponse: "latest external result",
+      lastTurnToolCount: 7,
+      lastTurnCompletedToolCount: 7,
+      lastTurnFailedToolCount: 0,
+      lastTurnRunningToolCount: 0,
+      updatedAt: 1_785_000_000,
+    });
+
+    const live = await controller.controlGetTaskStatus(current.localSessionId);
+    expect(live.session).toMatchObject({
+      lastTurnId: "turn_external_latest",
+      lastTurnStatus: "completed",
+      status: "ready",
+    });
+    expect(live.snapshot).toBeUndefined();
+    expect(live.remote?.finalResponse).toBe("latest external result");
+
+    await controller.onMessage(message("/status"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("**回合 ID**：turn_external_latest");
+    expect(serialized).toContain("Latest external step");
+    expect(serialized).toContain("**工具执行**：完成 7，失败 0");
+    expect(serialized).toContain("latest external result");
+    expect(serialized).not.toContain("turn_local_old");
+    expect(serialized).not.toContain("stale local step");
     expect(serialized).not.toContain("stale local result");
   });
 
@@ -2202,6 +2740,9 @@ describe("ProxySessionController", () => {
       cwd: "D:\\work\\desktop",
       source: "vscode",
       status: "active",
+      createdAt: 1_776_272_400,
+      updatedAt: 1_776_272_460,
+      recencyAt: 1_785_000_000,
       lastTurnId: "turn_external",
       lastTurnStatus: "inProgress",
       lastActivity: "Running the integration tests",
@@ -2213,7 +2754,9 @@ describe("ProxySessionController", () => {
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("🟢 外部执行中");
     expect(serialized).toContain("Running the integration tests");
-    expect(serialized).toContain("**当前任务**：未切换");
+    expect(serialized).toContain("**状态 / 当前任务**：🟢 外部执行中 / 未切换");
+    expect(serialized).toContain("**创建时间 / 最近活动**：");
+    expect(serialized).not.toContain("时间未知");
     expect(serialized).not.toContain("**来源**");
     expect(serialized).toContain("任务仍在执行，尚无最终结果");
     expect(runtime.resumeSession).not.toHaveBeenCalled();
@@ -2266,7 +2809,9 @@ describe("ProxySessionController", () => {
     expect(serialized.match(/\/restart/g)).toHaveLength(1);
     expect(serialized.match(/\/status \[序号或任务 ID\]/g)).toHaveLength(1);
     expect(serialized.match(/\/fork \[序号或任务 ID\]/g)).toHaveLength(1);
+    expect(serialized.match(/\/newgroup/g)).toHaveLength(1);
     expect(serialized.match(/\/stop/g)).toHaveLength(1);
+    expect(serialized.match(/\/nosteer/g)).toHaveLength(1);
     expect(serialized.match(/\/agent \[name\]/g)).toHaveLength(1);
     expect(serialized).not.toContain("/attach");
     expect(serialized).not.toContain("/detach");

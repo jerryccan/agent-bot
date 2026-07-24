@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { startFeishu } from "../../src/startup/startFeishu.js";
 
 describe("startFeishu", () => {
-  test("waits for the connector before sending the startup notification", async () => {
+  test("claims the local control endpoint before connecting and sending the startup notification", async () => {
     const order: string[] = [];
     const startedAt = new Date("2026-07-15T05:45:00.000Z");
 
@@ -17,8 +17,9 @@ describe("startFeishu", () => {
       },
       startedAt,
       "test restart",
+      async () => { order.push("control"); },
     );
 
-    expect(order).toEqual(["connector", "notification"]);
+    expect(order).toEqual(["control", "connector", "notification"]);
   });
 });

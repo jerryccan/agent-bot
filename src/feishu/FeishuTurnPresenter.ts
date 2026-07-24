@@ -1,5 +1,9 @@
 import type { AgentEvent } from "../runtime/types.js";
-import { createTurnViewState, reduceTurnEvent } from "../presentation/TurnStateReducer.js";
+import {
+  appendSteerMessage as appendSteerMessageToState,
+  createTurnViewState,
+  reduceTurnEvent,
+} from "../presentation/TurnStateReducer.js";
 import { splitMarkdown } from "../presentation/splitMarkdown.js";
 import type { TurnViewState } from "../presentation/turnViewTypes.js";
 import { CardRenderer } from "./CardRenderer.js";
@@ -14,7 +18,7 @@ interface TurnDeliveryRecord {
 }
 
 export interface TurnPresentationStore {
-  saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown): void;
+  saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown, contextKey?: string): void;
   getTurnSnapshot(turnId: string): unknown;
   saveTurnDelivery(turnId: string, patch: { progressMessageId?: string; lastCardHash?: string }): void;
   saveFinalDeliveryProgress(turnId: string, messageIds: string[]): void;
@@ -33,6 +37,7 @@ export interface FeishuTurnPresenterOptions {
 interface TurnEntry {
   contextKey: string;
   state: TurnViewState;
+  historySnapshot?: TurnViewState;
   initializing: Promise<void>;
   messageId?: string;
   scheduler?: CardUpdateScheduler<TurnViewState>;
@@ -67,8 +72,8 @@ export class FeishuTurnPresenter {
     for (const entry of this.entries.values()) {
       if (entry.state.sessionId !== sessionId || entry.state.taskTitle === taskTitle) continue;
       entry.state = { ...entry.state, taskTitle };
-      this.store.saveTurnSnapshot(entry.state.turnId, sessionId, entry.state);
-      entry.scheduler?.update(entry.state, "critical");
+      this.store.saveTurnSnapshot(entry.state.turnId, sessionId, entry.state, entry.contextKey);
+      if (!entry.historySnapshot) entry.scheduler?.update(entry.state, "critical");
     }
   }
 
@@ -102,7 +107,7 @@ export class FeishuTurnPresenter {
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(state.turnId, entry);
     this.pendingEntries.set(sessionId, entry);
-    this.store.saveTurnSnapshot(state.turnId, sessionId, state);
+    this.store.saveTurnSnapshot(state.turnId, sessionId, state, contextKey);
     entry.initializing = this.initializeEntry(entry);
     try {
       await entry.initializing;
@@ -118,13 +123,53 @@ export class FeishuTurnPresenter {
     if (!entry) return;
     this.pendingEntries.delete(sessionId);
     entry.state = { ...entry.state, status: "failed", error: message, completedAt: Date.now() };
-    this.store.saveTurnSnapshot(entry.state.turnId, sessionId, entry.state);
+    this.store.saveTurnSnapshot(entry.state.turnId, sessionId, entry.state, entry.contextKey);
     await entry.initializing;
     try {
       await entry.scheduler?.flush(entry.state);
     } catch (error) {
       this.options.onError?.(error);
     }
+  }
+
+  async appendSteerMessage(
+    sessionId: string,
+    turnId: string,
+    text: string,
+    messageId?: string,
+  ): Promise<void> {
+    const activityId = `steer:${messageId ?? createId("message")}`;
+    let entry = this.entries.get(turnId);
+    if (!entry) {
+      const contextKey = this.sessionContexts.get(sessionId);
+      if (!contextKey) return;
+      const saved = this.store.getTurnSnapshot(turnId);
+      const initial = isTurnViewState(saved) && saved.sessionId === sessionId
+        ? saved
+        : {
+            ...createTurnViewState(
+              sessionId,
+              turnId,
+              Date.now(),
+              this.sessionTitles.get(sessionId),
+              undefined,
+              this.sessionCwds.get(sessionId),
+            ),
+            status: "running" as const,
+          };
+      const state = appendSteerMessageToState(initial, activityId, text);
+      entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
+      this.entries.set(turnId, entry);
+      this.store.saveTurnSnapshot(turnId, sessionId, state, contextKey);
+      entry.initializing = this.initializeEntry(entry);
+      await entry.initializing;
+      return;
+    }
+
+    await entry.initializing;
+    entry.state = appendSteerMessageToState(entry.state, activityId, text);
+    this.store.saveTurnSnapshot(turnId, sessionId, entry.state, entry.contextKey);
+    if (!entry.historySnapshot) entry.scheduler?.update(entry.state, "critical");
   }
 
   async onEvent(event: AgentEvent): Promise<void> {
@@ -147,7 +192,7 @@ export class FeishuTurnPresenter {
           event,
         );
         this.entries.set(event.turnId, pending);
-        this.store.saveTurnSnapshot(event.turnId, event.sessionId, pending.state);
+        this.store.saveTurnSnapshot(event.turnId, event.sessionId, pending.state, pending.contextKey);
         existing = pending;
         eventApplied = true;
       }
@@ -157,7 +202,7 @@ export class FeishuTurnPresenter {
 
     if (existing && !eventApplied) {
       entry.state = reduceTurnEvent(entry.state, event);
-      this.store.saveTurnSnapshot(event.turnId, event.sessionId, entry.state);
+      this.store.saveTurnSnapshot(event.turnId, event.sessionId, entry.state, entry.contextKey);
     }
 
     await entry.initializing;
@@ -175,7 +220,7 @@ export class FeishuTurnPresenter {
       return;
     }
 
-    entry.scheduler.update(entry.state, eventPriority(event));
+    if (!entry.historySnapshot) entry.scheduler.update(entry.state, eventPriority(event));
   }
 
   async showDetails(contextKey: string, turnId: string): Promise<void> {
@@ -185,6 +230,52 @@ export class FeishuTurnPresenter {
       return;
     }
     await this.outbound.sendInteractiveCard(contextKey, this.renderer.renderTurnDetails(snapshot));
+  }
+
+  async showActivityPage(
+    contextKey: string,
+    turnId: string,
+    page: number | "latest",
+    messageId?: string,
+  ): Promise<void> {
+    const entry = this.entries.get(turnId);
+    if (entry) await entry.initializing;
+    const ownsProgressCard = entry
+      && entry.contextKey === contextKey
+      && (!messageId || !entry.messageId || messageId === entry.messageId);
+
+    if (ownsProgressCard) {
+      const targetMessageId = messageId ?? entry.messageId;
+      if (page === "latest") {
+        entry.historySnapshot = undefined;
+        if (entry.scheduler) {
+          entry.scheduler.invalidateRenderedCard();
+          await entry.scheduler.flush(entry.state);
+        } else if (targetMessageId) {
+          await this.outbound.updateInteractiveCard(targetMessageId, this.renderer.renderTurn(entry.state));
+        } else {
+          await this.outbound.sendInteractiveCard(contextKey, this.renderer.renderTurn(entry.state));
+        }
+        return;
+      }
+
+      if (!entry.historySnapshot) {
+        entry.historySnapshot = entry.state;
+        await entry.scheduler?.flush();
+      }
+      const card = this.renderer.renderActivityHistory(entry.historySnapshot, page);
+      if (targetMessageId) await this.outbound.updateInteractiveCard(targetMessageId, card);
+      else await this.outbound.sendInteractiveCard(contextKey, card);
+      return;
+    }
+
+    const snapshot = this.store.getTurnSnapshot(turnId);
+    if (!isTurnViewState(snapshot)) throw new Error("未找到这次执行的活动历史。");
+    const card = page === "latest"
+      ? this.renderer.renderTurn(snapshot)
+      : this.renderer.renderActivityHistory(snapshot, page);
+    if (messageId) await this.outbound.updateInteractiveCard(messageId, card);
+    else await this.outbound.sendInteractiveCard(contextKey, card);
   }
 
   async resumeDelivery(_sessionId: string, contextKey: string, turnId: string): Promise<void> {
@@ -199,7 +290,7 @@ export class FeishuTurnPresenter {
     await Promise.all(
       [...this.entries.values()].map(async (entry) => {
         await entry.initializing;
-        await entry.scheduler?.flush();
+        if (!entry.historySnapshot) await entry.scheduler?.flush();
       }),
     );
   }
@@ -221,7 +312,7 @@ export class FeishuTurnPresenter {
     );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(event.turnId, entry);
-    this.store.saveTurnSnapshot(event.turnId, event.sessionId, state);
+    this.store.saveTurnSnapshot(event.turnId, event.sessionId, state, contextKey);
     entry.initializing = this.initializeEntry(entry);
     return entry;
   }
@@ -252,10 +343,12 @@ export class FeishuTurnPresenter {
   }
 
   private async finalize(entry: TurnEntry): Promise<void> {
-    try {
-      await entry.scheduler?.flush(entry.state);
-    } catch (error) {
-      this.options.onError?.(error);
+    if (!entry.historySnapshot) {
+      try {
+        await entry.scheduler?.flush(entry.state);
+      } catch (error) {
+        this.options.onError?.(error);
+      }
     }
     if (entry.state.status !== "completed" || !entry.state.finalResponse) return;
     await this.deliverFinal(entry.contextKey, entry.state);

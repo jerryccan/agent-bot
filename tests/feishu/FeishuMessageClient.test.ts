@@ -16,6 +16,36 @@ afterEach(() => {
 });
 
 describe("FeishuMessageClient", () => {
+  test("creates a private Feishu group and invites the current user", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { chat_id: "oc_new_group" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.createGroup({
+      name: "[codex] 广州天气",
+      userOpenId: "ou_current_user",
+    })).resolves.toEqual({
+      chatId: "oc_new_group",
+      name: "[codex] 广州天气",
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/chats?user_id_type=open_id",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      headers: expect.objectContaining({ Authorization: "Bearer token" }),
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      chat_mode: "group",
+      chat_type: "private",
+      name: "[codex] 广州天气",
+      user_id_list: ["ou_current_user"],
+    });
+  });
+
   test("downloads a Feishu message image into the bot data directory and caches it", async () => {
     const clientConfig = config();
     const fetchMock = vi.fn()
@@ -157,7 +187,7 @@ describe("FeishuMessageClient", () => {
     };
     expect(card).toEqual({
       schema: "2.0",
-      config: { update_multi: true },
+      config: { update_multi: true, width_mode: "fill" },
       body: { elements: [{ tag: "markdown", content: markdown }] },
     });
   });

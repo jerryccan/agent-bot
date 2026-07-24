@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
 import { threadContextKey } from "./contextKey.js";
-import type { FeishuEventHandler, IncomingMessage } from "./types.js";
+import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
 
 export class FeishuConnector {
   constructor(
@@ -40,6 +40,23 @@ export class FeishuConnector {
             this.logger.error({ error, messageId: message.messageId }, "Failed to handle Feishu message event.");
           });
       },
+      "im.chat.updated_v1": async (data: unknown) => {
+        const update = toChatUpdatedEvent(data);
+        if (!update) {
+          this.logger.debug({ data }, "Ignored Feishu chat update without a name change.");
+          return;
+        }
+        if (!this.handler.onChatUpdated) return;
+
+        void Promise.resolve()
+          .then(() => this.handler.onChatUpdated!(update))
+          .catch((error: unknown) => {
+            this.logger.error(
+              { error, chatId: update.chatId, afterName: update.afterName },
+              "Failed to handle Feishu chat name update.",
+            );
+          });
+      },
       "card.action.trigger": async (data: unknown) => {
         const action = toCardAction(data);
         if (!action) {
@@ -64,6 +81,23 @@ export class FeishuConnector {
     wsClient.start({ eventDispatcher });
     this.logger.info("Feishu WebSocket connector started.");
   }
+}
+
+function toChatUpdatedEvent(data: unknown): ChatUpdatedEvent | undefined {
+  const event = getFeishuEvent(data);
+  const chatId = typeof event?.chat_id === "string" ? event.chat_id : undefined;
+  const beforeName = typeof event?.before_change?.name === "string"
+    ? event.before_change.name
+    : undefined;
+  const afterName = typeof event?.after_change?.name === "string"
+    ? event.after_change.name
+    : undefined;
+  if (!chatId || !afterName || beforeName === afterName) return undefined;
+  return {
+    chatId,
+    ...(beforeName !== undefined ? { beforeName } : {}),
+    afterName,
+  };
 }
 
 function toIncomingMessage(data: unknown): IncomingMessage | undefined {

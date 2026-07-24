@@ -50,6 +50,56 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("renders a compact cancellable prompt queue", () => {
+    const card = new CardRenderer().renderPromptQueue({
+      sessionId: "session_1",
+      contextKey: "chat_id:c1",
+      prompts: [
+        { id: "queue_1", text: "先运行全部测试" },
+        { id: "queue_2", text: "然后更新文档" },
+      ],
+    });
+    const objects = collectObjects(card);
+    const buttons = objects.filter((item) => item.tag === "button");
+    const columns = objects.filter((item) => item.tag === "column");
+
+    expect(card).toMatchObject({
+      schema: "2.0",
+      config: { width_mode: "fill" },
+      header: { title: { content: "排队 Prompt · 2" }, padding: "8px 12px 8px 12px" },
+      body: { vertical_spacing: "4px", padding: "8px 12px 8px 12px" },
+    });
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]).toMatchObject({
+      size: "tiny",
+      text: { content: "Cancel" },
+      behaviors: [{
+        type: "callback",
+        value: { action: "queued_prompt_cancel", promptId: "queue_1", sessionId: "session_1" },
+      }],
+    });
+    expect(JSON.stringify(card)).toContain("1. 先运行全部测试");
+    expect(JSON.stringify(card)).toContain("2. 然后更新文档");
+    expect(columns.every((column) => (
+      (column.elements as Array<Record<string, unknown>>)
+        .every((element) => element.tag !== "plain_text")
+    ))).toBe(true);
+  });
+
+  test("renders an empty prompt queue without unsupported plain_text body elements", () => {
+    const card = new CardRenderer().renderPromptQueue({
+      sessionId: "session_1",
+      contextKey: "chat_id:c1",
+      prompts: [],
+    });
+
+    expect(card).toMatchObject({
+      body: {
+        elements: [{ tag: "markdown", content: "队列为空" }],
+      },
+    });
+  });
+
   test("renders a callback-free startup status card with resumable task state", () => {
     const card = new CardRenderer().renderStartupStatus({
       startedAt: new Date("2026-07-15T05:45:00.000Z"),
@@ -72,7 +122,7 @@ describe("CardRenderer", () => {
 
     expect(card).toMatchObject({
       schema: "2.0",
-      config: { update_multi: true },
+      config: { update_multi: true, width_mode: "fill" },
       header: { template: "green" },
       body: { elements: expect.any(Array) },
     });
@@ -81,19 +131,24 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("在线");
     expect(serialized).toContain("重启原因");
     expect(serialized).toContain("用户执行 /restart 命令");
-    expect(serialized).toContain("Codex");
+    expect(serialized).toContain("codex");
     expect(serialized).toContain("D:\\\\dev\\\\acp-bot");
     expect(serialized).toContain("sess_1");
-    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain("模型 / 思考强度");
     expect(serialized).toContain("gpt-test");
-    expect(serialized).toContain("思考强度");
     expect(serialized).toContain("high");
     expect(serialized).toContain("Startup task metadata");
     expect(serialized).toContain("任务 ID");
+    expect(serialized).toContain("任务状态 / Agent");
+    expect(serialized).toContain("服务状态 / 启动时间");
     expect(serialized).toContain("下一条消息时恢复");
     expect(serialized).toContain("/new");
     expect(serialized).toContain("/status");
     expect(objects.filter((item) => item.tag === "button" || item.tag === "action")).toHaveLength(0);
+    const content = String(objects.find((item) => item.tag === "markdown")?.content);
+    expect(content.indexOf("当前任务")).toBeLessThan(content.indexOf("工作目录"));
+    expect(content.indexOf("工作目录")).toBeLessThan(content.indexOf("模型 / 思考强度"));
+    expect(content.indexOf("模型 / 思考强度")).toBeLessThan(content.indexOf("服务状态 / 启动时间"));
   });
 
   test("renders default model and automatic effort when there is no current task", () => {
@@ -107,14 +162,37 @@ describe("CardRenderer", () => {
     });
     const serialized = JSON.stringify(card);
 
-    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain("模型 / 思考强度");
     expect(serialized).toContain("默认");
-    expect(serialized).toContain("思考强度");
     expect(serialized).toContain("自动");
     expect(serialized).toContain("任务范围");
     expect(serialized).toContain("未指定项目");
     expect(serialized).not.toContain("D:\\\\dev\\\\acp-bot");
     expect(serialized).toContain("下一条普通消息会创建新任务");
+  });
+
+  test("renders safe restart blockers and countdown", () => {
+    const renderer = new CardRenderer();
+    const waiting = renderer.renderSafeRestartStatus({
+      reason: "更新卡片分页",
+      phase: "waiting_tasks",
+      pendingFinalDeliveries: 1,
+      waitingTasks: [{ id: "thread_1", title: "Long build" }],
+    });
+    const countdown = renderer.renderSafeRestartStatus({
+      reason: "更新卡片分页",
+      phase: "countdown",
+      remainingMs: 12_350,
+      pendingFinalDeliveries: 0,
+      waitingTasks: [],
+    });
+
+    expect(JSON.stringify(waiting)).toContain("等待任务完成");
+    expect(JSON.stringify(waiting)).toContain("Long build");
+    expect(JSON.stringify(waiting)).toContain("thread_1");
+    expect(JSON.stringify(waiting)).toContain("等待阻塞项清空后开始");
+    expect(JSON.stringify(countdown)).toContain("13s");
+    expect(countdown).toMatchObject({ header: { template: "orange" } });
   });
 
   test("renders visible reasoning and one collapsed panel per tool in chronological order", () => {
@@ -157,6 +235,7 @@ describe("CardRenderer", () => {
     expect(new Set(activityOrder).size).toBe(4);
     expect(card).toMatchObject({
       schema: "2.0",
+      config: { width_mode: "fill" },
       header: {
         subtitle: { tag: "plain_text", content: "耗时 52s · 2 个工具 · 1 个文件" },
         padding: "12px 12px 12px 12px",
@@ -473,7 +552,11 @@ describe("CardRenderer", () => {
     const card = new CardRenderer().renderTurn(waiting);
     const objects = collectObjects(card);
 
-    expect(card).toMatchObject({ schema: "2.0", body: { elements: expect.any(Array) } });
+    expect(card).toMatchObject({
+      schema: "2.0",
+      config: { width_mode: "fill" },
+      body: { elements: expect.any(Array) },
+    });
     expect(objects.some((item) => item.tag === "action")).toBe(false);
     expect(objects).toContainEqual(expect.objectContaining({
       tag: "column_set",
@@ -581,6 +664,60 @@ describe("CardRenderer", () => {
     expect(String(reasoning?.content)).not.toContain("__");
   });
 
+  test("merges consecutive reasoning entries while preserving activity boundaries", () => {
+    const running = state();
+    running.plan = [];
+    running.fileSummary = [];
+    const tool = { ...running.completedTools[0]!, id: "boundary-tool", title: "Boundary tool" };
+    running.activities = [
+      { kind: "reasoning", id: "reasoning:1", text: "第一段思考" },
+      { kind: "reasoning", id: "reasoning:2", text: "第二段思考" },
+      { kind: "tool", id: tool.id, tool },
+      { kind: "reasoning", id: "reasoning:3", text: "第三段思考" },
+      { kind: "reasoning", id: "reasoning:4", text: "第四段思考" },
+      { kind: "assistant", id: "commentary:1", text: "Assistant text" },
+      { kind: "reasoning", id: "reasoning:5", text: "第五段思考" },
+    ];
+
+    const renderer = new CardRenderer();
+    const card = renderer.renderTurn(running);
+    const reasoning = collectObjects(card)
+      .filter((item) => item.tag === "markdown" && String(item.content).startsWith("> 💭"))
+      .map((item) => String(item.content));
+
+    expect(reasoning).toEqual([
+      "> 💭 第一段思考\n> 💭 第二段思考",
+      "> 💭 第三段思考\n> 💭 第四段思考",
+      "> 💭 第五段思考",
+    ]);
+    const serialized = JSON.stringify(card);
+    expect(serialized.indexOf("第二段思考")).toBeLessThan(serialized.indexOf("Boundary tool"));
+    expect(serialized.indexOf("Boundary tool")).toBeLessThan(serialized.indexOf("第三段思考"));
+    expect(serialized.indexOf("第四段思考")).toBeLessThan(serialized.indexOf("Assistant text"));
+    expect(serialized.indexOf("Assistant text")).toBeLessThan(serialized.indexOf("第五段思考"));
+
+    const history = renderer.renderActivityHistory(running, 0);
+    const historyReasoning = collectObjects(history)
+      .filter((item) => item.tag === "markdown" && String(item.content).startsWith("> 💭"));
+    expect(historyReasoning).toHaveLength(3);
+  });
+
+  test("renders steer messages inline and preserves their activity order", () => {
+    const running = state();
+    running.plan = [];
+    running.fileSummary = [];
+    running.activities = [
+      { kind: "reasoning", id: "reasoning:1", text: "先检查代码" },
+      { kind: "user", id: "steer:m1", text: "同时补充测试" },
+      { kind: "reasoning", id: "reasoning:2", text: "继续处理" },
+    ];
+
+    const serialized = JSON.stringify(new CardRenderer().renderTurn(running));
+    expect(serialized).toContain("**用户追加**\\n同时补充测试");
+    expect(serialized.indexOf("先检查代码")).toBeLessThan(serialized.indexOf("同时补充测试"));
+    expect(serialized.indexOf("同时补充测试")).toBeLessThan(serialized.indexOf("继续处理"));
+  });
+
   test("shows an ellipsis before retained activities when older history was discarded", () => {
     const running = state();
     running.plan = [];
@@ -624,8 +761,13 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("Assistant 7");
     expect(serialized).toContain("Tool 44");
     expect(serialized).toContain("Reasoning 45");
-    expect(serialized).toContain("查看较早活动（共 2 页）");
+    expect(serialized).toContain("查看历史思考（共 2 页）");
     expect(serialized).toContain('"action":"activity_history"');
+    const elements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+    const historyLinkIndex = elements.findIndex((element) => element.tag === "column_set");
+    const firstActivityIndex = elements.findIndex((element) => element.tag === "markdown");
+    expect(historyLinkIndex).toBeGreaterThanOrEqual(0);
+    expect(historyLinkIndex).toBeLessThan(firstActivityIndex);
   });
 
   test("paginates all activity types from oldest to newest in 40-item pages", () => {
@@ -644,13 +786,35 @@ describe("CardRenderer", () => {
     expect(firstPage).toContain("FIRST-");
     expect(firstPage).not.toContain("Activity 2");
     expect(firstPage).toContain("下一页");
+    expect(firstPage).toContain("最新页");
     expect(middlePage).toContain("Activity 2");
     expect(middlePage).toContain("Activity 41");
     expect(middlePage).not.toContain("Activity 42");
+    expect(middlePage).not.toContain("下一页");
+    expect(middlePage).toContain('"page":"latest"');
     expect(lastPage).toContain("思考活动历史 · 3/3");
     expect(lastPage).toContain("Activity 42");
     expect(lastPage).toContain("LAST-81");
     expect(lastPage).toContain("上一页");
+    expect(lastPage).toContain("最新页");
+
+    const firstPageElements = (renderer.renderActivityHistory(running, 0) as {
+      body: { elements: Array<Record<string, unknown>> };
+    }).body.elements;
+    expect(firstPageElements[0]?.tag).toBe("column_set");
+    expect(firstPageElements[1]?.tag).toBe("hr");
+    expect(firstPageElements[2]?.tag).toBe("markdown");
+    const firstPageLabels = collectObjects(renderer.renderActivityHistory(running, 0))
+      .filter((item) => item.tag === "interactive_container")
+      .map((item) => JSON.stringify(item));
+    expect(firstPageLabels[0]).toContain("最新页");
+    expect(firstPageLabels[1]).toContain("下一页");
+
+    const lastPageLabels = collectObjects(renderer.renderActivityHistory(running, 2))
+      .filter((item) => item.tag === "interactive_container")
+      .map((item) => JSON.stringify(item));
+    expect(lastPageLabels[0]).toContain("最新页");
+    expect(lastPageLabels[1]).toContain("上一页");
   });
 
   test("renders task actions as colored callback links below the body", () => {
@@ -693,7 +857,11 @@ describe("CardRenderer", () => {
         value: { action: "session_status", sessionId: "thr_1" },
       }],
     }));
-    expect(card).toMatchObject({ schema: "2.0", body: { elements: expect.any(Array) } });
+    expect(card).toMatchObject({
+      schema: "2.0",
+      config: { width_mode: "fill" },
+      body: { elements: expect.any(Array) },
+    });
     expect(objects).toContainEqual(expect.objectContaining({
       tag: "column_set",
       flex_mode: "flow",

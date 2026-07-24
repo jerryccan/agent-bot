@@ -3,7 +3,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config/loadConfig.js";
 import { sendControlRequest, isServerRunning } from "./cli/LocalControlClient.js";
-import { controlEndpoint, type ControlResponse } from "./cli/controlProtocol.js";
+import {
+  controlEndpoint,
+  type ControlResponse,
+  type TaskStatusControlData,
+} from "./cli/controlProtocol.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
 
@@ -159,7 +163,22 @@ async function taskCommand(input: string[]): Promise<void> {
   const config = loadConfig();
   const store = new StateStore(config.storage.sqlitePath);
   try {
-    const sessions = filterSessions(store.listAllSessions(), rest);
+    const allSessions = store.listAllSessions();
+    if (action === "prompt" || action === "send") {
+      const [reference, ...promptParts] = rest;
+      if (!reference) throw new Error(`task ${action} 需要任务序号或任务 ID。`);
+      const text = promptParts.join(" ").trim();
+      if (!text) throw new Error(`task ${action} 需要要发送的 Prompt。`);
+      const session = resolveTask(allSessions, reference);
+      const endpoint = controlEndpoint(config.storage.sqlitePath);
+      printResponse(await sendControlRequest(endpoint, {
+        action: "task_prompt",
+        localSessionId: session.localSessionId,
+        text,
+      }, 60_000));
+      return;
+    }
+    const sessions = filterSessions(allSessions, rest);
     if (action === "list") {
       if (rest.includes("--json")) printJson(sessions);
       else printTaskList(sessions);
@@ -169,10 +188,28 @@ async function taskCommand(input: string[]): Promise<void> {
     if (!reference) throw new Error(`task ${action} 需要任务序号或任务 ID。`);
     const session = resolveTask(sessions, reference);
     if (action === "status") {
-      const snapshot = session.lastTurnId ? store.getTurnSnapshot(session.lastTurnId) : undefined;
-      const result = { ...session, snapshot };
+      const endpoint = controlEndpoint(config.storage.sqlitePath);
+      let live: TaskStatusControlData | undefined;
+      let response: ControlResponse | undefined;
+      try {
+        response = await sendControlRequest(endpoint, {
+          action: "task_status",
+          localSessionId: session.localSessionId,
+        });
+      } catch {
+        // The server can be stopped or still run an older control protocol
+        // while a safe restart is pending. Preserve the local read-only fallback.
+      }
+      if (response) {
+        ensureOk(response);
+        live = response.data as TaskStatusControlData;
+      }
+      const statusSession = live?.session ?? session;
+      const snapshot = live?.snapshot
+        ?? (statusSession.lastTurnId ? store.getTurnSnapshot(statusSession.lastTurnId) : undefined);
+      const result = { ...statusSession, snapshot, ...(live?.remote ? { remote: live.remote } : {}) };
       if (rest.includes("--json")) printJson(result);
-      else printTaskStatus(session, snapshot);
+      else printTaskStatus(statusSession, snapshot, live?.remote);
       return;
     }
     const endpoint = controlEndpoint(config.storage.sqlitePath);
@@ -248,7 +285,7 @@ function printTaskList(sessions: SessionRecord[]): void {
   }
 }
 
-function printTaskStatus(session: SessionRecord, snapshot: unknown): void {
+function printTaskStatus(session: SessionRecord, snapshot: unknown, remote?: TaskStatusControlData["remote"]): void {
   process.stdout.write(`标题：${session.title ?? "未命名任务"}\n`);
   process.stdout.write(`任务 ID：${session.remoteSessionId ?? session.acpSessionId ?? session.localSessionId}\n`);
   process.stdout.write(`本地 ID：${session.localSessionId}\n`);
@@ -256,15 +293,17 @@ function printTaskStatus(session: SessionRecord, snapshot: unknown): void {
   process.stdout.write(`状态：${session.status} / ${session.lastTurnStatus ?? "-"}\n`);
   process.stdout.write(`目录：${session.cwd}\n`);
   process.stdout.write(`最后轮次：${session.lastTurnId ?? "-"}\n`);
+  let displayedFinalResponse: string | undefined;
   if (snapshot && typeof snapshot === "object") {
     const state = snapshot as Record<string, unknown>;
     if (typeof state.durationMs === "number") process.stdout.write(`耗时：${Math.round(state.durationMs / 1_000)}s\n`);
     if (typeof state.totalTokens === "number") process.stdout.write(`Tokens：${state.totalTokens}\n`);
     if (typeof state.totalToolCount === "number") process.stdout.write(`工具调用：${state.totalToolCount}\n`);
-    if (typeof state.finalResponse === "string" && state.finalResponse.trim()) {
-      process.stdout.write(`最终结果：\n${state.finalResponse.trim()}\n`);
-    }
+    if (typeof state.finalResponse === "string" && state.finalResponse.trim()) displayedFinalResponse = state.finalResponse.trim();
   }
+  if (!snapshot && remote?.lastTurnToolCount !== undefined) process.stdout.write(`工具调用：${remote.lastTurnToolCount}\n`);
+  displayedFinalResponse = remote?.finalResponse?.trim() || displayedFinalResponse;
+  if (displayedFinalResponse) process.stdout.write(`最终结果：\n${displayedFinalResponse}\n`);
 }
 
 function printServerStatus(data: unknown): void {
@@ -331,6 +370,7 @@ function printHelp(): void {
   acp-bot [--config <path>] task status <序号|任务ID> [--json]
   acp-bot [--config <path>] task stop <序号|任务ID>
   acp-bot [--config <path>] task title <序号|任务ID> <新标题>
+  acp-bot [--config <path>] task prompt <序号|任务ID> <prompt>
   acp-bot skills status [--json] [--target <skills目录>]
   acp-bot skills install|register [--json] [--target <skills目录>]
   acp-bot skills uninstall|unregister [--json] [--target <skills目录>]
@@ -340,6 +380,7 @@ function printHelp(): void {
   server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
   --immediate（或 --force）跳过空闲等待并立即重启 worker。
   task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。
+  task prompt 不切换任务；机器人先在原会话显示 Prompt，再提交任务，响应继续发送到该会话。
   skills 默认注册到系统通用 ~/.agents/skills 目录；ACP_BOT_SKILLS_DIR 可修改默认目录。
 `);
 }

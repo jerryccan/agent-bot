@@ -14,6 +14,14 @@ export interface UserContextRecord {
   updatedAt: string;
 }
 
+export interface ChatContextRecord {
+  contextKey: string;
+  chatType: "p2p" | "group";
+  lastActivityAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SessionRecord {
   localSessionId: string;
   contextKey: string;
@@ -50,6 +58,18 @@ export interface MessageReactionRecord {
 export interface TurnAnchorRecord {
   turnId: string;
   localSessionId: string;
+  contextKey?: string;
+}
+
+export interface QueuedPromptRecord {
+  promptId: string;
+  localSessionId: string;
+  contextKey: string;
+  text: string;
+  localImagePaths?: string[];
+  messageId?: string;
+  replyMessageId?: string;
+  createdAt: string;
 }
 
 interface UserContextRow {
@@ -57,6 +77,14 @@ interface UserContextRow {
   default_agent: string;
   current_session_id: string | null;
   previous_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ChatContextRow {
+  context_key: string;
+  chat_type: "p2p" | "group";
+  last_activity_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +120,17 @@ interface MessageReactionRow {
   updated_at: string;
 }
 
+interface QueuedPromptRow {
+  prompt_id: string;
+  local_session_id: string;
+  context_key: string;
+  prompt_text: string;
+  local_image_paths_json: string;
+  message_id: string | null;
+  reply_message_id: string | null;
+  created_at: string;
+}
+
 export class StateStore {
   private readonly db: Database.Database;
 
@@ -105,6 +144,19 @@ export class StateStore {
     this.db.exec("UPDATE message_reactions SET status = 'pending' WHERE status = 'updating'");
     this.ensureUserContextColumns();
     this.ensureSessionColumns();
+    this.ensureTurnSnapshotColumns();
+    this.ensureChatContextColumns();
+    this.initializeContextSessionMappings();
+    this.reconcileDuplicateRemoteSessions();
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_remote_session_id_unique
+      ON sessions(remote_session_id)
+      WHERE remote_session_id IS NOT NULL
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_chat_contexts_activity
+      ON chat_contexts(last_activity_at)
+    `);
   }
 
   close(): void {
@@ -150,6 +202,143 @@ export class StateStore {
       .prepare("SELECT * FROM user_contexts ORDER BY created_at ASC")
       .all() as UserContextRow[];
     return rows.map(mapUserContext);
+  }
+
+  recordChatContext(contextKey: string, chatType: "p2p" | "group"): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO chat_contexts (context_key, chat_type, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(context_key) DO UPDATE SET
+        chat_type = excluded.chat_type,
+        updated_at = excluded.updated_at
+    `).run(contextKey, chatType, now, now);
+  }
+
+  listChatContexts(chatType?: "p2p" | "group"): ChatContextRecord[] {
+    const rows = chatType
+      ? this.db.prepare(`
+          SELECT * FROM chat_contexts
+          WHERE chat_type = ?
+          ORDER BY updated_at DESC
+        `).all(chatType) as ChatContextRow[]
+      : this.db.prepare("SELECT * FROM chat_contexts ORDER BY updated_at DESC").all() as ChatContextRow[];
+    return rows.map((row) => ({
+      contextKey: row.context_key,
+      chatType: row.chat_type,
+      lastActivityAt: row.last_activity_at ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  markChatActive(contextKey: string, activeAt = new Date()): void {
+    const timestamp = activeAt.toISOString();
+    this.db.prepare(`
+      UPDATE chat_contexts
+      SET last_activity_at = ?, updated_at = ?
+      WHERE context_key = ?
+    `).run(timestamp, timestamp, contextKey);
+  }
+
+  listRecentlyActiveChatContexts(since: Date): ChatContextRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM chat_contexts
+      WHERE last_activity_at >= ?
+      ORDER BY last_activity_at DESC
+    `).all(since.toISOString()) as ChatContextRow[];
+    return rows.map((row) => ({
+      contextKey: row.context_key,
+      chatType: row.chat_type,
+      lastActivityAt: row.last_activity_at ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  enqueuePrompt(input: {
+    promptId: string;
+    localSessionId: string;
+    contextKey: string;
+    text: string;
+    localImagePaths?: string[];
+    messageId?: string;
+    replyMessageId?: string;
+  }): QueuedPromptRecord {
+    const createdAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO queued_prompts (
+        prompt_id, local_session_id, context_key, prompt_text, local_image_paths_json,
+        message_id, reply_message_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.promptId,
+      input.localSessionId,
+      input.contextKey,
+      input.text,
+      JSON.stringify(input.localImagePaths ?? []),
+      input.messageId ?? null,
+      input.replyMessageId ?? null,
+      createdAt,
+    );
+    return {
+      ...input,
+      localImagePaths: input.localImagePaths?.length ? [...input.localImagePaths] : undefined,
+      createdAt,
+    };
+  }
+
+  listQueuedPrompts(localSessionId: string): QueuedPromptRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM queued_prompts
+      WHERE local_session_id = ?
+      ORDER BY created_at ASC, rowid ASC
+    `).all(localSessionId) as QueuedPromptRow[];
+    return rows.map(mapQueuedPrompt);
+  }
+
+  listQueuedPromptSessionIds(): string[] {
+    const rows = this.db.prepare(`
+      SELECT local_session_id, min(created_at) AS first_created_at, min(rowid) AS first_rowid
+      FROM queued_prompts
+      GROUP BY local_session_id
+      ORDER BY first_created_at ASC, first_rowid ASC
+    `).all() as Array<{ local_session_id: string }>;
+    return rows.map((row) => row.local_session_id);
+  }
+
+  countQueuedPrompts(localSessionId: string): number {
+    const row = this.db.prepare(`
+      SELECT count(*) AS count FROM queued_prompts WHERE local_session_id = ?
+    `).get(localSessionId) as { count: number };
+    return row.count;
+  }
+
+  takeNextQueuedPrompt(localSessionId: string): QueuedPromptRecord | undefined {
+    const take = this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT * FROM queued_prompts
+        WHERE local_session_id = ?
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT 1
+      `).get(localSessionId) as QueuedPromptRow | undefined;
+      if (!row) return undefined;
+      this.db.prepare("DELETE FROM queued_prompts WHERE prompt_id = ?").run(row.prompt_id);
+      return mapQueuedPrompt(row);
+    });
+    return take();
+  }
+
+  cancelQueuedPrompt(promptId: string, localSessionId: string): QueuedPromptRecord | undefined {
+    const cancel = this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT * FROM queued_prompts WHERE prompt_id = ? AND local_session_id = ?
+      `).get(promptId, localSessionId) as QueuedPromptRow | undefined;
+      if (!row) return undefined;
+      this.db.prepare("DELETE FROM queued_prompts WHERE prompt_id = ?").run(promptId);
+      return mapQueuedPrompt(row);
+    });
+    return cancel();
   }
 
   nextForkTitle(sourceTitle?: string): string {
@@ -229,6 +418,9 @@ export class StateStore {
 
   setCurrentSession(contextKey: string, localSessionId?: string): void {
     const now = new Date().toISOString();
+    if (localSessionId && this.getSession(localSessionId)) {
+      this.attachSessionToContext(contextKey, localSessionId);
+    }
     this.db
       .prepare(`
         UPDATE user_contexts
@@ -251,8 +443,8 @@ export class StateStore {
     status: SessionStatus;
   }): SessionRecord {
     const now = new Date().toISOString();
-    this.db
-      .prepare(
+    const create = this.db.transaction(() => {
+      this.db.prepare(
         `
         INSERT INTO sessions (
           local_session_id,
@@ -265,8 +457,7 @@ export class StateStore {
           updated_at
         ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
         `,
-      )
-      .run(
+      ).run(
         input.localSessionId,
         input.contextKey,
         input.agentName,
@@ -275,6 +466,12 @@ export class StateStore {
         now,
         now,
       );
+      this.db.prepare(`
+        INSERT INTO context_sessions (context_key, local_session_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+      `).run(input.contextKey, input.localSessionId, now, now);
+    });
+    create();
 
     return {
       ...input,
@@ -346,20 +543,21 @@ export class StateStore {
       );
   }
 
-  saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown): void {
+  saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown, contextKey?: string): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `
-        INSERT INTO turn_snapshots (turn_id, local_session_id, snapshot_json, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO turn_snapshots (turn_id, local_session_id, context_key, snapshot_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(turn_id) DO UPDATE SET
           local_session_id = excluded.local_session_id,
+          context_key = coalesce(excluded.context_key, turn_snapshots.context_key),
           snapshot_json = excluded.snapshot_json,
           updated_at = excluded.updated_at
         `,
       )
-      .run(turnId, localSessionId, JSON.stringify(snapshot), now);
+      .run(turnId, localSessionId, contextKey ?? null, JSON.stringify(snapshot), now);
   }
 
   getTurnSnapshot(turnId: string): unknown {
@@ -485,12 +683,39 @@ export class StateStore {
     return row ? mapSession(row) : undefined;
   }
 
+  getSessionForContext(localSessionId: string, contextKey: string): SessionRecord | undefined {
+    const linked = this.db.prepare(`
+      SELECT 1
+      FROM context_sessions
+      WHERE context_key = ? AND local_session_id = ?
+    `).get(contextKey, localSessionId);
+    if (!linked) return undefined;
+    const session = this.getSession(localSessionId);
+    return session ? { ...session, contextKey } : undefined;
+  }
+
+  attachSessionToContext(contextKey: string, localSessionId: string): void {
+    if (!this.getSession(localSessionId)) throw new Error(`找不到任务：${localSessionId}`);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO context_sessions (context_key, local_session_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(context_key, local_session_id) DO UPDATE SET updated_at = excluded.updated_at
+    `).run(contextKey, localSessionId, now, now);
+  }
+
   listSessions(contextKey: string): SessionRecord[] {
     const rows = this.db
-      .prepare("SELECT * FROM sessions WHERE context_key = ? ORDER BY created_at DESC")
+      .prepare(`
+        SELECT sessions.*
+        FROM context_sessions
+        JOIN sessions ON sessions.local_session_id = context_sessions.local_session_id
+        WHERE context_sessions.context_key = ?
+        ORDER BY context_sessions.created_at DESC
+      `)
       .all(contextKey) as SessionRow[];
 
-    return rows.map(mapSession);
+    return rows.map((row) => ({ ...mapSession(row), contextKey }));
   }
 
   listAllSessions(): SessionRecord[] {
@@ -506,7 +731,14 @@ export class StateStore {
     latestInboundAt?: string;
   } {
     const running = this.db
-      .prepare("SELECT COUNT(*) AS count FROM sessions WHERE status = 'running'")
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM sessions
+        WHERE status = 'running'
+           OR EXISTS (
+             SELECT 1 FROM queued_prompts WHERE queued_prompts.local_session_id = sessions.local_session_id
+           )
+      `)
       .get() as { count: number };
     const pending = this.db.prepare(`
       SELECT COUNT(*) AS count
@@ -531,9 +763,13 @@ export class StateStore {
     const row = contextKey
       ? this.db
           .prepare(`
-            SELECT * FROM sessions
-            WHERE remote_session_id = ? AND context_key = ? AND status != 'closed'
-            ORDER BY created_at ASC LIMIT 1
+            SELECT sessions.*
+            FROM sessions
+            JOIN context_sessions ON context_sessions.local_session_id = sessions.local_session_id
+            WHERE sessions.remote_session_id = ?
+              AND context_sessions.context_key = ?
+              AND sessions.status != 'closed'
+            LIMIT 1
           `)
           .get(remoteSessionId, contextKey) as SessionRow | undefined
       : this.db
@@ -543,7 +779,13 @@ export class StateStore {
             ORDER BY created_at ASC LIMIT 1
           `)
           .get(remoteSessionId) as SessionRow | undefined;
-    return row ? mapSession(row) : undefined;
+    return row ? { ...mapSession(row), ...(contextKey ? { contextKey } : {}) } : undefined;
+  }
+
+  getTurnContextKey(turnId: string): string | undefined {
+    const row = this.db.prepare("SELECT context_key FROM turn_snapshots WHERE turn_id = ?")
+      .get(turnId) as { context_key: string | null } | undefined;
+    return row?.context_key ?? undefined;
   }
 
   audit(contextKey: string, eventType: string, payload: unknown): void {
@@ -675,7 +917,11 @@ export class StateStore {
       LIMIT 1
     `).get(messageId) as { turn_id: string; local_session_id: string } | undefined;
     if (binding) {
-      return { turnId: binding.turn_id, localSessionId: binding.local_session_id };
+      return {
+        turnId: binding.turn_id,
+        localSessionId: binding.local_session_id,
+        contextKey: this.getTurnContextKey(binding.turn_id),
+      };
     }
 
     const reaction = this.db.prepare(`
@@ -685,7 +931,13 @@ export class StateStore {
       LIMIT 1
     `).get(messageId) as { turn_id: string; local_session_id: string } | undefined;
     if (reaction) {
-      return { turnId: reaction.turn_id, localSessionId: reaction.local_session_id };
+      const context = this.db.prepare("SELECT context_key FROM message_reactions WHERE message_id = ?")
+        .get(messageId) as { context_key: string } | undefined;
+      return {
+        turnId: reaction.turn_id,
+        localSessionId: reaction.local_session_id,
+        contextKey: context?.context_key ?? this.getTurnContextKey(reaction.turn_id),
+      };
     }
 
     const delivery = this.db.prepare(`
@@ -702,8 +954,111 @@ export class StateStore {
       LIMIT 1
     `).get(messageId, messageId) as { turn_id: string; local_session_id: string } | undefined;
     return delivery
-      ? { turnId: delivery.turn_id, localSessionId: delivery.local_session_id }
+      ? {
+          turnId: delivery.turn_id,
+          localSessionId: delivery.local_session_id,
+          contextKey: this.getTurnContextKey(delivery.turn_id),
+        }
       : undefined;
+  }
+
+  private initializeContextSessionMappings(): void {
+    this.db.exec(`
+      INSERT OR IGNORE INTO context_sessions (context_key, local_session_id, created_at, updated_at)
+      SELECT context_key, local_session_id, created_at, updated_at FROM sessions;
+
+      UPDATE turn_snapshots
+      SET context_key = (
+        SELECT sessions.context_key
+        FROM sessions
+        WHERE sessions.local_session_id = turn_snapshots.local_session_id
+      )
+      WHERE context_key IS NULL;
+    `);
+  }
+
+  private reconcileDuplicateRemoteSessions(): void {
+    const duplicateIds = this.db.prepare(`
+      SELECT remote_session_id
+      FROM sessions
+      WHERE remote_session_id IS NOT NULL
+      GROUP BY remote_session_id
+      HAVING count(*) > 1
+    `).all() as Array<{ remote_session_id: string }>;
+    if (duplicateIds.length === 0) return;
+
+    const reconcile = this.db.transaction(() => {
+      for (const { remote_session_id: remoteSessionId } of duplicateIds) {
+        const rows = this.db.prepare(`
+          SELECT * FROM sessions
+          WHERE remote_session_id = ?
+          ORDER BY created_at ASC
+        `).all(remoteSessionId) as SessionRow[];
+        const canonical = rows[0];
+        if (!canonical) continue;
+        const latest = [...rows].sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0] ?? canonical;
+
+        for (const duplicate of rows.slice(1)) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO context_sessions (context_key, local_session_id, created_at, updated_at)
+            SELECT context_key, ?, created_at, updated_at
+            FROM context_sessions
+            WHERE local_session_id = ?
+          `).run(canonical.local_session_id, duplicate.local_session_id);
+          this.db.prepare(`
+            UPDATE user_contexts
+            SET current_session_id = CASE WHEN current_session_id = ? THEN ? ELSE current_session_id END,
+                previous_session_id = CASE WHEN previous_session_id = ? THEN ? ELSE previous_session_id END
+          `).run(
+            duplicate.local_session_id,
+            canonical.local_session_id,
+            duplicate.local_session_id,
+            canonical.local_session_id,
+          );
+          this.db.prepare("UPDATE turn_snapshots SET local_session_id = ? WHERE local_session_id = ?")
+            .run(canonical.local_session_id, duplicate.local_session_id);
+          this.db.prepare("UPDATE message_reactions SET local_session_id = ? WHERE local_session_id = ?")
+            .run(canonical.local_session_id, duplicate.local_session_id);
+          this.db.prepare("UPDATE message_turn_bindings SET local_session_id = ? WHERE local_session_id = ?")
+            .run(canonical.local_session_id, duplicate.local_session_id);
+          this.db.prepare("UPDATE queued_prompts SET local_session_id = ? WHERE local_session_id = ?")
+            .run(canonical.local_session_id, duplicate.local_session_id);
+          this.db.prepare("DELETE FROM context_sessions WHERE local_session_id = ?")
+            .run(duplicate.local_session_id);
+          this.db.prepare("DELETE FROM sessions WHERE local_session_id = ?")
+            .run(duplicate.local_session_id);
+        }
+
+        this.db.prepare(`
+          UPDATE sessions
+          SET agent_name = ?, cwd = ?, acp_session_id = ?, runtime_kind = ?, title = ?, model = ?,
+              reasoning_effort = ?, permission_mode = ?, last_turn_id = ?, last_turn_status = ?,
+              status = ?, updated_at = ?
+          WHERE local_session_id = ?
+        `).run(
+          latest.agent_name,
+          latest.cwd,
+          latest.acp_session_id,
+          latest.runtime_kind,
+          latest.title,
+          latest.model,
+          latest.reasoning_effort,
+          latest.permission_mode,
+          latest.last_turn_id,
+          latest.last_turn_status,
+          latest.status,
+          latest.updated_at,
+          canonical.local_session_id,
+        );
+
+        this.db.prepare(`
+          UPDATE turn_snapshots
+          SET snapshot_json = json_set(snapshot_json, '$.sessionId', ?)
+          WHERE local_session_id = ? AND json_valid(snapshot_json)
+        `).run(canonical.local_session_id, canonical.local_session_id);
+      }
+    });
+    reconcile();
   }
 
   private ensureSessionColumns(): void {
@@ -733,6 +1088,24 @@ export class StateStore {
     );
     if (!existing.has("previous_session_id")) {
       this.db.exec("ALTER TABLE user_contexts ADD COLUMN previous_session_id TEXT");
+    }
+  }
+
+  private ensureTurnSnapshotColumns(): void {
+    const existing = new Set(
+      (this.db.pragma("table_info(turn_snapshots)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("context_key")) {
+      this.db.exec("ALTER TABLE turn_snapshots ADD COLUMN context_key TEXT");
+    }
+  }
+
+  private ensureChatContextColumns(): void {
+    const existing = new Set(
+      (this.db.pragma("table_info(chat_contexts)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("last_activity_at")) {
+      this.db.exec("ALTER TABLE chat_contexts ADD COLUMN last_activity_at TEXT");
     }
   }
 }
@@ -796,5 +1169,22 @@ function mapMessageReaction(row: MessageReactionRow): MessageReactionRecord {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapQueuedPrompt(row: QueuedPromptRow): QueuedPromptRecord {
+  const parsedPaths = JSON.parse(row.local_image_paths_json) as unknown;
+  const localImagePaths = Array.isArray(parsedPaths)
+    ? parsedPaths.filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    promptId: row.prompt_id,
+    localSessionId: row.local_session_id,
+    contextKey: row.context_key,
+    text: row.prompt_text,
+    localImagePaths: localImagePaths.length > 0 ? localImagePaths : undefined,
+    messageId: row.message_id ?? undefined,
+    replyMessageId: row.reply_message_id ?? undefined,
+    createdAt: row.created_at,
   };
 }

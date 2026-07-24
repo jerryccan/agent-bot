@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, test } from "vitest";
 import { StateStore } from "../../src/state/StateStore.js";
 
@@ -29,6 +30,55 @@ describe("StateStore runtime metadata", () => {
     expect(store.listUserContexts().map((context) => context.contextKey)).toEqual([
       "chat_id:c1",
       "console:local",
+    ]);
+  });
+
+  test("persists Feishu chat types independently from task contexts", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.recordChatContext("chat_id:private", "p2p");
+    store.recordChatContext("chat_id:group", "group");
+    store.markChatActive("chat_id:private", new Date("2026-07-20T12:00:00.000Z"));
+
+    expect(store.listChatContexts("p2p")).toMatchObject([
+      { contextKey: "chat_id:private", chatType: "p2p" },
+    ]);
+    expect(store.listChatContexts("group")).toMatchObject([
+      { contextKey: "chat_id:group", chatType: "group" },
+    ]);
+    expect(store.listRecentlyActiveChatContexts(new Date("2026-07-20T00:00:00.000Z"))).toMatchObject([
+      { contextKey: "chat_id:private", chatType: "p2p", lastActivityAt: "2026-07-20T12:00:00.000Z" },
+    ]);
+  });
+
+  test("adds activity tracking to an existing chat context table", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE chat_contexts (
+        context_key TEXT PRIMARY KEY,
+        chat_type TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO chat_contexts VALUES (
+        'chat_id:private', 'p2p',
+        '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z'
+      );
+    `);
+    legacy.close();
+
+    const store = new StateStore(dbPath);
+    stores.push(store);
+    store.markChatActive("chat_id:private", new Date("2026-07-20T12:00:00.000Z"));
+
+    expect(store.listRecentlyActiveChatContexts(new Date("2026-07-20T00:00:00.000Z"))).toMatchObject([
+      { contextKey: "chat_id:private", lastActivityAt: "2026-07-20T12:00:00.000Z" },
     ]);
   });
 
@@ -80,6 +130,60 @@ describe("StateStore runtime metadata", () => {
     expect(second.nextForkTitle("Inspect sessions")).toBe("Inspect sessions（分支 3）");
   });
 
+  test("persists queued prompts in FIFO order and cancels individual entries", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-queue-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.enqueuePrompt({
+      promptId: "prompt_1",
+      localSessionId: "session_1",
+      contextKey: "chat_id:c1",
+      text: "first",
+      messageId: "message_1",
+    });
+    first.enqueuePrompt({
+      promptId: "prompt_2",
+      localSessionId: "session_1",
+      contextKey: "chat_id:c1",
+      text: "second",
+      localImagePaths: ["D:\\images\\one.png"],
+      replyMessageId: "reply_2",
+    });
+    first.enqueuePrompt({
+      promptId: "prompt_other",
+      localSessionId: "session_2",
+      contextKey: "chat_id:c2",
+      text: "other",
+    });
+
+    expect(first.listQueuedPromptSessionIds()).toEqual(["session_1", "session_2"]);
+    expect(first.countQueuedPrompts("session_1")).toBe(2);
+    expect(first.listQueuedPrompts("session_1").map((prompt) => prompt.promptId)).toEqual([
+      "prompt_1",
+      "prompt_2",
+    ]);
+    expect(first.cancelQueuedPrompt("prompt_1", "session_2")).toBeUndefined();
+    expect(first.cancelQueuedPrompt("prompt_1", "session_1")).toMatchObject({
+      text: "first",
+      messageId: "message_1",
+    });
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.takeNextQueuedPrompt("session_1")).toMatchObject({
+      promptId: "prompt_2",
+      localImagePaths: ["D:\\images\\one.png"],
+      replyMessageId: "reply_2",
+    });
+    expect(second.countQueuedPrompts("session_1")).toBe(0);
+    expect(second.takeNextQueuedPrompt("session_1")).toBeUndefined();
+  });
+
   test("persists Codex thread settings", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);
@@ -114,6 +218,86 @@ describe("StateStore runtime metadata", () => {
     expect(store.findSessionByRemoteSessionId("thr_1", "chat_id:other")).toBeUndefined();
   });
 
+  test("migrates duplicate remote tasks into one canonical task with multiple context links", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE user_contexts (
+        context_key TEXT PRIMARY KEY,
+        default_agent TEXT NOT NULL,
+        current_session_id TEXT,
+        previous_session_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE sessions (
+        local_session_id TEXT PRIMARY KEY,
+        context_key TEXT NOT NULL,
+        agent_name TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        acp_session_id TEXT,
+        runtime_kind TEXT,
+        remote_session_id TEXT,
+        title TEXT,
+        model TEXT,
+        reasoning_effort TEXT,
+        permission_mode TEXT,
+        last_turn_id TEXT,
+        last_turn_status TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE turn_snapshots (
+        turn_id TEXT PRIMARY KEY,
+        local_session_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO sessions VALUES
+        ('canonical', 'chat_id:first', 'codex', 'D:\\work', NULL, 'codex', 'shared_remote', 'Shared', 'gpt', 'high', 'auto', 'turn_old', 'cancelled', 'ready', '2026-07-17T00:00:00.000Z', '2026-07-17T01:00:00.000Z'),
+        ('duplicate', 'chat_id:second', 'codex', 'D:\\work', NULL, 'codex', 'shared_remote', 'Shared', 'gpt', 'xhigh', 'auto', 'turn_new', 'failed', 'failed', '2026-07-18T00:00:00.000Z', '2026-07-18T01:00:00.000Z');
+      INSERT INTO user_contexts VALUES
+        ('chat_id:first', 'codex', 'canonical', NULL, '2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z'),
+        ('chat_id:second', 'codex', 'duplicate', NULL, '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z');
+      INSERT INTO turn_snapshots VALUES
+        ('turn_old', 'canonical', '{"sessionId":"canonical","turnId":"turn_old","status":"cancelled"}', '2026-07-17T01:00:00.000Z'),
+        ('turn_new', 'duplicate', '{"sessionId":"duplicate","turnId":"turn_new","status":"failed"}', '2026-07-18T01:00:00.000Z');
+    `);
+    legacy.close();
+
+    const store = new StateStore(dbPath);
+    stores.push(store);
+
+    expect(store.listAllSessions().filter((session) => session.remoteSessionId === "shared_remote"))
+      .toHaveLength(1);
+    expect(store.getSession("canonical")).toMatchObject({
+      remoteSessionId: "shared_remote",
+      lastTurnId: "turn_new",
+      lastTurnStatus: "failed",
+      status: "failed",
+      reasoningEffort: "xhigh",
+    });
+    expect(store.getSession("duplicate")).toBeUndefined();
+    expect(store.getUserContext("chat_id:second")?.currentSessionId).toBe("canonical");
+    expect(store.getSessionForContext("canonical", "chat_id:first")).toBeDefined();
+    expect(store.getSessionForContext("canonical", "chat_id:second")).toBeDefined();
+    expect(store.getTurnSnapshot("turn_new")).toMatchObject({ sessionId: "canonical", status: "failed" });
+    expect(store.getTurnContextKey("turn_old")).toBe("chat_id:first");
+    expect(store.getTurnContextKey("turn_new")).toBe("chat_id:second");
+
+    store.createSession({
+      localSessionId: "another",
+      contextKey: "chat_id:third",
+      agentName: "codex",
+      cwd: "D:\\work",
+      status: "ready",
+    });
+    expect(() => store.updateRuntimeSession("another", { remoteSessionId: "shared_remote" })).toThrow();
+  });
+
   test("reports global task and delivery activity for CLI management", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);
@@ -133,6 +317,19 @@ describe("StateStore runtime metadata", () => {
       cwd: process.cwd(),
       status: "ready",
     });
+    store.createSession({
+      localSessionId: "queued",
+      contextKey: "chat_id:c3",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.enqueuePrompt({
+      promptId: "queued_prompt",
+      localSessionId: "queued",
+      contextKey: "chat_id:c3",
+      text: "run after restart blocker",
+    });
     store.updateRuntimeSession("waiting-delivery", { lastTurnId: "turn_2", lastTurnStatus: "completed" });
     store.saveTurnSnapshot("turn_2", "waiting-delivery", {
       status: "completed",
@@ -145,7 +342,7 @@ describe("StateStore runtime metadata", () => {
       expect.arrayContaining(["running", "waiting-delivery"]),
     );
     expect(store.getServerActivityState()).toMatchObject({
-      runningSessions: 1,
+      runningSessions: 2,
       pendingFinalDeliveries: 1,
       latestInboundAt: expect.any(String),
     });

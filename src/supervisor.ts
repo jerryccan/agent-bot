@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isServerRunning } from "./cli/LocalControlClient.js";
+import { controlEndpoint } from "./cli/controlProtocol.js";
 import { loadConfig } from "./config/loadConfig.js";
 import {
   crashRestartDelayMs,
@@ -13,6 +15,7 @@ import { takeRestartReason } from "./supervision/restartReasonStore.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const sqlitePath = loadConfig().storage.sqlitePath;
+const serverEndpoint = controlEndpoint(sqlitePath);
 let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
 let stopping = false;
@@ -20,7 +23,13 @@ let consecutiveFailures = 0;
 const storedStartReason = takeRestartReason(sqlitePath);
 let nextStartReason = process.env.ACP_BOT_RESTART_REASON?.trim() || storedStartReason || "Supervisor 启动";
 
-function startChild(): void {
+async function startChild(): Promise<void> {
+  if (stopping || child) return;
+  if (await isServerRunning(serverEndpoint)) {
+    writeSupervisorLog("existing_server_detected", { endpoint: serverEndpoint });
+    process.exit(0);
+    return;
+  }
   const startedAt = Date.now();
   const restartReason = nextStartReason;
   nextStartReason = "Supervisor 重新拉起进程";
@@ -36,29 +45,42 @@ function startChild(): void {
     writeSupervisorLog("spawn_error", { error: error.message });
   });
   child.once("exit", (code, signal) => {
-    child = undefined;
-    const uptimeMs = Date.now() - startedAt;
-    writeSupervisorLog("exited", { code, signal, uptimeMs });
-    if (stopping) {
-      process.exit(0);
-      return;
-    }
-    if (code === STOP_EXIT_CODE) {
-      writeSupervisorLog("stopped_by_request", { code });
-      process.exit(0);
-      return;
-    }
-
-    const intentional = code === RESTART_EXIT_CODE;
-    nextStartReason = takeRestartReason(sqlitePath) ?? describeRestartReason(code, signal, intentional);
-    if (intentional || uptimeMs >= STABLE_UPTIME_MS) consecutiveFailures = 0;
-    else consecutiveFailures += 1;
-    const delayMs = intentional
-      ? INTENTIONAL_RESTART_DELAY_MS
-      : crashRestartDelayMs(consecutiveFailures);
-    writeSupervisorLog("restarting", { delayMs, consecutiveFailures, intentional });
-    restartTimer = setTimeout(startChild, delayMs);
+    void handleChildExit(code, signal, startedAt);
   });
+}
+
+async function handleChildExit(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  startedAt: number,
+): Promise<void> {
+  child = undefined;
+  const uptimeMs = Date.now() - startedAt;
+  writeSupervisorLog("exited", { code, signal, uptimeMs });
+  if (stopping) {
+    process.exit(0);
+    return;
+  }
+  if (code === STOP_EXIT_CODE) {
+    writeSupervisorLog("stopped_by_request", { code });
+    process.exit(0);
+    return;
+  }
+  if (await isServerRunning(serverEndpoint)) {
+    writeSupervisorLog("duplicate_supervisor_stopped", { endpoint: serverEndpoint });
+    process.exit(0);
+    return;
+  }
+
+  const intentional = code === RESTART_EXIT_CODE;
+  nextStartReason = takeRestartReason(sqlitePath) ?? describeRestartReason(code, signal, intentional);
+  if (intentional || uptimeMs >= STABLE_UPTIME_MS) consecutiveFailures = 0;
+  else consecutiveFailures += 1;
+  const delayMs = intentional
+    ? INTENTIONAL_RESTART_DELAY_MS
+    : crashRestartDelayMs(consecutiveFailures);
+  writeSupervisorLog("restarting", { delayMs, consecutiveFailures, intentional });
+  restartTimer = setTimeout(() => void startChild(), delayMs);
 }
 
 function stop(signal: NodeJS.Signals): void {
@@ -79,5 +101,8 @@ function writeSupervisorLog(event: string, data: Record<string, unknown>): void 
 process.on("SIGINT", () => stop("SIGINT"));
 process.on("SIGTERM", () => stop("SIGTERM"));
 const initialDelayMs = Number(process.env.ACP_BOT_START_DELAY_MS ?? 0);
-if (Number.isFinite(initialDelayMs) && initialDelayMs > 0) restartTimer = setTimeout(startChild, initialDelayMs);
-else startChild();
+if (Number.isFinite(initialDelayMs) && initialDelayMs > 0) {
+  restartTimer = setTimeout(() => void startChild(), initialDelayMs);
+} else {
+  void startChild();
+}

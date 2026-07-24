@@ -4,18 +4,33 @@ export interface ServerActivityState {
   latestInboundAt?: string;
 }
 
+export type SafeRestartPhase = "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting";
+
+export interface SafeRestartStatus {
+  scheduleId: number;
+  reason: string;
+  phase: SafeRestartPhase;
+  activity: ServerActivityState;
+  remainingMs?: number;
+}
+
 export interface SafeRestartSchedulerOptions {
   readActivity(): ServerActivityState;
   onReady(reason: string): void | Promise<void>;
+  onStatus?(status: SafeRestartStatus): void | Promise<void>;
+  onStatusError?(error: unknown): void;
   quietPeriodMs?: number;
   pollIntervalMs?: number;
 }
 
 export class SafeRestartScheduler {
   private timer?: NodeJS.Timeout;
+  private polling?: Promise<void>;
+  private pollAgain = false;
   private reason?: string;
   private idleSince?: number;
   private idleInboundAt?: string;
+  private scheduleId = 0;
 
   constructor(private readonly options: SafeRestartSchedulerOptions) {}
 
@@ -29,13 +44,14 @@ export class SafeRestartScheduler {
 
   schedule(reason: string): boolean {
     const newlyScheduled = !this.reason;
+    if (newlyScheduled) this.scheduleId += 1;
     this.reason = reason;
     this.idleSince = undefined;
     this.idleInboundAt = undefined;
     if (!this.timer) {
-      this.timer = setInterval(() => void this.poll(), this.options.pollIntervalMs ?? 2_000);
-      void this.poll();
+      this.timer = setInterval(() => this.requestPoll(), this.options.pollIntervalMs ?? 1_000);
     }
+    this.requestPoll();
     return newlyScheduled;
   }
 
@@ -54,15 +70,27 @@ export class SafeRestartScheduler {
     if (state.runningSessions > 0 || state.pendingFinalDeliveries > 0) {
       this.idleSince = undefined;
       this.idleInboundAt = undefined;
+      await this.emitStatus({
+        scheduleId: this.scheduleId,
+        reason,
+        phase: state.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
+        activity: state,
+      });
       return;
     }
+    const quietPeriodMs = this.options.quietPeriodMs ?? 15_000;
     const latestInboundAt = state.latestInboundAt ?? "";
     if (this.idleSince === undefined || this.idleInboundAt !== latestInboundAt) {
       this.idleSince = Date.now();
       this.idleInboundAt = latestInboundAt;
+      await this.emitStatus({ scheduleId: this.scheduleId, reason, phase: "countdown", activity: state, remainingMs: quietPeriodMs });
       return;
     }
-    if (Date.now() - this.idleSince < (this.options.quietPeriodMs ?? 15_000)) return;
+    const remainingMs = Math.max(0, quietPeriodMs - (Date.now() - this.idleSince));
+    if (remainingMs > 0) {
+      await this.emitStatus({ scheduleId: this.scheduleId, reason, phase: "countdown", activity: state, remainingMs });
+      return;
+    }
     const confirmed = this.options.readActivity();
     if (
       confirmed.runningSessions > 0
@@ -71,9 +99,51 @@ export class SafeRestartScheduler {
     ) {
       this.idleSince = undefined;
       this.idleInboundAt = undefined;
+      if (confirmed.runningSessions > 0 || confirmed.pendingFinalDeliveries > 0) {
+        await this.emitStatus({
+          scheduleId: this.scheduleId,
+          reason,
+          phase: confirmed.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
+          activity: confirmed,
+        });
+      } else {
+        await this.emitStatus({
+          scheduleId: this.scheduleId,
+          reason,
+          phase: "countdown",
+          activity: confirmed,
+          remainingMs: quietPeriodMs,
+        });
+      }
       return;
     }
+    await this.emitStatus({ scheduleId: this.scheduleId, reason, phase: "restarting", activity: confirmed, remainingMs: 0 });
     this.cancel();
     await this.options.onReady(reason);
+  }
+
+  private requestPoll(): void {
+    if (this.polling) {
+      this.pollAgain = true;
+      return;
+    }
+    this.polling = this.drainPolls().finally(() => {
+      this.polling = undefined;
+      if (this.pollAgain && this.reason) this.requestPoll();
+    });
+  }
+
+  private async drainPolls(): Promise<void> {
+    do {
+      this.pollAgain = false;
+      await this.poll();
+    } while (this.pollAgain && this.reason);
+  }
+
+  private async emitStatus(status: SafeRestartStatus): Promise<void> {
+    if (!this.options.onStatus) return;
+    await Promise.resolve(this.options.onStatus(status)).catch((error: unknown) => {
+      this.options.onStatusError?.(error);
+    });
   }
 }

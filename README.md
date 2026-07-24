@@ -81,9 +81,10 @@ acp-bot task status 2
 acp-bot task status 019f... --json
 acp-bot task stop 019f...
 acp-bot task title 2 "新的任务标题"
+acp-bot task prompt 2 "继续运行测试并汇报结果"
 ```
 
-序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止和改标题通过运行中 worker 的本地控制端点执行，以保证 Interrupt 和运行时状态一致。
+序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止、改标题和发送 Prompt 通过运行中 worker 的本地控制端点执行。`task prompt` 不会切换任何群聊的当前任务；机器人会先把 Prompt 文本发送到该任务最近一次使用的群聊、话题或私聊，发送成功后再提交给任务，思考卡片和最终回答也继续发送到同一位置。
 
 填入 `.env`：
 
@@ -147,6 +148,7 @@ defaults:
 - 直接发文字时，若没有当前任务会自动创建 Codex thread
 - 可以直接发送单张图片，或发送同一条富文本中的文字和图片；图片会缓存到 SQLite 同目录下的 `inbound-images` 并作为 Codex `localImage` 输入，纯图片默认按“请分析这张图片”处理。ACP Agent 不支持图片输入时会明确报错，不会静默丢图
 - Codex 运行中继续发文字，会通过 steering 追加到当前 turn；若恰好完成，则自动排为下一次请求
+- `/nosteer <prompt>` 会跳过 steering，将 Prompt 持久排到当前任务的后续轮次；紧凑队列卡可逐项 Cancel，多个 Prompt 按 FIFO 顺序执行
 - 每个 turn 只有一张进度卡，普通更新最多每 2 秒一次，关键状态最短间隔 500ms
 - 当前工具直接展示；命令行工具在执行中增量显示最近输出，并按卡片更新节流合并刷新；成功工具折叠；失败工具展开；文件变更折叠汇总
 - 完成后先把进度卡更新为终态，再单独发送最终 Markdown；长代码块会安全分片
@@ -157,9 +159,11 @@ defaults:
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
 - `/new [title] [--dir <cwd>]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，未指定目录时继承当前任务的项目或 Projectless 形态
+- `/newgroup [title]`：创建名为 `[agent name] title` 的私有飞书群并邀请命令发送者，不立即创建任务；省略标题时使用 `yy-mm-dd hh:mm` 本地时间。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
 - `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务的最新已结束轮次创建分支任务，并立即切换到新分支；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
 - `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
 - `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑
+- `/nosteer <prompt>`：不修改当前执行中的 turn，将 Prompt 排入当前任务的持久队列；队列卡展示全部待执行项并支持逐项 Cancel
 - `! <命令>`：在当前任务的工作目录直接执行本地命令；没有当前任务时使用默认工作目录
 - `/sessions [关键词]`：用交互卡片列出同一 `CODEX_HOME` 下的 Codex 任务，默认显示 5 条，可通过 `更多任务` 每次继续展开 5 条；每个任务的正文末尾都有链接式文字操作，点击 `Status` 查看详情，当前任务不显示 `Switch`，其他空闲任务可点击 `Switch` 快速切换，外部运行中的任务可点击 `Stop` 发送 Interrupt
 - `/switch [序号或 Codex 任务 ID]`：不带参数切回上一个任务；也可按最近一次 `/sessions` 的序号或任务 ID 切换空闲任务
@@ -182,7 +186,7 @@ defaults:
 
 ## 持久化与恢复
 
-SQLite 默认位于 `./data/acp-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、进度快照和最终消息投递账本。
+SQLite 默认位于 `./data/acp-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、排队 Prompt、进度快照和最终消息投递账本。
 
 进程重启时会恢复持久化的活动 turn，并通过 `thread/read` 与 Codex 的真实状态校准。运行中收到新的 turn ID、线程终态通知或控制请求失败时也会重新校准；投递账本会阻止已经成功发送的最终回复被重复发送。App Server 请求均有有限超时，不会永久占住飞书消息队列。
 

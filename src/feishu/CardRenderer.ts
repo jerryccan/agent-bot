@@ -25,6 +25,26 @@ export interface StartupStatusView {
   };
 }
 
+export interface SafeRestartStatusView {
+  reason: string;
+  phase: "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting";
+  remainingMs?: number;
+  pendingFinalDeliveries: number;
+  waitingTasks: Array<{
+    id: string;
+    title?: string;
+  }>;
+}
+
+export interface PromptQueueCardView {
+  sessionId: string;
+  contextKey: string;
+  prompts: Array<{
+    id: string;
+    text: string;
+  }>;
+}
+
 export interface CardSection {
   title?: string;
   lines: string[];
@@ -44,29 +64,125 @@ export interface TaskListCardEntry {
 }
 
 export class CardRenderer {
-  renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
+  renderPromptQueue(view: PromptQueueCardView): Record<string, unknown> {
+    const elements = view.prompts.length === 0
+      ? [markdown("队列为空")]
+      : view.prompts.map((prompt, index) => ({
+          tag: "column_set",
+          flex_mode: "stretch",
+          horizontal_spacing: "8px",
+          vertical_align: "center",
+          columns: [
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              vertical_align: "center",
+              elements: [markdown(
+                escapeCardHtml(
+                  `${index + 1}. ${truncateText(prompt.text.replace(/\s+/g, " ").trim(), 180)}`,
+                ),
+              )],
+            },
+            {
+              tag: "column",
+              width: "auto",
+              vertical_align: "center",
+              elements: [{
+                tag: "button",
+                text: { tag: "plain_text", content: "Cancel" },
+                type: "default",
+                size: "tiny",
+                behaviors: [{
+                  type: "callback",
+                  value: {
+                    action: "queued_prompt_cancel",
+                    promptId: prompt.id,
+                    sessionId: view.sessionId,
+                    contextKey: view.contextKey,
+                  },
+                }],
+              }],
+            },
+          ],
+        }));
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        width_mode: "fill",
+      },
+      header: {
+        template: "grey",
+        title: { tag: "plain_text", content: `排队 Prompt · ${view.prompts.length}` },
+        padding: "8px 12px 8px 12px",
+      },
+      body: {
+        direction: "vertical",
+        vertical_spacing: "4px",
+        padding: "8px 12px 8px 12px",
+        elements,
+      },
+    };
+  }
+
+  renderSafeRestartStatus(view: SafeRestartStatusView): Record<string, unknown> {
+    const countdown = view.phase === "countdown"
+      ? `${Math.max(0, Math.ceil((view.remainingMs ?? 0) / 1_000))}s`
+      : view.phase === "restarting"
+        ? "0s"
+        : "等待阻塞项清空后开始";
+    const status = view.phase === "waiting_tasks"
+      ? "🟠 等待任务完成"
+      : view.phase === "waiting_delivery"
+        ? "🟠 等待最终结果投递"
+        : view.phase === "countdown"
+          ? "🟡 空闲确认中"
+          : "🔄 正在重启";
     const lines = [
-      "**状态**：🟢 在线",
-      `**启动时间**：${formatStartupTime(view.startedAt)}`,
-      `**重启原因**：${inlineCode(view.restartReason)}`,
-      `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
-      view.workspaceKind === "projectless"
-        ? "**任务范围**：未指定项目"
-        : `**工作目录**：${inlineCode(view.cwd)}`,
-      `**当前模型**：${inlineCode(view.currentTask?.model ?? "默认")}`,
-      `**思考强度**：${inlineCode(view.currentTask?.reasoningEffort ?? "自动")}`,
+      `**状态**：${status}`,
+      `**重启原因**：${inlineCode(view.reason)}`,
+      `**重启倒计时**：${countdown}`,
+      `**待投递结果**：${view.pendingFinalDeliveries} 条`,
     ];
-    if (view.currentTask) {
-      lines.push(
-        `**当前任务**：${inlineCode(view.currentTask.title ?? view.currentTask.id)}`,
-        `**任务 ID**：${inlineCode(view.currentTask.id)}`,
-        `**任务 Agent**：${inlineCode(view.currentTask.agentName)}`,
-        `**任务状态**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)}`,
-      );
+    const elements: Record<string, unknown>[] = [markdown(lines.join("\n"))];
+    if (view.waitingTasks.length > 0) {
+      const visible = view.waitingTasks.slice(0, 10);
+      const taskLines = visible.map((task, index) =>
+        `${index + 1}. ${task.title ? `${inlineCode(truncateText(task.title, 80))} · ` : ""}${inlineCode(task.id)}`);
+      if (view.waitingTasks.length > visible.length) {
+        taskLines.push(`… 还有 ${view.waitingTasks.length - visible.length} 个任务`);
+      }
+      elements.push({ tag: "hr" }, markdown(`**当前等待的任务（${view.waitingTasks.length}）**\n${taskLines.join("\n")}`));
     } else {
-      lines.push("**当前任务**：无，下一条普通消息会创建新任务");
+      elements.push({ tag: "hr" }, markdown("**当前等待的任务**：无"));
     }
-    lines.push("发送普通消息继续当前任务；发送 `/new` 创建新任务；发送 `/status` 查看详情。");
+    return sectionCard("acp-bot 安全重启", elements, view.phase === "restarting" ? "blue" : "orange");
+  }
+
+  renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
+    const workspaceLine = view.workspaceKind === "projectless"
+      ? "**任务范围**：未指定项目"
+      : `**工作目录**：${inlineCode(view.cwd)}`;
+    const lines = view.currentTask
+      ? [
+        `**当前任务**：${inlineCode(view.currentTask.title ?? view.currentTask.id)}`,
+        workspaceLine,
+        `**模型 / 思考强度**：${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")}`,
+        `**任务状态 / Agent**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)} / ${inlineCode(view.currentTask.agentName)}`,
+        `**任务 ID**：${inlineCode(view.currentTask.id)}`,
+      ]
+      : [
+        "**当前任务**：无，下一条普通消息会创建新任务",
+        workspaceLine,
+        `**模型 / 思考强度**：${inlineCode("默认")} / ${inlineCode("自动")}`,
+        `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
+      ];
+    lines.push(
+      `**服务状态 / 启动时间**：🟢 在线 / ${formatStartupTime(view.startedAt)}`,
+      `**重启原因**：${inlineCode(view.restartReason)}`,
+      "发送普通消息继续当前任务；发送 `/new` 创建新任务；发送 `/status` 查看详情。",
+    );
     return sectionCard("acp-bot 已启动", [markdown(lines.join("\n"))], "green");
   }
 
@@ -101,18 +217,22 @@ export class CardRenderer {
     }
     const page = Math.max(0, Math.min(Math.trunc(requestedPage), pages.length - 1));
     const actions: TaskListCardAction[] = [
+      ...(pages.length > 1 ? [{
+        text: "最新页",
+        value: { action: "activity_history", turnId: state.turnId, page: "latest" },
+      }] : []),
       ...(page > 0 ? [{
-        text: "← 上一页",
+        text: "上一页",
         value: { action: "activity_history", turnId: state.turnId, page: String(page - 1) },
       }] : []),
-      ...(page < pages.length - 1 ? [{
-        text: "下一页 →",
+      ...(page < pages.length - 2 ? [{
+        text: "下一页",
         value: { action: "activity_history", turnId: state.turnId, page: String(page + 1) },
       }] : []),
     ];
-    const elements = (pages[page] ?? [])
-      .flatMap((activity) => renderActivity(activity, state.projectCwd, true));
-    if (actions.length > 0) elements.push({ tag: "hr" }, taskActionRow(actions));
+    const elements: Record<string, unknown>[] = [];
+    if (actions.length > 0) elements.push(taskActionRow(actions), { tag: "hr" });
+    elements.push(...renderActivities(pages[page] ?? [], state.projectCwd, true));
     return sectionCard(`思考活动历史 · ${page + 1}/${pages.length}`, elements.length > 0 ? elements : [markdown("无")]);
   }
 
@@ -228,6 +348,7 @@ export class CardRenderer {
       schema: "2.0",
       config: {
         update_multi: true,
+        width_mode: "fill",
       },
       header: {
         template: "blue",
@@ -285,11 +406,9 @@ function renderTurnElements(
   const pages = activityPages(allActivities);
   const visibleActivities = pages.at(-1) ?? [];
   if (state.plan.length > 0) elements.push(planPanel(state.plan));
-  if (state.activitiesTruncated || pages.length > 1) elements.push(markdown("…"));
-  elements.push(...visibleActivities.flatMap((activity) => renderActivity(activity, state.projectCwd)));
   if (pages.length > 1) {
     elements.push(taskActionRow([{
-      text: `查看较早活动（共 ${pages.length} 页）`,
+      text: `查看历史思考（共 ${pages.length} 页）`,
       value: {
         action: "activity_history",
         turnId: state.turnId,
@@ -297,6 +416,8 @@ function renderTurnElements(
       },
     }]));
   }
+  if (state.activitiesTruncated || pages.length > 1) elements.push(markdown("…"));
+  elements.push(...renderActivities(visibleActivities, state.projectCwd));
   if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
 
   if (state.approval) {
@@ -378,6 +499,14 @@ function renderActivity(
   projectCwd?: string,
   fullAssistantText = false,
 ): Record<string, unknown>[] {
+  if (activity.kind === "user") {
+    const text = activity.text.trim();
+    if (!text) return [];
+    const chunks = fullAssistantText
+      ? splitText(text, ACTIVITY_TEXT_CHUNK)
+      : [truncateText(text, MAX_LIVE_ASSISTANT_TEXT)];
+    return chunks.map((chunk, index) => markdown(index === 0 ? `**用户追加**\n${chunk}` : chunk));
+  }
   if (activity.kind === "assistant" || (activity.kind === "reasoning" && activity.id.startsWith("commentary:"))) {
     const text = activity.text.trim();
     if (!text) return [];
@@ -386,13 +515,54 @@ function renderActivity(
       : [markdown(truncateText(text, MAX_LIVE_ASSISTANT_TEXT))];
   }
   if (activity.kind === "reasoning") {
-    const text = activity.text.trim();
-    if (!text) return [];
-    const content = truncateText(text, 2_000);
-    const plainReasoning = removeMarkdownBold(content);
-    return [markdown(`> 💭 ${plainReasoning.replaceAll("\n", "\n> ")}`)];
+    return renderReasoningGroup([activity]);
   }
   return [toolPanel(activity.tool, projectCwd)];
+}
+
+function renderActivities(
+  activities: TurnActivity[],
+  projectCwd?: string,
+  fullAssistantText = false,
+): Record<string, unknown>[] {
+  const elements: Record<string, unknown>[] = [];
+  let reasoningGroup: Array<Extract<TurnActivity, { kind: "reasoning" }>> = [];
+  const flushReasoning = (): void => {
+    if (reasoningGroup.length === 0) return;
+    elements.push(...renderReasoningGroup(reasoningGroup));
+    reasoningGroup = [];
+  };
+
+  for (const activity of activities) {
+    if (isRawReasoning(activity)) {
+      reasoningGroup.push(activity);
+      continue;
+    }
+    flushReasoning();
+    elements.push(...renderActivity(activity, projectCwd, fullAssistantText));
+  }
+  flushReasoning();
+  return elements;
+}
+
+function renderReasoningGroup(
+  activities: Array<Extract<TurnActivity, { kind: "reasoning" }>>,
+): Record<string, unknown>[] {
+  const sections = activities
+    .map((activity) => activity.text.trim())
+    .filter(Boolean)
+    .map((text) => removeMarkdownBold(truncateText(text, 2_000)));
+  if (sections.length === 0) return [];
+  const quotedReasoning = sections
+    .map((text) => `💭 ${text.replaceAll("\n", "\n> ")}`)
+    .join("\n> ");
+  return [markdown(`> ${quotedReasoning}`)];
+}
+
+function isRawReasoning(
+  activity: TurnActivity,
+): activity is Extract<TurnActivity, { kind: "reasoning" }> {
+  return activity.kind === "reasoning" && !activity.id.startsWith("commentary:");
 }
 
 const ACTIVITIES_PER_PAGE = 40;
@@ -712,6 +882,7 @@ function turnCard(
     schema: "2.0",
     config: {
       update_multi: true,
+      width_mode: "fill",
     },
     header: {
       template,
@@ -743,6 +914,7 @@ function sectionCard(
     schema: "2.0",
     config: {
       update_multi: true,
+      width_mode: "fill",
     },
     header: {
       template,

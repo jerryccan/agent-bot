@@ -20,6 +20,8 @@ export class CommandRouter {
         return { type: "agent" };
       case "new":
         return parseNewCommand(args);
+      case "newgroup":
+        return parseNewGroupCommand(args);
       case "fork":
         if (args.length > 1) throw new Error("/fork 只接受一个可选的任务序号或任务 ID。");
         return args[0] ? { type: "fork", sessionId: args[0] } : { type: "fork" };
@@ -28,6 +30,11 @@ export class CommandRouter {
         return { type: "title", title: args.join(" ") };
       case "ask":
         return { type: "ask", text: trimmed.slice(rawCommand.length).trim() };
+      case "nosteer": {
+        const prompt = trimmed.slice(rawCommand.length).trim();
+        if (!prompt) throw new Error("请输入要排队的 Prompt，例如：/nosteer 完成后再运行全部测试。");
+        return { type: "nosteer", text: prompt };
+      }
       case "sessions":
         return { type: "sessions", searchTerm: trimmed.slice(rawCommand.length).trim() || undefined };
       case "switch":
@@ -108,6 +115,16 @@ function parseNewCommand(args: string[]): Extract<Command, { type: "new" }> {
     type: "new",
     title: titleParts.join(" ").trim() || undefined,
     cwd,
+  };
+}
+
+function parseNewGroupCommand(args: string[]): Extract<Command, { type: "newgroup" }> {
+  if (args.includes("--dir")) {
+    throw new Error("/newgroup 只创建飞书群，不支持 --dir；请在新群中使用 /new --dir <cwd> 创建任务。");
+  }
+  return {
+    type: "newgroup",
+    title: args.join(" ").trim() || undefined,
   };
 }
 

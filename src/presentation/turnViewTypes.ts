@@ -18,6 +18,7 @@ export interface FileSummary {
 
 export type TurnActivity =
   | { kind: "assistant"; id: string; text: string }
+  | { kind: "user"; id: string; text: string }
   | { kind: "reasoning"; id: string; text: string }
   | { kind: "tool"; id: string; tool: ToolState };
 

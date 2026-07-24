@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
+import { detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import { CardRenderer } from "../feishu/CardRenderer.js";
-import { isThreadContextKey } from "../feishu/contextKey.js";
 import type { FeishuOutbound } from "../feishu/types.js";
 import type { SessionRecord, StateStore } from "../state/StateStore.js";
 
@@ -26,18 +26,25 @@ export class StartupNotifier {
   ) {}
 
   async notify(startedAt: Date, restartReason: string): Promise<void> {
-    let contexts;
+    let targets;
     try {
-      contexts = this.store.listUserContexts().filter((context) =>
-        context.contextKey.startsWith("chat_id:") && !isThreadContextKey(context.contextKey),
-      );
+      const activeGroupSince = new Date(startedAt.getTime() - 3 * 60 * 1_000);
+      const chats = [
+        ...this.store.listChatContexts("p2p"),
+        ...this.store.listRecentlyActiveChatContexts(activeGroupSince)
+          .filter((chat) => chat.chatType === "group"),
+      ];
+      targets = chats.map((chat) => ({
+        contextKey: chat.contextKey,
+        context: this.store.getUserContext(chat.contextKey),
+      }));
     } catch (error) {
       this.logger.warn({ error }, "Failed to load startup notification targets.");
       return;
     }
 
-    await Promise.all(contexts.map(async (context) => {
-      let session = context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
+    await Promise.all(targets.map(async ({ contextKey, context }) => {
+      let session = context?.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
       if (session && this.metadataHydrator) {
         try {
           session = await this.metadataHydrator.hydrate(session);
@@ -48,13 +55,17 @@ export class StartupNotifier {
           );
         }
       }
+      const cwd = session?.cwd ?? this.options.cwd;
+      const workspaceKind = session
+        ? (detectProjectlessWorkspace(session.cwd) ? "projectless" : "project")
+        : this.options.workspaceKind;
       const card = this.renderer.renderStartupStatus({
         startedAt,
         restartReason,
         defaultAgentName: this.options.defaultAgentName,
         defaultAgentTitle: this.options.defaultAgentTitle,
-        cwd: this.options.cwd,
-        workspaceKind: this.options.workspaceKind,
+        cwd,
+        workspaceKind,
         currentTask: session
           ? {
               id: session.remoteSessionId ?? session.localSessionId,
@@ -68,10 +79,10 @@ export class StartupNotifier {
           : undefined,
       });
       try {
-        await this.outbound.sendInteractiveCard(context.contextKey, card);
+        await this.outbound.sendInteractiveCard(contextKey, card);
       } catch (error) {
         this.logger.warn(
-          { error, contextKey: context.contextKey },
+          { error, contextKey },
           "Failed to send startup status notification.",
         );
       }

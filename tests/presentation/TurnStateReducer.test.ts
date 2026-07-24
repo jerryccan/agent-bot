@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { createTurnViewState, reduceTurnEvent } from "../../src/presentation/TurnStateReducer.js";
+import {
+  appendSteerMessage,
+  createTurnViewState,
+  reduceTurnEvent,
+} from "../../src/presentation/TurnStateReducer.js";
 import type { AgentEvent, ToolState } from "../../src/runtime/types.js";
 
 const tool = (id: string, title: string, status: ToolState["status"], extra: Partial<ToolState> = {}): ToolState => ({
@@ -183,6 +187,26 @@ describe("TurnStateReducer", () => {
       id: "t1",
       tool: { status: "completed", output: "a.ts" },
     });
+  });
+
+  test("inserts steer messages into the activity timeline once", () => {
+    let state = createTurnViewState("s1", "turn_1", 1_000);
+    state = reduceTurnEvent(state, event("progress", {
+      activityId: "reasoning:before",
+      text: "先检查代码",
+    }));
+    state = appendSteerMessage(state, "steer:m1", "  同时补充测试  ");
+    state = reduceTurnEvent(state, event("progress", {
+      activityId: "reasoning:after",
+      text: "继续处理",
+    }));
+    state = appendSteerMessage(state, "steer:m1", "同时补充测试");
+
+    expect(state.activities).toEqual([
+      { kind: "reasoning", id: "reasoning:before", text: "先检查代码" },
+      { kind: "user", id: "steer:m1", text: "同时补充测试" },
+      { kind: "reasoning", id: "reasoning:after", text: "继续处理" },
+    ]);
   });
 
   test("retains activity history beyond the 40-item display page", () => {

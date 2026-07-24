@@ -3,9 +3,11 @@ import type { PermissionMode } from "../runtime/types.js";
 export type Command =
   | { type: "shell"; command: string }
   | { type: "new"; title?: string; cwd?: string }
+  | { type: "newgroup"; title?: string }
   | { type: "fork"; sessionId?: string }
   | { type: "title"; title: string }
   | { type: "ask"; text: string }
+  | { type: "nosteer"; text: string }
   | { type: "sessions"; searchTerm?: string }
   | { type: "switch"; sessionId?: string }
   | { type: "agent"; agent?: string }

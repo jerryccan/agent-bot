@@ -5,7 +5,12 @@ import type { AppConfig } from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
 import { baseChatContextKey, isThreadContextKey } from "../feishu/contextKey.js";
-import type { CardAction, IncomingMessage, MessageReplyTarget } from "../feishu/types.js";
+import type {
+  CardAction,
+  ChatUpdatedEvent,
+  IncomingMessage,
+  MessageReplyTarget,
+} from "../feishu/types.js";
 import { CardRenderer, type CardSection, type TaskListCardAction } from "../feishu/CardRenderer.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
@@ -24,6 +29,7 @@ import {
   StateStore,
   type MessageReactionRecord,
   type MessageReactionStatus,
+  type QueuedPromptRecord,
   type SessionRecord,
 } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
@@ -45,13 +51,6 @@ const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
 const MESSAGE_CANCELLED_REACTION = "CrossMark";
 const SESSION_PAGE_SIZE = 5;
-
-interface QueuedPrompt {
-  text: string;
-  localImagePaths?: string[];
-  messageId?: string;
-  replyTarget?: MessageReplyTarget;
-}
 
 interface SessionsCardOptions {
   updateMessageId?: string;
@@ -76,7 +75,9 @@ export class ProxySessionController {
   private readonly cardRenderer = new CardRenderer();
   private readonly messageQueues = new Map<string, Promise<void>>();
   private readonly sessionLoads = new Map<string, Promise<LoadedSession>>();
-  private readonly queuedPrompts = new Map<string, QueuedPrompt[]>();
+  private readonly queuedPromptStarts = new Map<string, Promise<void>>();
+  private readonly queuedPromptCards = new Map<string, Map<string, string>>();
+  private readonly queuedPromptCardWrites = new Map<string, Promise<void>>();
   private readonly lastSessionListings = new Map<string, string[]>();
   private readonly threadInitializations = new Map<string, Promise<void>>();
   private readonly unsubscribe: Array<() => void> = [];
@@ -111,12 +112,16 @@ export class ProxySessionController {
       );
     }
     this.restorePersistedSessionRoutes();
+    this.restorePersistedQueuedPrompts();
     void this.restorePersistedMessageReactions().catch((error: unknown) => {
       this.logger.warn({ error }, "Failed to restore persisted message reaction statuses.");
     });
   }
 
   async onMessage(message: IncomingMessage): Promise<void> {
+    if (message.chatId && message.chatType) {
+      this.store.recordChatContext(baseChatContextKey(message.contextKey), message.chatType);
+    }
     if (!this.store.claimInboundEvent(message.messageId, "message")) return;
     try {
       const reactionId = await this.outbound.addReaction(
@@ -142,6 +147,9 @@ export class ProxySessionController {
       text: message.text,
       ...(imageCount > 0 ? { imageCount } : {}),
     });
+    if (imageCount > 0 && message.chatId && message.chatType) {
+      this.store.markChatActive(baseChatContextKey(message.contextKey));
+    }
     let localImagePaths: string[] | undefined;
     if (imageCount > 0) {
       try {
@@ -171,13 +179,30 @@ export class ProxySessionController {
       );
       return;
     }
+    if (
+      message.chatId
+      && message.chatType
+      && (
+        command.type === "shell"
+        || (command.type === "prompt" && !message.text.trimStart().startsWith("/"))
+      )
+    ) {
+      this.store.markChatActive(baseChatContextKey(message.contextKey));
+    }
 
     // Operational and read-only commands must remain available even if a prompt operation is slow.
     if (isQueueIndependentCommand(command)) {
       await this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
           await this.ensureThreadFork(message);
-          await this.execute(message.contextKey, command, message.messageId, replyTarget, localImagePaths);
+          await this.execute(
+            message.contextKey,
+            command,
+            message.messageId,
+            replyTarget,
+            localImagePaths,
+            message.userId,
+          );
           if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
         } catch (error) {
           await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
@@ -192,7 +217,14 @@ export class ProxySessionController {
       this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
           await this.ensureThreadFork(message);
-          await this.execute(message.contextKey, command, message.messageId, replyTarget, localImagePaths);
+          await this.execute(
+            message.contextKey,
+            command,
+            message.messageId,
+            replyTarget,
+            localImagePaths,
+            message.userId,
+          );
           if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
         } catch (error) {
           await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
@@ -219,14 +251,19 @@ export class ProxySessionController {
         if (kind === "turn_details") {
           await this.outbound.showDetails(contextKey, String(scopedAction.value.turnId ?? ""));
         } else if (kind === "activity_history") {
-          await this.showActivityHistory(
+          const requestedPage = String(scopedAction.value.page ?? "0");
+          const numericPage = Number(requestedPage);
+          await this.outbound.showActivityPage(
             contextKey,
             String(scopedAction.value.turnId ?? ""),
-            Number(scopedAction.value.page ?? 0),
+            requestedPage === "latest" ? "latest" : Number.isFinite(numericPage) ? numericPage : 0,
+            scopedAction.messageId,
           );
         } else if (kind === "turn_cancel") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.cancelSession(this.requireSession(contextKey, sessionId));
+        } else if (kind === "queued_prompt_cancel") {
+          await this.cancelQueuedPrompt(scopedAction);
         } else if (kind === "session_more") {
           await this.refreshSessionsCardFromAction(scopedAction, undefined, true);
         } else if (kind === "session_switch") {
@@ -254,10 +291,24 @@ export class ProxySessionController {
     });
   }
 
+  async onChatUpdated(event: ChatUpdatedEvent): Promise<void> {
+    const contextKey = `chat_id:${event.chatId}`;
+    const previous = this.messageQueues.get(contextKey) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.syncTaskTitleFromGroupName(contextKey, event));
+    this.messageQueues.set(contextKey, next);
+    try {
+      await next;
+    } finally {
+      if (this.messageQueues.get(contextKey) === next) this.messageQueues.delete(contextKey);
+    }
+  }
+
   close(): void {
     for (const unsubscribe of this.unsubscribe) unsubscribe();
     this.unsubscribe.length = 0;
     this.lastSessionListings.clear();
+    this.queuedPromptCards.clear();
+    this.queuedPromptCardWrites.clear();
   }
 
   async controlStopTask(localSessionId: string): Promise<string> {
@@ -265,6 +316,31 @@ export class ProxySessionController {
     if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
     await this.cancelSession(record);
     return `已请求停止任务：${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+  }
+
+  async controlGetTaskStatus(localSessionId: string): Promise<{
+    session: SessionRecord;
+    snapshot?: TurnViewState;
+    remote?: RemoteSessionSummary;
+  }> {
+    const record = this.store.getSession(localSessionId);
+    if (!record) throw new Error(`找不到任务：${localSessionId}`);
+    let remote: RemoteSessionSummary | undefined;
+    if (record.remoteSessionId) {
+      const runtime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
+      if (runtime.readRemoteSession) {
+        try {
+          remote = await runtime.readRemoteSession(record.remoteSessionId);
+        } catch (error) {
+          this.logger.warn({ error, sessionId: record.localSessionId }, "Failed to inspect Codex task status for CLI.");
+        }
+      }
+    }
+    const session = mergeRemoteTaskStatus(record, remote);
+    const snapshot = session.lastTurnId
+      ? turnViewSnapshot(this.store.getTurnSnapshot(session.lastTurnId))
+      : undefined;
+    return { session, snapshot, remote };
   }
 
   async controlSetTaskTitle(localSessionId: string, title: string): Promise<string> {
@@ -283,6 +359,67 @@ export class ProxySessionController {
       source: "cli",
     });
     return `任务标题已修改为：${normalizedTitle}`;
+  }
+
+  async controlSendTaskPrompt(localSessionId: string, text: string): Promise<string> {
+    const promptText = text.trim();
+    if (!promptText) throw new Error("Prompt 不能为空。");
+    const record = this.store.getSession(localSessionId);
+    if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
+    const runtime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
+    const activeTurnId = runtime.getSession(localSessionId)?.activeTurnId;
+    const routedContextKey = this.outbound.getSessionContextKey(localSessionId);
+    const responseContextKey = (activeTurnId ? this.store.getTurnContextKey(activeTurnId) ?? routedContextKey : undefined)
+      ?? (record.lastTurnId ? this.store.getTurnContextKey(record.lastTurnId) : undefined)
+      ?? routedContextKey
+      ?? record.contextKey;
+    const lastSnapshot = record.lastTurnId
+      ? turnViewSnapshot(this.store.getTurnSnapshot(record.lastTurnId))
+      : undefined;
+    const activeSnapshot = activeTurnId
+      ? turnViewSnapshot(this.store.getTurnSnapshot(activeTurnId))
+      : undefined;
+    const routedReplyTarget = this.outbound.getSessionReplyTarget(localSessionId);
+    const existingReplyTarget = activeSnapshot?.replyTarget
+      ?? (activeTurnId ? routedReplyTarget : undefined)
+      ?? lastSnapshot?.replyTarget
+      ?? routedReplyTarget;
+    if (isThreadContextKey(responseContextKey) && !existingReplyTarget) {
+      throw new Error("无法确定目标任务的话题回复位置，未发送 Prompt。");
+    }
+    const scopedRecord = this.store.getSessionForContext(localSessionId, responseContextKey)
+      ?? { ...record, contextKey: responseContextKey };
+    const previous = this.messageQueues.get(responseContextKey) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(async () => {
+      this.outbound.registerSession(
+        scopedRecord.localSessionId,
+        responseContextKey,
+        scopedRecord.title,
+        scopedRecord.cwd,
+      );
+      const promptMessageId = await this.outbound.withReplyTarget(
+        responseContextKey,
+        existingReplyTarget,
+        () => this.outbound.sendText(responseContextKey, promptText),
+      );
+      const turnReplyTarget = isThreadContextKey(responseContextKey)
+        ? promptMessageId
+          ? { messageId: promptMessageId, replyInThread: true as const }
+          : existingReplyTarget
+        : undefined;
+      await this.promptSession(scopedRecord, responseContextKey, promptText, undefined, turnReplyTarget);
+      this.store.audit(responseContextKey, "task_prompt_sent", {
+        localSessionId,
+        source: "cli",
+      });
+    });
+    this.messageQueues.set(responseContextKey, next);
+    try {
+      await next;
+    } finally {
+      if (this.messageQueues.get(responseContextKey) === next) this.messageQueues.delete(responseContextKey);
+    }
+    return `已通过机器人向原会话发送 Prompt，并提交给任务：${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
   }
 
   private cardActionContextKey(action: CardAction): string {
@@ -305,21 +442,13 @@ export class ProxySessionController {
       : action.contextKey;
   }
 
-  private async showActivityHistory(contextKey: string, turnId: string, page: number): Promise<void> {
-    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(turnId));
-    if (!snapshot) throw new Error("未找到这次执行的活动历史。");
-    await this.outbound.sendInteractiveCard(
-      contextKey,
-      this.cardRenderer.renderActivityHistory(snapshot, Number.isFinite(page) ? page : 0),
-    );
-  }
-
   private async execute(
     contextKey: string,
     command: Command,
     messageId?: string,
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
+    userId?: string,
   ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     switch (command.type) {
@@ -338,6 +467,14 @@ export class ProxySessionController {
           command.title,
         );
         return;
+      case "newgroup":
+        await this.createFeishuGroup(
+          contextKey,
+          context.defaultAgent,
+          command.title,
+          userId,
+        );
+        return;
       case "fork":
         await this.forkSessionReference(contextKey, command.sessionId);
         return;
@@ -347,6 +484,9 @@ export class ProxySessionController {
       case "ask":
       case "prompt":
         await this.prompt(contextKey, command.text, messageId, replyTarget, localImagePaths);
+        return;
+      case "nosteer":
+        await this.enqueueNoSteerPrompt(contextKey, command.text, messageId, replyTarget);
         return;
       case "sessions":
         await this.listSessions(contextKey, command.searchTerm);
@@ -397,12 +537,23 @@ export class ProxySessionController {
   private restorePersistedSessionRoutes(): void {
     for (const context of this.store.listUserContexts()) {
       if (!context.currentSessionId) continue;
-      const session = this.store.getSession(context.currentSessionId);
+      const session = this.store.getSessionForContext(context.currentSessionId, context.contextKey);
       if (!session || session.status === "closed") continue;
-      this.outbound.registerSession(session.localSessionId, session.contextKey, session.title, session.cwd);
+      const turnContextKey = session.lastTurnId
+        ? this.store.getTurnContextKey(session.lastTurnId) ?? context.contextKey
+        : context.contextKey;
+      this.outbound.registerSession(session.localSessionId, turnContextKey, session.title, session.cwd);
       if (!session.lastTurnId) continue;
-      void this.outbound.resumeDelivery(session.localSessionId, session.contextKey, session.lastTurnId).catch((error: unknown) => {
+      void this.outbound.resumeDelivery(session.localSessionId, turnContextKey, session.lastTurnId).catch((error: unknown) => {
         this.logger.warn({ error, sessionId: session.localSessionId }, "Failed to restore persisted turn delivery.");
+      });
+    }
+  }
+
+  private restorePersistedQueuedPrompts(): void {
+    for (const sessionId of this.store.listQueuedPromptSessionIds()) {
+      void this.scheduleNextQueuedPrompt(sessionId).catch((error: unknown) => {
+        this.logger.warn({ error, sessionId }, "Failed to resume a persisted prompt queue.");
       });
     }
   }
@@ -436,6 +587,17 @@ export class ProxySessionController {
       const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
       record = await this.createSession(contextKey, context.defaultAgent, undefined, false, true, text, replyTarget);
     }
+    await this.promptSession(record, contextKey, text, messageId, replyTarget, localImagePaths);
+  }
+
+  private async promptSession(
+    record: SessionRecord,
+    contextKey: string,
+    text: string,
+    messageId?: string,
+    replyTarget?: MessageReplyTarget,
+    localImagePaths?: string[],
+  ): Promise<void> {
     const configuredRuntime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
     if (!configuredRuntime.getSession(record.localSessionId)) {
       this.outbound.registerSession(record.localSessionId, contextKey, record.title, record.cwd);
@@ -463,8 +625,18 @@ export class ProxySessionController {
     }
     const activeTurnId = loaded.session.activeTurnId;
     if (activeTurnId) {
+      const activeContextKey = this.store.getTurnContextKey(activeTurnId);
+      if (activeContextKey && activeContextKey !== contextKey) {
+        this.persistQueuedPrompt(record.localSessionId, contextKey, text, {
+          localImagePaths,
+          messageId,
+          replyTarget,
+        });
+        return;
+      }
       try {
         await loaded.runtime.steerTurn(record.localSessionId, activeTurnId, runtimePrompt(text, localImagePaths));
+        await this.presentSteerMessage(record.localSessionId, activeTurnId, text, messageId);
         if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, activeTurnId);
         return;
       } catch (error) {
@@ -487,6 +659,7 @@ export class ProxySessionController {
               current.activeTurnId,
               runtimePrompt(text, localImagePaths),
             );
+            await this.presentSteerMessage(record.localSessionId, current.activeTurnId, text, messageId);
             if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, current.activeTurnId);
             return;
           } catch (retryError) {
@@ -496,14 +669,147 @@ export class ProxySessionController {
             );
           }
         }
-        const queued = this.queuedPrompts.get(record.localSessionId) ?? [];
-        queued.push({ text, localImagePaths, messageId, replyTarget });
-        this.queuedPrompts.set(record.localSessionId, queued);
+        this.persistQueuedPrompt(record.localSessionId, contextKey, text, {
+          localImagePaths,
+          messageId,
+          replyTarget,
+        });
         return;
       }
     }
     const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths);
     if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
+  }
+
+  private async presentSteerMessage(
+    localSessionId: string,
+    turnId: string,
+    text: string,
+    messageId?: string,
+  ): Promise<void> {
+    try {
+      await this.outbound.appendSteerMessage(localSessionId, turnId, text, messageId);
+    } catch (error) {
+      this.logger.warn(
+        { error, sessionId: localSessionId, turnId, messageId },
+        "Failed to insert a steer message into the thinking card.",
+      );
+    }
+  }
+
+  private async enqueueNoSteerPrompt(
+    contextKey: string,
+    text: string,
+    messageId?: string,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void> {
+    const record = this.requireCurrentSession(contextKey);
+    const queued = this.persistQueuedPrompt(record.localSessionId, contextKey, text, { messageId, replyTarget });
+    this.store.audit(contextKey, "queued_prompt_added", {
+      promptId: queued.promptId,
+      localSessionId: record.localSessionId,
+    });
+    await this.presentPromptQueueCard(record.localSessionId, contextKey);
+    await this.scheduleNextQueuedPrompt(record.localSessionId);
+  }
+
+  private persistQueuedPrompt(
+    localSessionId: string,
+    contextKey: string,
+    text: string,
+    options: {
+      localImagePaths?: string[];
+      messageId?: string;
+      replyTarget?: MessageReplyTarget;
+    } = {},
+  ): QueuedPromptRecord {
+    return this.store.enqueuePrompt({
+      promptId: createId("prompt"),
+      localSessionId,
+      contextKey,
+      text,
+      localImagePaths: options.localImagePaths,
+      messageId: options.messageId,
+      replyMessageId: options.replyTarget?.messageId,
+    });
+  }
+
+  private async cancelQueuedPrompt(action: CardAction): Promise<void> {
+    const promptId = String(action.value.promptId ?? "");
+    const sessionId = String(action.value.sessionId ?? "");
+    if (!promptId || !sessionId) throw new Error("无效的排队 Prompt 取消请求。");
+    this.requireSession(action.contextKey, sessionId);
+    if (action.messageId) this.rememberPromptQueueCard(sessionId, action.contextKey, action.messageId);
+    const cancelled = this.store.cancelQueuedPrompt(promptId, sessionId);
+    if (cancelled?.messageId) await this.finalizeStandaloneMessageReaction(cancelled.messageId, "cancelled");
+    if (cancelled) {
+      this.store.audit(action.contextKey, "queued_prompt_cancelled", {
+        promptId,
+        localSessionId: sessionId,
+      });
+    }
+    await this.refreshPromptQueueCards(sessionId);
+  }
+
+  private async presentPromptQueueCard(localSessionId: string, contextKey: string): Promise<void> {
+    await this.serializePromptQueueCardWrite(localSessionId, async () => {
+      const card = this.renderPromptQueueCard(localSessionId, contextKey);
+      const existing = this.queuedPromptCards.get(localSessionId)?.get(contextKey);
+      if (existing) {
+        try {
+          await this.outbound.updateInteractiveCard(contextKey, existing, card);
+          return;
+        } catch (error) {
+          this.logger.warn({ error, localSessionId, contextKey, messageId: existing }, "Failed to update prompt queue card; sending a replacement.");
+        }
+      }
+      const messageId = await this.outbound.sendInteractiveCard(contextKey, card);
+      if (messageId) this.rememberPromptQueueCard(localSessionId, contextKey, messageId);
+    });
+  }
+
+  private async refreshPromptQueueCards(localSessionId: string): Promise<void> {
+    await this.serializePromptQueueCardWrite(localSessionId, async () => {
+      const cards = this.queuedPromptCards.get(localSessionId);
+      if (!cards) return;
+      await Promise.all([...cards].map(async ([contextKey, messageId]) => {
+        try {
+          await this.outbound.updateInteractiveCard(
+            contextKey,
+            messageId,
+            this.renderPromptQueueCard(localSessionId, contextKey),
+          );
+        } catch (error) {
+          this.logger.warn({ error, localSessionId, contextKey, messageId }, "Failed to refresh prompt queue card.");
+        }
+      }));
+    });
+  }
+
+  private renderPromptQueueCard(localSessionId: string, contextKey: string): Record<string, unknown> {
+    return this.cardRenderer.renderPromptQueue({
+      sessionId: localSessionId,
+      contextKey,
+      prompts: this.store.listQueuedPrompts(localSessionId).map((prompt) => ({
+        id: prompt.promptId,
+        text: prompt.text,
+      })),
+    });
+  }
+
+  private rememberPromptQueueCard(localSessionId: string, contextKey: string, messageId: string): void {
+    const cards = this.queuedPromptCards.get(localSessionId) ?? new Map<string, string>();
+    cards.set(contextKey, messageId);
+    this.queuedPromptCards.set(localSessionId, cards);
+  }
+
+  private serializePromptQueueCardWrite(localSessionId: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.queuedPromptCardWrites.get(localSessionId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(write);
+    this.queuedPromptCardWrites.set(localSessionId, next);
+    return next.finally(() => {
+      if (this.queuedPromptCardWrites.get(localSessionId) === next) this.queuedPromptCardWrites.delete(localSessionId);
+    });
   }
 
   private async ensureThreadFork(message: IncomingMessage): Promise<void> {
@@ -534,11 +840,13 @@ export class ProxySessionController {
       throw new Error("无法确定这个话题对应的 Codex 轮次，因此没有创建分支任务。请从该轮的用户消息、思考卡片或最终回答创建话题。");
     }
 
-    const source = this.store.getSession(anchor.localSessionId);
+    const source = anchor.contextKey
+      ? this.store.getSessionForContext(anchor.localSessionId, anchor.contextKey)
+      : this.store.getSession(anchor.localSessionId);
     if (!source || !source.remoteSessionId || !this.isCodexSession(source)) {
       throw new Error("这个话题的来源不是可 fork 的 Codex 任务。");
     }
-    if (baseChatContextKey(source.contextKey) !== `chat_id:${message.chatId}`) {
+    if (baseChatContextKey(anchor.contextKey ?? source.contextKey) !== `chat_id:${message.chatId}`) {
       throw new Error("话题来源任务不属于当前会话，已拒绝创建分支。");
     }
 
@@ -618,10 +926,11 @@ export class ProxySessionController {
       source = this.requireCurrentSession(contextKey);
     } else {
       const direct = this.store.getSession(taskId);
-      if (direct && (direct.contextKey !== contextKey || direct.status === "closed")) {
+      if (direct?.status === "closed") {
         throw new Error(`找不到任务：${taskId}`);
       }
-      source = direct ?? this.store.findSessionByRemoteSessionId(taskId, contextKey);
+      const global = direct ?? this.store.findSessionByRemoteSessionId(taskId);
+      source = global ? { ...global, contextKey } : undefined;
     }
 
     if (source && (!source.remoteSessionId || !this.isCodexSession(source))) {
@@ -809,6 +1118,38 @@ export class ProxySessionController {
     }
   }
 
+  private async createFeishuGroup(
+    sourceContextKey: string,
+    agentName: string,
+    requestedTitle: string | undefined,
+    userId: string | undefined,
+  ): Promise<void> {
+    if (!userId?.startsWith("ou_")) {
+      throw new Error("/newgroup 只能由具有 open_id 的飞书用户消息触发。");
+    }
+    const title = normalizeTaskTitle(requestedTitle) ?? formatTimestampTaskTitle(new Date());
+    const groupName = `[${agentName}] ${title}`;
+    if (Array.from(groupName).length > 60) {
+      throw new Error(`飞书群名最多 60 个字符；当前格式化后的群名为 ${Array.from(groupName).length} 个字符。`);
+    }
+
+    const group = await this.outbound.createGroup(sourceContextKey, {
+      name: groupName,
+      userOpenId: userId,
+    });
+    const groupContextKey = `chat_id:${group.chatId}`;
+    this.store.recordChatContext(groupContextKey, "group");
+    this.store.getOrCreateUserContext(groupContextKey, agentName);
+    await this.outbound.sendText(
+      groupContextKey,
+      "群已创建。直接发送消息即可在本群开始一个新任务。",
+    );
+    await this.outbound.sendText(
+      sourceContextKey,
+      `已创建飞书群：${group.name}，并邀请你加入。`,
+    );
+  }
+
   private async loadSession(record: SessionRecord): Promise<LoadedSession> {
     const agent = this.ensureAgent(record.agentName);
     const runtime = this.runtimes.forAgent(agent);
@@ -872,7 +1213,8 @@ export class ProxySessionController {
         });
       }
       this.persistRuntimeSession(record, session, session.activeTurnId ? "running" : "ready");
-      return { record: this.store.getSession(record.localSessionId) ?? record, runtime, session };
+      const saved = this.store.getSession(record.localSessionId) ?? record;
+      return { record: saved, runtime, session };
     })();
     this.sessionLoads.set(record.localSessionId, loading);
     try {
@@ -907,50 +1249,80 @@ export class ProxySessionController {
       this.store.updateSession(event.sessionId, { status: "running" });
       this.store.updateRuntimeSession(event.sessionId, { lastTurnId: event.turnId, lastTurnStatus: "running" });
     } else if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
-      const status = event.type === "turn_failed" ? "failed" : "ready";
-      this.store.updateSession(event.sessionId, { status });
       this.store.updateRuntimeSession(event.sessionId, {
         lastTurnId: event.turnId,
         lastTurnStatus: event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
       });
-      await this.finalizeTurnMessageReactions(
-        event.turnId,
-        event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
-      );
     }
 
-    await this.outbound.onEvent(event);
+    try {
+      await this.outbound.onEvent(event);
+      if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+        await this.finalizeTurnMessageReactions(
+          event.turnId,
+          event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
+        );
+      }
+    } finally {
+      if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+        const latest = this.store.getSession(event.sessionId);
+        const agent = latest ? this.ensureAgent(latest.agentName) : undefined;
+        const activeTurnId = agent ? this.runtimes.forAgent(agent).getSession(event.sessionId)?.activeTurnId : undefined;
+        if (latest?.lastTurnId === event.turnId && !activeTurnId) {
+          this.store.updateSession(event.sessionId, { status: event.type === "turn_failed" ? "failed" : "ready" });
+        }
+      }
+    }
     if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
       const latest = this.store.getSession(event.sessionId);
       const agent = latest ? this.ensureAgent(latest.agentName) : undefined;
       const activeTurnId = agent ? this.runtimes.forAgent(agent).getSession(event.sessionId)?.activeTurnId : undefined;
       if (latest?.lastTurnId !== event.turnId || activeTurnId) return;
-      await this.startNextQueuedPrompt(event.sessionId);
+      await this.scheduleNextQueuedPrompt(event.sessionId);
     }
   }
 
-  private async startNextQueuedPrompt(sessionId: string): Promise<void> {
-    const queued = this.queuedPrompts.get(sessionId);
-    const prompt = queued?.shift();
-    if (!prompt) {
-      this.queuedPrompts.delete(sessionId);
-      return;
-    }
-    if (queued?.length === 0) this.queuedPrompts.delete(sessionId);
-    const record = this.store.getSession(sessionId);
-    if (!record || record.status === "closed") return;
+  private scheduleNextQueuedPrompt(sessionId: string): Promise<void> {
+    const previous = this.queuedPromptStarts.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.startNextQueuedPromptIfIdle(sessionId));
+    this.queuedPromptStarts.set(sessionId, next);
+    return next.finally(() => {
+      if (this.queuedPromptStarts.get(sessionId) === next) this.queuedPromptStarts.delete(sessionId);
+    });
+  }
+
+  private async startNextQueuedPromptIfIdle(sessionId: string): Promise<void> {
+    if (this.store.countQueuedPrompts(sessionId) === 0) return;
+    const baseRecord = this.store.getSession(sessionId);
+    if (!baseRecord || baseRecord.status === "closed") return;
+    let prompt: QueuedPromptRecord | undefined;
     try {
+      let loaded = await this.loadSession(baseRecord);
+      await this.assertSessionTurnOwnership(loaded.record, loaded.runtime);
+      if (loaded.record.lastTurnId || loaded.session.activeTurnId) {
+        loaded = { ...loaded, session: await loaded.runtime.synchronizeSession(sessionId) };
+      }
+      if (loaded.session.activeTurnId) return;
+
+      prompt = this.store.takeNextQueuedPrompt(sessionId);
+      if (!prompt) return;
+      const record = this.store.getSessionForContext(sessionId, prompt.contextKey) ?? baseRecord;
+      loaded = { ...loaded, record };
+      await this.refreshPromptQueueCards(sessionId);
       const turnId = await this.startTurn(
-        await this.loadSession(record),
+        loaded,
         prompt.text,
-        prompt.replyTarget,
+        prompt.replyMessageId ? { messageId: prompt.replyMessageId, replyInThread: true } : undefined,
         prompt.localImagePaths,
       );
       if (prompt.messageId) await this.bindMessageReactionToTurn(prompt.messageId, sessionId, turnId);
     } catch (error) {
       this.logger.warn({ error, sessionId }, "Failed to start queued prompt.");
-      if (prompt.messageId) await this.finalizeStandaloneMessageReaction(prompt.messageId, "failed");
-      await this.sendError(record.contextKey, error);
+      if (prompt?.messageId) await this.finalizeStandaloneMessageReaction(prompt.messageId, "failed");
+      if (prompt) await this.sendError(prompt.contextKey, error);
+      if (prompt && this.store.countQueuedPrompts(sessionId) > 0) {
+        queueMicrotask(() => void this.scheduleNextQueuedPrompt(sessionId));
+      }
     }
   }
 
@@ -1256,6 +1628,34 @@ export class ProxySessionController {
     await this.outbound.sendText(contextKey, `已将当前任务标题修改为：${normalizedTitle}`);
   }
 
+  private async syncTaskTitleFromGroupName(
+    contextKey: string,
+    event: ChatUpdatedEvent,
+  ): Promise<void> {
+    const parsed = parseAgentGroupName(event.afterName);
+    if (!parsed) return;
+    const context = this.store.getUserContext(contextKey);
+    if (!context?.currentSessionId) return;
+    const record = this.store.getSessionForContext(context.currentSessionId, contextKey);
+    if (!record || record.status === "closed") return;
+    if (record.agentName.toLowerCase() !== parsed.agentName.toLowerCase()) return;
+    const title = normalizeTaskTitle(parsed.title);
+    if (!title || title === record.title) return;
+
+    const loaded = await this.loadSession(record);
+    if (loaded.runtime.setTitle) await loaded.runtime.setTitle(record.localSessionId, title);
+    else loaded.session.title = title;
+    this.store.updateRuntimeSession(record.localSessionId, { title });
+    this.outbound.updateSessionTitle(record.localSessionId, title);
+    this.store.audit(contextKey, "session_title_changed", {
+      localSessionId: record.localSessionId,
+      title,
+      source: "group_name",
+      beforeName: event.beforeName,
+      afterName: event.afterName,
+    });
+  }
+
   private async thinking(contextKey: string, effort?: string): Promise<void> {
     const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
     const models = await loaded.runtime.listModels();
@@ -1443,13 +1843,14 @@ export class ProxySessionController {
     this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const taskId = this.resolveSessionReference(contextKey, reference);
     const direct = this.store.getSession(taskId);
-    if (direct && (direct.contextKey !== contextKey || direct.status === "closed")) {
+    if (direct?.status === "closed") {
       throw new Error(`找不到任务：${taskId}`);
     }
-    const existing = direct ?? this.store.findSessionByRemoteSessionId(taskId, contextKey);
+    const existing = direct ?? this.store.findSessionByRemoteSessionId(taskId);
     if (existing) {
       const runtime = this.runtimes.forAgent(this.ensureAgent(existing.agentName));
       await this.assertSessionTurnOwnership(existing, runtime);
+      this.store.attachSessionToContext(contextKey, existing.localSessionId);
       this.store.setCurrentSession(contextKey, existing.localSessionId);
       this.outbound.registerSession(existing.localSessionId, contextKey, existing.title, existing.cwd);
       await this.outbound.sendText(contextKey, `已切换到任务：${existing.title ?? existing.remoteSessionId ?? taskId}`);
@@ -1493,14 +1894,14 @@ export class ProxySessionController {
   private async stopSessionReference(contextKey: string, taskId: string): Promise<void> {
     const direct = this.store.getSession(taskId);
     if (direct) {
-      if (direct.contextKey !== contextKey || direct.status === "closed") throw new Error(`找不到任务：${taskId}`);
-      await this.cancelSession(direct);
+      if (direct.status === "closed") throw new Error(`找不到任务：${taskId}`);
+      await this.cancelSession({ ...direct, contextKey });
       return;
     }
 
-    const existing = this.store.findSessionByRemoteSessionId(taskId, contextKey);
+    const existing = this.store.findSessionByRemoteSessionId(taskId);
     if (existing) {
-      await this.cancelSession(existing);
+      await this.cancelSession({ ...existing, contextKey });
       return;
     }
 
@@ -1575,8 +1976,9 @@ export class ProxySessionController {
     let current: SessionRecord | undefined;
     if (targetSessionId) {
       const direct = this.store.getSession(targetSessionId);
-      if (direct && direct.contextKey !== contextKey) throw new Error(`找不到任务：${targetSessionId}`);
-      current = direct ?? this.store.findSessionByRemoteSessionId(targetSessionId, contextKey);
+      current = direct
+        ? { ...direct, contextKey }
+        : this.store.findSessionByRemoteSessionId(targetSessionId, contextKey);
       if (!current) {
         await this.statusForCodexTask(contextKey, targetSessionId, options);
         return;
@@ -1597,6 +1999,7 @@ export class ProxySessionController {
       }
     }
 
+    const localCurrent = current;
     let remote: RemoteSessionSummary | undefined;
     let goal: RuntimeGoal | undefined;
     if (current?.remoteSessionId) {
@@ -1618,7 +2021,8 @@ export class ProxySessionController {
       }
     }
 
-    const sessions = this.store.listSessions(contextKey);
+    if (current) current = mergeRemoteTaskStatus(current, remote);
+
     const taskLines: string[] = [];
     let snapshot: TurnViewState | undefined;
     let activeTurnId: string | undefined;
@@ -1631,22 +2035,24 @@ export class ProxySessionController {
       activeTurnId = runtimeSession?.activeTurnId;
       const remoteActive = isRemoteSessionActive(remote);
       activeTurnId = remoteActive ? remote?.lastTurnId ?? activeTurnId : activeTurnId;
-      queued = this.queuedPrompts.get(current.localSessionId)?.length ?? 0;
+      queued = this.store.countQueuedPrompts(current.localSessionId);
       snapshot = turnViewSnapshot(current.lastTurnId ? this.store.getTurnSnapshot(current.lastTurnId) : undefined);
+      const statusLabel = remoteActive && remote && localCurrent && !isBotOwnedActiveTurn(localCurrent, remote)
+        ? "外部执行中"
+        : sessionStatusLabel(current.status, activeTurnId);
+      const resultLabel = remoteActive
+        ? "执行中"
+        : remoteTurnStatusLabel(remote?.lastTurnStatus ?? current.lastTurnStatus);
       taskLines.push(
-        `**标题**：${cardText(current.title ?? "未命名任务")}`,
-        `**状态**：${remoteActive && remote && !isBotOwnedActiveTurn(current, remote)
-          ? "外部执行中"
-          : sessionStatusLabel(current.status, activeTurnId)}`,
-        `**Agent / 运行时**：${cardText(agent.title)} / ${cardText(current.runtimeKind ?? agent.kind)}`,
-        `**模型 / 思考强度**：${cardText(current.model ?? "默认")} / ${cardText(current.reasoningEffort ?? "自动")}`,
-        `**权限模式**：${current.permissionMode === "confirm" ? "执行前确认" : "自动执行"}`,
-        `**任务范围**：${detectProjectlessWorkspace(current.cwd) ? "未指定项目" : "指定项目"}`,
-        `**工作目录**：${cardText(current.cwd)}`,
-        `**Codex 任务 ID**：${cardText(current.remoteSessionId ?? "尚未创建")}`,
-        `**当前执行**：${activeTurnId ? cardText(activeTurnId) : "无"}　**排队消息**：${queued} 条`,
-        `**最近结果**：${remoteActive ? "执行中" : remoteTurnStatusLabel(remote?.lastTurnStatus ?? current.lastTurnStatus)}`,
-        `**创建 / 更新**：${formatStatusTime(current.createdAt)} / ${formatStatusTime(current.updatedAt)}`,
+        `**标题**：${cardCode(current.title ?? "未命名任务")}`,
+        `**工作目录**：${cardCode(current.cwd)}`,
+        `**模型 / 思考强度**：${cardCode(current.model ?? "默认")} / ${cardCode(current.reasoningEffort ?? "自动")}`,
+        `**状态 / 最近结果**：${statusLabel} / ${resultLabel}`,
+        `**Agent**：${cardCode(agent.title)}`,
+        `**权限 / 任务范围**：${current.permissionMode === "confirm" ? "执行前确认" : "自动执行"} / ${detectProjectlessWorkspace(current.cwd) ? "未指定项目" : "指定项目"}`,
+        `**Codex 任务 ID**：${cardCode(current.remoteSessionId ?? "尚未创建")}`,
+        `**当前执行 / 排队消息**：${activeTurnId ? cardCode(activeTurnId) : "无"} / ${queued} 条`,
+        `**创建时间 / 最近活动**：${formatStatusTime(current.createdAt)} / ${formatStatusTime(current.updatedAt)}`,
       );
     }
 
@@ -1662,16 +2068,14 @@ export class ProxySessionController {
       }] : []),
       ...(current ? [{
         title: "执行详情",
-        lines: executionDetailLines(current, snapshot, remote, activeTurnId, queued),
+        lines: executionDetailLines(localCurrent ?? current, snapshot, remote, activeTurnId, queued),
         collapsible: true,
         elementId: "status_execution_details",
       }] : []),
       {
         title: "acp-bot",
         lines: [
-          `**默认 Agent**：${cardText(context.defaultAgent)}`,
-          `**保活机制**：${this.lifecycle?.supervised ? "已启用（异常退出自动重启）" : "未启用"}`,
-          `**任务统计**：${sessionStats(sessions)}`,
+          `**默认 Agent / 保活**：${cardCode(context.defaultAgent)} / ${this.lifecycle?.supervised ? "已启用" : "未启用"}`,
           "**交互方式**：普通消息继续当前任务；/new 创建新任务；/help 查看命令。",
         ],
       },
@@ -1682,7 +2086,7 @@ export class ProxySessionController {
     const taskId = current?.remoteSessionId ?? current?.localSessionId;
     const isCurrent = Boolean(current && current.localSessionId === context.currentSessionId);
     const remoteActive = isRemoteSessionActive(remote);
-    const botOwnsActiveTurn = Boolean(current && remote && isBotOwnedActiveTurn(current, remote));
+    const botOwnsActiveTurn = Boolean(localCurrent && remote && isBotOwnedActiveTurn(localCurrent, remote));
     const active = Boolean(activeTurnId || current?.status === "running" || remoteActive);
     const forceSwitch = Boolean(taskId && options.forceSwitchTaskId === taskId);
     const actions: TaskListCardAction[] = !taskId ? []
@@ -1710,13 +2114,12 @@ export class ProxySessionController {
       {
         title: "指定任务",
         lines: [
-          `**标题**：${cardText(remote.title ?? remote.preview ?? "未命名任务")}`,
-          `**状态**：${remoteSessionDetailStatus(remote)}`,
-          "**当前任务**：未切换",
-          `**工作目录**：${cardText(remote.cwd || "目录未知")}`,
-          `**Codex 任务 ID**：${cardText(remote.id)}`,
-          `**最近回合**：${cardText(remote.lastTurnId ?? "无")}　${remoteTurnStatusLabel(remote.lastTurnStatus)}`,
-          `**更新时间**：${formatRemoteTime(remote.updatedAt)}`,
+          `**标题**：${cardCode(remote.title ?? remote.preview ?? "未命名任务")}`,
+          `**工作目录**：${cardCode(remote.cwd || "目录未知")}`,
+          `**状态 / 当前任务**：${remoteSessionDetailStatus(remote)} / 未切换`,
+          `**Codex 任务 ID**：${cardCode(remote.id)}`,
+          `**最近回合**：${cardCode(remote.lastTurnId ?? "无")}　${remoteTurnStatusLabel(remote.lastTurnStatus)}`,
+          `**创建时间 / 最近活动**：${formatRemoteTime(remote.createdAt)} / ${formatRemoteTime(latestRemoteTimestamp(remote.recencyAt, remote.updatedAt))}`,
         ],
       },
       { title: "最终结果", lines: finalResultLines(undefined, remote) },
@@ -1758,6 +2161,7 @@ export class ProxySessionController {
         title: "任务管理",
         lines: [
           "**/new [title] [--dir <cwd>]**　使用默认 Agent 创建任务；普通参数作为标题，省略目录时继承当前项目形态",
+          "**/newgroup [title]**　创建飞书群并邀请当前用户；省略标题时使用当前时间",
           "**/fork [序号或任务 ID]**　从当前或指定任务的最新已结束轮次创建分支并切换过去",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
           "**/sessions [关键词]**　查找本机任务",
@@ -1769,6 +2173,7 @@ export class ProxySessionController {
         lines: [
           "**! &#60;命令&#62;**　在当前任务目录直接执行本地命令",
           "**/stop**　停止当前执行",
+          "**/nosteer &#60;prompt&#62;**　不追加到当前轮次，按顺序排队为后续轮次",
           "**/goal [目标]**　查看或创建长任务 Goal；支持 pause、resume、edit、clear",
           "**/model [name]**　查看或切换模型",
           "**/thinking [level]**　查看或设置思考强度",
@@ -1806,7 +2211,9 @@ export class ProxySessionController {
 
   private currentSession(contextKey: string): SessionRecord | undefined {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-    return context.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
+    return context.currentSessionId
+      ? this.store.getSessionForContext(context.currentSessionId, contextKey)
+      : undefined;
   }
 
   private inheritedNewTaskCwd(contextKey: string): string | undefined {
@@ -1824,8 +2231,8 @@ export class ProxySessionController {
   }
 
   private requireSession(contextKey: string, sessionId: string): SessionRecord {
-    const record = this.store.getSession(sessionId);
-    if (!record || record.contextKey !== contextKey) throw new Error(`找不到任务：${sessionId}`);
+    const record = this.store.getSessionForContext(sessionId, contextKey);
+    if (!record) throw new Error(`找不到任务：${sessionId}`);
     return record;
   }
 
@@ -1948,7 +2355,7 @@ function executionDetailLines(
   const remoteActive = isRemoteSessionActive(remote);
   const turnId = remoteActive
     ? remote?.lastTurnId ?? activeTurnId
-    : activeTurnId ?? snapshot?.turnId ?? remote?.lastTurnId ?? record.lastTurnId;
+    : activeTurnId ?? remote?.lastTurnId ?? snapshot?.turnId ?? record.lastTurnId;
   if (!turnId) return ["尚无执行记录。"];
   const relevantSnapshot = snapshot?.turnId === turnId ? snapshot : undefined;
   const externallyActive = Boolean(remoteActive && remote && !isBotOwnedActiveTurn(record, remote));
@@ -1982,18 +2389,19 @@ function executionDetailLines(
 }
 
 function finalResultLines(snapshot?: TurnViewState, remote?: RemoteSessionSummary): string[] {
-  if (snapshot?.status === "running" || snapshot?.status === "tool_running" || snapshot?.status === "waiting_for_approval"
+  const relevantSnapshot = !remote?.lastTurnId || snapshot?.turnId === remote.lastTurnId ? snapshot : undefined;
+  if (relevantSnapshot?.status === "running" || relevantSnapshot?.status === "tool_running" || relevantSnapshot?.status === "waiting_for_approval"
     || isRemoteSessionActive(remote)) {
     return ["任务仍在执行，尚无最终结果。"];
   }
-  const result = snapshot?.finalResponse?.trim() || remote?.finalResponse?.trim();
+  const result = remote?.finalResponse?.trim() || relevantSnapshot?.finalResponse?.trim();
   if (result) return [statusExcerpt(result, 2_800)];
-  const error = snapshot?.error?.trim() || remote?.lastError?.trim();
+  const error = remote?.lastError?.trim() || relevantSnapshot?.error?.trim();
   if (error) return [`❌ ${statusExcerpt(error, 2_400)}`];
-  if (snapshot?.status === "cancelled" || remote?.lastTurnStatus === "interrupted") {
+  if (relevantSnapshot?.status === "cancelled" || remote?.lastTurnStatus === "interrupted") {
     return ["任务已停止，未产生最终回答。"];
   }
-  if (snapshot?.status === "failed" || remote?.lastTurnStatus === "failed") {
+  if (relevantSnapshot?.status === "failed" || remote?.lastTurnStatus === "failed") {
     return ["任务执行失败，未记录最终回答。"];
   }
   return ["没有保存到可展示的最终结果。"];
@@ -2078,17 +2486,6 @@ function formatDuration(milliseconds: number): string {
   return milliseconds < 1_000 ? `${milliseconds}ms` : `${(milliseconds / 1_000).toFixed(1)}s`;
 }
 
-function sessionStats(sessions: SessionRecord[]): string {
-  if (sessions.length === 0) return "共 0 个";
-  const counts = new Map<string, number>();
-  for (const session of sessions) {
-    const label = sessionStatusLabel(session.status);
-    counts.set(label, (counts.get(label) ?? 0) + 1);
-  }
-  const details = [...counts].map(([label, count]) => `${label} ${count}`).join("，");
-  return `共 ${sessions.length} 个（${details}）`;
-}
-
 function formatStatusTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -2107,6 +2504,10 @@ function cardText(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("`", "&#96;").replaceAll("<", "&#60;").replaceAll(">", "&#62;");
 }
 
+function cardCode(value: string): string {
+  return `\`${value.replaceAll("`", "'")}\``;
+}
+
 function remoteSessionStatusLabel(status: RemoteSessionSummary["status"]): string {
   const labels: Record<RemoteSessionSummary["status"], string> = {
     active: "执行中",
@@ -2119,13 +2520,50 @@ function remoteSessionStatusLabel(status: RemoteSessionSummary["status"]): strin
 
 function formatRemoteTime(value?: number): string {
   if (value === undefined) return "时间未知";
-  return formatStatusTime(new Date(value * 1_000).toISOString());
+  return formatStatusTime(new Date(normalizeRemoteTimestamp(value)).toISOString());
 }
 
 function mapRemoteTurnStatus(status?: RemoteSessionSummary["lastTurnStatus"]): string | undefined {
   if (status === "interrupted") return "cancelled";
   if (status === "inProgress") return "running";
   return status;
+}
+
+function mergeRemoteTaskStatus(record: SessionRecord, remote?: RemoteSessionSummary): SessionRecord {
+  if (!remote) return record;
+  const remoteTurnStatus = mapRemoteTurnStatus(remote.lastTurnStatus);
+  const createdAt = remote.createdAt === undefined
+    ? record.createdAt
+    : new Date(normalizeRemoteTimestamp(remote.createdAt)).toISOString();
+  const remoteActivityAt = latestRemoteTimestamp(remote.recencyAt, remote.updatedAt);
+  const updatedAt = remoteActivityAt === undefined
+    ? record.updatedAt
+    : new Date(remoteActivityAt).toISOString();
+  return {
+    ...record,
+    title: remote.title ?? record.title,
+    cwd: remote.cwd || record.cwd,
+    status: isRemoteSessionActive(remote)
+      ? "running"
+      : remote.lastTurnStatus
+        ? "ready"
+        : record.status,
+    lastTurnId: remote.lastTurnId ?? record.lastTurnId,
+    lastTurnStatus: remoteTurnStatus ?? record.lastTurnStatus,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeRemoteTimestamp(value: number): number {
+  return value >= 10_000_000_000 ? value : value * 1_000;
+}
+
+function latestRemoteTimestamp(...values: Array<number | undefined>): number | undefined {
+  const timestamps = values
+    .filter((value): value is number => value !== undefined)
+    .map(normalizeRemoteTimestamp);
+  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
 }
 
 function isTurnStillRunning(status?: TurnViewState["status"]): boolean {
@@ -2150,7 +2588,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["stop", "status", "restart", "help", "sessions", "goal"].includes(command.type)) return true;
+  if (["stop", "status", "restart", "help", "sessions", "goal", "nosteer"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (command.type === "model") return command.model === undefined;
   if (command.type === "thinking") return command.effort === undefined;
@@ -2164,11 +2602,27 @@ function parseSessionVisibleCount(value: unknown): number {
 }
 
 function isPromptCommand(command: Command): boolean {
-  return command.type === "ask" || command.type === "prompt";
+  return command.type === "ask" || command.type === "prompt" || command.type === "nosteer";
 }
 
 function runtimePrompt(text: string, localImagePaths?: string[]): RuntimePrompt {
   return localImagePaths?.length ? { text, localImagePaths } : text;
+}
+
+function formatTimestampTaskTitle(date: Date): string {
+  const year = String(date.getFullYear()).slice(-2);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+}
+
+function parseAgentGroupName(value: string): { agentName: string; title: string } | undefined {
+  const match = /^\[([^[\]]+)\]\s+(.+)$/.exec(value.trim());
+  const agentName = match?.[1]?.trim();
+  const title = match?.[2]?.trim();
+  return agentName && title ? { agentName, title } : undefined;
 }
 
 function validateGoalObjective(objective: string): void {

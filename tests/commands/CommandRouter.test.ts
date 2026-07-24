@@ -84,6 +84,22 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/new --dir D:\\work --dir D:\\other")).toThrow("只能指定一次");
   });
 
+  test("creates a new group with an optional title and rejects task-only --dir", () => {
+    expect(router.parse("/newgroup")).toEqual({
+      type: "newgroup",
+      title: undefined,
+    });
+    expect(router.parse("/newgroup 广州天气")).toEqual({
+      type: "newgroup",
+      title: "广州天气",
+    });
+    expect(router.parse('/newgroup "广州 天气"')).toEqual({
+      type: "newgroup",
+      title: "广州 天气",
+    });
+    expect(() => router.parse("/newgroup 广州天气 --dir D:\\work")).toThrow("不支持 --dir");
+  });
+
   test("parses fork with an optional session reference", () => {
     expect(router.parse("/fork")).toEqual({ type: "fork" });
     expect(router.parse("/fork 2")).toEqual({ type: "fork", sessionId: "2" });
@@ -100,6 +116,14 @@ describe("CommandRouter", () => {
   test("parses stop without a cancel compatibility alias", () => {
     expect(router.parse("/stop")).toEqual({ type: "stop" });
     expect(router.parse("/cancel")).toEqual({ type: "prompt", text: "/cancel" });
+  });
+
+  test("parses a no-steer queued prompt", () => {
+    expect(router.parse("/nosteer 完成后再运行全部测试")).toEqual({
+      type: "nosteer",
+      text: "完成后再运行全部测试",
+    });
+    expect(() => router.parse("/nosteer")).toThrow("请输入要排队的 Prompt");
   });
 
   test("does not retain removed task aliases", () => {

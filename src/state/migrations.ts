@@ -34,6 +34,7 @@ export const migrations = [
   CREATE TABLE IF NOT EXISTS turn_snapshots (
     turn_id TEXT PRIMARY KEY,
     local_session_id TEXT NOT NULL,
+    context_key TEXT,
     snapshot_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -86,5 +87,41 @@ export const migrations = [
     base_title TEXT PRIMARY KEY,
     last_sequence INTEGER NOT NULL
   );
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS context_sessions (
+    context_key TEXT NOT NULL,
+    local_session_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (context_key, local_session_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_context_sessions_local_session
+    ON context_sessions(local_session_id);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS chat_contexts (
+    context_key TEXT PRIMARY KEY,
+    chat_type TEXT NOT NULL,
+    last_activity_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_contexts_type
+    ON chat_contexts(chat_type, updated_at);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS queued_prompts (
+    prompt_id TEXT PRIMARY KEY,
+    local_session_id TEXT NOT NULL,
+    context_key TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    local_image_paths_json TEXT NOT NULL DEFAULT '[]',
+    message_id TEXT,
+    reply_message_id TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_order
+    ON queued_prompts(local_session_id, created_at);
   `,
 ] as const;

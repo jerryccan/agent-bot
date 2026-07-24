@@ -109,6 +109,7 @@ export interface RemoteSessionSummary {
   cwd: string;
   source: string;
   status: RemoteSessionStatus;
+  createdAt?: number;
   updatedAt?: number;
   recencyAt?: number;
   lastTurnId?: string;

@@ -5,7 +5,12 @@ import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
 import { LOCAL_CARD_IMAGE_PATH } from "./LocalCardImage.js";
 import { renderMarkdownWithLocalImages } from "./LocalImageMarkdown.js";
-import type { FeishuOutbound, MessageReplyTarget } from "./types.js";
+import type {
+  CreatedGroup,
+  CreateGroupInput,
+  FeishuOutbound,
+  MessageReplyTarget,
+} from "./types.js";
 
 interface TenantTokenResponse {
   code: number;
@@ -19,6 +24,15 @@ interface SendMessageResponse {
   msg: string;
   data?: {
     message_id?: string;
+  };
+  error?: unknown;
+}
+
+interface CreateGroupResponse {
+  code: number;
+  msg: string;
+  data?: {
+    chat_id?: string;
   };
   error?: unknown;
 }
@@ -62,6 +76,42 @@ export class FeishuMessageClient implements FeishuOutbound {
     private readonly config: AppConfig,
     private readonly logger: Logger,
   ) {}
+
+  async createGroup(input: CreateGroupInput): Promise<CreatedGroup> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(
+        "https://open.feishu.cn/open-apis/im/v1/chats?user_id_type=open_id",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({
+            chat_mode: "group",
+            chat_type: "private",
+            name: input.name,
+            user_id_list: [input.userOpenId],
+          }),
+        },
+      );
+      const payload = (await response.json()) as CreateGroupResponse;
+      const chatId = payload.data?.chat_id;
+      if (!response.ok || payload.code !== 0 || !chatId) {
+        throw new FeishuApiError(
+          payload.msg || response.statusText,
+          payload.code,
+          payload,
+          "create group",
+          response.status,
+        );
+      }
+      return { chatId, name: input.name };
+    } catch (error) {
+      throw normalizeTransportError(error, "create group");
+    }
+  }
 
   async addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
     try {
@@ -511,7 +561,12 @@ export class FeishuApiError extends Error {
   constructor(
     message: string,
     readonly code: number,
-    readonly payload: SendMessageResponse | UploadImageResponse | ReactionResponse | DownloadImageErrorResponse,
+    readonly payload:
+      | SendMessageResponse
+      | CreateGroupResponse
+      | UploadImageResponse
+      | ReactionResponse
+      | DownloadImageErrorResponse,
     operation = "send",
     readonly httpStatus?: number,
     forceRetryable = false,
@@ -559,6 +614,7 @@ function finalAnswerCard(elements: Array<Record<string, unknown>>): Record<strin
     schema: "2.0",
     config: {
       update_multi: true,
+      width_mode: "fill",
     },
     body: {
       elements,
