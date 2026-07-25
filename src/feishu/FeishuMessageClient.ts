@@ -502,7 +502,7 @@ export class FeishuMessageClient implements FeishuOutbound {
       if (bytes.byteLength === 0) throw new Error("Feishu returned an empty image.");
       if (bytes.byteLength > 20 * 1024 * 1024) throw new Error("Feishu image exceeds the 20 MiB input limit.");
 
-      const sqlitePath = this.config.storage?.sqlitePath ?? path.resolve("data/acp-bot.sqlite");
+      const sqlitePath = this.config.storage?.sqlitePath ?? path.resolve("data/agent-bot.sqlite");
       const directory = path.join(path.dirname(sqlitePath), "inbound-images");
       await mkdir(directory, { recursive: true });
       const digest = createHash("sha256").update(`${messageId}:${imageKey}`).digest("hex");

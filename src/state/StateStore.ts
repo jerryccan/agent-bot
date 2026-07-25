@@ -10,6 +10,7 @@ export interface UserContextRecord {
   defaultAgent: string;
   currentSessionId?: string;
   previousSessionId?: string;
+  boundProjectCwd?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,6 +78,7 @@ interface UserContextRow {
   default_agent: string;
   current_session_id: string | null;
   previous_session_id: string | null;
+  bound_project_cwd: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -393,7 +395,7 @@ export class StateStore {
             status: "failed",
             completedAt,
             ...(startedAt === undefined ? {} : { durationMs: Math.max(0, completedAt - startedAt) }),
-            error: "acp-bot 已重启，原 ACP 进程中的执行无法继续。",
+            error: "Agent Bot 已重启，原 ACP 进程中的执行无法继续。",
           };
           delete failedSnapshot.activeTool;
           delete failedSnapshot.approval;
@@ -414,6 +416,13 @@ export class StateStore {
     this.db
       .prepare("UPDATE user_contexts SET default_agent = ?, updated_at = ? WHERE context_key = ?")
       .run(agentName, now, contextKey);
+  }
+
+  setBoundProjectCwd(contextKey: string, cwd?: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare("UPDATE user_contexts SET bound_project_cwd = ?, updated_at = ? WHERE context_key = ?")
+      .run(cwd ? path.resolve(cwd) : null, now, contextKey);
   }
 
   setCurrentSession(contextKey: string, localSessionId?: string): void {
@@ -1089,6 +1098,9 @@ export class StateStore {
     if (!existing.has("previous_session_id")) {
       this.db.exec("ALTER TABLE user_contexts ADD COLUMN previous_session_id TEXT");
     }
+    if (!existing.has("bound_project_cwd")) {
+      this.db.exec("ALTER TABLE user_contexts ADD COLUMN bound_project_cwd TEXT");
+    }
   }
 
   private ensureTurnSnapshotColumns(): void {
@@ -1132,6 +1144,7 @@ function mapUserContext(row: UserContextRow): UserContextRecord {
     defaultAgent: row.default_agent,
     currentSessionId: row.current_session_id ?? undefined,
     previousSessionId: row.previous_session_id ?? undefined,
+    boundProjectCwd: row.bound_project_cwd ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

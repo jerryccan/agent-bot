@@ -397,7 +397,7 @@ function response(payload: unknown) {
 }
 
 function config(): AppConfig {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-client-data-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-client-data-"));
   temporaryDirectories.push(directory);
   return {
     feishu: { appId: "cli_app", appSecret: "secret" },
@@ -410,7 +410,7 @@ function logger(): Logger {
 }
 
 function createImage(name: string): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-client-image-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-client-image-"));
   temporaryDirectories.push(directory);
   const filePath = path.join(directory, name);
   fs.writeFileSync(filePath, "fake image");

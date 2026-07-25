@@ -155,4 +155,4 @@ git add src/codex/CodexEventMapper.ts tests/codex/CodexEventMapper.test.ts src/f
 git commit -m "fix: deliver Codex screenshots in Feishu"
 ```
 
-Restart acp-bot, send a production final message referencing an existing local screenshot, read the message back, and confirm the card contains an image resource and previewable image element.
+Restart Agent Bot, send a production final message referencing an existing local screenshot, read the message back, and confirm the card contains an image resource and previewable image element.

@@ -20,6 +20,7 @@ interface TurnDeliveryRecord {
 export interface TurnPresentationStore {
   saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown, contextKey?: string): void;
   getTurnSnapshot(turnId: string): unknown;
+  getTurnContextKey?(turnId: string): string | undefined;
   saveTurnDelivery(turnId: string, patch: { progressMessageId?: string; lastCardHash?: string }): void;
   saveFinalDeliveryProgress(turnId: string, messageIds: string[]): void;
   markFinalDelivered(turnId: string, messageIds: string[]): void;
@@ -141,9 +142,9 @@ export class FeishuTurnPresenter {
     const activityId = `steer:${messageId ?? createId("message")}`;
     let entry = this.entries.get(turnId);
     if (!entry) {
-      const contextKey = this.sessionContexts.get(sessionId);
-      if (!contextKey) return;
       const saved = this.store.getTurnSnapshot(turnId);
+      const contextKey = this.store.getTurnContextKey?.(turnId) ?? this.sessionContexts.get(sessionId);
+      if (!contextKey) return;
       const initial = isTurnViewState(saved) && saved.sessionId === sessionId
         ? saved
         : {
@@ -296,18 +297,22 @@ export class FeishuTurnPresenter {
   }
 
   private createEntry(event: AgentEvent): TurnEntry | undefined {
-    const contextKey = this.sessionContexts.get(event.sessionId);
+    const saved = this.store.getTurnSnapshot(event.turnId);
+    const contextKey = this.store.getTurnContextKey?.(event.turnId) ?? this.sessionContexts.get(event.sessionId);
     if (!contextKey) return undefined;
     const startedAt = event.type === "turn_started" ? event.startedAt : Date.now();
+    const initial = isTurnViewState(saved) && saved.sessionId === event.sessionId
+      ? saved
+      : createTurnViewState(
+          event.sessionId,
+          event.turnId,
+          startedAt,
+          this.sessionTitles.get(event.sessionId),
+          undefined,
+          this.sessionCwds.get(event.sessionId),
+        );
     const state = reduceTurnEvent(
-      createTurnViewState(
-        event.sessionId,
-        event.turnId,
-        startedAt,
-        this.sessionTitles.get(event.sessionId),
-        undefined,
-        this.sessionCwds.get(event.sessionId),
-      ),
+      initial,
       event,
     );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;

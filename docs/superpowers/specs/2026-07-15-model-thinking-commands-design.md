@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make the active Codex model and reasoning effort visible and controllable from the gateway while preserving the existing model-switching command.
+Make the active Codex model and reasoning effort visible and controllable from the Agent Bot while preserving the existing model-switching command.
 
 ## Command Behavior
 
@@ -12,7 +12,7 @@ Make the active Codex model and reasoning effort visible and controllable from t
 - `/model <name>` continues to switch the active session to the named model.
 - The model change applies to the next turn and subsequent turns.
 - The requested model must exist in the App Server model catalog.
-- If the current reasoning effort is unsupported by the new model, the gateway changes it to that model's default reasoning effort and reports both the model change and the automatic fallback.
+- If the current reasoning effort is unsupported by the new model, the Agent Bot changes it to that model's default reasoning effort and reports both the model change and the automatic fallback.
 
 ### `/thinking`
 

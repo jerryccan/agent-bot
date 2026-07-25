@@ -295,7 +295,7 @@ export class CardRenderer {
     } else {
       elements.push({ tag: "hr" }, markdown("**当前等待的任务**：无"));
     }
-    return sectionCard("acp-bot 安全重启", elements, view.phase === "restarting" ? "blue" : "orange");
+    return sectionCard("Agent Bot 安全重启", elements, view.phase === "restarting" ? "blue" : "orange");
   }
 
   renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
@@ -321,7 +321,7 @@ export class CardRenderer {
       `**重启原因**：${inlineCode(view.restartReason)}`,
       "发送普通消息继续当前任务；发送 `/new` 创建新任务；发送 `/status` 查看详情。",
     );
-    return sectionCard("acp-bot 已启动", [markdown(lines.join("\n"))], "green");
+    return sectionCard("Agent Bot 已启动", [markdown(lines.join("\n"))], "green");
   }
 
   renderTurn(state: TurnViewState): Record<string, unknown> {
@@ -416,7 +416,7 @@ export class CardRenderer {
   }
 
   renderStatus(status: string): Record<string, unknown> {
-    return this.baseCard("ACP Gateway 状态", "blue", [markdown(status)]);
+    return this.baseCard("Agent Bot 状态", "blue", [markdown(status)]);
   }
 
   renderSectionsCard(

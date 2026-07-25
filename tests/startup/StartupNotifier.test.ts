@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 function createStore(): StateStore {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-startup-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-startup-"));
   directories.push(directory);
   const store = new StateStore(path.join(directory, "state.sqlite"));
   stores.push(store);
@@ -45,7 +45,7 @@ function markActive(
 const options = {
   defaultAgentName: "codex",
   defaultAgentTitle: "Codex",
-  cwd: "D:\\dev\\acp-bot",
+  cwd: "D:\\dev\\agent-bot",
 };
 
 describe("StartupNotifier", () => {
@@ -130,7 +130,7 @@ describe("StartupNotifier", () => {
 
     const serialized = JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1]);
     expect(serialized).toContain("未指定项目");
-    expect(serialized).not.toContain("D:\\\\dev\\\\acp-bot");
+    expect(serialized).not.toContain("D:\\\\dev\\\\agent-bot");
   });
 
   test("continues startup delivery when legacy metadata hydration fails", async () => {

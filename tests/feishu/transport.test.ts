@@ -353,7 +353,7 @@ test("dispatches group-thread mentions with an isolated task context and thread 
       root_id: "om_topic_root",
       thread_id: "omt_topic_1",
       content: JSON.stringify({ text: "  @_user_1   /status" }),
-      mentions: [{ key: "@_user_1", id: "ou_bot", id_type: "open_id", name: "ACP-Bot" }],
+      mentions: [{ key: "@_user_1", id: "ou_bot", id_type: "open_id", name: "Agent Bot" }],
     },
     sender: { sender_id: { open_id: "ou_member" } },
   });
@@ -393,7 +393,7 @@ test("dispatches group-main mentions without creating a thread reply", async () 
       chat_type: "group",
       message_type: "text",
       content: JSON.stringify({ text: "@_user_1 hello group" }),
-      mentions: [{ key: "@_user_1", id: "ou_bot", id_type: "open_id", name: "ACP-Bot" }],
+      mentions: [{ key: "@_user_1", id: "ou_bot", id_type: "open_id", name: "Agent Bot" }],
     },
     sender: { sender_id: { open_id: "ou_member" } },
   });

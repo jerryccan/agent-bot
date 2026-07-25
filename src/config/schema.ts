@@ -33,7 +33,7 @@ export const appConfigSchema = z.object({
     })
     .default({ cwd: "." }),
   storage: z.object({
-    sqlitePath: z.string().default("./data/acp-bot.sqlite"),
+    sqlitePath: z.string().default("./data/agent-bot.sqlite"),
   }),
   logging: z.object({
     level: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),

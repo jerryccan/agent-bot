@@ -262,7 +262,7 @@ Expected: all tests pass, TypeScript reports no errors, and `dist` builds succes
 
 - [ ] **Step 3: Restart the running feature server**
 
-Stop only the known acp-bot process tree, then launch `npm start` from the feature worktree with working directory `D:\dev\acp-bot` and `ACP_BOT_CONFIG` pointing at the feature worktree `agents.yaml`. Confirm the log contains a fresh `Feishu WebSocket connector started` entry.
+Stop only the known Agent Bot process tree, then launch `npm start` from the feature worktree with working directory `D:\dev\agent-bot` and `AGENT_BOT_CONFIG` pointing at the feature worktree `agents.yaml`. Confirm the log contains a fresh `Feishu WebSocket connector started` entry.
 
 - [ ] **Step 4: Verify the Feishu chain**
 
@@ -271,4 +271,3 @@ Use the existing bot chat to submit a prompt that causes at least two tool calls
 - [ ] **Step 5: Commit any verification-only corrections**
 
 If corrections were required, commit only those focused changes with a descriptive `fix:` message. If no correction was required, leave the worktree clean.
-

@@ -20,7 +20,7 @@ void main(args).catch((error: unknown) => {
 
 async function main(input: string[]): Promise<void> {
   const parsed = parseGlobalOptions(input);
-  if (parsed.configPath) process.env.ACP_BOT_CONFIG = parsed.configPath;
+  if (parsed.configPath) process.env.AGENT_BOT_CONFIG = parsed.configPath;
   const [command, ...rest] = parsed.args;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
@@ -42,12 +42,12 @@ async function main(input: string[]): Promise<void> {
     skillsCommand(rest);
     return;
   }
-  throw new Error(`未知命令：${command}。使用 acp-bot --help 查看帮助。`);
+  throw new Error(`未知命令：${command}。使用 agent-bot --help 查看帮助。`);
 }
 
 function skillsCommand(input: string[]): void {
   const [action = "status", ...rest] = input;
-  const sourcePath = fileURLToPath(new URL("../skills/acp-bot/", import.meta.url));
+  const sourcePath = fileURLToPath(new URL("../skills/agent-bot/", import.meta.url));
   const targetRoot = optionValue(rest, "--target") ?? resolveSystemSkillsRoot();
   const registry = new SkillRegistry(sourcePath, targetRoot);
   const json = rest.includes("--json");
@@ -56,16 +56,16 @@ function skillsCommand(input: string[]): void {
     const result = registry.install();
     if (json) printJson(result);
     else process.stdout.write(result.updated
-      ? `已注册 acp-bot Skill：${result.status.targetPath}\n`
-      : `acp-bot Skill 已是最新版本：${result.status.targetPath}\n`);
+      ? `已注册 Agent Bot Skill：${result.status.targetPath}\n`
+      : `Agent Bot Skill 已是最新版本：${result.status.targetPath}\n`);
     return;
   }
   if (action === "uninstall" || action === "unregister") {
     const removed = registry.uninstall();
     if (json) printJson({ removed, targetPath: registry.targetPath });
     else process.stdout.write(removed
-      ? `已反注册 acp-bot Skill：${registry.targetPath}\n`
-      : `acp-bot Skill 尚未注册：${registry.targetPath}\n`);
+      ? `已反注册 Agent Bot Skill：${registry.targetPath}\n`
+      : `Agent Bot Skill 尚未注册：${registry.targetPath}\n`);
     return;
   }
   if (action === "status") {
@@ -92,13 +92,13 @@ async function consoleCommand(input: string[]): Promise<void> {
   const endpoint = controlEndpoint(config.storage.sqlitePath);
   const force = input.includes("--force");
   if (!force && await isServerRunning(endpoint)) {
-    throw new Error("acp-bot server 正在运行。为避免争用同一任务状态，请先停止 server，或明确使用 --force。");
+    throw new Error("agent-bot server 正在运行。为避免争用同一任务状态，请先停止 server，或明确使用 --force。");
   }
   const entry = fileURLToPath(new URL("./index.js", import.meta.url));
   const result = spawnSync(process.execPath, [entry], {
     cwd: process.cwd(),
     stdio: "inherit",
-    env: { ...process.env, ACP_BOT_CONSOLE_ONLY: "1" },
+    env: { ...process.env, AGENT_BOT_CONSOLE_ONLY: "1" },
   });
   if (result.error) throw result.error;
   if (result.status && result.status !== 0) process.exitCode = result.status;
@@ -116,14 +116,14 @@ async function serverCommand(input: string[]): Promise<void> {
       else printServerStatus(response.data);
     } catch {
       if (rest.includes("--json")) printJson({ running: false });
-      else process.stdout.write("acp-bot server：未运行\n");
+      else process.stdout.write("agent-bot server：未运行\n");
       process.exitCode = 3;
     }
     return;
   }
   if (action === "start") {
     if (await isServerRunning(endpoint)) {
-      process.stdout.write("acp-bot server 已在运行。\n");
+      process.stdout.write("agent-bot server 已在运行。\n");
       return;
     }
     const entry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
@@ -132,12 +132,12 @@ async function serverCommand(input: string[]): Promise<void> {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
-      env: { ...process.env, ACP_BOT_RESTART_REASON: "通过 acp-bot CLI 启动" },
+      env: { ...process.env, AGENT_BOT_RESTART_REASON: "通过 agent-bot CLI 启动" },
     });
     child.unref();
     const running = await waitForServer(endpoint, 30_000);
     if (!running) throw new Error("已启动 Supervisor，但 server 未在 30 秒内就绪。请检查日志。");
-    process.stdout.write("acp-bot server 已启动。\n");
+    process.stdout.write("agent-bot server 已启动。\n");
     return;
   }
   if (action === "stop") {
@@ -147,7 +147,7 @@ async function serverCommand(input: string[]): Promise<void> {
   if (action === "restart") {
     const immediate = rest.includes("--immediate") || rest.includes("--force");
     const reason = optionValue(rest, "--reason")
-      ?? (immediate ? "通过 acp-bot CLI 立即重启" : "通过 acp-bot CLI 安全重启");
+      ?? (immediate ? "通过 agent-bot CLI 立即重启" : "通过 agent-bot CLI 安全重启");
     printResponse(await sendControlRequest(endpoint, {
       action: "server_restart",
       mode: immediate ? "immediate" : "safe",
@@ -311,7 +311,7 @@ function printServerStatus(data: unknown): void {
   const activity = value.activity && typeof value.activity === "object"
     ? value.activity as Record<string, unknown>
     : {};
-  process.stdout.write("acp-bot server：运行中\n");
+  process.stdout.write("agent-bot server：运行中\n");
   process.stdout.write(`PID：${value.pid ?? "-"}\n`);
   process.stdout.write(`启动时间：${value.startedAt ?? "-"}\n`);
   process.stdout.write(`Supervisor：${value.supervised ? "已启用" : "未启用"}\n`);
@@ -321,11 +321,11 @@ function printServerStatus(data: unknown): void {
 }
 
 function printSkillStatus(status: SkillRegistrationStatus): void {
-  process.stdout.write(`acp-bot Skill：${status.registered ? "已注册" : "未注册"}\n`);
+  process.stdout.write(`Agent Bot Skill：${status.registered ? "已注册" : "未注册"}\n`);
   process.stdout.write(`系统目录：${status.skillsRoot}\n`);
   process.stdout.write(`注册位置：${status.targetPath}\n`);
   if (status.registered) {
-    process.stdout.write(`归属：${status.managed ? "由 acp-bot 管理" : "外部目录（不会覆盖或删除）"}\n`);
+    process.stdout.write(`归属：${status.managed ? "由 Agent Bot 管理" : "外部目录（不会覆盖或删除）"}\n`);
     process.stdout.write(`版本：${status.upToDate ? "最新" : "需要更新"}\n`);
   }
 }
@@ -336,7 +336,7 @@ function printResponse(response: ControlResponse): void {
 }
 
 function ensureOk(response: ControlResponse): void {
-  if (!response.ok) throw new Error(response.message ?? "acp-bot 控制操作失败。");
+  if (!response.ok) throw new Error(response.message ?? "Agent Bot 控制操作失败。");
 }
 
 function optionValue(args: string[], name: string): string | undefined {
@@ -358,29 +358,29 @@ function printJson(value: unknown): void {
 }
 
 function printHelp(): void {
-  process.stdout.write(`acp-bot 命令行工具
+  process.stdout.write(`Agent Bot 命令行工具
 
 用法：
-  acp-bot [--config <path>] console [--force]
-  acp-bot [--config <path>] server status [--json]
-  acp-bot [--config <path>] server start
-  acp-bot [--config <path>] server stop
-  acp-bot [--config <path>] server restart [--safe | --immediate] [--reason <text>]
-  acp-bot [--config <path>] task list [--context <key>] [--status <status>] [--json]
-  acp-bot [--config <path>] task status <序号|任务ID> [--json]
-  acp-bot [--config <path>] task stop <序号|任务ID>
-  acp-bot [--config <path>] task title <序号|任务ID> <新标题>
-  acp-bot [--config <path>] task prompt <序号|任务ID> <prompt>
-  acp-bot skills status [--json] [--target <skills目录>]
-  acp-bot skills install|register [--json] [--target <skills目录>]
-  acp-bot skills uninstall|unregister [--json] [--target <skills目录>]
-  acp-bot skills path [--json] [--target <skills目录>]
+  agent-bot [--config <path>] console [--force]
+  agent-bot [--config <path>] server status [--json]
+  agent-bot [--config <path>] server start
+  agent-bot [--config <path>] server stop
+  agent-bot [--config <path>] server restart [--safe | --immediate] [--reason <text>]
+  agent-bot [--config <path>] task list [--context <key>] [--status <status>] [--json]
+  agent-bot [--config <path>] task status <序号|任务ID> [--json]
+  agent-bot [--config <path>] task stop <序号|任务ID>
+  agent-bot [--config <path>] task title <序号|任务ID> <新标题>
+  agent-bot [--config <path>] task prompt <序号|任务ID> <prompt>
+  agent-bot skills status [--json] [--target <skills目录>]
+  agent-bot skills install|register [--json] [--target <skills目录>]
+  agent-bot skills uninstall|unregister [--json] [--target <skills目录>]
+  agent-bot skills path [--json] [--target <skills目录>]
 
 说明：
   server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
   --immediate（或 --force）跳过空闲等待并立即重启 worker。
   task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。
   task prompt 不切换任务；机器人先在原会话显示 Prompt，再提交任务，响应继续发送到该会话。
-  skills 默认注册到系统通用 ~/.agents/skills 目录；ACP_BOT_SKILLS_DIR 可修改默认目录。
+  skills 默认注册到系统通用 ~/.agents/skills 目录；AGENT_BOT_SKILLS_DIR 可修改默认目录。
 `);
 }

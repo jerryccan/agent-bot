@@ -106,7 +106,7 @@ describe("CardRenderer", () => {
       restartReason: "用户执行 /restart 命令",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
-      cwd: "D:\\dev\\acp-bot",
+      cwd: "D:\\dev\\agent-bot",
       currentTask: {
         id: "sess_1",
         title: "Startup task metadata",
@@ -128,12 +128,12 @@ describe("CardRenderer", () => {
       body: { elements: expect.any(Array) },
     });
     expect(card).not.toHaveProperty("elements");
-    expect(serialized).toContain("acp-bot 已启动");
+    expect(serialized).toContain("Agent Bot 已启动");
     expect(serialized).toContain("在线");
     expect(serialized).toContain("重启原因");
     expect(serialized).toContain("用户执行 /restart 命令");
     expect(serialized).toContain("codex");
-    expect(serialized).toContain("D:\\\\dev\\\\acp-bot");
+    expect(serialized).toContain("D:\\\\dev\\\\agent-bot");
     expect(serialized).toContain("sess_1");
     expect(serialized).toContain("模型 / 思考强度 / 权限");
     expect(serialized).toContain("gpt-test");
@@ -159,7 +159,7 @@ describe("CardRenderer", () => {
       restartReason: "Supervisor 启动",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
-      cwd: "D:\\dev\\acp-bot",
+      cwd: "D:\\dev\\agent-bot",
       workspaceKind: "projectless",
     });
     const serialized = JSON.stringify(card);
@@ -170,7 +170,7 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("自动执行");
     expect(serialized).toContain("任务范围");
     expect(serialized).toContain("未指定项目");
-    expect(serialized).not.toContain("D:\\\\dev\\\\acp-bot");
+    expect(serialized).not.toContain("D:\\\\dev\\\\agent-bot");
     expect(serialized).toContain("下一条普通消息会创建新任务");
   });
 
@@ -404,7 +404,7 @@ describe("CardRenderer", () => {
 
   test("renders a view_image preview inside the collapsed tool panel", () => {
     const running = state();
-    const imagePath = "D:\\dev\\acp-bot\\.tmp\\preview.png";
+    const imagePath = "D:\\dev\\agent-bot\\.tmp\\preview.png";
     const tool = {
       id: "image_1",
       title: `查看图片 ${imagePath}`,
@@ -443,9 +443,9 @@ describe("CardRenderer", () => {
 
   test("shows project files as relative paths and external files as absolute paths", () => {
     const running = state();
-    running.projectCwd = "D:\\dev\\acp-bot";
+    running.projectCwd = "D:\\dev\\agent-bot";
     const files = [
-      { path: "D:\\dev\\acp-bot\\src\\index.ts", additions: 1 },
+      { path: "D:\\dev\\agent-bot\\src\\index.ts", additions: 1 },
       { path: "src/relative.ts", additions: 2 },
       { path: "..\\shared\\config.ts", deletions: 1 },
       { path: "E:\\external\\other.ts", additions: 3 },
@@ -470,7 +470,7 @@ describe("CardRenderer", () => {
     expect(markdownContents).toContain("src\\relative.ts  +2 -0");
     expect(markdownContents).toContain("D:\\dev\\shared\\config.ts  +0 -1");
     expect(markdownContents).toContain("E:\\external\\other.ts  +3 -0");
-    expect(markdownContents).not.toContain("D:\\dev\\acp-bot\\src\\index.ts");
+    expect(markdownContents).not.toContain("D:\\dev\\agent-bot\\src\\index.ts");
   });
 
   test("keeps a stable identity for a tool panel while command output is updated", () => {

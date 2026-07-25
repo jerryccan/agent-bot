@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 function fixture(title?: string, hasTurn = true) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-hydrator-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-hydrator-"));
   directories.push(directory);
   const store = new StateStore(path.join(directory, "state.sqlite"));
   stores.push(store);
@@ -46,7 +46,7 @@ function fixture(title?: string, hasTurn = true) {
 
 describe("SessionMetadataHydrator", () => {
   test("restores and synchronizes a persisted running Codex turn during startup", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-hydrator-running-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-hydrator-running-"));
     directories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);

@@ -11,6 +11,8 @@ describe("loadConfig", () => {
     expect(Object.keys(config.feishu).sort()).toEqual(
       ["appId", "appSecret", "transport", "useConsoleWhenMissingCredentials"].sort(),
     );
+    expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
+    expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
   });
 });
 

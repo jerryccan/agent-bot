@@ -1,12 +1,12 @@
-# acp-bot：通过飞书使用本机 Codex
+# Agent Bot：通过飞书使用本机 Codex
 
-`acp-bot` 把本机 Codex App Server 接到飞书机器人，并保留一个并行的命令行入口用于测试。飞书是主界面：每次请求只创建一张进度卡，卡片会原地更新；完成后再单独发送最终 Markdown 回复。
+Agent Bot 把本机 Codex App Server 接到飞书机器人，并保留一个并行的命令行入口用于测试。飞书是主界面：每次请求只创建一张进度卡，卡片会原地更新；完成后再单独发送最终 Markdown 回复。
 
 ## 使用前提
 
 - Node.js 20+
 - 已安装 Codex CLI，并能在运行机器上执行 `codex`
-- 用运行 `acp-bot` 的同一个系统用户完成过 Codex 登录
+- 用运行 Agent Bot 的同一个系统用户完成过 Codex 登录
 
 检查登录状态：
 
@@ -18,15 +18,15 @@ App Server 直接复用本机 Codex 的登录状态，不需要机器人用户�
 
 ## 系统 Skill
 
-项目内置了标准 `acp-bot` Skill，可通过 CLI 注册到系统通用的 `~/.agents/skills`：
+项目内置了标准 Agent Bot Skill，可通过 CLI 注册到系统通用的 `~/.agents/skills`：
 
 ```powershell
-acp-bot skills install
-acp-bot skills status
-acp-bot skills uninstall
+agent-bot skills install
+agent-bot skills status
+agent-bot skills uninstall
 ```
 
-`register`/`unregister` 分别是 `install`/`uninstall` 的别名。注册采用受管复制；更新会覆盖旧的受管版本，反注册不会删除非 acp-bot 创建的同名目录。可用 `--target <skills目录>` 或 `ACP_BOT_SKILLS_DIR` 修改目标根目录。
+`register`/`unregister` 分别是 `install`/`uninstall` 的别名。注册采用受管复制；更新会覆盖旧的受管版本，反注册不会删除非 Agent Bot 创建的同名目录。可用 `--target <skills目录>` 或 `AGENT_BOT_SKILLS_DIR` 修改目标根目录。
 
 ## 启动
 
@@ -37,36 +37,36 @@ npm run build
 npm start
 ```
 
-`npm start` 通过常驻 supervisor 启动 acp-bot。acp-bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。开发调试可使用 `npm run dev` 直接运行单进程。
+`npm start` 通过常驻 supervisor 启动 Agent Bot。Agent Bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。开发调试可使用 `npm run dev` 直接运行单进程。
 
-## acp-bot 命令行工具
+## Agent Bot 命令行工具
 
-构建后可以通过 npm 注册本地 `acp-bot` 命令，或直接使用 `npm run cli --`：
+构建后可以通过 npm 注册本地 `agent-bot` 命令，或直接使用 `npm run cli --`：
 
 ```powershell
 npm run build
 npm link
-acp-bot --help
+agent-bot --help
 # 未执行 npm link 时：npm run cli -- server status
 ```
 
 Console UI：
 
 ```powershell
-acp-bot console
+agent-bot console
 ```
 
-Console UI 默认拒绝与已运行的 server 争用同一份任务状态；只有明确需要并理解风险时才使用 `acp-bot console --force`。
+Console UI 默认拒绝与已运行的 server 争用同一份任务状态；只有明确需要并理解风险时才使用 `agent-bot console --force`。
 
 Server 管理：
 
 ```powershell
-acp-bot server status
-acp-bot server start
-acp-bot server stop
-acp-bot server restart                         # 默认安全重启
-acp-bot server restart --safe --reason "部署卡片更新"
-acp-bot server restart --immediate --reason "修复阻塞进程"
+agent-bot server status
+agent-bot server start
+agent-bot server stop
+agent-bot server restart                         # 默认安全重启
+agent-bot server restart --safe --reason "部署卡片更新"
+agent-bot server restart --immediate --reason "修复阻塞进程"
 ```
 
 安全重启会等待所有群聊、话题和私聊任务结束，确认最终回答完成投递，并连续 15 秒没有新消息后再重启。等待期间新任务会重置空闲计时。`--immediate`（或 `--force`）跳过任务空闲判断，适合明确需要立刻替换 worker 的场景。
@@ -74,14 +74,14 @@ acp-bot server restart --immediate --reason "修复阻塞进程"
 任务查询和管理：
 
 ```powershell
-acp-bot task list
-acp-bot task list --status running
-acp-bot task list --context "chat_id:oc_xxx"
-acp-bot task status 2
-acp-bot task status 019f... --json
-acp-bot task stop 019f...
-acp-bot task title 2 "新的任务标题"
-acp-bot task prompt 2 "继续运行测试并汇报结果"
+agent-bot task list
+agent-bot task list --status running
+agent-bot task list --context "chat_id:oc_xxx"
+agent-bot task status 2
+agent-bot task status 019f... --json
+agent-bot task stop 019f...
+agent-bot task title 2 "新的任务标题"
+agent-bot task prompt 2 "继续运行测试并汇报结果"
 ```
 
 序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止、改标题和发送 Prompt 通过运行中 worker 的本地控制端点执行。`task prompt` 不会切换任何群聊的当前任务；机器人会先把 Prompt 文本发送到该任务最近一次使用的群聊、话题或私聊，发送成功后再提交给任务，思考卡片和最终回答也继续发送到同一位置。
@@ -91,7 +91,7 @@ acp-bot task prompt 2 "继续运行测试并汇报结果"
 ```env
 FEISHU_APP_ID=cli_xxxxxxxxxxxxx
 FEISHU_APP_SECRET=your_app_secret
-ACP_BOT_CONFIG=./agents.yaml
+AGENT_BOT_CONFIG=./agents.yaml
 ```
 
 默认会同时启动：
@@ -159,7 +159,7 @@ defaults:
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
 - `/new [title] [--dir <cwd> | --nodir]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，`--nodir` 强制创建 Projectless 任务，两者互斥；都不指定时继承当前任务的项目或 Projectless 形态
-- `/newgroup [title]`：创建名为 `[agent name] title` 的私有飞书群并邀请命令发送者，不立即创建任务，同时在新群正文发送一次 Sessions 卡片；省略标题时使用 `yy-mm-dd hh:mm` 本地时间。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
+- `/newgroup [title]`：创建名为 `[agent] <Project 目录> <title|新任务> - yy-mm-dd hh:mm` 的私有飞书群并邀请命令发送者，不立即创建任务，同时在新群正文发送一次 Sessions 卡片；过长的 Project 目录会从中间压缩。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
 - `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务创建分支任务，并立即切换到新分支；源任务正在运行时从最近已完成轮次分支，没有已完成轮次时才拒绝；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
 - `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
 - `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑
@@ -176,7 +176,7 @@ defaults:
 
 所有以 `/` 开头的消息都会严格按机器人命令解析。未知命令会直接提示用户并建议查看 `/help`，不会作为 Prompt 发送给模型；带图片的斜杠消息也遵循相同规则。
 - `/status [序号或 Codex 任务 ID]`：查看当前任务，或按最近一次 `/sessions` 的序号/任务 ID 查看指定任务的详细状态、执行步骤和最终结果；Status 卡片支持点击 `刷新` 在原卡片获取最新状态
-- `/restart`：优雅重启 acp-bot；可绕过阻塞的任务消息队列
+- `/restart`：优雅重启 Agent Bot；可绕过阻塞的任务消息队列
 - `/agent [agent]`：不带参数列出全部 Agent 并标出当前项；带参数时切换默认 Agent
 - `/use <agent> [cwd]`：切换默认 agent 并创建任务
 - `/help`：显示帮助
@@ -188,7 +188,7 @@ defaults:
 
 ## 持久化与恢复
 
-SQLite 默认位于 `./data/acp-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、排队 Prompt、进度快照和最终消息投递账本。
+SQLite 默认位于 `./data/agent-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、排队 Prompt、进度快照和最终消息投递账本。
 
 进程重启时会恢复持久化的活动 turn，并通过 `thread/read` 与 Codex 的真实状态校准。运行中收到新的 turn ID、线程终态通知或控制请求失败时也会重新校准；投递账本会阻止已经成功发送的最终回复被重复发送。App Server 请求均有有限超时，不会永久占住飞书消息队列。
 
@@ -196,9 +196,9 @@ supervisor 使用退出码 `75` 区分 `/restart` 发起的主动重启；其他
 
 ### 统一 Codex 任务
 
-`/sessions` 通过只读的 `thread/list` 发现 Codex Desktop、CLI、acp-bot 或其他 App Server 创建的任务。任务不再按创建端分类，对外统一使用 Codex 任务 ID，并为当前展示结果生成从 1 开始的序号；卡片默认显示前 5 条，点击 `更多任务` 后每次在原卡片继续展开 5 条。每个任务都显示 `New` 和 `Status`：`New` 会重新读取来源任务，并继承其项目目录、模型、思考强度和权限模式来创建新任务，然后把当前聊天切换过去；`Status` 复用 `/status <任务 ID>` 发送该任务的详细状态卡，不改变当前任务。链接式文字操作携带稳定任务 ID，不受列表顺序变化影响。空闲任务显示 `Switch`；从 acp-bot 切走但当前活跃轮次仍是由 acp-bot 触发的任务也保持 `Switch`，可以随时切回且不会中断其执行；其他外部运行中的任务显示 `Stop`，点击后只确认向 Codex 发送 Interrupt，并把原卡片操作更新为 `Switch`，后续子进程与 turn 状态由 Codex 自行维护。`/switch` 不带参数时在当前任务和上一个任务之间往返，也可以使用最近一次列表中的序号或任务 ID 切换任务；首次切换时只建立消息路由，保留原任务的工作目录和上下文，不回放历史消息。
+`/sessions` 通过只读的 `thread/list` 发现 Codex Desktop、CLI、Agent Bot 或其他 App Server 创建的任务。任务不再按创建端分类，对外统一使用 Codex 任务 ID，并为当前展示结果生成从 1 开始的序号；卡片默认显示前 5 条，点击 `更多任务` 后每次在原卡片继续展开 5 条。每个任务都显示 `New` 和 `Status`：`New` 会重新读取来源任务，并继承其项目目录、模型、思考强度和权限模式来创建新任务，然后把当前聊天切换过去；`Status` 复用 `/status <任务 ID>` 发送该任务的详细状态卡，不改变当前任务。链接式文字操作携带稳定任务 ID，不受列表顺序变化影响。空闲任务显示 `Switch`；从 Agent Bot 切走但当前活跃轮次仍是由 Agent Bot 触发的任务也保持 `Switch`，可以随时切回且不会中断其执行；其他外部运行中的任务显示 `Stop`，点击后只确认向 Codex 发送 Interrupt，并把原卡片操作更新为 `Switch`，后续子进程与 turn 状态由 Codex 自行维护。`/switch` 不带参数时在当前任务和上一个任务之间往返，也可以使用最近一次列表中的序号或任务 ID 切换任务；首次切换时只建立消息路由，保留原任务的工作目录和上下文，不回放历史消息。
 
-内部仍保存一个本地路由键，用于关联飞书卡片、投递账本和当前聊天，但它不代表另一类任务，也不会在用户界面中显示。为避免干扰其他 Codex 客户端，acp-bot 只会续写自己启动的当前 turn；首次加载以及每次继续消息前都会核对真实 turn ID。若任务正在其他客户端执行，acp-bot 不会 `resume` 或 `steer`；只有用户在 `/sessions` 卡片中明确点击 `Stop` 时才会发送 `interrupt`。
+内部仍保存一个本地路由键，用于关联飞书卡片、投递账本和当前聊天，但它不代表另一类任务，也不会在用户界面中显示。为避免干扰其他 Codex 客户端，Agent Bot 只会续写自己启动的当前 turn；首次加载以及每次继续消息前都会核对真实 turn ID。若任务正在其他客户端执行，Agent Bot 不会 `resume` 或 `steer`；只有用户在 `/sessions` 卡片中明确点击 `Stop` 时才会发送 `interrupt`。
 
 ## 保留 ACP Agent
 

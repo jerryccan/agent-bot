@@ -5,6 +5,7 @@ export const migrations = [
     default_agent TEXT NOT NULL,
     current_session_id TEXT,
     previous_session_id TEXT,
+    bound_project_cwd TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );

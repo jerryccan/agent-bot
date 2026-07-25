@@ -28,6 +28,6 @@ export interface TaskStatusControlData {
 export function controlEndpoint(sqlitePath: string): string {
   const key = createHash("sha256").update(path.resolve(sqlitePath).toLowerCase()).digest("hex").slice(0, 16);
   return process.platform === "win32"
-    ? `\\\\.\\pipe\\acp-bot-${key}`
-    : path.join(path.dirname(path.resolve(sqlitePath)), `.acp-bot-${key}.sock`);
+    ? `\\\\.\\pipe\\agent-bot-${key}`
+    : path.join(path.dirname(path.resolve(sqlitePath)), `.agent-bot-${key}.sock`);
 }

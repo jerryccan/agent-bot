@@ -90,8 +90,8 @@ export class AcpSessionManager {
       protocolVersion: 1,
       clientCapabilities: {},
       clientInfo: {
-        name: "feishu-acp-gateway",
-        title: "Feishu ACP Gateway",
+        name: "agent-bot",
+        title: "Agent Bot",
         version: "0.1.0",
       },
     });

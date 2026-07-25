@@ -86,7 +86,7 @@ Expected: PASS.
 ### Task 3: Deploy and smoke-test the real Feishu path
 
 **Files:**
-- Modify operational state: `D:/dev/acp-bot/data/acp-bot.sqlite`
+- Modify operational state: `D:/dev/agent-bot/data/agent-bot.sqlite`
 - No source file changes unless the smoke test exposes a new reproducible defect.
 
 **Interfaces:**

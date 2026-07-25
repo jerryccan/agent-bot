@@ -48,7 +48,7 @@ Expected: all tests pass and both TypeScript commands exit successfully.
 
 - [x] **Step 5: Restart and run a live DPI capture**
 
-Restart `acp-bot`, ask the active Feishu Codex session to capture the complete dual-monitor desktop, inspect the generated PNG dimensions, and confirm they equal the DPI-aware virtual bounds reported by Windows.
+Restart `agent-bot`, ask the active Feishu Codex session to capture the complete dual-monitor desktop, inspect the generated PNG dimensions, and confirm they equal the DPI-aware virtual bounds reported by Windows.
 
 - [x] **Step 6: Commit**
 

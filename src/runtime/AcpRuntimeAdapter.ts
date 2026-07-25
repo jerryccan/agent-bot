@@ -155,11 +155,11 @@ export class AcpRuntimeAdapter implements AgentRuntime {
   }
 
   async setModel(): Promise<void> {
-    throw new Error("ACP runtime does not expose model selection through the gateway.");
+    throw new Error("ACP runtime does not expose model selection through Agent Bot.");
   }
 
   async setReasoningEffort(_sessionId: string, _effort: string): Promise<void> {
-    throw new Error("ACP runtime does not expose reasoning effort through the gateway.");
+    throw new Error("ACP runtime does not expose reasoning effort through Agent Bot.");
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void> {

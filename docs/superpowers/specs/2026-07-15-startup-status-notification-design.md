@@ -2,7 +2,7 @@
 
 ## Goal
 
-After every successful acp-bot restart, send one Feishu status card to each previously known Feishu conversation so the user can immediately see that the bot is online and what state it will resume from.
+After every successful Agent Bot restart, send one Feishu status card to each previously known Feishu conversation so the user can immediately see that the bot is online and what state it will resume from.
 
 ## Delivery behavior
 
@@ -15,7 +15,7 @@ After every successful acp-bot restart, send one Feishu status card to each prev
 
 ## Card content
 
-The card uses a green `acp-bot 已启动` header and contains:
+The card uses a green `Agent Bot 已启动` header and contains:
 
 - Online status.
 - Local startup time.

@@ -1,11 +1,11 @@
 {
-  "name": "acp-bot",
+  "name": "agent-bot",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Feishu-first gateway for local Codex App Server and ACP agents.",
+  "description": "Feishu-first Agent Bot for local Codex App Server and ACP agents.",
   "bin": {
-    "acp-bot": "dist/cli.js"
+    "agent-bot": "dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",

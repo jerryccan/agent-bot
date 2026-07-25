@@ -49,8 +49,8 @@ defaults:
   cwd: "."
 
 storage:
-  sqlitePath: "./data/acp-bot.sqlite"
+  sqlitePath: "./data/agent-bot.sqlite"
 
 logging:
   level: "info"
-  path: "./logs/acp-bot.log"
+  path: "./logs/agent-bot.log"

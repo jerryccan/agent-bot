@@ -38,7 +38,7 @@ export class CodexProcessManager implements AppServerClientProvider {
       for (const listener of this.disconnectListeners) listener(error);
     });
     await client.request("initialize", {
-      clientInfo: { name: "feishu_acp_gateway", title: "Feishu ACP Gateway", version: "0.1.0" },
+      clientInfo: { name: "agent-bot", title: "Agent Bot", version: "0.1.0" },
     });
     client.notify("initialized", {});
     return client;

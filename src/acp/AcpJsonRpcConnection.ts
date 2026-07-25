@@ -180,7 +180,7 @@ export class AcpJsonRpcConnection extends EventEmitter {
         id,
         error: {
           code: -32601,
-          message: `Client method is not implemented by gateway: ${method}`,
+          message: `Client method is not implemented by Agent Bot: ${method}`,
         },
       });
       return;

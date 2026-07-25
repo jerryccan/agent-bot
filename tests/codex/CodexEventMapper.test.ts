@@ -126,7 +126,7 @@ describe("mapCodexNotification", () => {
     const item = {
       type: "imageView",
       id: "image_1",
-      path: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+      path: "D:\\dev\\agent-bot\\.tmp\\monitor-1.png",
     };
 
     expect(mapCodexNotification("item/started", { threadId: "thr_1", turnId: "turn_1", item })).toEqual({
@@ -138,8 +138,8 @@ describe("mapCodexNotification", () => {
         id: "image_1",
         kind: "image_view",
         status: "running",
-        command: "view_image D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
-        imagePath: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+        command: "view_image D:\\dev\\agent-bot\\.tmp\\monitor-1.png",
+        imagePath: "D:\\dev\\agent-bot\\.tmp\\monitor-1.png",
       }),
     });
     expect(mapCodexNotification("item/completed", { threadId: "thr_1", turnId: "turn_1", item })).toEqual({
@@ -151,8 +151,8 @@ describe("mapCodexNotification", () => {
         id: "image_1",
         kind: "image_view",
         status: "completed",
-        command: "view_image D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
-        imagePath: "D:\\dev\\acp-bot\\.tmp\\monitor-1.png",
+        command: "view_image D:\\dev\\agent-bot\\.tmp\\monitor-1.png",
+        imagePath: "D:\\dev\\agent-bot\\.tmp\\monitor-1.png",
       }),
     });
   });

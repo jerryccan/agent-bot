@@ -17,7 +17,7 @@ afterEach(() => {
 
 describe("SafeRestartNotifier", () => {
   test("sends and updates one card only in persisted private chats", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-restart-notifier-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-notifier-"));
     directories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -89,7 +89,7 @@ describe("SafeRestartNotifier", () => {
   });
 
   test("serializes changed countdown cards instead of coalescing intermediate updates", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-restart-countdown-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-countdown-"));
     directories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);

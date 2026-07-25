@@ -11,12 +11,12 @@ afterEach(() => {
 });
 
 function fixture(): { root: string; source: string; skillsRoot: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "acp-skill-registry-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-skill-registry-"));
   directories.push(root);
-  const source = path.join(root, "bundled", "acp-bot");
+  const source = path.join(root, "bundled", "agent-bot");
   const skillsRoot = path.join(root, ".agents", "skills");
   fs.mkdirSync(path.join(source, "agents"), { recursive: true });
-  fs.writeFileSync(path.join(source, "SKILL.md"), "---\nname: acp-bot\ndescription: test\n---\n", "utf8");
+  fs.writeFileSync(path.join(source, "SKILL.md"), "---\nname: agent-bot\ndescription: test\n---\n", "utf8");
   fs.writeFileSync(path.join(source, "agents", "openai.yaml"), "interface: {}\n", "utf8");
   return { root, source, skillsRoot };
 }
@@ -24,7 +24,7 @@ function fixture(): { root: string; source: string; skillsRoot: string } {
 describe("SkillRegistry", () => {
   test("defaults to the system-wide agent skills directory", () => {
     expect(resolveSystemSkillsRoot({}, "C:\\Users\\tester")).toBe(path.resolve("C:\\Users\\tester", ".agents", "skills"));
-    expect(resolveSystemSkillsRoot({ ACP_BOT_SKILLS_DIR: "D:\\shared-skills" }, "ignored"))
+    expect(resolveSystemSkillsRoot({ AGENT_BOT_SKILLS_DIR: "D:\\shared-skills" }, "ignored"))
       .toBe(path.resolve("D:\\shared-skills"));
   });
 
@@ -34,7 +34,7 @@ describe("SkillRegistry", () => {
 
     expect(registry.status()).toMatchObject({ registered: false, managed: false, upToDate: false });
     expect(registry.install()).toMatchObject({ updated: true, status: { registered: true, managed: true, upToDate: true } });
-    expect(fs.readFileSync(path.join(registry.targetPath, "SKILL.md"), "utf8")).toContain("name: acp-bot");
+    expect(fs.readFileSync(path.join(registry.targetPath, "SKILL.md"), "utf8")).toContain("name: agent-bot");
     expect(registry.install()).toMatchObject({ updated: false });
 
     fs.appendFileSync(path.join(source, "SKILL.md"), "\nupdated\n", "utf8");
@@ -48,13 +48,13 @@ describe("SkillRegistry", () => {
 
   test("refuses to replace or remove an unmanaged skill", () => {
     const { source, skillsRoot } = fixture();
-    const target = path.join(skillsRoot, "acp-bot");
+    const target = path.join(skillsRoot, "agent-bot");
     fs.mkdirSync(target, { recursive: true });
     fs.writeFileSync(path.join(target, "SKILL.md"), "user content", "utf8");
     const registry = new SkillRegistry(source, skillsRoot);
 
     expect(registry.status()).toMatchObject({ registered: true, managed: false, upToDate: false });
-    expect(() => registry.install()).toThrow("不由 acp-bot 管理");
+    expect(() => registry.install()).toThrow("不由 Agent Bot 管理");
     expect(() => registry.uninstall()).toThrow("拒绝删除");
     expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("user content");
   });
