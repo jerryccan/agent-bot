@@ -20,6 +20,14 @@ describe("local CLI control", () => {
     expect(controlEndpoint(`${sqlitePath}.other`)).not.toBe(endpoint);
   });
 
+  test("keeps the legacy control namespace while using the legacy database", () => {
+    const legacy = controlEndpoint(path.join(os.tmpdir(), "acp-bot.sqlite"));
+    const renamed = controlEndpoint(path.join(os.tmpdir(), "agent-bot.sqlite"));
+
+    expect(legacy).toContain("acp-bot-");
+    expect(renamed).toContain("agent-bot-");
+  });
+
   test("round-trips requests and reports handler failures", async () => {
     const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-${process.pid}-${Date.now()}.sqlite`));
     const server = new LocalControlServer(endpoint, async (request) => {
