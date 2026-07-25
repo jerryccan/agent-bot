@@ -886,7 +886,7 @@ describe("ProxySessionController", () => {
     });
 
     expect(outbound.createGroup).toHaveBeenCalledWith({
-      name: "[codex] 广州天气",
+      name: expect.stringMatching(/^\[codex\] Projectless 广州天气 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/),
       userOpenId: "ou_current_user",
     });
     expect(runtime.createSession).not.toHaveBeenCalled();
@@ -896,16 +896,72 @@ describe("ProxySessionController", () => {
     expect(presenter.registerSession).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      "群已创建。直接发送消息即可在本群开始一个新任务。",
+      "群已创建。\n当前 Project 目录：未绑定（Projectless）\n直接发送消息即可在本群开始一个新任务。",
     );
     const groupCardCall = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(groupCardCall?.[0]).toBe("chat_id:oc_new_group");
     expect(groupCardCall?.[1]).toMatchObject({ header: { title: { content: "Codex 任务" } } });
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已创建飞书群：[codex] 广州天气，邀请你加入，并在新群中发送了 Sessions 卡片。",
+      expect.stringMatching(
+        /^已创建飞书群：\[codex\] Projectless 广州天气 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}，邀请你加入，并在新群中发送了 Sessions 卡片。$/,
+      ),
     );
     expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
+  });
+
+  test("binds a new group to the source project and uses it for the first automatic task", async () => {
+    const { controller, runtime, store, outbound } = fixture();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-source-project-"));
+    tempDirs.push(project);
+    await controller.onMessage(message(`/new --dir "${project}"`));
+
+    await controller.onMessage({
+      messageId: "new-project-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Project room",
+    });
+
+    expect(store.getUserContext("chat_id:oc_new_group")).toMatchObject({
+      currentSessionId: undefined,
+      boundProjectCwd: project,
+    });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      `群已创建。\n当前 Project 目录：${project}\n直接发送消息即可在本群开始一个新任务。`,
+    );
+
+    await controller.onMessage(groupMessage("oc_new_group", "inspect this project"));
+
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: project,
+      title: "inspect this project",
+    }));
+  });
+
+  test("lets an explicit directory override a new group's bound project", async () => {
+    const { controller, runtime } = fixture();
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "acp-source-project-"));
+    const explicitProject = fs.mkdtempSync(path.join(os.tmpdir(), "acp-explicit-project-"));
+    tempDirs.push(sourceProject, explicitProject);
+    await controller.onMessage(message(`/new --dir "${sourceProject}"`));
+    await controller.onMessage({
+      messageId: "new-project-group-override",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Override room",
+    });
+
+    await controller.onMessage(groupMessage("oc_new_group", `/new --dir "${explicitProject}"`));
+
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: explicitProject,
+    }));
   });
 
   test("uses the local yy-mm-dd hh:mm time when newgroup omits the title", async () => {
@@ -921,8 +977,37 @@ describe("ProxySessionController", () => {
     });
 
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(groupInput.name).toMatch(/^\[codex\] \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(groupInput.name).toMatch(
+      /^\[codex\] Projectless 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/,
+    );
     expect(runtime.createSession).not.toHaveBeenCalled();
+  });
+
+  test("middle-truncates a long project directory in the generated group name", async () => {
+    const { controller, outbound } = fixture();
+    const project = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "acp-long-project-")),
+      "a-very-long-middle-directory-name",
+      "project-tail",
+    );
+    fs.mkdirSync(project, { recursive: true });
+    tempDirs.push(path.dirname(path.dirname(project)));
+    await controller.onMessage(message(`/new --dir "${project}"`));
+
+    await controller.onMessage({
+      messageId: "new-long-project-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup",
+    });
+
+    const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(Array.from(groupInput.name)).toHaveLength(60);
+    expect(groupInput.name).toMatch(
+      /^\[codex\] .+….+project-tail 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/,
+    );
   });
 
   test("rejects newgroup when the message does not contain a Feishu open_id", async () => {

@@ -631,7 +631,15 @@ export class ProxySessionController {
     let record = this.currentSession(contextKey);
     if (!record) {
       const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
-      record = await this.createSession(contextKey, context.defaultAgent, undefined, false, true, text, replyTarget);
+      record = await this.createSession(
+        contextKey,
+        context.defaultAgent,
+        this.inheritedNewTaskCwd(contextKey),
+        false,
+        true,
+        text,
+        replyTarget,
+      );
     }
     await this.promptSession(record, contextKey, text, messageId, replyTarget, localImagePaths);
   }
@@ -1257,8 +1265,13 @@ export class ProxySessionController {
     if (!userId?.startsWith("ou_")) {
       throw new Error("/newgroup 只能由具有 open_id 的飞书用户消息触发。");
     }
-    const title = normalizeTaskTitle(requestedTitle) ?? formatTimestampTaskTitle(new Date());
-    const groupName = `[${agentName}] ${title}`;
+    const boundProjectCwd = this.currentProjectCwd(sourceContextKey);
+    const groupName = formatNewGroupName(
+      agentName,
+      boundProjectCwd,
+      normalizeTaskTitle(requestedTitle) ?? "新任务",
+      new Date(),
+    );
     if (Array.from(groupName).length > 60) {
       throw new Error(`飞书群名最多 60 个字符；当前格式化后的群名为 ${Array.from(groupName).length} 个字符。`);
     }
@@ -1270,9 +1283,14 @@ export class ProxySessionController {
     const groupContextKey = `chat_id:${group.chatId}`;
     this.store.recordChatContext(groupContextKey, "group");
     this.store.getOrCreateUserContext(groupContextKey, agentName);
+    if (boundProjectCwd) this.store.setBoundProjectCwd(groupContextKey, boundProjectCwd);
     await this.outbound.sendText(
       groupContextKey,
-      "群已创建。直接发送消息即可在本群开始一个新任务。",
+      [
+        "群已创建。",
+        `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
+        "直接发送消息即可在本群开始一个新任务。",
+      ].join("\n"),
     );
     await this.listSessions(groupContextKey);
     await this.outbound.sendText(
@@ -2351,7 +2369,7 @@ export class ProxySessionController {
         title: "任务管理",
         lines: [
           "**/new [title] [--dir &#60;cwd&#62; | --nodir]**　使用默认 Agent 创建任务；--nodir 强制创建 Projectless 任务",
-          "**/newgroup [title]**　创建飞书群、邀请当前用户并发送 Sessions 卡片；省略标题时使用当前时间",
+          "**/newgroup [title]**　创建飞书群并绑定当前项目；邀请当前用户并发送 Sessions 卡片",
           "**/fork [序号或任务 ID]**　从当前或指定任务创建分支；运行中使用最近已完成轮次",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
           "**/sessions [关键词]**　查找本机任务",
@@ -2408,10 +2426,15 @@ export class ProxySessionController {
 
   private inheritedNewTaskCwd(contextKey: string): string | undefined {
     const current = this.currentSession(contextKey);
-    if (!current) return undefined;
+    if (!current) return this.store.getUserContext(contextKey)?.boundProjectCwd;
     return detectProjectlessWorkspace(current.cwd)
       ? createProjectlessWorkspace().cwd
       : current.cwd;
+  }
+
+  private currentProjectCwd(contextKey: string): string | undefined {
+    const current = this.currentSession(contextKey);
+    return current && !detectProjectlessWorkspace(current.cwd) ? current.cwd : undefined;
   }
 
   private requireCurrentSession(contextKey: string): SessionRecord {
@@ -2821,6 +2844,31 @@ function formatTimestampTaskTitle(date: Date): string {
   const hour = String(date.getHours()).padStart(2, "0");
   const minute = String(date.getMinutes()).padStart(2, "0");
   return `${year}-${month}-${day} ${hour}:${minute}`;
+}
+
+function formatNewGroupName(
+  agentName: string,
+  projectCwd: string | undefined,
+  taskTitle: string,
+  date: Date,
+): string {
+  const prefix = `[${agentName}] `;
+  const suffix = ` ${taskTitle} - ${formatTimestampTaskTitle(date)}`;
+  const availableProjectLength = 60 - Array.from(prefix).length - Array.from(suffix).length;
+  if (availableProjectLength <= 0) return `${prefix}${projectCwd ?? "Projectless"}${suffix}`;
+  const project = truncateMiddleCharacters(projectCwd ?? "Projectless", availableProjectLength);
+  return `${prefix}${project}${suffix}`;
+}
+
+function truncateMiddleCharacters(value: string, maxLength: number): string {
+  const characters = Array.from(value);
+  if (characters.length <= maxLength) return value;
+  if (maxLength <= 0) return "";
+  if (maxLength === 1) return "…";
+  const retained = maxLength - 1;
+  const headLength = Math.ceil(retained / 2);
+  const tailLength = Math.floor(retained / 2);
+  return `${characters.slice(0, headLength).join("")}…${characters.slice(-tailLength).join("")}`;
 }
 
 function parseAgentGroupName(value: string): { agentName: string; title: string } | undefined {

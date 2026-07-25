@@ -159,7 +159,7 @@ defaults:
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
 - `/new [title] [--dir <cwd> | --nodir]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，`--nodir` 强制创建 Projectless 任务，两者互斥；都不指定时继承当前任务的项目或 Projectless 形态
-- `/newgroup [title]`：创建名为 `[agent name] title` 的私有飞书群并邀请命令发送者，不立即创建任务，同时在新群正文发送一次 Sessions 卡片；省略标题时使用 `yy-mm-dd hh:mm` 本地时间。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
+- `/newgroup [title]`：创建名为 `[agent] <Project 目录> <title|新任务> - yy-mm-dd hh:mm` 的私有飞书群并邀请命令发送者，不立即创建任务，同时在新群正文发送一次 Sessions 卡片；过长的 Project 目录会从中间压缩。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
 - `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务创建分支任务，并立即切换到新分支；源任务正在运行时从最近已完成轮次分支，没有已完成轮次时才拒绝；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
 - `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
 - `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑

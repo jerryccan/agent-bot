@@ -33,6 +33,27 @@ describe("StateStore runtime metadata", () => {
     ]);
   });
 
+  test("persists a project binding on a taskless chat context", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.getOrCreateUserContext("chat_id:new_group", "codex");
+    first.setBoundProjectCwd("chat_id:new_group", "D:\\work\\project");
+    expect(first.getUserContext("chat_id:new_group")).toMatchObject({
+      currentSessionId: undefined,
+      boundProjectCwd: "D:\\work\\project",
+    });
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.getUserContext("chat_id:new_group")?.boundProjectCwd).toBe("D:\\work\\project");
+  });
+
   test("persists Feishu chat types independently from task contexts", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
     tempDirectories.push(directory);

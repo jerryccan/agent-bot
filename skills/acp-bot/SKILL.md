@@ -54,7 +54,7 @@ Use `task prompt` to send input to a specific task without changing any chat's c
 
 For a long-running objective in the active Feishu task, use `/goal <objective>`. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control automatic continuation, `/goal edit <objective>` to revise it, and `/goal clear` to remove it. Stopping a Goal turn through ACP Bot also pauses the Goal before sending Interrupt so it does not immediately continue.
 
-Use `/newgroup [title]` in Feishu to create a private group named `[agent-name] title` and invite the command sender without creating a task. ACP Bot sends a Sessions card to the new group body immediately. When the title is omitted, ACP Bot uses the local `yy-mm-dd hh:mm` time. The first ordinary message sent later in the new group follows the normal automatic task-creation flow.
+Use `/newgroup [title]` in Feishu to create a private group named `[agent] <project directory> <title or 新任务> - yy-mm-dd hh:mm` and invite the command sender without creating a task. Long project directories are truncated in the middle to keep the name within Feishu's 60-character limit. ACP Bot sends a notification containing the current Project directory plus a Sessions card to the new group body immediately. If the source chat's current task belongs to a project, the new group persists that project as its default; the first ordinary message or `/new` inherits it unless `/new --dir <cwd>` or `/new --nodir` explicitly overrides it.
 
 Use `/new [title] --nodir` to force a new Codex Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
 
