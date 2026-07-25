@@ -3,9 +3,9 @@ import type { Command } from "./commandTypes.js";
 export class CommandRouter {
   parse(text: string): Command {
     const trimmed = text.trim();
-    if (trimmed.startsWith("!")) {
+    if (trimmed.startsWith("!") || trimmed.startsWith("！")) {
       const command = trimmed.slice(1).trim();
-      if (!command) throw new Error("请输入要执行的命令，例如：! ls");
+      if (!command) throw new Error("请输入要执行的命令，例如：! ls 或 ！ls");
       return { type: "shell", command };
     }
     if (!trimmed.startsWith("/")) {
@@ -81,7 +81,7 @@ export class CommandRouter {
       case "help":
         return { type: "help" };
       default:
-        return { type: "prompt", text };
+        throw new Error(`未知命令：${rawCommand}。发送 /help 查看可用命令。`);
     }
   }
 }
@@ -97,12 +97,20 @@ function requireArg<T>(value: string | undefined, name: string, create: (value: 
 function parseNewCommand(args: string[]): Extract<Command, { type: "new" }> {
   const titleParts: string[] = [];
   let cwd: string | undefined;
+  let projectless = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
+    if (argument === "--nodir") {
+      if (projectless) throw new Error("/new 只能指定一次 --nodir。");
+      if (cwd !== undefined) throw new Error("/new 的 --dir 和 --nodir 不能同时使用。");
+      projectless = true;
+      continue;
+    }
     if (argument !== "--dir") {
       titleParts.push(argument);
       continue;
     }
+    if (projectless) throw new Error("/new 的 --dir 和 --nodir 不能同时使用。");
     if (cwd !== undefined) throw new Error("/new 只能指定一次 --dir。");
     const directory = args[index + 1];
     if (!directory || directory === "--dir") {
@@ -115,6 +123,7 @@ function parseNewCommand(args: string[]): Extract<Command, { type: "new" }> {
     type: "new",
     title: titleParts.join(" ").trim() || undefined,
     cwd,
+    ...(projectless ? { projectless: true } : {}),
   };
 }
 

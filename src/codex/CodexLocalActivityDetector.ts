@@ -1,6 +1,7 @@
 import { open } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
+import type { PermissionMode } from "../runtime/types.js";
 
 const READ_CHUNK_SIZE = 64 * 1024;
 const TASK_STARTED = Buffer.from('"type":"task_started"');
@@ -11,6 +12,19 @@ const PATTERN_OVERLAP = Math.max(TASK_STARTED.length, TASK_COMPLETE.length, TURN
 interface ThreadPathRow {
   id: string;
   rollout_path: string;
+}
+
+interface ThreadSettingsRow {
+  id: string;
+  model: string | null;
+  reasoning_effort: string | null;
+  approval_mode: string | null;
+}
+
+export interface CodexLocalThreadSettings {
+  model?: string;
+  reasoningEffort?: string;
+  permissionMode?: PermissionMode;
 }
 
 /**
@@ -52,6 +66,34 @@ export class CodexLocalActivityDetector {
       if (task.active) active.set(row.id, task.turnId);
     }
     return active;
+  }
+
+  async threadSettings(threadIds: string[]): Promise<Map<string, CodexLocalThreadSettings>> {
+    const ids = [...new Set(threadIds.filter(Boolean))];
+    if (ids.length === 0) return new Map();
+
+    let database: Database.Database | undefined;
+    try {
+      database = new Database(path.join(this.codexHome, "state_5.sqlite"), {
+        readonly: true,
+        fileMustExist: true,
+      });
+      const placeholders = ids.map(() => "?").join(", ");
+      const rows = database.prepare(
+        `SELECT id, model, reasoning_effort, approval_mode FROM threads WHERE id IN (${placeholders})`,
+      ).all(...ids) as ThreadSettingsRow[];
+      return new Map(rows.map((row) => [row.id, {
+        ...(row.model?.trim() ? { model: row.model.trim() } : {}),
+        ...(row.reasoning_effort?.trim() ? { reasoningEffort: row.reasoning_effort.trim() } : {}),
+        ...(row.approval_mode?.trim()
+          ? { permissionMode: row.approval_mode.trim() === "never" ? "auto" : "confirm" }
+          : {}),
+      }]));
+    } catch {
+      return new Map();
+    } finally {
+      database?.close();
+    }
   }
 }
 

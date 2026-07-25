@@ -73,6 +73,7 @@ describe("StartupNotifier", () => {
       title: "Current task title",
       model: "gpt-test",
       reasoningEffort: "high",
+      permissionMode: "confirm",
       lastTurnStatus: "running",
     });
     store.setCurrentSession("chat_id:private", "sess_1");
@@ -98,6 +99,7 @@ describe("StartupNotifier", () => {
     expect(JSON.stringify(privateCard)).toContain("Current task title");
     expect(JSON.stringify(privateCard)).toContain("gpt-test");
     expect(JSON.stringify(privateCard)).toContain("high");
+    expect(JSON.stringify(privateCard)).toContain("执行前确认");
     expect(JSON.stringify(privateCard)).toContain("用户执行 /restart 命令");
     expect(JSON.stringify(privateCard)).toContain("D:\\\\dev\\\\session-project");
     expect(JSON.stringify(privateCard)).not.toContain("未指定项目");

@@ -109,10 +109,14 @@ export interface RemoteSessionSummary {
   cwd: string;
   source: string;
   status: RemoteSessionStatus;
+  model?: string;
+  reasoningEffort?: string;
+  permissionMode?: PermissionMode;
   createdAt?: number;
   updatedAt?: number;
   recencyAt?: number;
   lastTurnId?: string;
+  lastCompletedTurnId?: string;
   lastTurnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
   lastActivity?: string;
   finalResponse?: string;

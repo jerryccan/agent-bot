@@ -63,6 +63,21 @@ interface StatusCardOptions {
   forceSwitchTaskId?: string;
 }
 
+interface ModelCardOptions {
+  sessionId?: string;
+  updateMessageId?: string;
+}
+
+interface ThinkingCardOptions extends ModelCardOptions {
+  expectedModel?: string;
+}
+
+interface SessionExecutionSettings {
+  model?: string;
+  reasoningEffort?: string;
+  permissionMode?: PermissionMode;
+}
+
 export interface ProxyLifecycle {
   supervised?: boolean;
   restart(contextKey: string): Promise<void>;
@@ -167,7 +182,7 @@ export class ProxySessionController {
     }
     let command: Command;
     try {
-      command = imageCount > 0
+      command = imageCount > 0 && !message.text.trimStart().startsWith("/")
         ? { type: "prompt", text: message.text.trim() || "请分析这张图片。" }
         : this.router.parse(message.text);
     } catch (error) {
@@ -275,6 +290,10 @@ export class ProxySessionController {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.forkSessionReference(contextKey, sessionId);
           await this.refreshSessionsCardFromAction(scopedAction);
+        } else if (kind === "session_new") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          await this.createProjectSessionFromReference(contextKey, sessionId);
+          await this.refreshSessionsCardFromAction(scopedAction);
         } else if (kind === "session_stop") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.stopSessionReference(contextKey, sessionId);
@@ -282,6 +301,30 @@ export class ProxySessionController {
           else await this.refreshSessionsCardFromAction(scopedAction, sessionId);
         } else if (kind === "session_status") {
           await this.status(contextKey, String(scopedAction.value.sessionId ?? ""));
+        } else if (kind === "session_status_refresh") {
+          await this.refreshStatusCardFromAction(scopedAction);
+        } else if (kind === "model_select") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          const model = String(scopedAction.value.model ?? "");
+          await this.model(contextKey, model, {
+            sessionId,
+            updateMessageId: scopedAction.messageId,
+          });
+        } else if (kind === "model_open") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          await this.model(contextKey, undefined, {
+            sessionId,
+            updateMessageId: scopedAction.messageId,
+          });
+        } else if (kind === "reasoning_select") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          const model = String(scopedAction.value.model ?? "");
+          const effort = String(scopedAction.value.effort ?? "");
+          await this.thinking(contextKey, effort, {
+            sessionId,
+            updateMessageId: scopedAction.messageId,
+            expectedModel: model,
+          });
         } else if (kind === "approval") {
           await this.resolveApproval(scopedAction);
         }
@@ -456,10 +499,13 @@ export class ProxySessionController {
         await this.runShellCommand(contextKey, command.command);
         return;
       case "new":
+        if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "codex") {
+          throw new Error("/new --nodir 仅支持 Codex Agent。");
+        }
         await this.createSession(
           contextKey,
           context.defaultAgent,
-          command.cwd ?? this.inheritedNewTaskCwd(contextKey),
+          command.projectless ? undefined : command.cwd ?? this.inheritedNewTaskCwd(contextKey),
           true,
           false,
           undefined,
@@ -960,21 +1006,24 @@ export class ProxySessionController {
     const remote = runtime.readRemoteSession
       ? await runtime.readRemoteSession(remoteSessionId)
       : undefined;
-    const lastTurnId = remote?.lastTurnId ?? source?.lastTurnId;
-    const snapshot = turnViewSnapshot(lastTurnId ? this.store.getTurnSnapshot(lastTurnId) : undefined);
+    const latestTurnId = remote?.lastTurnId ?? source?.lastTurnId;
+    const latestSnapshot = turnViewSnapshot(latestTurnId ? this.store.getTurnSnapshot(latestTurnId) : undefined);
     const isRunning = remote
       ? isRemoteSessionActive(remote)
       : Boolean(
         (source && runtime.getSession(source.localSessionId)?.activeTurnId)
         || source?.lastTurnStatus === "running"
-        || isTurnStillRunning(snapshot?.status),
+        || isTurnStillRunning(latestSnapshot?.status),
       );
-    if (isRunning) {
-      throw new Error(`${sourceLabel}的轮次仍在执行，暂时不能 fork。请等待本轮结束后重试。`);
-    }
+    const lastTurnId = isRunning ? remote?.lastCompletedTurnId : latestTurnId;
     if (!lastTurnId) {
+      if (isRunning) {
+        throw new Error(`${sourceLabel}正在执行，且还没有已完成轮次可供 fork。请等待当前轮次完成后重试。`);
+      }
       throw new Error(`${sourceLabel}还没有可供 fork 的轮次。请先完成至少一轮对话。`);
     }
+    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(lastTurnId));
+    const forkedFromHistoricalTurn = isRunning && lastTurnId !== latestTurnId;
 
     const cwd = remote?.cwd || source?.cwd;
     if (!cwd) throw new Error("指定的 Codex 任务没有可用的工作目录，暂时不能 fork。");
@@ -1015,7 +1064,9 @@ export class ProxySessionController {
       this.persistRuntimeSession(record, forked, "ready");
       this.store.updateRuntimeSession(localSessionId, {
         lastTurnId,
-        lastTurnStatus: mapRemoteTurnStatus(remote?.lastTurnStatus)
+        lastTurnStatus: forkedFromHistoricalTurn
+          ? "completed"
+          : mapRemoteTurnStatus(remote?.lastTurnStatus)
           ?? forkedTurnStatus(snapshot?.status)
           ?? source?.lastTurnStatus,
       });
@@ -1025,17 +1076,86 @@ export class ProxySessionController {
         sourceLocalSessionId: source?.localSessionId,
         sourceRemoteSessionId: remoteSessionId,
         sourceTurnId: lastTurnId,
+        sourceWasRunning: isRunning,
         forkedLocalSessionId: localSessionId,
         forkedRemoteSessionId: forked.remoteSessionId,
       });
+      const forkSourceLabel = forkedFromHistoricalTurn ? `${sourceLabel}最近已完成轮次` : sourceLabel;
       await this.outbound.sendText(
         contextKey,
-        `已从${sourceLabel}创建分支并切换到新任务：${forked.title ? `${forked.title}（${forked.remoteSessionId}）` : forked.remoteSessionId}`,
+        `已从${forkSourceLabel}创建分支并切换到新任务：${forked.title ? `${forked.title}（${forked.remoteSessionId}）` : forked.remoteSessionId}`,
       );
     } catch (error) {
       this.store.updateSession(localSessionId, { status: "failed" });
       throw error;
     }
+  }
+
+  private async createProjectSessionFromReference(contextKey: string, reference: string): Promise<void> {
+    const taskId = this.resolveSessionReference(contextKey, reference);
+    const direct = this.store.getSession(taskId);
+    if (direct?.status === "closed") {
+      throw new Error(`找不到任务：${taskId}`);
+    }
+    const source = direct ?? this.store.findSessionByRemoteSessionId(taskId);
+    if (source && !this.isCodexSession(source)) {
+      throw new Error("指定任务不是 Codex 任务，暂时不能按项目创建新任务。");
+    }
+
+    let agentName: string;
+    let runtime: AgentRuntime;
+    if (source) {
+      agentName = source.agentName;
+      runtime = this.runtimes.forAgent(this.ensureAgent(agentName));
+    } else {
+      const agentEntry = Object.entries(this.config.agents).find(([, agent]) => agent.kind === "codex");
+      if (!agentEntry) throw new Error("未配置 Codex Agent。");
+      [agentName] = agentEntry;
+      runtime = this.runtimes.get("codex");
+    }
+
+    const remoteSessionId = source?.remoteSessionId ?? taskId;
+    let remote: RemoteSessionSummary | undefined;
+    if (runtime.readRemoteSession && remoteSessionId) {
+      try {
+        remote = await runtime.readRemoteSession(remoteSessionId);
+      } catch (error) {
+        if (!source) throw error;
+        this.logger.warn(
+          { error, contextKey, taskId: remoteSessionId },
+          "Failed to refresh the source task before creating a project task; using the local project path.",
+        );
+      }
+    }
+
+    const cwd = remote?.cwd || source?.cwd;
+    if (!cwd) {
+      throw new Error("指定的 Codex 任务没有可用的工作目录，暂时不能按项目创建新任务。");
+    }
+    const executionSettings: SessionExecutionSettings = {
+      model: remote?.model ?? source?.model,
+      reasoningEffort: remote?.reasoningEffort ?? source?.reasoningEffort,
+      permissionMode: remote?.permissionMode ?? source?.permissionMode ?? "auto",
+    };
+    const created = await this.createSession(
+      contextKey,
+      agentName,
+      cwd,
+      true,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      executionSettings,
+    );
+    this.store.audit(contextKey, "project_session_created", {
+      sourceLocalSessionId: source?.localSessionId,
+      sourceRemoteSessionId: remoteSessionId,
+      createdLocalSessionId: created.localSessionId,
+      createdRemoteSessionId: created.remoteSessionId,
+      cwd,
+      ...executionSettings,
+    });
   }
 
   private async startTurn(
@@ -1081,6 +1201,7 @@ export class ProxySessionController {
     prompt?: string,
     replyTarget?: MessageReplyTarget,
     requestedTitle?: string,
+    executionSettings: SessionExecutionSettings = {},
   ): Promise<SessionRecord> {
     const agent = this.ensureAgent(agentName);
     const localSessionId = createId("sess");
@@ -1089,7 +1210,14 @@ export class ProxySessionController {
       ? createProjectlessWorkspace({ prompt: initialTitle }).cwd
       : path.resolve(cwd ?? this.config.defaults.cwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
-    if (initialTitle) this.store.updateRuntimeSession(localSessionId, { title: initialTitle });
+    if (initialTitle || executionSettings.model || executionSettings.reasoningEffort || executionSettings.permissionMode) {
+      this.store.updateRuntimeSession(localSessionId, {
+        title: initialTitle,
+        model: executionSettings.model,
+        reasoningEffort: executionSettings.reasoningEffort,
+        permissionMode: executionSettings.permissionMode,
+      });
+    }
     this.store.setCurrentSession(contextKey, localSessionId);
     this.outbound.registerSession(localSessionId, contextKey, initialTitle, sessionCwd);
     const runtime = this.runtimes.forAgent(agent);
@@ -1100,7 +1228,9 @@ export class ProxySessionController {
         agentName,
         cwd: sessionCwd,
         title: initialTitle,
-        permissionMode: "auto",
+        model: executionSettings.model,
+        reasoningEffort: executionSettings.reasoningEffort,
+        permissionMode: executionSettings.permissionMode ?? "auto",
       });
       this.persistRuntimeSession(record, session, session.activeTurnId ? "running" : "ready");
       const saved = this.store.getSession(localSessionId) ?? record;
@@ -1144,9 +1274,10 @@ export class ProxySessionController {
       groupContextKey,
       "群已创建。直接发送消息即可在本群开始一个新任务。",
     );
+    await this.listSessions(groupContextKey);
     await this.outbound.sendText(
       sourceContextKey,
-      `已创建飞书群：${group.name}，并邀请你加入。`,
+      `已创建飞书群：${group.name}，邀请你加入，并在新群中发送了 Sessions 卡片。`,
     );
   }
 
@@ -1451,28 +1582,29 @@ export class ProxySessionController {
     await loaded.runtime.respondToApproval(sessionId, requestId, decision);
   }
 
-  private async model(contextKey: string, model?: string): Promise<void> {
-    const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
+  private async model(contextKey: string, model?: string, options: ModelCardOptions = {}): Promise<void> {
+    const record = options.sessionId
+      ? this.requireSession(contextKey, options.sessionId)
+      : this.requireCurrentSession(contextKey);
+    const loaded = await this.loadSession(record);
+    const models = await loaded.runtime.listModels();
     if (!model) {
-      const models = await loaded.runtime.listModels();
       const currentModel = loaded.session.model ?? models.find((item) => item.isDefault)?.id;
-      const lines = models.map((item) => {
-        const isCurrent = item.id === currentModel;
-        const marker = isCurrent ? "✅ " : "";
-        const label = isCurrent ? "（当前）" : item.isDefault ? "（默认）" : "";
-        const displayName = item.displayName && item.displayName !== item.id ? `：${item.displayName}` : "";
-        return `- ${marker}${asInlineCode(item.id)}${label}${displayName}`;
+      const card = this.cardRenderer.renderModelSelector({
+        sessionId: loaded.record.localSessionId,
+        contextKey,
+        currentModel,
+        reasoningEffort: loaded.session.reasoningEffort,
+        models,
       });
-      await this.outbound.sendMarkdown(contextKey, [
-        `当前模型：${asInlineCode(currentModel ?? "默认")}`,
-        `当前思考强度：${loaded.session.reasoningEffort ?? "默认"}`,
-        "支持的模型：",
-        lines.join("\n") || "- 无",
-      ].join("\n"));
+      if (options.updateMessageId) {
+        await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+      } else {
+        await this.outbound.sendInteractiveCard(contextKey, card);
+      }
       return;
     }
 
-    const models = await loaded.runtime.listModels();
     const selected = models.find((item) => item.id === model);
     if (!selected) throw new Error(`未知模型：${model}`);
     const currentEffort = loaded.session.reasoningEffort;
@@ -1489,6 +1621,21 @@ export class ProxySessionController {
     const effortMessage = nextEffort && nextEffort !== currentEffort
       ? `，思考强度已自动调整为 ${nextEffort}`
       : "";
+    if (options.updateMessageId) {
+      await this.outbound.updateInteractiveCard(
+        contextKey,
+        options.updateMessageId,
+        this.cardRenderer.renderReasoningSelector({
+          sessionId: loaded.record.localSessionId,
+          contextKey,
+          model,
+          currentEffort: nextEffort,
+          options: selected.supportedReasoningEfforts,
+          notice: `模型已切换为 ${cardCode(model)}，请选择思考模式。`,
+        }),
+      );
+      return;
+    }
     await this.outbound.sendText(contextKey, `模型已切换为 ${model}${effortMessage}，从下一次请求生效。`);
   }
 
@@ -1610,10 +1757,8 @@ export class ProxySessionController {
       ? "已超时（120s）"
       : `退出码 ${result.exitCode ?? "未知"}`;
     await this.outbound.sendMarkdown(contextKey, [
-      `**目录**：${asInlineCode(cwd)}`,
-      `**命令**：${asInlineCode(command.replace(/\s+/g, " ").trim())}`,
-      codeBlock(output || "（无输出）", "text"),
-      `${status}${result.outputTruncated ? " · 输出已截断" : ""}`,
+      codeBlock(`$  ${command.trim()}\n${output || "（无输出）"}`, "text"),
+      `${asInlineCode(cwd)} · ${status}${result.outputTruncated ? " · 输出已截断" : ""}`,
     ].join("\n"));
   }
 
@@ -1656,23 +1801,33 @@ export class ProxySessionController {
     });
   }
 
-  private async thinking(contextKey: string, effort?: string): Promise<void> {
-    const loaded = await this.loadSession(this.requireCurrentSession(contextKey));
+  private async thinking(contextKey: string, effort?: string, options: ThinkingCardOptions = {}): Promise<void> {
+    const record = options.sessionId
+      ? this.requireSession(contextKey, options.sessionId)
+      : this.requireCurrentSession(contextKey);
+    const loaded = await this.loadSession(record);
     const models = await loaded.runtime.listModels();
     const currentModel = models.find((item) => item.id === loaded.session.model)
       ?? models.find((item) => item.isDefault);
     if (!currentModel) throw new Error("当前运行时没有可配置思考强度的模型。");
+    if (options.expectedModel && currentModel.id !== options.expectedModel) {
+      throw new Error("模型已发生变化，请重新打开 /model。");
+    }
     const supported = currentModel.supportedReasoningEfforts;
 
     if (!effort) {
-      const lines = supported.map((option) =>
-        `- ${asInlineCode(option.value)}${option.description ? `：${option.description}` : ""}`,
-      );
-      await this.outbound.sendMarkdown(contextKey, [
-        `当前思考强度：${loaded.session.reasoningEffort ?? currentModel.defaultReasoningEffort ?? "默认"}`,
-        "可选强度：",
-        lines.join("\n") || "无",
-      ].join("\n"));
+      const card = this.cardRenderer.renderReasoningSelector({
+        sessionId: loaded.record.localSessionId,
+        contextKey,
+        model: currentModel.id,
+        currentEffort: loaded.session.reasoningEffort ?? currentModel.defaultReasoningEffort,
+        options: supported,
+      });
+      if (options.updateMessageId) {
+        await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+      } else {
+        await this.outbound.sendInteractiveCard(contextKey, card);
+      }
       return;
     }
 
@@ -1682,6 +1837,21 @@ export class ProxySessionController {
     }
     await loaded.runtime.setReasoningEffort(loaded.record.localSessionId, effort);
     this.store.updateRuntimeSession(loaded.record.localSessionId, { reasoningEffort: effort });
+    if (options.updateMessageId) {
+      await this.outbound.updateInteractiveCard(
+        contextKey,
+        options.updateMessageId,
+        this.cardRenderer.renderReasoningSelector({
+          sessionId: loaded.record.localSessionId,
+          contextKey,
+          model: currentModel.id,
+          currentEffort: effort,
+          options: supported,
+          notice: `思考模式已切换为 ${cardCode(effort)}，从下一次请求生效。`,
+        }),
+      );
+      return;
+    }
     await this.outbound.sendText(contextKey, `思考强度已切换为 ${effort}，从下一次请求生效。`);
   }
 
@@ -1760,6 +1930,16 @@ export class ProxySessionController {
         },
       }];
       actions.push({
+        text: "New",
+        value: {
+          action: "session_new",
+          sessionId: entry.id,
+          ...(searchTerm ? { searchTerm } : {}),
+          visibleCount: String(visibleCount),
+          contextKey,
+        },
+      });
+      actions.push({
         text: "Fork",
         value: {
           action: "session_fork",
@@ -1791,9 +1971,9 @@ export class ProxySessionController {
       cardEntries,
       [
         ...(remoteHint ? [remoteHint] : []),
-        "点击 **Switch** 快速切换；点击 **Fork** 从任务最新已完成轮次创建分支；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
+        "点击 **New** 在对应任务的项目中创建新任务；点击 **Switch** 快速切换；点击 **Fork** 从任务最新已完成轮次创建分支；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
         "也可发送 **/switch [序号或任务 ID]**；不带参数切回上一个任务。外部正在执行的回合不会被接管。",
-        "发送 **/fork [序号或任务 ID]**，可从当前或指定任务的最新已结束轮次创建分支。",
+        "发送 **/fork [序号或任务 ID]**，可从当前或指定任务创建分支；任务运行中时使用最近已完成轮次。",
         "点击 **Status**，或发送 **/status [序号或任务 ID]**，查看当前或指定任务状态。",
       ],
       hasMore ? {
@@ -1833,7 +2013,10 @@ export class ProxySessionController {
 
   private async refreshStatusCardFromAction(action: CardAction, forceSwitchTaskId?: string): Promise<void> {
     if (!action.messageId) return;
-    await this.status(action.contextKey, String(action.value.sessionId ?? ""), {
+    const sessionId = typeof action.value.sessionId === "string" && action.value.sessionId.trim()
+      ? action.value.sessionId
+      : undefined;
+    await this.status(action.contextKey, sessionId, {
       updateMessageId: action.messageId,
       forceSwitchTaskId,
     });
@@ -2089,7 +2272,7 @@ export class ProxySessionController {
     const botOwnsActiveTurn = Boolean(localCurrent && remote && isBotOwnedActiveTurn(localCurrent, remote));
     const active = Boolean(activeTurnId || current?.status === "running" || remoteActive);
     const forceSwitch = Boolean(taskId && options.forceSwitchTaskId === taskId);
-    const actions: TaskListCardAction[] = !taskId ? []
+    const taskActions: TaskListCardAction[] = !taskId ? []
       : remoteActive && !botOwnsActiveTurn && !forceSwitch
         ? [statusCardAction("Stop", "danger", "session_stop", taskId, contextKey)]
         : isCurrent && active && !forceSwitch
@@ -2097,6 +2280,10 @@ export class ProxySessionController {
           : !isCurrent
             ? [statusCardAction("Switch", "default", "session_switch", taskId, contextKey)]
             : [];
+    const actions: TaskListCardAction[] = [
+      statusRefreshAction(taskId, contextKey),
+      ...taskActions,
+    ];
     const card = this.cardRenderer.renderSectionsCard(title, sections, actions);
     if (options.updateMessageId) await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
     else await this.outbound.sendInteractiveCard(contextKey, card);
@@ -2137,13 +2324,16 @@ export class ProxySessionController {
     ];
     const title = `Codex 状态：${truncateText((remote.title ?? remote.preview ?? remote.id).replace(/\s+/g, " "), 40)}`;
     const showStop = isRemoteSessionActive(remote) && options.forceSwitchTaskId !== remote.id;
-    const actions = [statusCardAction(
-      showStop ? "Stop" : "Switch",
-      showStop ? "danger" : "default",
-      showStop ? "session_stop" : "session_switch",
-      remote.id,
-      contextKey,
-    )];
+    const actions = [
+      statusRefreshAction(remote.id, contextKey),
+      statusCardAction(
+        showStop ? "Stop" : "Switch",
+        showStop ? "danger" : "default",
+        showStop ? "session_stop" : "session_switch",
+        remote.id,
+        contextKey,
+      ),
+    ];
     const card = this.cardRenderer.renderSectionsCard(title, sections, actions);
     if (options.updateMessageId) await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
     else await this.outbound.sendInteractiveCard(contextKey, card);
@@ -2160,9 +2350,9 @@ export class ProxySessionController {
       {
         title: "任务管理",
         lines: [
-          "**/new [title] [--dir <cwd>]**　使用默认 Agent 创建任务；普通参数作为标题，省略目录时继承当前项目形态",
-          "**/newgroup [title]**　创建飞书群并邀请当前用户；省略标题时使用当前时间",
-          "**/fork [序号或任务 ID]**　从当前或指定任务的最新已结束轮次创建分支并切换过去",
+          "**/new [title] [--dir &#60;cwd&#62; | --nodir]**　使用默认 Agent 创建任务；--nodir 强制创建 Projectless 任务",
+          "**/newgroup [title]**　创建飞书群、邀请当前用户并发送 Sessions 卡片；省略标题时使用当前时间",
+          "**/fork [序号或任务 ID]**　从当前或指定任务创建分支；运行中使用最近已完成轮次",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
           "**/sessions [关键词]**　查找本机任务",
           "**/switch [序号或任务 ID]**　不填参数切回上一个任务",
@@ -2265,6 +2455,21 @@ function statusCardAction(
     text,
     type,
     value: { action, sessionId, cardView: "status", contextKey },
+  };
+}
+
+function statusRefreshAction(
+  sessionId: string | undefined,
+  contextKey: string,
+): TaskListCardAction {
+  return {
+    text: "刷新",
+    value: {
+      action: "session_status_refresh",
+      ...(sessionId ? { sessionId } : {}),
+      cardView: "status",
+      contextKey,
+    },
   };
 }
 

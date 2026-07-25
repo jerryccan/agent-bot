@@ -112,6 +112,7 @@ describe("CardRenderer", () => {
         title: "Startup task metadata",
         model: "gpt-test",
         reasoningEffort: "high",
+        permissionMode: "confirm",
         agentName: "codex",
         sessionStatus: "running",
         lastTurnStatus: "running",
@@ -134,9 +135,10 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("codex");
     expect(serialized).toContain("D:\\\\dev\\\\acp-bot");
     expect(serialized).toContain("sess_1");
-    expect(serialized).toContain("模型 / 思考强度");
+    expect(serialized).toContain("模型 / 思考强度 / 权限");
     expect(serialized).toContain("gpt-test");
     expect(serialized).toContain("high");
+    expect(serialized).toContain("执行前确认");
     expect(serialized).toContain("Startup task metadata");
     expect(serialized).toContain("任务 ID");
     expect(serialized).toContain("任务状态 / Agent");
@@ -147,8 +149,8 @@ describe("CardRenderer", () => {
     expect(objects.filter((item) => item.tag === "button" || item.tag === "action")).toHaveLength(0);
     const content = String(objects.find((item) => item.tag === "markdown")?.content);
     expect(content.indexOf("当前任务")).toBeLessThan(content.indexOf("工作目录"));
-    expect(content.indexOf("工作目录")).toBeLessThan(content.indexOf("模型 / 思考强度"));
-    expect(content.indexOf("模型 / 思考强度")).toBeLessThan(content.indexOf("服务状态 / 启动时间"));
+    expect(content.indexOf("工作目录")).toBeLessThan(content.indexOf("模型 / 思考强度 / 权限"));
+    expect(content.indexOf("模型 / 思考强度 / 权限")).toBeLessThan(content.indexOf("服务状态 / 启动时间"));
   });
 
   test("renders default model and automatic effort when there is no current task", () => {
@@ -162,9 +164,10 @@ describe("CardRenderer", () => {
     });
     const serialized = JSON.stringify(card);
 
-    expect(serialized).toContain("模型 / 思考强度");
+    expect(serialized).toContain("模型 / 思考强度 / 权限");
     expect(serialized).toContain("默认");
     expect(serialized).toContain("自动");
+    expect(serialized).toContain("自动执行");
     expect(serialized).toContain("任务范围");
     expect(serialized).toContain("未指定项目");
     expect(serialized).not.toContain("D:\\\\dev\\\\acp-bot");
@@ -349,7 +352,7 @@ describe("CardRenderer", () => {
     expect(panelTitle(panel ?? {})).not.toContain("已截断");
   });
 
-  test("unwraps PowerShell launchers in tool titles while preserving the full command in details", () => {
+  test("unwraps PowerShell launchers in both tool titles and expanded command details", () => {
     const running = state();
     const command = '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -Command "Get-Content src/index.ts | Select-Object -First 20"';
     const active = { id: "wrapped", title: command, kind: "command", status: "running" as const, command };
@@ -361,7 +364,8 @@ describe("CardRenderer", () => {
 
     expect(panelTitle(panel ?? {})).toBe("⏳ Get-Content src/index.ts | Select-Object -First 20");
     expect(panelTitle(panel ?? {})).not.toMatch(/powershell|pwsh/i);
-    expect(details).toContain(`$ ${command}`);
+    expect(details).toContain("$ Get-Content src/index.ts | Select-Object -First 20");
+    expect(details).not.toMatch(/powershell|pwsh/i);
   });
 
   test("unwraps single-quoted multiline PowerShell commands into compact titles", () => {
@@ -372,8 +376,11 @@ describe("CardRenderer", () => {
 
     const card = new CardRenderer().renderTurn(running);
     const panel = collectObjects(card).find((item) => item.tag === "collapsible_panel" && panelTitle(item).includes("npm test"));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
 
     expect(panelTitle(panel ?? {})).toBe("✅ npm test -- --run if ($LASTEXITCODE -ne 0) { exit 1 }");
+    expect(details).toContain("$ npm test -- --run\nif ($LASTEXITCODE -ne 0) { exit 1 }");
+    expect(details).not.toMatch(/powershell|pwsh/i);
   });
 
   test("uses the useful web-search action title while keeping full details expandable", () => {
@@ -712,10 +719,16 @@ describe("CardRenderer", () => {
       { kind: "reasoning", id: "reasoning:2", text: "继续处理" },
     ];
 
-    const serialized = JSON.stringify(new CardRenderer().renderTurn(running));
-    expect(serialized).toContain("**用户追加**\\n同时补充测试");
+    const renderer = new CardRenderer();
+    const card = renderer.renderTurn(running);
+    const serialized = JSON.stringify(card);
+    expect(collectObjects(card)).toContainEqual({ tag: "markdown", content: "💬 同时补充测试" });
+    expect(serialized).not.toContain("用户追加");
     expect(serialized.indexOf("先检查代码")).toBeLessThan(serialized.indexOf("同时补充测试"));
     expect(serialized.indexOf("同时补充测试")).toBeLessThan(serialized.indexOf("继续处理"));
+
+    const history = renderer.renderActivityHistory(running, 0);
+    expect(collectObjects(history)).toContainEqual({ tag: "markdown", content: "💬 同时补充测试" });
   });
 
   test("shows an ellipsis before retained activities when older history was discarded", () => {

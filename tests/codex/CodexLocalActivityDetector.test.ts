@@ -47,6 +47,38 @@ describe("CodexLocalActivityDetector", () => {
 
     expect(active.has("large")).toBe(true);
   });
+
+  test("reads model, reasoning effort, and permission mode without loading the thread", async () => {
+    const home = await createCodexHome();
+    const rollout = await createRollout(home, "settings", []);
+    createStateDatabase(home, [{
+      id: "settings",
+      rolloutPath: rollout,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      approvalMode: "never",
+    }, {
+      id: "confirm",
+      rolloutPath: rollout,
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      approvalMode: "on-request",
+    }]);
+
+    const settings = await new CodexLocalActivityDetector(home).threadSettings(["settings", "confirm", "missing"]);
+
+    expect(settings.get("settings")).toEqual({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "auto",
+    });
+    expect(settings.get("confirm")).toEqual({
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      permissionMode: "confirm",
+    });
+    expect(settings.has("missing")).toBe(false);
+  });
 });
 
 async function createCodexHome(): Promise<string> {
@@ -62,11 +94,35 @@ async function createRollout(home: string, id: string, lifecycle: string[]): Pro
   return rollout;
 }
 
-function createStateDatabase(home: string, rows: Array<{ id: string; rolloutPath: string }>): void {
+function createStateDatabase(home: string, rows: Array<{
+  id: string;
+  rolloutPath: string;
+  model?: string;
+  reasoningEffort?: string;
+  approvalMode?: string;
+}>): void {
   const database = new Database(path.join(home, "state_5.sqlite"));
-  database.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL)");
-  const insert = database.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)");
-  for (const row of rows) insert.run(row.id, row.rolloutPath);
+  database.exec(`
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      rollout_path TEXT NOT NULL,
+      model TEXT,
+      reasoning_effort TEXT,
+      approval_mode TEXT
+    )
+  `);
+  const insert = database.prepare(
+    "INSERT INTO threads (id, rollout_path, model, reasoning_effort, approval_mode) VALUES (?, ?, ?, ?, ?)",
+  );
+  for (const row of rows) {
+    insert.run(
+      row.id,
+      row.rolloutPath,
+      row.model ?? null,
+      row.reasoningEffort ?? null,
+      row.approvalMode ?? null,
+    );
+  }
   database.close();
 }
 

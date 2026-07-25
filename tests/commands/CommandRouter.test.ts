@@ -6,11 +6,13 @@ describe("CommandRouter", () => {
 
   test("parses local shell commands before prompt routing", () => {
     expect(router.parse("! ls")).toEqual({ type: "shell", command: "ls" });
+    expect(router.parse("！git status")).toEqual({ type: "shell", command: "git status" });
     expect(router.parse("  ! Get-ChildItem | Select-Object -First 5  ")).toEqual({
       type: "shell",
       command: "Get-ChildItem | Select-Object -First 5",
     });
     expect(() => router.parse("!")).toThrow("请输入要执行的命令");
+    expect(() => router.parse("！")).toThrow("请输入要执行的命令");
   });
 
   test("parses Codex permission commands", () => {
@@ -84,6 +86,30 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/new --dir D:\\work --dir D:\\other")).toThrow("只能指定一次");
   });
 
+  test("parses --nodir for a forced projectless task and rejects directory conflicts", () => {
+    expect(router.parse("/new --nodir")).toEqual({
+      type: "new",
+      title: undefined,
+      cwd: undefined,
+      projectless: true,
+    });
+    expect(router.parse("/new Projectless task --nodir")).toEqual({
+      type: "new",
+      title: "Projectless task",
+      cwd: undefined,
+      projectless: true,
+    });
+    expect(router.parse("/new --nodir Projectless task")).toEqual({
+      type: "new",
+      title: "Projectless task",
+      cwd: undefined,
+      projectless: true,
+    });
+    expect(() => router.parse("/new --nodir --dir D:\\work")).toThrow("--dir 和 --nodir 不能同时使用");
+    expect(() => router.parse("/new --dir D:\\work --nodir")).toThrow("--dir 和 --nodir 不能同时使用");
+    expect(() => router.parse("/new --nodir --nodir")).toThrow("只能指定一次 --nodir");
+  });
+
   test("creates a new group with an optional title and rejects task-only --dir", () => {
     expect(router.parse("/newgroup")).toEqual({
       type: "newgroup",
@@ -115,7 +141,7 @@ describe("CommandRouter", () => {
 
   test("parses stop without a cancel compatibility alias", () => {
     expect(router.parse("/stop")).toEqual({ type: "stop" });
-    expect(router.parse("/cancel")).toEqual({ type: "prompt", text: "/cancel" });
+    expect(() => router.parse("/cancel")).toThrow("未知命令：/cancel");
   });
 
   test("parses a no-steer queued prompt", () => {
@@ -127,9 +153,17 @@ describe("CommandRouter", () => {
   });
 
   test("does not retain removed task aliases", () => {
-    expect(router.parse("/attach 019f-thread")).toEqual({ type: "prompt", text: "/attach 019f-thread" });
-    expect(router.parse("/detach")).toEqual({ type: "prompt", text: "/detach" });
-    expect(router.parse("/close")).toEqual({ type: "prompt", text: "/close" });
+    expect(() => router.parse("/attach 019f-thread")).toThrow("未知命令：/attach");
+    expect(() => router.parse("/detach")).toThrow("未知命令：/detach");
+    expect(() => router.parse("/close")).toThrow("未知命令：/close");
+  });
+
+  test("rejects unknown slash commands instead of routing them as prompts", () => {
+    expect(() => router.parse("/does-not-exist hello")).toThrow(
+      "未知命令：/does-not-exist。发送 /help 查看可用命令。",
+    );
+    expect(() => router.parse("   /UNKNOWN")).toThrow("未知命令：/UNKNOWN");
+    expect(() => router.parse("/")).toThrow("未知命令：/");
   });
 
   test("parses Codex task discovery and unified switching", () => {

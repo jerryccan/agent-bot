@@ -54,7 +54,19 @@ Use `task prompt` to send input to a specific task without changing any chat's c
 
 For a long-running objective in the active Feishu task, use `/goal <objective>`. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control automatic continuation, `/goal edit <objective>` to revise it, and `/goal clear` to remove it. Stopping a Goal turn through ACP Bot also pauses the Goal before sending Interrupt so it does not immediately continue.
 
-Use `/newgroup [title]` in Feishu to create a private group named `[agent-name] title` and invite the command sender without creating a task. When the title is omitted, ACP Bot uses the local `yy-mm-dd hh:mm` time. The first ordinary message sent later in the new group follows the normal automatic task-creation flow.
+Use `/newgroup [title]` in Feishu to create a private group named `[agent-name] title` and invite the command sender without creating a task. ACP Bot sends a Sessions card to the new group body immediately. When the title is omitted, ACP Bot uses the local `yy-mm-dd hh:mm` time. The first ordinary message sent later in the new group follows the normal automatic task-creation flow.
+
+Use `/new [title] --nodir` to force a new Codex Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
+
+Every task in the Feishu `/sessions` card has a `New` action. It inherits the source task's project directory, model, reasoning effort, and permission mode, creates a new task, and switches the current chat to it without stopping or forking the source task.
+
+Use `/fork [number-or-task-id]` in Feishu to branch from the current or specified Codex task and switch to the new branch. If the source task is running, ACP Bot forks from its latest completed turn and leaves the active turn running; it rejects only when the task has no completed turn yet.
+
+Status cards include a `刷新` action that reads the latest task state and updates the same card in place without switching tasks or sending another card.
+
+Use `/model` in Feishu to show an interactive Card 2.0 model selector for the current task. Each non-current model has the same blue link-style `切换` action used by other ACP Bot cards. After selecting a model, the same card advances to that model's reasoning-mode selector; the selector lists only mode names, has a `返回模型` action, and applies a selected mode from the next request. `/thinking` opens the reasoning selector directly. `/model <name>` and `/thinking <level>` remain available for direct text-based selection.
+
+Messages whose trimmed text starts with `/` are always parsed as ACP Bot commands. Unknown slash commands are reported to the user with a `/help` hint and must never fall through to the model, including slash-prefixed messages that also contain images.
 
 When a group body has a current task, renaming the Feishu group to `[agent-name] new title` also renames that current task if the prefix matches the task's configured agent. Malformed names, agent mismatches, empty groups, and thread-specific tasks are ignored.
 

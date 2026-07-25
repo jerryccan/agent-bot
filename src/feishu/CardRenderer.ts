@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { JsonValue } from "../acp/acpTypes.js";
 import type { RuntimeSession } from "../acp/AcpSessionManager.js";
-import type { ToolState } from "../runtime/types.js";
+import type {
+  ModelOption,
+  PermissionMode,
+  ReasoningEffortOption,
+  ToolState,
+} from "../runtime/types.js";
 import type { TurnActivity, TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
 import { truncateMiddle, truncateText } from "../utils/markdown.js";
 import { localCardImage } from "./LocalCardImage.js";
@@ -19,6 +24,7 @@ export interface StartupStatusView {
     title?: string;
     model?: string;
     reasoningEffort?: string;
+    permissionMode?: PermissionMode;
     agentName: string;
     sessionStatus: string;
     lastTurnStatus?: string;
@@ -45,6 +51,24 @@ export interface PromptQueueCardView {
   }>;
 }
 
+export interface ModelSelectorCardView {
+  sessionId: string;
+  contextKey: string;
+  currentModel?: string;
+  reasoningEffort?: string;
+  models: ModelOption[];
+  notice?: string;
+}
+
+export interface ReasoningSelectorCardView {
+  sessionId: string;
+  contextKey: string;
+  model: string;
+  currentEffort?: string;
+  options: ReasoningEffortOption[];
+  notice?: string;
+}
+
 export interface CardSection {
   title?: string;
   lines: string[];
@@ -64,6 +88,120 @@ export interface TaskListCardEntry {
 }
 
 export class CardRenderer {
+  renderReasoningSelector(view: ReasoningSelectorCardView): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [
+      markdown([
+        `**模型**：${inlineCode(view.model)}`,
+        `**当前思考模式**：${inlineCode(view.currentEffort ?? "默认")}`,
+        ...(view.notice ? [view.notice] : []),
+      ].join("\n")),
+      { tag: "hr" },
+    ];
+    if (view.options.length === 0) {
+      elements.push(markdown("该模型没有可配置的思考模式。"));
+    } else {
+      elements.push(...view.options.map((option) => {
+        const isCurrent = option.value === view.currentEffort;
+        return {
+          tag: "column_set",
+          flex_mode: "none",
+          horizontal_spacing: "8px",
+          vertical_align: "center",
+          columns: [
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              vertical_align: "center",
+              elements: [markdown(inlineCode(option.value))],
+            },
+            {
+              tag: "column",
+              width: "auto",
+              vertical_align: "center",
+              elements: isCurrent
+                ? [markdown("✅ 当前")]
+                : [taskActionElement({
+                    text: "切换",
+                    value: {
+                      action: "reasoning_select",
+                      sessionId: view.sessionId,
+                      contextKey: view.contextKey,
+                      model: view.model,
+                      effort: option.value,
+                    },
+                  })],
+            },
+          ],
+        };
+      }));
+    }
+    elements.push(
+      { tag: "hr" },
+      taskActionRow([{
+        text: "返回模型",
+        value: {
+          action: "model_open",
+          sessionId: view.sessionId,
+          contextKey: view.contextKey,
+        },
+      }]),
+    );
+    return sectionCard("思考模式", elements, view.notice ? "green" : "blue");
+  }
+
+  renderModelSelector(view: ModelSelectorCardView): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [
+      markdown([
+        `**当前模型**：${inlineCode(view.currentModel ?? "默认")}`,
+        `**思考强度**：${inlineCode(view.reasoningEffort ?? "默认")}`,
+        ...(view.notice ? [view.notice] : []),
+      ].join("\n")),
+      { tag: "hr" },
+    ];
+    if (view.models.length === 0) {
+      elements.push(markdown("当前运行时未返回可用模型。"));
+    } else {
+      elements.push(...view.models.map((model) => {
+        const isCurrent = model.id === view.currentModel;
+        return {
+          tag: "column_set",
+          flex_mode: "none",
+          horizontal_spacing: "8px",
+          vertical_align: "center",
+          columns: [
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              vertical_align: "center",
+              elements: [markdown(
+                `${inlineCode(model.id)}${model.isDefault ? " · 默认" : ""}`,
+              )],
+            },
+            {
+              tag: "column",
+              width: "auto",
+              vertical_align: "center",
+              elements: isCurrent
+                ? [markdown("✅ 当前")]
+                : [taskActionElement({
+                    text: "切换",
+                    value: {
+                      action: "model_select",
+                      sessionId: view.sessionId,
+                      contextKey: view.contextKey,
+                      model: model.id,
+                    },
+                  })],
+            },
+          ],
+        };
+      }));
+    }
+    return sectionCard("模型", elements, view.notice ? "green" : "blue");
+  }
+
   renderPromptQueue(view: PromptQueueCardView): Record<string, unknown> {
     const elements = view.prompts.length === 0
       ? [markdown("队列为空")]
@@ -168,14 +306,14 @@ export class CardRenderer {
       ? [
         `**当前任务**：${inlineCode(view.currentTask.title ?? view.currentTask.id)}`,
         workspaceLine,
-        `**模型 / 思考强度**：${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")}`,
+        `**模型 / 思考强度 / 权限**：${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentTask.permissionMode))}`,
         `**任务状态 / Agent**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)} / ${inlineCode(view.currentTask.agentName)}`,
         `**任务 ID**：${inlineCode(view.currentTask.id)}`,
       ]
       : [
         "**当前任务**：无，下一条普通消息会创建新任务",
         workspaceLine,
-        `**模型 / 思考强度**：${inlineCode("默认")} / ${inlineCode("自动")}`,
+        `**模型 / 思考强度 / 权限**：${inlineCode("默认")} / ${inlineCode("自动")} / ${inlineCode(permissionModeLabel())}`,
         `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
       ];
     lines.push(
@@ -505,7 +643,7 @@ function renderActivity(
     const chunks = fullAssistantText
       ? splitText(text, ACTIVITY_TEXT_CHUNK)
       : [truncateText(text, MAX_LIVE_ASSISTANT_TEXT)];
-    return chunks.map((chunk, index) => markdown(index === 0 ? `**用户追加**\n${chunk}` : chunk));
+    return chunks.map((chunk, index) => markdown(index === 0 ? `💬 ${chunk}` : chunk));
   }
   if (activity.kind === "assistant" || (activity.kind === "reasoning" && activity.id.startsWith("commentary:"))) {
     const text = activity.text.trim();
@@ -662,7 +800,11 @@ function renderToolDetails(tool: ToolState, projectCwd?: string): string {
       .join("\n")
     : undefined;
   const result = tool.error ?? tool.output ?? fileSummary;
-  const commandText = truncateText(stripAnsi(command).trim(), 800);
+  const normalizedCommand = stripAnsi(command).trim();
+  const displayCommand = tool.kind === "command"
+    ? unwrapPowerShellCommand(normalizedCommand) ?? normalizedCommand
+    : normalizedCommand;
+  const commandText = truncateText(displayCommand, 800);
   const resultText = result ? truncateMiddle(stripAnsi(result).trim(), 1_200) : undefined;
   return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
 }
@@ -780,6 +922,10 @@ function formatStartupTime(value: Date): string {
   }).format(value);
 }
 
+function permissionModeLabel(mode?: PermissionMode): string {
+  return mode === "confirm" ? "执行前确认" : "自动执行";
+}
+
 function persistedTaskStatus(sessionStatus: string, lastTurnStatus?: string): string {
   if (sessionStatus === "running" || lastTurnStatus === "running") {
     return "上次运行中，可在下一条消息时恢复";
@@ -855,20 +1001,24 @@ function taskActionRow(actions: TaskListCardAction[]): Record<string, unknown> {
       tag: "column",
       width: "auto",
       vertical_align: "center",
-      elements: [{
-        tag: "interactive_container",
-        margin: "0px",
-        padding: "0px",
-        has_border: false,
-        elements: [markdown(
-          `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardHtml(action.text)}</font>`,
-        )],
-        behaviors: [{
-          type: "callback",
-          value: action.value,
-        }],
-      }],
+      elements: [taskActionElement(action)],
     })),
+  };
+}
+
+function taskActionElement(action: TaskListCardAction): Record<string, unknown> {
+  return {
+    tag: "interactive_container",
+    margin: "0px",
+    padding: "0px",
+    has_border: false,
+    elements: [markdown(
+      `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardHtml(action.text)}</font>`,
+    )],
+    behaviors: [{
+      type: "callback",
+      value: action.value,
+    }],
   };
 }
 

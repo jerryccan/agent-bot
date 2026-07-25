@@ -72,6 +72,7 @@ export class StartupNotifier {
               title: session.title,
               model: session.model,
               reasoningEffort: session.reasoningEffort,
+              permissionMode: session.permissionMode,
               agentName: session.agentName,
               sessionStatus: session.status,
               lastTurnStatus: session.lastTurnStatus,

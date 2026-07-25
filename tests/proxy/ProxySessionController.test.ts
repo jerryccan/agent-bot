@@ -187,7 +187,10 @@ function fixture() {
       {
         id: "gpt-next",
         displayName: "GPT Next",
-        supportedReasoningEfforts: [{ value: "medium", description: "Balanced" }],
+        supportedReasoningEfforts: [
+          { value: "medium", description: "Balanced" },
+          { value: "xhigh", description: "Deep" },
+        ],
         defaultReasoningEffort: "medium",
       },
     ]),
@@ -365,14 +368,17 @@ describe("ProxySessionController", () => {
     expect(shellCommandExecutor).toHaveBeenCalledWith("ls", cwd);
     expect(outbound.sendMarkdown).toHaveBeenCalledWith(
       "chat_id:c1",
-      expect.stringMatching(/\*\*目录\*\*：`D:\\work space\\shell-project`[\s\S]*\*\*命令\*\*：`ls`[\s\S]*```text\nREADME\.md\nsrc\ntests\n```[\s\S]*退出码 0/),
+      expect.stringMatching(/```text\n\$  ls\nREADME\.md\nsrc\ntests\n```\n`D:\\work space\\shell-project` · 退出码 0$/),
     );
+    const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(markdown).not.toContain("**目录**");
+    expect(markdown).not.toContain("**命令**");
   });
 
   test("uses the configured default directory for bang commands without a current task", async () => {
     const { controller, shellCommandExecutor } = fixture();
 
-    await controller.onMessage(message("! Get-ChildItem"));
+    await controller.onMessage(message("！ Get-ChildItem"));
 
     expect(shellCommandExecutor).toHaveBeenCalledWith("Get-ChildItem", process.cwd());
   });
@@ -443,6 +449,31 @@ describe("ProxySessionController", () => {
       text: "请分析这张图片。",
       localImagePaths: [expect.stringContaining("img_input.png")],
     });
+  });
+
+  test("rejects unknown slash commands without sending text or images to the model", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+
+    await controller.onMessage(message("/does-not-exist hello"));
+    await controller.onMessage({
+      messageId: "om_unknown_slash_image",
+      contextKey: "chat_id:c1",
+      text: "  /missing-with-image",
+      images: [{ imageKey: "img_unused" }],
+    });
+
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.steerTurn).not.toHaveBeenCalled();
+    expect(store.listSessions("chat_id:c1")).toHaveLength(0);
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "未知命令：/does-not-exist。发送 /help 查看可用命令。",
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "未知命令：/missing-with-image。发送 /help 查看可用命令。",
+    );
   });
 
   test("keeps current tasks and stop operations isolated between groups", async () => {
@@ -778,7 +809,7 @@ describe("ProxySessionController", () => {
     }));
   });
 
-  test("refuses to fork the current task while its latest turn is running", async () => {
+  test("refuses to fork a running task that has no completed turn yet", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("long-running source"));
 
@@ -787,7 +818,7 @@ describe("ProxySessionController", () => {
     expect(runtime.forkSession).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      expect.stringContaining("轮次仍在执行"),
+      expect.stringContaining("还没有已完成轮次"),
     );
   });
 
@@ -804,6 +835,19 @@ describe("ProxySessionController", () => {
       agentName: "acp",
       cwd: "D:\\work space\\repo",
     });
+  });
+
+  test("rejects --nodir when the current default agent is not Codex", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/agent acp"));
+
+    await controller.onMessage(message("/new --nodir"));
+
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "/new --nodir 仅支持 Codex Agent。",
+    );
   });
 
   test("creates a task with an explicit title and synchronizes it with the runtime", async () => {
@@ -829,7 +873,7 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("creates a Feishu group for the current user without initializing a task", async () => {
+  test("creates a Feishu group without initializing a task and sends its sessions card", async () => {
     const { controller, runtime, store, outbound, presenter } = fixture();
 
     await controller.onMessage({
@@ -854,9 +898,12 @@ describe("ProxySessionController", () => {
       "chat_id:oc_new_group",
       "群已创建。直接发送消息即可在本群开始一个新任务。",
     );
+    const groupCardCall = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(groupCardCall?.[0]).toBe("chat_id:oc_new_group");
+    expect(groupCardCall?.[1]).toMatchObject({ header: { title: { content: "Codex 任务" } } });
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已创建飞书群：[codex] 广州天气，并邀请你加入。",
+      "已创建飞书群：[codex] 广州天气，邀请你加入，并在新群中发送了 Sessions 卡片。",
     );
     expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
   });
@@ -931,6 +978,30 @@ describe("ProxySessionController", () => {
     expect((runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[1]?.[0]).toMatchObject({
       cwd: project,
     });
+  });
+
+  test("forces a fresh projectless workspace with /new --nodir from a project task", async () => {
+    const { controller, runtime } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "acp-projectless-home-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-project-"));
+    tempDirs.push(home, project);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+
+    await controller.onMessage(message(`/new --dir "${project}"`));
+    await controller.onMessage({
+      messageId: "new-forced-projectless",
+      contextKey: "chat_id:c1",
+      text: "/new Detached task --nodir",
+    });
+
+    const input = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls[1]?.[0];
+    const projectlessRoot = path.join(home, "Documents", "Codex");
+    expect(path.relative(projectlessRoot, input.cwd)).toMatch(
+      /^\d{4}-\d{2}-\d{2}[\\/]detached-task$/,
+    );
+    expect(input.cwd).not.toBe(project);
+    expect(fs.statSync(path.join(input.cwd, "work")).isDirectory()).toBe(true);
+    expect(fs.statSync(path.join(input.cwd, "outputs")).isDirectory()).toBe(true);
   });
 
   test("creates a fresh projectless workspace when new is sent from a projectless task", async () => {
@@ -1492,6 +1563,8 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("最后更新：");
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain("<font color='blue'>New</font>");
+    expect(serialized).toContain('"action":"session_new","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Fork</font>");
     expect(serialized).toContain('"action":"session_fork","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Status</font>");
@@ -1600,6 +1673,150 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     expect(JSON.stringify(updatedCard)).toContain("Card fork source（分支 1）");
+  });
+
+  test("creates and switches to a new task in the selected sessions-card project", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    remoteSessions.push({
+      id: "card_new_source",
+      title: "Card new source",
+      cwd: "D:\\work\\card-new-source",
+      source: "desktop",
+      status: "active",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+      lastTurnId: "turn_card_new_source",
+      lastTurnStatus: "inProgress",
+    });
+    await controller.onMessage(message("/sessions"));
+
+    await controller.onCardAction({
+      actionId: "new-card-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: {
+        action: "session_new",
+        sessionId: "card_new_source",
+        visibleCount: "5",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    const createdSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: createdSessionId,
+      agentName: "codex",
+      cwd: "D:\\work\\card-new-source",
+      title: undefined,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    }));
+    expect(store.getSession(createdSessionId!)).toMatchObject({
+      remoteSessionId: "thr_1",
+      cwd: "D:\\work\\card-new-source",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+      status: "ready",
+    });
+    expect(runtime.interruptRemoteTurn).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("已创建 Codex 任务"),
+    );
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
+  });
+
+  test("inherits locally tracked execution settings when the remote task omits them", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    store.createSession({
+      localSessionId: "local_card_new_source",
+      contextKey: "chat_id:source",
+      agentName: "codex",
+      cwd: "D:\\work\\locally-tracked-source",
+      status: "ready",
+    });
+    store.updateRuntimeSession("local_card_new_source", {
+      runtimeKind: "codex",
+      remoteSessionId: "locally_tracked_source",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    });
+    remoteSessions.push({
+      id: "locally_tracked_source",
+      cwd: "D:\\work\\locally-tracked-source",
+      source: "acp-bot",
+      status: "idle",
+    });
+
+    await controller.onCardAction({
+      actionId: "new-locally-tracked-card-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: {
+        action: "session_new",
+        sessionId: "locally_tracked_source",
+        visibleCount: "5",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "D:\\work\\locally-tracked-source",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    }));
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
+  });
+
+  test("forks an active task from its latest completed turn through the sessions card", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    remoteSessions.push({
+      id: "active_card_fork_source",
+      title: "Active card fork source",
+      cwd: "D:\\work\\active-card-fork-source",
+      source: "desktop",
+      status: "active",
+      lastTurnId: "turn_still_running",
+      lastCompletedTurnId: "turn_latest_completed",
+      lastTurnStatus: "inProgress",
+    });
+    await controller.onMessage(message("/sessions"));
+
+    await controller.onCardAction({
+      actionId: "fork-active-card-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: {
+        action: "session_fork",
+        sessionId: "active_card_fork_source",
+        visibleCount: "5",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    const forkedSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: forkedSessionId,
+      remoteSessionId: "active_card_fork_source",
+      lastTurnId: "turn_latest_completed",
+      title: "Active card fork source（分支 1）",
+    }));
+    expect(store.getSession(forkedSessionId!)).toMatchObject({
+      remoteSessionId: "active_card_fork_source_fork",
+      status: "ready",
+      lastTurnId: "turn_latest_completed",
+      lastTurnStatus: "completed",
+    });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("已从指定任务最近已完成轮次创建分支"),
+    );
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
   });
 
   test("loads five more tasks into the same sessions card on demand", async () => {
@@ -1813,8 +2030,60 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain('"element_id":"status_execution_details"');
     expect(serialized).toContain('"expanded":false');
     expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
+    expect(serialized).toContain("<font color='blue'>刷新</font>");
+    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"status_target","cardView":"status"');
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"status_target","cardView":"status"');
+  });
+
+  test("refreshes a status card in place with the latest task state", async () => {
+    const { controller, remoteSessions, outbound } = fixture();
+    remoteSessions.push({
+      id: "refresh_status_target",
+      title: "Refresh status target",
+      cwd: "D:\\work\\refresh-status",
+      source: "vscode",
+      status: "idle",
+      lastTurnId: "turn_before_refresh",
+      lastTurnStatus: "completed",
+      finalResponse: "Result before refresh",
+    });
+
+    await controller.onCardAction({
+      actionId: "show-refreshable-status",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: { action: "session_status", sessionId: "refresh_status_target" },
+    });
+    Object.assign(remoteSessions[0]!, {
+      status: "active",
+      lastTurnId: "turn_after_refresh",
+      lastTurnStatus: "inProgress",
+      lastActivity: "Running after refresh",
+      finalResponse: undefined,
+    });
+
+    await controller.onCardAction({
+      actionId: "refresh-task-status",
+      contextKey: "chat_id:c1",
+      messageId: "om_status",
+      value: {
+        action: "session_status_refresh",
+        sessionId: "refresh_status_target",
+        cardView: "status",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_status", expect.any(Object));
+    const refreshedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(refreshedCard);
+    expect(serialized).toContain("turn_after_refresh");
+    expect(serialized).toContain("Running after refresh");
+    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"refresh_status_target"');
+    expect(serialized).toContain('"action":"session_stop","sessionId":"refresh_status_target"');
+    expect(serialized).not.toContain("Result before refresh");
   });
 
   test("stops an active external task from its status card and changes the action to Switch", async () => {
@@ -1868,6 +2137,7 @@ describe("ProxySessionController", () => {
     const statusCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(statusCard);
     expect(serialized).toContain("<font color='red'>Stop</font>");
+    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"thr_1","cardView":"status"');
     expect(serialized).toContain('"element_id":"status_execution_details"');
     expect(serialized).toContain('"expanded":false');
     expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
@@ -2446,32 +2716,155 @@ describe("ProxySessionController", () => {
     expect(runtime.steerTurn).not.toHaveBeenCalled();
   });
 
-  test("shows every supported model and marks the current model", async () => {
-    const { controller, runtime, outbound } = fixture();
+  test("shows every supported model with link-style switch actions and marks the current model", async () => {
+    const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
 
     await controller.onMessage(message("/model"));
 
     expect(runtime.listModels).toHaveBeenCalled();
-    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
-      "chat_id:c1",
-      expect.stringMatching(/当前模型：`gpt-test`[\s\S]*当前思考强度：high[\s\S]*✅ `gpt-test`（当前）[\s\S]*`gpt-next`/),
-    );
+    expect(outbound.sendInteractiveCard).toHaveBeenCalled();
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain("思考强度");
+    expect(serialized).toContain("gpt-test");
+    expect(serialized).toContain("gpt-next");
+    expect(serialized).not.toContain("GPT Test");
+    expect(serialized).not.toContain("GPT Next");
+    expect(serialized).toContain("✅ 当前");
+    expect(serialized).toContain("<font color='blue'>切换</font>");
+    expect(serialized).toContain('"tag":"interactive_container"');
+    expect(serialized).not.toContain('"tag":"button"');
+    expect(serialized).toContain(`"action":"model_select","sessionId":"${sessionId}"`);
+    expect(serialized).toContain('"model":"gpt-next"');
+    const modelRows = ((card as { body?: { elements?: Array<Record<string, unknown>> } })?.body?.elements ?? [])
+      .filter((element) => element.tag === "column_set");
+    expect(modelRows).toHaveLength(2);
+    for (const row of modelRows) {
+      expect(row).toMatchObject({ flex_mode: "none" });
+      const columns = row.columns as Array<Record<string, unknown>>;
+      expect(columns).toHaveLength(2);
+      expect(columns[0]).toMatchObject({ width: "weighted" });
+      expect(columns[1]).toMatchObject({ width: "auto" });
+    }
   });
 
-  test("shows and changes supported reasoning efforts", async () => {
+  test("switches the model from a card callback and advances the card to reasoning selection", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+
+    await controller.onCardAction({
+      actionId: "select-model-next",
+      contextKey: "chat_id:c1",
+      messageId: "om_model",
+      value: {
+        action: "model_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-next",
+      },
+    });
+
+    expect(runtime.setModel).toHaveBeenCalledWith(sessionId, "gpt-next");
+    expect(runtime.setReasoningEffort).toHaveBeenCalledWith(sessionId, "medium");
+    expect(store.getSession(sessionId)).toMatchObject({
+      model: "gpt-next",
+      reasoningEffort: "medium",
+    });
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
+    const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(updated);
+    expect(serialized).toContain("思考模式");
+    expect(serialized).toContain("模型已切换为 `gpt-next`，请选择思考模式");
+    expect(serialized).toContain("gpt-next");
+    expect(serialized).toContain("medium");
+    expect(serialized).toContain("xhigh");
+    expect(serialized).toContain("✅ 当前");
+    expect(serialized).toContain("<font color='blue'>切换</font>");
+    expect(serialized).toContain("<font color='blue'>返回模型</font>");
+    expect(serialized).toContain('"action":"model_open"');
+    expect(serialized).toContain('"action":"reasoning_select"');
+    expect(serialized).toContain('"model":"gpt-next","effort":"xhigh"');
+    expect(serialized).not.toContain('"action":"model_select"');
+    const bodyElements = (updated as { body?: { elements?: Array<Record<string, unknown>> } })?.body?.elements ?? [];
+    expect(bodyElements.at(-2)).toMatchObject({ tag: "hr" });
+    expect(JSON.stringify(bodyElements.at(-1))).toContain('"action":"model_open"');
+  });
+
+  test("switches reasoning from the follow-up card and updates it in place", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    await controller.onMessage(message("/model gpt-next"));
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await controller.onCardAction({
+      actionId: "select-reasoning-xhigh",
+      contextKey: "chat_id:c1",
+      messageId: "om_model",
+      value: {
+        action: "reasoning_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-next",
+        effort: "xhigh",
+      },
+    });
+
+    expect(runtime.setReasoningEffort).toHaveBeenLastCalledWith(sessionId, "xhigh");
+    expect(store.getSession(sessionId)).toMatchObject({ reasoningEffort: "xhigh" });
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
+    const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(updated);
+    expect(serialized).toContain("思考模式已切换为 `xhigh`，从下一次请求生效");
+    expect(serialized).toContain("✅ 当前");
+    expect(serialized).toContain('"effort":"medium"');
+  });
+
+  test("returns from reasoning selection to the model selector in place", async () => {
+    const { controller, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+
+    await controller.onCardAction({
+      actionId: "return-to-models",
+      contextKey: "chat_id:c1",
+      messageId: "om_model",
+      value: {
+        action: "model_open",
+        sessionId,
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
+    const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(updated);
+    expect(serialized).toContain('"content":"模型"');
+    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain('"action":"model_select"');
+    expect(serialized).not.toContain('"action":"model_open"');
+    expect(serialized).not.toContain('"action":"reasoning_select"');
+  });
+
+  test("shows supported reasoning efforts as an interactive card and keeps direct changes compatible", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
 
     await controller.onMessage(message("/thinking"));
-    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
-      "chat_id:c1",
-      expect.stringContaining("当前思考强度：high"),
-    );
-    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
-      "chat_id:c1",
-      expect.stringContaining("`low`：Fast"),
-    );
+    expect(outbound.sendInteractiveCard).toHaveBeenCalled();
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("当前思考模式");
+    expect(serialized).toContain("high");
+    expect(serialized).toContain("low");
+    expect(serialized).not.toContain("Fast");
+    expect(serialized).not.toContain("Deep");
+    expect(serialized).toContain("<font color='blue'>返回模型</font>");
+    expect(serialized).toContain('"action":"reasoning_select"');
 
     await controller.onMessage(message("/thinking low"));
     expect(runtime.setReasoningEffort).toHaveBeenCalledWith(expect.any(String), "low");

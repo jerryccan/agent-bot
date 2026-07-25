@@ -125,7 +125,7 @@ describe("FeishuTurnPresenter", () => {
       "chat_id:c1",
     );
     expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1]))
-      .toContain("用户追加");
+      .toContain("💬 同时补充测试");
   });
 
   test("coalesces command output deltas into an incremental tool panel update", async () => {

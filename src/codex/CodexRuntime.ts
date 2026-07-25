@@ -229,7 +229,12 @@ export class CodexRuntime implements AgentRuntime {
     );
     const summary = remoteSessionSummary(response.thread);
     const activeThreads = await this.localActivityDetector?.activeThreads([remoteSessionId]);
-    return activeThreads ? markLocallyDetectedActive(summary, activeThreads) : summary;
+    const activeSummary = activeThreads ? markLocallyDetectedActive(summary, activeThreads) : summary;
+    const settings = await this.localActivityDetector?.threadSettings([remoteSessionId]);
+    return {
+      ...activeSummary,
+      ...settings?.get(remoteSessionId),
+    };
   }
 
   async synchronizeSession(sessionId: string): Promise<RuntimeSession> {
@@ -817,6 +822,9 @@ function extractFinalResponse(turn: CodexTurnSnapshot): string {
 
 function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {
   const lastTurn = thread.turns?.at(-1);
+  const lastCompletedTurn = [...(thread.turns ?? [])]
+    .reverse()
+    .find((turn) => turn.status === "completed");
   const toolCounts = lastTurn ? summarizeTurnTools(lastTurn) : undefined;
   const status = remoteThreadStatus(thread.status?.type);
   // A persisted inProgress turn can outlive the CLI/Desktop app-server process
@@ -839,6 +847,7 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     updatedAt: thread.updatedAt,
     recencyAt: thread.recencyAt ?? undefined,
     lastTurnId: lastTurn?.id,
+    lastCompletedTurnId: lastCompletedTurn?.id,
     lastTurnStatus,
     lastActivity: lastText,
     finalResponse: lastTurn && lastTurn.status !== "inProgress" ? extractFinalResponse(lastTurn) || undefined : undefined,

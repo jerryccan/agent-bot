@@ -2,7 +2,7 @@ import type { PermissionMode } from "../runtime/types.js";
 
 export type Command =
   | { type: "shell"; command: string }
-  | { type: "new"; title?: string; cwd?: string }
+  | { type: "new"; title?: string; cwd?: string; projectless?: boolean }
   | { type: "newgroup"; title?: string }
   | { type: "fork"; sessionId?: string }
   | { type: "title"; title: string }

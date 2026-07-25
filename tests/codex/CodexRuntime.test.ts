@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { RuntimeEvent, RuntimeGoal } from "../../src/runtime/types.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
+import { CodexLocalActivityDetector } from "../../src/codex/CodexLocalActivityDetector.js";
 
 describe("CodexRuntime", () => {
   test("sends text and local images as Codex app-server user input blocks", async () => {
@@ -765,6 +766,7 @@ describe("CodexRuntime", () => {
     await expect(runtime.readRemoteSession("external_1")).resolves.toEqual(expect.objectContaining({
       id: "external_1",
       lastTurnId: "turn_external",
+      lastCompletedTurnId: "turn_external",
       lastTurnStatus: "completed",
       lastTurnToolCount: 2,
       lastTurnCompletedToolCount: 1,
@@ -780,6 +782,68 @@ describe("CodexRuntime", () => {
       method: "thread/list",
       params: expect.objectContaining({ searchTerm: "Desktop", limit: 10 }),
     }));
+  });
+
+  test("reports the latest completed turn while a newer turn is still running", async () => {
+    const client = new FakeAppServerClient();
+    client.readResult = {
+      thread: {
+        id: "active_with_history",
+        cwd: "D:\\work\\active",
+        source: "vscode",
+        status: { type: "active" },
+        turns: [
+          { id: "turn_completed_1", status: "completed", items: [] },
+          { id: "turn_failed", status: "failed", items: [] },
+          { id: "turn_completed_2", status: "completed", items: [] },
+          { id: "turn_running", status: "inProgress", items: [] },
+        ],
+      },
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.readRemoteSession("active_with_history")).resolves.toEqual(expect.objectContaining({
+      lastTurnId: "turn_running",
+      lastCompletedTurnId: "turn_completed_2",
+      lastTurnStatus: "inProgress",
+      status: "active",
+    }));
+  });
+
+  test("enriches external task reads with locally persisted execution settings", async () => {
+    const client = new FakeAppServerClient();
+    client.readResult = {
+      thread: {
+        id: "external_settings",
+        cwd: "D:\\work\\external-settings",
+        source: "vscode",
+        status: { type: "notLoaded" },
+        turns: [],
+      },
+    };
+    const activeSpy = vi.spyOn(CodexLocalActivityDetector.prototype, "activeThreads")
+      .mockResolvedValue(new Map());
+    const settingsSpy = vi.spyOn(CodexLocalActivityDetector.prototype, "threadSettings")
+      .mockResolvedValue(new Map([["external_settings", {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        permissionMode: "confirm",
+      }]]));
+    const runtime = new CodexRuntime({
+      ...provider(client),
+      getCodexHome: () => "C:\\codex-home",
+    }, logger());
+
+    try {
+      await expect(runtime.readRemoteSession("external_settings")).resolves.toEqual(expect.objectContaining({
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        permissionMode: "confirm",
+      }));
+    } finally {
+      activeSpy.mockRestore();
+      settingsSpy.mockRestore();
+    }
   });
 
   test("does not treat a stale inProgress turn from an unloaded app-server as active", async () => {
