@@ -13,13 +13,15 @@ afterEach(async () => {
 
 describe("local CLI control", () => {
   test("uses a stable endpoint for one state database", () => {
-    const sqlitePath = path.join(os.tmpdir(), "acp-control", "state.sqlite");
-    expect(controlEndpoint(sqlitePath)).toBe(controlEndpoint(sqlitePath));
-    expect(controlEndpoint(`${sqlitePath}.other`)).not.toBe(controlEndpoint(sqlitePath));
+    const sqlitePath = path.join(os.tmpdir(), "agent-bot-control", "state.sqlite");
+    const endpoint = controlEndpoint(sqlitePath);
+    expect(endpoint).toBe(controlEndpoint(sqlitePath));
+    expect(endpoint).toContain("agent-bot-");
+    expect(controlEndpoint(`${sqlitePath}.other`)).not.toBe(endpoint);
   });
 
   test("round-trips requests and reports handler failures", async () => {
-    const endpoint = controlEndpoint(path.join(os.tmpdir(), `acp-control-${process.pid}-${Date.now()}.sqlite`));
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-${process.pid}-${Date.now()}.sqlite`));
     const server = new LocalControlServer(endpoint, async (request) => {
       if (request.action === "health") return { ok: true, data: { pid: 42 } };
       throw new Error("rejected");
@@ -39,7 +41,7 @@ describe("local CLI control", () => {
   });
 
   test("round-trips a targeted task prompt request", async () => {
-    const endpoint = controlEndpoint(path.join(os.tmpdir(), `acp-control-prompt-${process.pid}-${Date.now()}.sqlite`));
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-prompt-${process.pid}-${Date.now()}.sqlite`));
     const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));
     servers.push(server);
     await server.start();
@@ -59,7 +61,7 @@ describe("local CLI control", () => {
   });
 
   test("round-trips a live task status request", async () => {
-    const endpoint = controlEndpoint(path.join(os.tmpdir(), `acp-control-status-${process.pid}-${Date.now()}.sqlite`));
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-status-${process.pid}-${Date.now()}.sqlite`));
     const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));
     servers.push(server);
     await server.start();
@@ -77,7 +79,7 @@ describe("local CLI control", () => {
   });
 
   test.skipIf(process.platform !== "win32")("rejects a second server for the same Windows control pipe", async () => {
-    const endpoint = controlEndpoint(path.join(os.tmpdir(), `acp-control-exclusive-${process.pid}-${Date.now()}.sqlite`));
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-exclusive-${process.pid}-${Date.now()}.sqlite`));
     const first = new LocalControlServer(endpoint, async () => ({ ok: true }));
     const duplicate = new LocalControlServer(endpoint, async () => ({ ok: true }));
     servers.push(first, duplicate);

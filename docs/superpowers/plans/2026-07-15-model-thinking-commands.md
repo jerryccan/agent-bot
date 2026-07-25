@@ -213,7 +213,7 @@ In `tests/runtime/AcpRuntimeAdapter.test.ts`, after creating an ACP session:
 
 ```ts
 await expect(runtime.setReasoningEffort("s1", "high")).rejects.toThrow(
-  "ACP runtime does not expose reasoning effort through the gateway.",
+  "ACP runtime does not expose reasoning effort through Agent Bot.",
 );
 ```
 
@@ -308,7 +308,7 @@ Add to `src/runtime/AcpRuntimeAdapter.ts`:
 
 ```ts
 async setReasoningEffort(): Promise<void> {
-  throw new Error("ACP runtime does not expose reasoning effort through the gateway.");
+  throw new Error("ACP runtime does not expose reasoning effort through Agent Bot.");
 }
 ```
 

@@ -2,16 +2,16 @@
 
 ## Summary
 
-Integrate the locally authenticated Codex runtime into `acp-bot` through `codex app-server`. Feishu is the primary user interface; the console remains a lightweight test interface. The resulting experience preserves Codex threads, streaming progress, tool activity, steering, cancellation, model selection, and approval handling without replaying already-delivered history when a thread is resumed.
+Integrate the locally authenticated Codex runtime into `agent-bot` through `codex app-server`. Feishu is the primary user interface; the console remains a lightweight test interface. The resulting experience preserves Codex threads, streaming progress, tool activity, steering, cancellation, model selection, and approval handling without replaying already-delivered history when a thread is resumed.
 
 ## Goals
 
 - Use the existing local Codex authentication and capabilities without a second ChatGPT login.
 - Let Feishu and the local console run concurrently with separate current-session state.
 - Make Feishu feel responsive without flooding the chat or exceeding card-update limits.
-- Preserve Codex threads across `acp-bot` restarts and lazily resume them on demand.
+- Preserve Codex threads across `agent-bot` restarts and lazily resume them on demand.
 - Never resend successfully delivered historical messages when a Codex thread is resumed.
-- Keep existing ACP agents working through the same gateway.
+- Keep existing ACP agents working through Agent Bot.
 - Default Codex sessions to automatic execution while allowing `/permissions confirm` per session.
 
 ## Non-goals
@@ -19,7 +19,7 @@ Integrate the locally authenticated Codex runtime into `acp-bot` through `codex 
 - Recreating the complete Codex terminal UI in the local console.
 - Adding multi-user authorization or filesystem access controls.
 - Replaying a prompt automatically after an App Server crash.
-- Replaying missed historical output after a gateway restart.
+- Replaying missed historical output after an Agent Bot restart.
 - Making the App Server reachable over a public WebSocket endpoint.
 
 ## User Experience
@@ -82,7 +82,7 @@ The progress card has these visual states:
 - `/status`: show App Server state, authentication mode, current session, model, directory, permission mode, and active turn.
 - `/cancel`: interrupt the active Codex turn immediately.
 - `/close [session]`: archive the Codex thread and close the local session.
-- `/agents`, `/modes`, and `/help`: continue to support the gateway's multi-agent behavior.
+- `/agents`, `/modes`, and `/help`: continue to support the Agent Bot's multi-agent behavior.
 - Plain text: start a turn, or steer the active turn when one is already running.
 
 Control commands are not serialized behind a long-running turn. `/cancel` and `/status` are handled immediately. Plain text received during a turn uses `turn/steer`; if the turn is already completing, the text becomes the next queued turn.
@@ -141,9 +141,9 @@ Missing `kind` remains backward-compatible and means `acp`.
 
 - One long-lived `codex app-server` child process hosts all Codex threads.
 - Communication uses App Server's JSON-RPC-lite JSONL protocol over stdio; it is separate from the existing ACP JSON-RPC connection.
-- The gateway sends `initialize`, then `initialized`, exactly once for each process generation.
+- The Agent Bot sends `initialize`, then `initialized`, exactly once for each process generation.
 - Request IDs, pending responses, notifications, and server-initiated requests are handled independently.
-- TypeScript bindings are generated from the installed Codex binary during development as a protocol reference. The source tree keeps a focused, hand-audited subset of the message types used by the gateway, plus contract tests against captured protocol fixtures, rather than checking in the entire generated API surface.
+- TypeScript bindings are generated from the installed Codex binary during development as a protocol reference. The source tree keeps a focused, hand-audited subset of the message types used by the Agent Bot, plus contract tests against captured protocol fixtures, rather than checking in the entire generated API surface.
 - The process inherits the current OS user and `CODEX_HOME`, reusing the existing ChatGPT login.
 - Unexpected process exit rejects pending operations and marks active turns failed. Restart uses bounded exponential backoff.
 
@@ -170,11 +170,11 @@ Resume behavior is deliberately live-only.
 
 - `thread/resume` response data may contain historical turns and items. The runtime uses this data only to reconstruct internal Codex state and never converts it into outbound events.
 - The event bridge remains closed while a thread is being resumed.
-- Outbound event processing opens only after the gateway starts a new turn and records its new `turnId`.
+- Outbound event processing opens only after the Agent Bot starts a new turn and records its new `turnId`.
 - Notifications are accepted only when they belong to the currently active locally-started turn.
 - Thread-level lifecycle notifications may update internal status but never create Feishu messages.
 - Persisted delivery records are used for idempotency and diagnostics, not as a replay queue.
-- If the gateway restarts during an active turn, that turn becomes `failed/interrupted`; the gateway does not replay its prompt or fetch and resend its output.
+- If the Agent Bot restarts during an active turn, that turn becomes `failed/interrupted`; the Agent Bot does not replay its prompt or fetch and resend its output.
 - A manually requested details view reads the stored bounded turn snapshot. It is not automatic replay.
 
 These rules guarantee that messages successfully delivered before a restart or resume are not sent again.
@@ -264,7 +264,7 @@ Turn snapshots store bounded presentation data for `/details`. Delivery records 
 ### Manual verification
 
 - Use the existing locally authenticated Codex CLI runtime.
-- Start `acp-bot` with both Feishu and console connectors enabled.
+- Start `agent-bot` with both Feishu and console connectors enabled.
 - From Feishu: create a session, run a code task, steer it, inspect tools, cancel a turn, switch permissions, and resume after restart.
 - Confirm the progress card remains stable, completed tools stay folded, the final answer appears once, and no historical message reappears after resume.
 
@@ -276,6 +276,6 @@ Turn snapshots store bounded presentation data for `/details`. Delivery records 
 - The final Codex answer is readable Markdown and is delivered once.
 - `/permissions auto|confirm`, `/model`, `/cancel`, steering, session switching, and session closing work.
 - Feishu and console inputs can run concurrently with independent current sessions.
-- Restarting `acp-bot` and resuming a thread never resends previously delivered messages.
+- Restarting `agent-bot` and resuming a thread never resends previously delivered messages.
 - Existing ACP agents continue to work.
 - Build, type checks, unit tests, integration tests, and the manual Feishu flow pass.

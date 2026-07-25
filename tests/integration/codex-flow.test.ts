@@ -15,7 +15,7 @@ import type { AgentRuntime } from "../../src/runtime/types.js";
 import { StateStore } from "../../src/state/StateStore.js";
 
 test("sends one progress card and one final answer per turn, then resumes without history replay", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acp-codex-flow-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-codex-flow-"));
   const dbPath = path.join(dir, "state.sqlite");
   const first = createApplication(dbPath, new FakeClient("turn_1"));
   try {
@@ -118,7 +118,7 @@ class FakeClient implements AppServerClient {
         thread: {
           id: "thr_1",
           cwd: process.cwd(),
-          source: "acp-bot",
+          source: "agent-bot",
           status: { type: this.latestTurn?.status === "inProgress" ? "active" : "idle" },
           turns: this.latestTurn ? [this.latestTurn] : [],
         },

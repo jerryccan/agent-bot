@@ -21,7 +21,7 @@ let restartTimer: NodeJS.Timeout | undefined;
 let stopping = false;
 let consecutiveFailures = 0;
 const storedStartReason = takeRestartReason(sqlitePath);
-let nextStartReason = process.env.ACP_BOT_RESTART_REASON?.trim() || storedStartReason || "Supervisor 启动";
+let nextStartReason = process.env.AGENT_BOT_RESTART_REASON?.trim() || storedStartReason || "Supervisor 启动";
 
 async function startChild(): Promise<void> {
   if (stopping || child) return;
@@ -35,7 +35,7 @@ async function startChild(): Promise<void> {
   nextStartReason = "Supervisor 重新拉起进程";
   child = spawn(process.execPath, [childEntry], {
     cwd: process.cwd(),
-    env: { ...process.env, ACP_BOT_SUPERVISED: "1", ACP_BOT_RESTART_REASON: restartReason },
+    env: { ...process.env, AGENT_BOT_SUPERVISED: "1", AGENT_BOT_RESTART_REASON: restartReason },
     stdio: "inherit",
     windowsHide: true,
   });
@@ -95,12 +95,12 @@ function stop(signal: NodeJS.Signals): void {
 }
 
 function writeSupervisorLog(event: string, data: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify({ component: "acp-bot-supervisor", event, time: new Date().toISOString(), ...data })}\n`);
+  process.stdout.write(`${JSON.stringify({ component: "agent-bot-supervisor", event, time: new Date().toISOString(), ...data })}\n`);
 }
 
 process.on("SIGINT", () => stop("SIGINT"));
 process.on("SIGTERM", () => stop("SIGTERM"));
-const initialDelayMs = Number(process.env.ACP_BOT_START_DELAY_MS ?? 0);
+const initialDelayMs = Number(process.env.AGENT_BOT_START_DELAY_MS ?? 0);
 if (Number.isFinite(initialDelayMs) && initialDelayMs > 0) {
   restartTimer = setTimeout(() => void startChild(), initialDelayMs);
 } else {

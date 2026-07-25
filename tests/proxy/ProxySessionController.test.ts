@@ -77,7 +77,7 @@ function fixture() {
           id: session.remoteSessionId,
           title: input.title,
           cwd: input.cwd,
-          source: "acp-bot",
+          source: "agent-bot",
           status: "idle",
         });
       }
@@ -107,7 +107,7 @@ function fixture() {
         id: remoteSessionId,
         title: input.title,
         cwd: input.cwd,
-        source: "acp-bot",
+        source: "agent-bot",
         status: "idle",
         lastTurnId: input.lastTurnId,
         lastTurnStatus: "completed",
@@ -228,7 +228,7 @@ function fixture() {
     flushAll: vi.fn(async () => undefined),
   };
   const outboundRouter = new OutboundRouter([{ matches: () => true, outbound, presenter }]);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acp-controller-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-controller-"));
   tempDirs.push(dir);
   const store = new StateStore(path.join(dir, "state.sqlite"));
   const config = {
@@ -492,7 +492,7 @@ describe("ProxySessionController", () => {
       remoteSessions.push({
         id: session.remoteSessionId,
         cwd: input.cwd,
-        source: "acp-bot",
+        source: "agent-bot",
         status: "idle",
       });
       return session;
@@ -912,7 +912,7 @@ describe("ProxySessionController", () => {
 
   test("binds a new group to the source project and uses it for the first automatic task", async () => {
     const { controller, runtime, store, outbound } = fixture();
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-source-project-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
     tempDirs.push(project);
     await controller.onMessage(message(`/new --dir "${project}"`));
 
@@ -944,8 +944,8 @@ describe("ProxySessionController", () => {
 
   test("lets an explicit directory override a new group's bound project", async () => {
     const { controller, runtime } = fixture();
-    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "acp-source-project-"));
-    const explicitProject = fs.mkdtempSync(path.join(os.tmpdir(), "acp-explicit-project-"));
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
+    const explicitProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-explicit-project-"));
     tempDirs.push(sourceProject, explicitProject);
     await controller.onMessage(message(`/new --dir "${sourceProject}"`));
     await controller.onMessage({
@@ -986,7 +986,7 @@ describe("ProxySessionController", () => {
   test("middle-truncates a long project directory in the generated group name", async () => {
     const { controller, outbound } = fixture();
     const project = path.join(
-      fs.mkdtempSync(path.join(os.tmpdir(), "acp-long-project-")),
+      fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-long-project-")),
       "a-very-long-middle-directory-name",
       "project-tail",
     );
@@ -1036,7 +1036,7 @@ describe("ProxySessionController", () => {
 
   test("creates a Desktop-compatible projectless workspace when a new Codex task omits cwd", async () => {
     const { controller, runtime } = fixture();
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "acp-projectless-home-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-projectless-home-"));
     tempDirs.push(home);
     vi.spyOn(os, "homedir").mockReturnValue(home);
 
@@ -1054,7 +1054,7 @@ describe("ProxySessionController", () => {
 
   test("inherits the current project directory when new omits cwd", async () => {
     const { controller, runtime } = fixture();
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-project-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-project-"));
     tempDirs.push(project);
 
     await controller.onMessage(message(`/new --dir "${project}"`));
@@ -1067,8 +1067,8 @@ describe("ProxySessionController", () => {
 
   test("forces a fresh projectless workspace with /new --nodir from a project task", async () => {
     const { controller, runtime } = fixture();
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "acp-projectless-home-"));
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "acp-project-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-projectless-home-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-project-"));
     tempDirs.push(home, project);
     vi.spyOn(os, "homedir").mockReturnValue(home);
 
@@ -1091,7 +1091,7 @@ describe("ProxySessionController", () => {
 
   test("creates a fresh projectless workspace when new is sent from a projectless task", async () => {
     const { controller, runtime } = fixture();
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "acp-projectless-home-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-projectless-home-"));
     tempDirs.push(home);
     vi.spyOn(os, "homedir").mockReturnValue(home);
 
@@ -1446,7 +1446,7 @@ describe("ProxySessionController", () => {
     remoteSessions.push({
       id: "thr_saved",
       cwd: process.cwd(),
-      source: "acp-bot",
+      source: "agent-bot",
       status: "idle",
       lastTurnId: "turn_saved",
       lastTurnStatus: "completed",
@@ -1478,7 +1478,7 @@ describe("ProxySessionController", () => {
     remoteSessions.push({
       id: "thr_running",
       cwd: process.cwd(),
-      source: "acp-bot",
+      source: "agent-bot",
       status: "active",
       lastTurnId: "turn_saved",
       lastTurnStatus: "inProgress",
@@ -1516,7 +1516,7 @@ describe("ProxySessionController", () => {
     remoteSessions.push({
       id: "thr_restored",
       cwd: process.cwd(),
-      source: "acp-bot",
+      source: "agent-bot",
       status: "idle",
       lastTurnId: "turn_previous",
       lastTurnStatus: "completed",
@@ -1571,7 +1571,7 @@ describe("ProxySessionController", () => {
     remoteSessions.push({
       id: "thr_without_rollout",
       cwd: process.cwd(),
-      source: "acp-bot",
+      source: "agent-bot",
       status: "not_loaded",
     });
     (runtime.resumeSession as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
@@ -1833,7 +1833,7 @@ describe("ProxySessionController", () => {
     remoteSessions.push({
       id: "locally_tracked_source",
       cwd: "D:\\work\\locally-tracked-source",
-      source: "acp-bot",
+      source: "agent-bot",
       status: "idle",
     });
 
@@ -2276,7 +2276,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).not.toHaveBeenCalled();
   });
 
-  test("does not switch back when the active turn was triggered outside acp-bot", async () => {
+  test("does not switch back when the active turn was triggered outside agent-bot", async () => {
     const { controller, remoteSessions, outbound, store } = fixture();
     remoteSessions.push(
       {
@@ -2412,7 +2412,7 @@ describe("ProxySessionController", () => {
       id: "shared_remote",
       title: "Shared Codex task",
       cwd: "D:\\work\\shared",
-      source: "acp-bot",
+      source: "agent-bot",
       status: "idle",
       lastTurnId: "turn_shared",
       lastTurnStatus: "completed",
@@ -3034,7 +3034,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("**Codex 任务 ID**：`thr_1`");
     expect(serialized).toContain("**创建时间 / 最近活动**：");
     expect(serialized).not.toContain("**创建 / 更新**：");
-    expect(serialized).toContain("acp-bot");
+    expect(serialized).toContain("Agent Bot");
     expect(serialized).toContain("**默认 Agent / 保活**：`codex` / 已启用");
     expect(serialized).not.toContain("任务统计");
     expect(serialized).not.toContain("###");

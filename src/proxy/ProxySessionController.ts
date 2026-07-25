@@ -2156,7 +2156,7 @@ export class ProxySessionController {
     }
     const botOwnsActiveTurn = isBotOwnedActiveTurn(record, remote);
     if ((remote.status === "active" || remote.lastTurnStatus === "inProgress") && !botOwnsActiveTurn) {
-      throw new Error("这个任务正在外部 Codex 中执行。acp-bot 不会接管或追加消息，请等待外部执行完成。");
+      throw new Error("这个任务正在外部 Codex 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
     }
   }
 
@@ -2274,7 +2274,7 @@ export class ProxySessionController {
         elementId: "status_execution_details",
       }] : []),
       {
-        title: "acp-bot",
+        title: "Agent Bot",
         lines: [
           `**默认 Agent / 保活**：${cardCode(context.defaultAgent)} / ${this.lifecycle?.supervised ? "已启用" : "未启用"}`,
           "**交互方式**：普通消息继续当前任务；/new 创建新任务；/help 查看命令。",
@@ -2333,7 +2333,7 @@ export class ProxySessionController {
         lines: [
           `**当前 / 最后步骤**：${statusExcerpt(remote.lastActivity ?? remoteStatusStep(remote), 500)}`,
           isRemoteSessionActive(remote)
-            ? "外部 Codex 正在执行；acp-bot 只读取状态，不会接管。"
+            ? "外部 Codex 正在执行；Agent Bot 只读取状态，不会接管。"
             : `发送 **/switch ${cardText(remote.id)}** 切换到此任务。`,
         ],
         collapsible: true,
@@ -2398,7 +2398,7 @@ export class ProxySessionController {
         title: "系统",
         lines: [
           "**/status [序号或任务 ID]**　查看当前或指定任务的详细状态",
-          "**/restart**　重启 acp-bot 并恢复会话",
+          "**/restart**　重启 Agent Bot 并恢复会话",
           "**/help**　显示本帮助",
         ],
       },

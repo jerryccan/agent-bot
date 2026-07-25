@@ -19,7 +19,7 @@ afterEach(() => {
 
 describe("StateStore runtime metadata", () => {
   test("lists all persisted user contexts in creation order", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -34,7 +34,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("persists a project binding on a taskless chat context", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);
@@ -55,7 +55,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("persists Feishu chat types independently from task contexts", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -76,7 +76,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("adds activity tracking to an existing chat context table", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const legacy = new Database(dbPath);
@@ -104,7 +104,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("persists the previous task and toggles it when the current task changes", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);
@@ -134,7 +134,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("allocates persistent fork title sequences by root title", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);
@@ -152,7 +152,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("persists queued prompts in FIFO order and cancels individual entries", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-queue-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-queue-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);
@@ -206,7 +206,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("persists Codex thread settings", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -240,7 +240,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("migrates duplicate remote tasks into one canonical task with multiple context links", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const legacy = new Database(dbPath);
@@ -320,7 +320,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("reports global task and delivery activity for CLI management", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -370,7 +370,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("stores bounded turn snapshots and final delivery state", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -389,7 +389,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("resolves fork anchors from inbound, progress, and final message ids", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -415,7 +415,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("reconciles ACP turns left running by a previous process", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
@@ -444,13 +444,13 @@ describe("StateStore runtime metadata", () => {
     expect(store.getSession("acp_stale")).toMatchObject({ status: "failed", lastTurnStatus: "failed" });
     expect(store.getTurnSnapshot("turn_stale")).toMatchObject({
       status: "failed",
-      error: "acp-bot 已重启，原 ACP 进程中的执行无法继续。",
+      error: "Agent Bot 已重启，原 ACP 进程中的执行无法继续。",
     });
     expect(store.getTurnSnapshot("turn_stale")).not.toHaveProperty("activeTool");
   });
 
   test("claims an inbound event only once across store restarts", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);
@@ -466,7 +466,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("persists and atomically claims message reactions bound to a turn", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);
@@ -505,7 +505,7 @@ describe("StateStore runtime metadata", () => {
   });
 
   test("retries a reaction replacement interrupted by process restart", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-state-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
     const first = new StateStore(dbPath);

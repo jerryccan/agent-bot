@@ -395,7 +395,7 @@ export class StateStore {
             status: "failed",
             completedAt,
             ...(startedAt === undefined ? {} : { durationMs: Math.max(0, completedAt - startedAt) }),
-            error: "acp-bot 已重启，原 ACP 进程中的执行无法继续。",
+            error: "Agent Bot 已重启，原 ACP 进程中的执行无法继续。",
           };
           delete failedSnapshot.activeTool;
           delete failedSnapshot.approval;

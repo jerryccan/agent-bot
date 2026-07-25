@@ -20,6 +20,7 @@ function createFixture(delivered = false) {
   const store = {
     saveTurnSnapshot: vi.fn(),
     getTurnSnapshot: vi.fn(),
+    getTurnContextKey: vi.fn(),
     saveTurnDelivery: vi.fn(),
     saveFinalDeliveryProgress: vi.fn(),
     markFinalDelivered: vi.fn(),
@@ -29,7 +30,7 @@ function createFixture(delivered = false) {
     normalIntervalMs: 1,
     criticalGapMs: 0,
   });
-  presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\acp-bot");
+  presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\agent-bot");
   return { presenter, outbound, store };
 }
 
@@ -46,7 +47,7 @@ describe("FeishuTurnPresenter", () => {
     expect(store.saveTurnSnapshot).toHaveBeenCalledWith(
       "turn_1",
       "s1",
-      expect.objectContaining({ projectCwd: "D:\\dev\\acp-bot" }),
+      expect.objectContaining({ projectCwd: "D:\\dev\\agent-bot" }),
       "chat_id:c1",
     );
   });
@@ -263,6 +264,50 @@ describe("FeishuTurnPresenter", () => {
     expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(2);
   });
 
+  test("delivers a rehydrated turn failure to its persisted group instead of the latest session context", async () => {
+    const { presenter, outbound, store } = createFixture();
+    const persisted = {
+      sessionId: "s1",
+      turnId: "turn_1",
+      status: "running" as const,
+      startedAt: Date.now() - 1_000,
+      assistantText: "",
+      plan: [],
+      activities: [],
+      totalToolCount: 0,
+      completedToolCount: 0,
+      failedToolCount: 0,
+      toolStatuses: {},
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    };
+    store.getTurnSnapshot.mockReturnValue(persisted);
+    store.getTurnContextKey.mockReturnValue("chat_id:origin_group");
+    presenter.registerSession("s1", "chat_id:current_private");
+
+    await presenter.onEvent({
+      type: "turn_failed",
+      sessionId: "s1",
+      turnId: "turn_1",
+      message: "stream disconnected before completion",
+    });
+
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:origin_group",
+      expect.any(Object),
+    );
+    expect(store.saveTurnSnapshot).toHaveBeenLastCalledWith(
+      "turn_1",
+      "s1",
+      expect.objectContaining({
+        status: "failed",
+        error: "stream disconnected before completion",
+      }),
+      "chat_id:origin_group",
+    );
+  });
+
   test("does not resend a final answer already recorded as delivered", async () => {
     const { presenter, outbound } = createFixture(true);
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() - 1_000 });
@@ -319,9 +364,14 @@ describe("FeishuTurnPresenter", () => {
 
 class MemoryStore implements TurnPresentationStore {
   private readonly snapshots = new Map<string, unknown>();
+  private readonly contexts = new Map<string, string>();
   private readonly deliveries = new Map<string, { finalDelivered: boolean; finalMessageIds: string[] }>();
-  saveTurnSnapshot(turnId: string, _sessionId: string, snapshot: unknown): void { this.snapshots.set(turnId, snapshot); }
+  saveTurnSnapshot(turnId: string, _sessionId: string, snapshot: unknown, contextKey?: string): void {
+    this.snapshots.set(turnId, snapshot);
+    if (contextKey) this.contexts.set(turnId, contextKey);
+  }
   getTurnSnapshot(turnId: string): unknown { return this.snapshots.get(turnId); }
+  getTurnContextKey(turnId: string): string | undefined { return this.contexts.get(turnId); }
   saveTurnDelivery(turnId: string): void {
     if (!this.deliveries.has(turnId)) this.deliveries.set(turnId, { finalDelivered: false, finalMessageIds: [] });
   }

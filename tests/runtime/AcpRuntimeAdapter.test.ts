@@ -72,7 +72,7 @@ describe("AcpRuntimeAdapter tool updates", () => {
       permissionMode: "auto",
     });
     await expect(runtime.setReasoningEffort("s1", "high")).rejects.toThrow(
-      "ACP runtime does not expose reasoning effort through the gateway.",
+      "ACP runtime does not expose reasoning effort through Agent Bot.",
     );
     await runtime.startTurn("s1", "inspect the directory");
 

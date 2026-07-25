@@ -15,11 +15,11 @@ describe("AppServerConnection", () => {
     const connection = new AppServerConnection(process.child, logger());
 
     const pending = connection.request<{ userAgent: string }>("initialize", {
-      clientInfo: { name: "acp_bot", version: "0.1.0" },
+      clientInfo: { name: "agent-bot", version: "0.1.0" },
     });
 
     expect(process.writtenJson()).toEqual([
-      { id: 1, method: "initialize", params: { clientInfo: { name: "acp_bot", version: "0.1.0" } } },
+      { id: 1, method: "initialize", params: { clientInfo: { name: "agent-bot", version: "0.1.0" } } },
     ]);
     process.pushStdout({ id: 1, result: { userAgent: "codex" } });
     await expect(pending).resolves.toEqual({ userAgent: "codex" });

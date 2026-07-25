@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Bot"
+  short_description: "Manage Agent Bot services, sessions, and tasks safely"
+  default_prompt: "Use $agent-bot to inspect and safely manage the local Agent Bot service."

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Send one self-contained Feishu status card to every known Feishu conversation after each successful acp-bot restart.
+**Goal:** Send one self-contained Feishu status card to every known Feishu conversation after each successful Agent Bot restart.
 
 **Architecture:** Add a read-only context enumeration method to `StateStore`, a deterministic startup-card view model to `CardRenderer`, and a small `StartupNotifier` orchestration service. The application invokes the notifier after the Feishu connector is ready; delivery failures are isolated per conversation and never abort startup.
 
@@ -75,7 +75,7 @@ Expected: PASS.
 
 - [ ] **Step 1: Write the failing renderer test**
 
-Render a fixed startup status and assert the serialized card contains `acp-bot 已启动`, `在线`, `Codex`, the CWD, task ID, resumable status wording, `/new`, and `/status`; assert it contains no `button`, `action`, or `value` fields.
+Render a fixed startup status and assert the serialized card contains `Agent Bot 已启动`, `在线`, `Codex`, the CWD, task ID, resumable status wording, `/new`, and `/status`; assert it contains no `button`, `action`, or `value` fields.
 
 - [ ] **Step 2: Run the test and verify failure**
 
@@ -160,8 +160,8 @@ Expected: all tests pass and both TypeScript commands exit 0.
 
 - [ ] **Step 3: Restart the live process**
 
-Gracefully terminate the current TypeScript application process, start it again from `D:/dev/acp-bot` with `ACP_BOT_CONFIG` pointing to the worktree `agents.yaml`, and keep the process hidden.
+Gracefully terminate the current TypeScript application process, start it again from `D:/dev/agent-bot` with `AGENT_BOT_CONFIG` pointing to the worktree `agents.yaml`, and keep the process hidden.
 
 - [ ] **Step 4: Verify the real notification**
 
-Confirm the log contains the new Feishu WebSocket startup entry and no `Failed to send startup status notification` entry. Query the recent Feishu message send result or ask the user to visually confirm the single `acp-bot 已启动` status card.
+Confirm the log contains the new Feishu WebSocket startup entry and no `Failed to send startup status notification` entry. Query the recent Feishu message send result or ask the user to visually confirm the single `Agent Bot 已启动` status card.

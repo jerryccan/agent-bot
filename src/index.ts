@@ -31,9 +31,11 @@ import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
 
 const processStartedAt = new Date();
-const startupReason = process.env.ACP_BOT_RESTART_REASON?.trim()
-  || (process.env.ACP_BOT_SUPERVISED === "1" ? "Supervisor 启动" : "直接启动");
-const consoleOnly = process.env.ACP_BOT_CONSOLE_ONLY === "1";
+const supervised = process.env.AGENT_BOT_SUPERVISED === "1" || process.env.ACP_BOT_SUPERVISED === "1";
+const startupReason = process.env.AGENT_BOT_RESTART_REASON?.trim()
+  || process.env.ACP_BOT_RESTART_REASON?.trim()
+  || (supervised ? "Supervisor 启动" : "直接启动");
+const consoleOnly = process.env.AGENT_BOT_CONSOLE_ONLY === "1";
 const config = loadConfig();
 const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
@@ -95,7 +97,7 @@ const outbound = new OutboundRouter(routes);
 let shuttingDown = false;
 let restartRequested = false;
 const controller = new ProxySessionController(config, store, runtimes, outbound, logger, {
-  supervised: process.env.ACP_BOT_SUPERVISED === "1",
+  supervised,
   restart: requestRestart,
 });
 const safeRestart = new SafeRestartScheduler({
@@ -118,7 +120,7 @@ const startControlServer = async (): Promise<void> => {
     handleControlRequest,
   );
   await controlServer.start();
-  logger.info({ endpoint: controlEndpoint(config.storage.sqlitePath) }, "Local acp-bot control endpoint started.");
+  logger.info({ endpoint: controlEndpoint(config.storage.sqlitePath) }, "Local Agent Bot control endpoint started.");
 };
 
 if (feishuConnector && startupNotifier) {
@@ -135,7 +137,7 @@ async function requestRestart(contextKey: string): Promise<void> {
 
 async function initiateRestart(reason: string, contextKey?: string): Promise<void> {
   if (restartRequested) {
-    if (contextKey) await outbound.sendText(contextKey, "acp-bot 已在重启中，请稍候。").catch(() => undefined);
+    if (contextKey) await outbound.sendText(contextKey, "Agent Bot 已在重启中，请稍候。").catch(() => undefined);
     return;
   }
   restartRequested = true;
@@ -143,12 +145,12 @@ async function initiateRestart(reason: string, contextKey?: string): Promise<voi
   await safeRestartNotifier?.flush();
   saveRestartReason(config.storage.sqlitePath, reason);
   if (contextKey) {
-    await outbound.sendText(contextKey, "acp-bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
+    await outbound.sendText(contextKey, "Agent Bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
       logger.warn({ error, contextKey }, "Failed to send restart acknowledgement.");
     });
   }
   setTimeout(() => {
-    if (process.env.ACP_BOT_SUPERVISED === "1") {
+    if (supervised) {
       void shutdown(RESTART_EXIT_CODE);
       return;
     }
@@ -160,8 +162,8 @@ async function initiateRestart(reason: string, contextKey?: string): Promise<voi
       stdio: "ignore",
       env: {
         ...process.env,
-        ACP_BOT_START_DELAY_MS: "1000",
-        ACP_BOT_RESTART_REASON: "用户执行 /restart 命令",
+        AGENT_BOT_START_DELAY_MS: "1000",
+        AGENT_BOT_RESTART_REASON: "用户执行 /restart 命令",
       },
     });
     supervisor.unref();
@@ -177,7 +179,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
         data: {
           pid: process.pid,
           startedAt: processStartedAt.toISOString(),
-          supervised: process.env.ACP_BOT_SUPERVISED === "1",
+          supervised,
           safeRestartScheduled: safeRestart.scheduled,
           safeRestartReason: safeRestart.pendingReason,
           activity: store.getServerActivityState(),
@@ -198,7 +200,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
     case "server_stop":
       safeRestart.cancel();
       setTimeout(() => void shutdown(STOP_EXIT_CODE), 25);
-      return { ok: true, message: "已请求停止 acp-bot server。" };
+      return { ok: true, message: "已请求停止 Agent Bot server。" };
     case "task_status":
       return { ok: true, data: await controller.controlGetTaskStatus(request.localSessionId) };
     case "task_stop":
@@ -213,7 +215,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
 async function shutdown(exitCode: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  logger.info({ exitCode }, "Shutting down ACP bot.");
+  logger.info({ exitCode }, "Shutting down Agent Bot.");
   safeRestart.cancel();
   feishuConnector?.stop();
   consoleConnector?.stop();

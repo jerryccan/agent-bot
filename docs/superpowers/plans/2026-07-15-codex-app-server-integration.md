@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a persistent Codex App Server runtime to `acp-bot` with a Feishu-first progress-card experience, resumable threads without history replay, controllable permissions, steering, cancellation, and a concurrent test console.
+**Goal:** Add a persistent Codex App Server runtime to `agent-bot` with a Feishu-first progress-card experience, resumable threads without history replay, controllable permissions, steering, cancellation, and a concurrent test console.
 
 **Architecture:** Introduce a runtime-neutral event and session interface, retain ACP as one implementation, and add a single-process multi-thread Codex App Server implementation. Normalize Codex events into a pure turn-view state, then render and rate-limit complete Feishu cards while delivering the final answer separately.
 
@@ -143,7 +143,7 @@ Commit files: `git add src/runtime src/config/schema.ts src/state agents.yaml te
 test("writes JSON-RPC-lite requests without a jsonrpc field", async () => {
   const process = fakeChildProcess();
   const connection = new AppServerConnection(process.child, logger);
-  const pending = connection.request("initialize", { clientInfo: { name: "acp_bot", version: "0.1.0" } });
+  const pending = connection.request("initialize", { clientInfo: { name: "agent-bot", version: "0.1.0" } });
   expect(process.writtenJson()).toEqual([{ id: 1, method: "initialize", params: expect.any(Object) }]);
   process.pushStdout({ id: 1, result: { userAgent: "codex" } });
   await expect(pending).resolves.toMatchObject({ userAgent: "codex" });

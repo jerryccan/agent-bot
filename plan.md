@@ -2,13 +2,13 @@
 
 ## 目标
 
-实现一个运行在本地的 Feishu ACP Gateway，使用户可以通过飞书机器人控制本机任意支持 Agent Client Protocol（ACP）的 agent 客户端/agent 进程。Gateway 负责连接飞书机器人与本地 ACP agent：飞书侧提供消息入口、交互卡片、会话管理和授权控制；ACP 侧保持协议透明，不因为安全策略额外限制 agent 能力。
+实现一个运行在本地的 Agent Bot，使用户可以通过飞书机器人控制本机任意支持 Agent Client Protocol（ACP）的 agent 客户端/agent 进程。Agent Bot 负责连接飞书机器人与本地 ACP agent：飞书侧提供消息入口、交互卡片、会话管理和授权控制；ACP 侧保持协议透明，不因为安全策略额外限制 agent 能力。
 
 ## 核心原则
 
 - 飞书机器人侧是唯一的安全控制面，负责用户白名单、会话权限、确认按钮、审计和操作入口控制。
 - ACP/agent 侧不做额外能力裁剪，不拦截、不改写、不弱化 agent 按协议请求的文件、终端、MCP 或权限相关能力。
-- Gateway 作为 ACP Client，按照 ACP 协议完整实现与 agent 的 JSON-RPC 交互。
+- Agent Bot 作为 ACP Client，按照 ACP 协议完整实现与 agent 的 JSON-RPC 交互。
 - 支持任意 ACP stdio agent，通过配置文件声明启动命令、参数、环境变量和展示名称。
 - 优先保证端到端可用性，再逐步增强飞书交互体验、多 agent 管理和稳定性。
 
@@ -31,7 +31,7 @@
 
 - 在 agent 侧实现额外沙箱或能力限制。
 - 对 agent 发起的文件读写、终端命令、MCP 调用做协议层裁剪。
-- 在 ACP Client 侧实现 `fs/*`、`terminal/*` 等不必要能力；Gateway 默认不声明这些 capability，让 agent 使用自身内置能力。
+- 在 ACP Client 侧实现 `fs/*`、`terminal/*` 等不必要能力；Agent Bot 默认不声明这些 capability，让 agent 使用自身内置能力。
 - 接管已经打开的第三方 IDE ACP Client。若后续需要，需要额外 IDE 插件或专用控制接口。
 
 ## 确定技术栈
@@ -52,7 +52,7 @@
 ## TypeScript 项目结构
 
 ```text
-acp-bot/
+agent-bot/
   package.json
   tsconfig.json
   agents.yaml
@@ -176,7 +176,7 @@ acp-bot/
 
 - 维护每个飞书用户或群聊的默认 agent、当前会话和每个会话创建时绑定的工作目录。
 - 工作目录只在创建会话时通过 `/new [agent] [cwd]` 或 `/use <agent> [cwd]` 指定；已有 ACP 会话不支持运行中切换工作目录。
-- 将 `/xxx` 控制命令转换为 Gateway 内部状态变更或 ACP session 生命周期操作。
+- 将 `/xxx` 控制命令转换为 Agent Bot 内部状态变更或 ACP session 生命周期操作。
 - 将普通文本消息透明转发为当前 ACP 会话的 `session/prompt`。
 - 将 `session/request_permission` 映射到飞书交互卡片按钮。
 - 将 `/modes` 和 `/mode` 映射到 ACP session config / mode 能力；不硬编码 `plan`、`goal` 等具体模式。
@@ -263,13 +263,13 @@ acp-bot/
 - 支持普通消息默认发送到当前会话，无需每次输入 `/ask`。
 - 支持在会话卡片上快捷切换、取消、关闭。
 - 支持显示当前默认 agent、当前会话工作目录和当前会话。
-- 保持 Gateway 为透明代理，不实现 `fs/*`、`terminal/*` 等 ACP Client 侧能力。
+- 保持 Agent Bot 为透明代理，不实现 `fs/*`、`terminal/*` 等 ACP Client 侧能力。
 
 交付标准：
 
 - 用户可以只通过飞书 `/xxx` 命令完成 agent 选择、指定新会话工作目录和会话管理。
 - 普通消息能稳定转发到当前 ACP 会话。
-- Gateway 不依赖、不声明、不实现 ACP Client 侧 `fs/*` 和 `terminal/*` 能力。
+- Agent Bot 不依赖、不声明、不实现 ACP Client 侧 `fs/*` 和 `terminal/*` 能力。
 
 ### 阶段 6：稳定性与可运维
 
@@ -282,7 +282,7 @@ acp-bot/
 
 交付标准：
 
-- Gateway 可以长时间运行。
+- Agent Bot 可以长时间运行。
 - 异常退出后可恢复历史会话元数据。
 - 本地问题可通过日志定位。
 
@@ -307,13 +307,13 @@ agents:
     env: {}
 
 storage:
-  sqlitePath: "./data/acp-bot.sqlite"
+  sqlitePath: "./data/agent-bot.sqlite"
 
 logging:
   level: "info"
-  path: "./logs/acp-bot.log"
+  path: "./logs/agent-bot.log"
 ```
 
 ## 第一版里程碑
 
-第一版以“能通过飞书稳定驱动一个本地 ACP agent 完成真实任务”为目标，建议完成到阶段 5。Gateway 定位为透明代理和控制面：通过飞书 `/xxx` 命令管理 agent、工作目录和会话，不在 ACP Client 侧实现 `fs/*`、`terminal/*` 等不必要能力。
+第一版以“能通过飞书稳定驱动一个本地 ACP agent 完成真实任务”为目标，建议完成到阶段 5。Agent Bot 定位为透明代理和控制面：通过飞书 `/xxx` 命令管理 agent、工作目录和会话，不在 ACP Client 侧实现 `fs/*`、`terminal/*` 等不必要能力。

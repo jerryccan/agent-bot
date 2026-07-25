@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function restartReasonFile(sqlitePath: string): string {
-  return path.join(path.dirname(path.resolve(sqlitePath)), "acp-bot-restart-reason.json");
+  return path.join(path.dirname(path.resolve(sqlitePath)), "agent-bot-restart-reason.json");
 }
 
 export function saveRestartReason(sqlitePath: string, reason: string): void {

@@ -66,7 +66,7 @@ describe("renderMarkdownWithLocalImages", () => {
 });
 
 function createImage(name: string): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acp-bot-image-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-image-"));
   temporaryDirectories.push(directory);
   const filePath = path.join(directory, name);
   fs.writeFileSync(filePath, "fake image");

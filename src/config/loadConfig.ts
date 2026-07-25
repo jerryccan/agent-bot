@@ -6,7 +6,9 @@ import { appConfigSchema, type AppConfig } from "./schema.js";
 
 const ENV_PATTERN = /\$\{([A-Z0-9_]+)\}/gi;
 
-export function loadConfig(configPath = process.env.ACP_BOT_CONFIG ?? "./agents.yaml"): AppConfig {
+export function loadConfig(
+  configPath = process.env.AGENT_BOT_CONFIG ?? process.env.ACP_BOT_CONFIG ?? "./agents.yaml",
+): AppConfig {
   loadDotEnv({ quiet: true });
 
   const absolutePath = path.resolve(configPath);
@@ -24,6 +26,7 @@ export function loadConfig(configPath = process.env.ACP_BOT_CONFIG ?? "./agents.
     throw new Error(`Default agent "${defaultAgent}" is not configured.`);
   }
 
+  const sqlitePath = resolveCompatibleStoragePath(path.resolve(config.storage.sqlitePath));
   return {
     ...config,
     defaults: {
@@ -32,13 +35,21 @@ export function loadConfig(configPath = process.env.ACP_BOT_CONFIG ?? "./agents.
       cwd: path.resolve(config.defaults.cwd),
     },
     storage: {
-      sqlitePath: path.resolve(config.storage.sqlitePath),
+      sqlitePath,
     },
     logging: {
       ...config.logging,
       path: config.logging.path ? path.resolve(config.logging.path) : undefined,
     },
   };
+}
+
+function resolveCompatibleStoragePath(configuredPath: string): string {
+  if (fs.existsSync(configuredPath) || path.basename(configuredPath).toLowerCase() !== "agent-bot.sqlite") {
+    return configuredPath;
+  }
+  const legacyPath = path.join(path.dirname(configuredPath), "acp-bot.sqlite");
+  return fs.existsSync(legacyPath) ? legacyPath : configuredPath;
 }
 
 function expandEnv(raw: string): string {

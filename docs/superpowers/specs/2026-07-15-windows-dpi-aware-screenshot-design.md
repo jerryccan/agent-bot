@@ -6,7 +6,7 @@ Codex generated a PowerShell screenshot command that loaded `System.Windows.Form
 
 ## Design
 
-`acp-bot` will attach a concise Windows screenshot rule to every Codex thread at the trusted app-server developer-instruction layer. The same instruction is sent on `thread/start`, explicit `thread/resume`, and the lazy `thread/resume` performed after an app-server disconnect.
+`agent-bot` will attach a concise Windows screenshot rule to every Codex thread at the trusted app-server developer-instruction layer. The same instruction is sent on `thread/start`, explicit `thread/resume`, and the lazy `thread/resume` performed after an app-server disconnect.
 
 The instruction requires screenshot commands to:
 

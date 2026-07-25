@@ -82,7 +82,7 @@ describe("CodexLocalActivityDetector", () => {
 });
 
 async function createCodexHome(): Promise<string> {
-  const home = await mkdtemp(path.join(os.tmpdir(), "acp-bot-codex-state-"));
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-bot-codex-state-"));
   temporaryDirectories.push(home);
   await mkdir(path.join(home, "sessions"), { recursive: true });
   return home;

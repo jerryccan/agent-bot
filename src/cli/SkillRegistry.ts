@@ -3,12 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_NAME = "acp-bot";
-const MARKER_FILE = ".acp-bot-managed.json";
+const SKILL_NAME = "agent-bot";
+const MARKER_FILE = ".agent-bot-managed.json";
 
 interface RegistrationMarker {
   schemaVersion: 1;
-  managedBy: "acp-bot";
+  managedBy: "agent-bot";
   installedAt: string;
   sourceDigest: string;
 }
@@ -28,7 +28,7 @@ export function resolveSystemSkillsRoot(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory = os.homedir(),
 ): string {
-  return path.resolve(env.ACP_BOT_SKILLS_DIR ?? path.join(homeDirectory, ".agents", "skills"));
+  return path.resolve(env.AGENT_BOT_SKILLS_DIR ?? path.join(homeDirectory, ".agents", "skills"));
 }
 
 export class SkillRegistry {
@@ -46,7 +46,7 @@ export class SkillRegistry {
   status(): SkillRegistrationStatus {
     this.assertValidSource();
     const registered = fs.existsSync(path.join(this.targetPath, "SKILL.md"));
-    const managed = registered && this.readMarker()?.managedBy === "acp-bot";
+    const managed = registered && this.readMarker()?.managedBy === "agent-bot";
     const sourceDigest = digestDirectory(this.sourcePath);
     const installedDigest = registered ? digestDirectory(this.targetPath) : undefined;
     return {
@@ -64,8 +64,8 @@ export class SkillRegistry {
   install(): { updated: boolean; status: SkillRegistrationStatus } {
     this.assertValidSource();
     const existing = fs.existsSync(this.targetPath);
-    if (existing && this.readMarker()?.managedBy !== "acp-bot") {
-      throw new Error(`目标目录已存在且不由 acp-bot 管理：${this.targetPath}`);
+    if (existing && this.readMarker()?.managedBy !== "agent-bot") {
+      throw new Error(`目标目录已存在且不由 Agent Bot 管理：${this.targetPath}`);
     }
 
     const before = existing ? this.status() : undefined;
@@ -77,7 +77,7 @@ export class SkillRegistry {
       fs.cpSync(this.sourcePath, temporaryPath, { recursive: true, errorOnExist: true });
       const marker: RegistrationMarker = {
         schemaVersion: 1,
-        managedBy: "acp-bot",
+        managedBy: "agent-bot",
         installedAt: new Date().toISOString(),
         sourceDigest: digestDirectory(this.sourcePath),
       };
@@ -92,8 +92,8 @@ export class SkillRegistry {
 
   uninstall(): boolean {
     if (!fs.existsSync(this.targetPath)) return false;
-    if (this.readMarker()?.managedBy !== "acp-bot") {
-      throw new Error(`拒绝删除不由 acp-bot 管理的目录：${this.targetPath}`);
+    if (this.readMarker()?.managedBy !== "agent-bot") {
+      throw new Error(`拒绝删除不由 Agent Bot 管理的目录：${this.targetPath}`);
     }
     this.removeManagedTarget();
     return true;
@@ -101,7 +101,7 @@ export class SkillRegistry {
 
   private assertValidSource(): void {
     if (!fs.existsSync(path.join(this.sourcePath, "SKILL.md"))) {
-      throw new Error(`找不到内置 acp-bot Skill：${this.sourcePath}`);
+      throw new Error(`找不到内置 Agent Bot Skill：${this.sourcePath}`);
     }
   }
 
@@ -114,7 +114,7 @@ export class SkillRegistry {
   private readMarker(): RegistrationMarker | undefined {
     try {
       const marker = JSON.parse(fs.readFileSync(path.join(this.targetPath, MARKER_FILE), "utf8")) as Partial<RegistrationMarker>;
-      if (marker.schemaVersion !== 1 || marker.managedBy !== "acp-bot") return undefined;
+      if (marker.schemaVersion !== 1 || marker.managedBy !== "agent-bot") return undefined;
       return marker as RegistrationMarker;
     } catch {
       return undefined;
