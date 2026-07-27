@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { initializeAgentBot } from "../../src/cli/Initializer.js";
+import { initializeAgentBot, readFeishuCredentials, writeFeishuCredentials } from "../../src/cli/Initializer.js";
 
 const directories: string[] = [];
 
@@ -53,6 +53,48 @@ describe("initializeAgentBot", () => {
     expect(result.env.path).toBe(path.join(fixture.home, ".env"));
     expect(result.data.path).toBe(path.join(path.dirname(configPath), "data"));
     expect(result.logs.path).toBe(path.join(path.dirname(configPath), "logs"));
+  });
+
+  test("writes Feishu credentials without changing other environment settings", () => {
+    const fixture = createFixture();
+    const result = initializeAgentBot(fixture.options);
+    fs.writeFileSync(
+      result.env.path,
+      ["# user comment", "FEISHU_APP_ID=", "CUSTOM_VALUE=keep-me", "FEISHU_APP_SECRET=", ""].join("\n"),
+      "utf8",
+    );
+
+    writeFeishuCredentials(result.env.path, {
+      appId: "cli_created",
+      appSecret: "secret-created",
+    });
+
+    expect(fs.readFileSync(result.env.path, "utf8")).toBe(
+      [
+        "# user comment",
+        "FEISHU_APP_ID=cli_created",
+        "CUSTOM_VALUE=keep-me",
+        "FEISHU_APP_SECRET=secret-created",
+        "",
+      ].join("\n"),
+    );
+    expect(readFeishuCredentials(result.env.path, {})).toEqual({
+      status: "configured",
+      appId: "cli_created",
+      appSecret: "secret-created",
+    });
+  });
+
+  test("reports incomplete credentials", () => {
+    const fixture = createFixture();
+    const result = initializeAgentBot(fixture.options);
+    fs.writeFileSync(result.env.path, "FEISHU_APP_ID=cli_only\nFEISHU_APP_SECRET=\n", "utf8");
+
+    expect(readFeishuCredentials(result.env.path, {})).toEqual({
+      status: "incomplete",
+      appId: "cli_only",
+      appSecret: undefined,
+    });
   });
 });
 

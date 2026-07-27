@@ -24,12 +24,14 @@
     "better-sqlite3": "latest",
     "dotenv": "latest",
     "pino": "latest",
+    "qrcode-terminal": "^0.12.0",
     "yaml": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/better-sqlite3": "latest",
     "@types/node": "latest",
+    "@types/qrcode-terminal": "^0.12.2",
     "eslint": "latest",
     "prettier": "latest",
     "tsx": "latest",

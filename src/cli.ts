@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import qrcode from "qrcode-terminal";
 import { loadConfig } from "./config/loadConfig.js";
 import { sendControlRequest, isServerRunning } from "./cli/LocalControlClient.js";
 import {
@@ -8,7 +9,23 @@ import {
   type ControlResponse,
   type TaskStatusControlData,
 } from "./cli/controlProtocol.js";
-import { initializeAgentBot, type InitializationResult, type InitializationStatus } from "./cli/Initializer.js";
+import {
+  initializeAgentBot,
+  readFeishuCredentials,
+  writeFeishuCredentials,
+  type InitializationResult,
+  type InitializationStatus,
+} from "./cli/Initializer.js";
+import {
+  registerFeishuApp,
+  type FeishuAppCredentials,
+  type FeishuAppRegistrationChallenge,
+} from "./cli/FeishuAppRegistration.js";
+import {
+  ensureFeishuAppConfiguration,
+  type EnsureFeishuAppConfigurationResult,
+  type FeishuConfigurationChallenge,
+} from "./cli/FeishuAppConfiguration.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
@@ -29,7 +46,7 @@ async function main(input: string[]): Promise<void> {
     return;
   }
   if (command === "init") {
-    initCommand(rest, parsed.configPath);
+    await initCommand(rest, parsed.configPath);
     return;
   }
   if (command === "console") {
@@ -51,11 +68,79 @@ async function main(input: string[]): Promise<void> {
   throw new Error(`未知命令：${command}。使用 agent-bot --help 查看帮助。`);
 }
 
-function initCommand(input: string[], configPath?: string): void {
-  const unsupported = input.filter((value) => value !== "--json");
+type FeishuInitializationStatus = "created" | "existing" | "skipped";
+
+interface InitCommandResult extends InitializationResult {
+  feishu: {
+    status: FeishuInitializationStatus;
+    appId?: string;
+    configuration?: EnsureFeishuAppConfigurationResult;
+  };
+}
+
+async function initCommand(input: string[], configPath?: string): Promise<void> {
+  const supported = new Set(["--json", "--skip-feishu", "--reconfigure-feishu"]);
+  const unsupported = input.filter((value) => !supported.has(value));
   if (unsupported.length > 0) throw new Error(`init 不支持参数：${unsupported.join(" ")}`);
-  const result = initializeAgentBot({ configPath });
-  if (input.includes("--json")) printJson(result);
+  const json = input.includes("--json");
+  const skipFeishu = input.includes("--skip-feishu");
+  const reconfigureFeishu = input.includes("--reconfigure-feishu");
+  if (skipFeishu && reconfigureFeishu) {
+    throw new Error("--skip-feishu 和 --reconfigure-feishu 不能同时使用。");
+  }
+
+  const paths = initializeAgentBot({ configPath });
+  if (!json) printInitializationPaths(paths);
+
+  const existing = readFeishuCredentials(paths.env.path);
+  let feishu: InitCommandResult["feishu"];
+  if (skipFeishu) {
+    feishu = {
+      status: "skipped",
+      ...(existing.appId ? { appId: existing.appId } : {}),
+    };
+  } else {
+    const controller = new AbortController();
+    const onInterrupt = (): void => controller.abort(new Error("已取消初始化。"));
+    process.once("SIGINT", onInterrupt);
+    try {
+      let credentials: FeishuAppCredentials;
+      let status: Exclude<FeishuInitializationStatus, "skipped">;
+      if (existing.status === "configured" && !reconfigureFeishu) {
+        credentials = {
+          appId: existing.appId!,
+          appSecret: existing.appSecret!,
+        };
+        status = "existing";
+      } else {
+        if (existing.status === "incomplete" && !reconfigureFeishu) {
+          throw new Error(`检测到不完整的飞书凭证：请补全 ${paths.env.path}，或使用 --reconfigure-feishu 重新创建应用。`);
+        }
+        credentials = await registerFeishuApp({
+          signal: controller.signal,
+          onVerification: (challenge) => printFeishuVerification(challenge, json),
+        });
+        writeFeishuCredentials(paths.env.path, credentials);
+        status = "created";
+      }
+
+      if (!json) process.stdout.write("\n正在检查飞书应用权限、事件和回调配置...\n");
+      const configuration = await ensureFeishuAppConfiguration(credentials, {
+        signal: controller.signal,
+        onVerification: (challenge) => printFeishuConfigurationVerification(challenge, json),
+      });
+      feishu = {
+        status,
+        appId: credentials.appId,
+        configuration,
+      };
+    } finally {
+      process.removeListener("SIGINT", onInterrupt);
+    }
+  }
+
+  const result: InitCommandResult = { ...paths, feishu };
+  if (json) printJson(result);
   else printInitializationResult(result);
 }
 
@@ -350,14 +435,130 @@ function printSkillStatus(status: SkillRegistrationStatus): void {
   }
 }
 
-function printInitializationResult(result: InitializationResult): void {
-  process.stdout.write("Agent Bot 初始化完成。\n");
+function printInitializationPaths(result: InitializationResult): void {
+  process.stdout.write("正在准备 Agent Bot 用户环境...\n");
   process.stdout.write(`用户目录：${result.home.path}（${initializationStatusLabel(result.home.status)}）\n`);
   process.stdout.write(`配置文件：${result.config.path}（${initializationStatusLabel(result.config.status)}）\n`);
   process.stdout.write(`环境文件：${result.env.path}（${initializationStatusLabel(result.env.status)}）\n`);
   process.stdout.write(`数据目录：${result.data.path}（${initializationStatusLabel(result.data.status)}）\n`);
   process.stdout.write(`日志目录：${result.logs.path}（${initializationStatusLabel(result.logs.status)}）\n`);
-  process.stdout.write(`下一步：按需编辑 ${result.env.path} 和 ${result.config.path}，然后运行 agent-bot server start。\n`);
+}
+
+function printInitializationResult(result: InitCommandResult): void {
+  process.stdout.write("\nAgent Bot 初始化完成。\n");
+  if (result.feishu.status === "created") {
+    process.stdout.write(`飞书应用：已创建并保存凭证（${result.feishu.appId}）\n`);
+  } else if (result.feishu.status === "existing") {
+    process.stdout.write(`飞书应用：已配置，未修改（${result.feishu.appId}）\n`);
+  } else {
+    process.stdout.write("飞书应用：已跳过，可使用 Console 模式或稍后重新运行 init。\n");
+  }
+  if (result.feishu.configuration?.status === "updated") {
+    const added = result.feishu.configuration.added;
+    process.stdout.write(
+      `飞书配置：已补齐 ${added.scopes.length} 项权限、${added.events.length} 项事件、${added.callbacks.length} 项回调\n`,
+    );
+  } else if (result.feishu.configuration?.status === "partial") {
+    const configuration = result.feishu.configuration;
+    const addedCount =
+      configuration.added.scopes.length + configuration.added.events.length + configuration.added.callbacks.length;
+    if (addedCount > 0) {
+      process.stdout.write(
+        `飞书配置：核心能力已就绪，已补齐 ${configuration.added.scopes.length} 项权限、${configuration.added.events.length} 项事件、${configuration.added.callbacks.length} 项回调\n`,
+      );
+    } else {
+      process.stdout.write("飞书配置：核心能力已就绪\n");
+    }
+    printOptionalFeishuConfigurationWarnings(configuration.remaining);
+  } else if (result.feishu.configuration?.status === "ready") {
+    process.stdout.write("飞书配置：权限、事件和回调均已就绪\n");
+  }
+  process.stdout.write(`配置文件：${result.config.path}\n`);
+  process.stdout.write("下一步：运行 agent-bot server start。\n");
+}
+
+function printFeishuVerification(challenge: FeishuAppRegistrationChallenge, json: boolean): void {
+  process.stderr.write("\n请使用飞书扫码，或在浏览器中打开下面的链接创建机器人应用：\n\n");
+  process.stderr.write(`${challenge.verificationUrl}\n\n`);
+  if (!json) {
+    qrcode.generate(challenge.verificationUrl, { small: true }, (output) => {
+      process.stderr.write(`${output}\n`);
+    });
+  }
+  process.stderr.write(`链接约在 ${Math.ceil(challenge.expiresIn / 60)} 分钟后过期，正在等待确认...\n`);
+}
+
+function printFeishuConfigurationVerification(
+  challenge: FeishuConfigurationChallenge,
+  json: boolean,
+): void {
+  process.stderr.write("\n飞书应用还缺少以下配置：\n");
+  if (challenge.missing.scopes.length > 0) {
+    process.stderr.write(`权限：${challenge.missing.scopes.join(", ")}\n`);
+  }
+  if (challenge.missing.events.length > 0) {
+    process.stderr.write(`事件：${challenge.missing.events.join(", ")}\n`);
+  }
+  if (challenge.missing.callbacks.length > 0) {
+    process.stderr.write(`回调：${challenge.missing.callbacks.join(", ")}\n`);
+  }
+  process.stderr.write("\n请使用飞书扫码，或在浏览器中打开下面的链接补齐配置：\n\n");
+  process.stderr.write(`${challenge.verificationUrl}\n\n`);
+  if (!json) {
+    qrcode.generate(challenge.verificationUrl, { small: true }, (output) => {
+      process.stderr.write(`${output}\n`);
+    });
+  }
+  if (challenge.blocking) {
+    process.stderr.write("正在等待核心权限和消息事件发布生效...\n");
+  } else {
+    process.stderr.write("以上配置不影响基础消息收发；初始化将继续，可稍后打开链接授权。\n");
+  }
+}
+
+function printOptionalFeishuConfigurationWarnings(missing: FeishuConfigurationChallenge["missing"]): void {
+  process.stdout.write("提醒：以下非核心配置尚未生效，部分功能可能不可用。\n");
+  if (missing.scopes.length > 0) {
+    process.stdout.write(`未生效权限：${missing.scopes.join(", ")}\n`);
+  }
+  if (missing.events.length > 0) {
+    process.stdout.write(`未生效事件：${missing.events.join(", ")}\n`);
+  }
+  if (missing.callbacks.length > 0) {
+    process.stdout.write(`未生效回调：${missing.callbacks.join(", ")}\n`);
+  }
+  for (const feature of optionalFeishuFeatureWarnings(missing)) {
+    process.stdout.write(`可能缺失功能：${feature}\n`);
+  }
+}
+
+function optionalFeishuFeatureWarnings(missing: FeishuConfigurationChallenge["missing"]): string[] {
+  const scopes = new Set(missing.scopes);
+  const events = new Set(missing.events);
+  const callbacks = new Set(missing.callbacks);
+  const warnings: string[] = [];
+  if (scopes.has("im:chat:create")) {
+    warnings.push("无法使用 /newgroup 和 /forkgroup 创建飞书群");
+  }
+  if (scopes.has("im:chat:read") || events.has("im.chat.updated_v1")) {
+    warnings.push("修改飞书群名称时无法同步 Agent Bot 任务标题");
+  }
+  if (scopes.has("im:message.reactions:write_only")) {
+    warnings.push("无法用表情显示消息处理状态");
+  }
+  if (scopes.has("im:message:readonly")) {
+    warnings.push("可能无法读取用户消息中的图片");
+  }
+  if (scopes.has("im:resource")) {
+    warnings.push("可能无法上传图片、发送本地图片或设置群头像");
+  }
+  if (scopes.has("im:message:update")) {
+    warnings.push("可能无法更新已发送的进度卡片");
+  }
+  if (callbacks.has("card.action.trigger")) {
+    warnings.push("卡片按钮和交互操作不可用");
+  }
+  return warnings;
 }
 
 function initializationStatusLabel(status: InitializationStatus): string {
@@ -396,7 +597,7 @@ function printHelp(): void {
   process.stdout.write(`Agent Bot 命令行工具
 
 用法：
-  agent-bot [--config <path>] init [--json]
+  agent-bot [--config <path>] init [--json] [--skip-feishu | --reconfigure-feishu]
   agent-bot [--config <path>] console [--force]
   agent-bot [--config <path>] server status [--json]
   agent-bot [--config <path>] server start
@@ -416,7 +617,9 @@ function printHelp(): void {
 说明：
   默认用户目录是 ~/.agent-bot；配置为 ~/.agent-bot/config.yaml，环境变量为 ~/.agent-bot/.env。
   可用 AGENT_BOT_HOME 修改用户目录，或用 --config 指向某个配置文件。
-  init 创建用户目录、示例配置、环境文件、数据目录和日志目录；已有文件不会被覆盖。
+  init 创建用户目录和运行文件；创建或读取飞书凭证后会审计并补齐已发布的权限、事件和回调。
+  仅核心消息能力缺失会阻塞初始化；非核心配置缺失只提醒受影响功能。
+  --skip-feishu 跳过飞书创建及配置审计并保留 Console 模式；--reconfigure-feishu 明确替换已有飞书凭证。
   server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
   --immediate（或 --force）跳过空闲等待并立即重启 worker。
   task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。
