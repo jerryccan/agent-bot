@@ -1101,12 +1101,12 @@ describe("ProxySessionController", () => {
     });
   });
 
-  test("uses the platform path separator for a shortened project directory in the generated group name", async () => {
+  test("keeps readable trailing directories in the generated group name", async () => {
     const { controller, outbound } = fixture();
     const project = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-long-project-")),
-      "a-very-long-middle-directory-name",
-      "project-tail",
+      "dev",
+      "agent-bot",
     );
     fs.mkdirSync(project, { recursive: true });
     tempDirs.push(path.dirname(path.dirname(project)));
@@ -1124,10 +1124,58 @@ describe("ProxySessionController", () => {
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(groupInput.name).toMatch(/^\[codex\] \[[^\]]+\] 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/);
     const projectDisplay = /^\[codex\] \[([^\]]+)\]/.exec(groupInput.name)?.[1];
+    expect(projectDisplay).toBe(`dev${path.sep}agent-bot`);
+  });
+
+  test("falls back to the leaf directory when the trailing pair is too long for a group name", async () => {
+    const { controller, outbound } = fixture();
+    const project = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-long-project-")),
+      "a-very-long-middle-directory-name",
+      "project-tail",
+    );
+    fs.mkdirSync(project, { recursive: true });
+    tempDirs.push(path.dirname(path.dirname(project)));
+    await controller.onMessage(message(`/new --dir "${project}"`));
+
+    await controller.onMessage({
+      messageId: "new-long-leaf-project-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup",
+    });
+
+    const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const projectDisplay = /^\[codex\] \[([^\]]+)\]/.exec(groupInput.name)?.[1];
+    expect(projectDisplay).toBe("project-tail");
+  });
+
+  test("truncates the tail when the leaf directory is too long for a group name", async () => {
+    const { controller, outbound } = fixture();
+    const project = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-long-project-")),
+      "dev",
+      "a-very-long-project-tail",
+    );
+    fs.mkdirSync(project, { recursive: true });
+    tempDirs.push(path.dirname(path.dirname(project)));
+    await controller.onMessage(message(`/new --dir "${project}"`));
+
+    await controller.onMessage({
+      messageId: "new-overlong-leaf-project-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup",
+    });
+
+    const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const projectDisplay = /^\[codex\] \[([^\]]+)\]/.exec(groupInput.name)?.[1];
+    expect(projectDisplay).toBe("a-very-long-...");
     expect(Array.from(projectDisplay ?? "")).toHaveLength(15);
-    expect(projectDisplay?.startsWith(`...${path.sep}`)).toBe(true);
-    expect(projectDisplay?.slice(4).split(path.sep)).toHaveLength(2);
-    expect(projectDisplay).toContain("…tail");
   });
 
   test("rejects newgroup when the message does not contain a Feishu open_id", async () => {

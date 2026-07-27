@@ -3010,17 +3010,18 @@ function formatNewGroupName(
   return `${prefix}${formatGroupProjectDirectory(projectCwd)}${suffix}`;
 }
 
+const GROUP_PROJECT_DIRECTORY_MAX_LENGTH = 15;
+
 function formatGroupProjectDirectory(projectCwd: string | undefined): string {
   const value = projectCwd ? abbreviateHomeDirectory(projectCwd) : "Projectless";
-  if (Array.from(value).length <= 15) return `[${value}]`;
+  if (Array.from(value).length <= GROUP_PROJECT_DIRECTORY_MAX_LENGTH) return `[${value}]`;
 
   const levels = value
     .replace(/[\\/]+$/, "")
     .split(/[\\/]+/)
     .filter(Boolean)
     .slice(-2);
-  const prefix = `...${path.sep}`;
-  return `[${prefix}${fitTrailingPathLevels(levels, 15 - Array.from(prefix).length, path.sep)}]`;
+  return `[${fitTrailingPathLevels(levels, GROUP_PROJECT_DIRECTORY_MAX_LENGTH, path.sep)}]`;
 }
 
 function abbreviateHomeDirectory(value: string): string {
@@ -3037,27 +3038,16 @@ function fitTrailingPathLevels(levels: string[], maxLength: number, separator: s
   const leaf = levels[1]!;
   const joined = `${parent}${separator}${leaf}`;
   if (Array.from(joined).length <= maxLength) return joined;
-
-  const available = Math.max(2, maxLength - 1);
-  let parentLength = Math.floor(available / 2);
-  let leafLength = available - parentLength;
-  const parentSize = Array.from(parent).length;
-  const leafSize = Array.from(leaf).length;
-  if (parentSize < parentLength) {
-    leafLength += parentLength - parentSize;
-    parentLength = parentSize;
-  } else if (leafSize < leafLength) {
-    parentLength += leafLength - leafSize;
-    leafLength = leafSize;
-  }
-  return `${truncatePathLevel(parent, parentLength)}${separator}${truncatePathLevel(leaf, leafLength)}`;
+  if (Array.from(leaf).length <= maxLength) return leaf;
+  return truncatePathLevel(leaf, maxLength);
 }
 
 function truncatePathLevel(value: string, maxLength: number): string {
   const characters = Array.from(value);
   if (characters.length <= maxLength) return value;
-  if (maxLength <= 1) return "…";
-  return `…${characters.slice(-(maxLength - 1)).join("")}`;
+  if (maxLength <= 0) return "";
+  if (maxLength <= 3) return ".".repeat(maxLength);
+  return `${characters.slice(0, maxLength - 3).join("")}...`;
 }
 
 function parseAgentGroupName(value: string): { agentName: string; title: string } | undefined {
