@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_LOG_PATH, DEFAULT_SQLITE_PATH } from "./paths.js";
 
 const envRecordSchema = z.record(z.string(), z.string()).default({});
 
@@ -33,12 +34,12 @@ export const appConfigSchema = z.object({
     })
     .default({ cwd: "." }),
   storage: z.object({
-    sqlitePath: z.string().default("./data/agent-bot.sqlite"),
-  }),
+    sqlitePath: z.string().default(DEFAULT_SQLITE_PATH),
+  }).default({ sqlitePath: DEFAULT_SQLITE_PATH }),
   logging: z.object({
     level: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
-    path: z.string().optional(),
-  }),
+    path: z.string().optional().default(DEFAULT_LOG_PATH),
+  }).default({ level: "info", path: DEFAULT_LOG_PATH }),
 });
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;

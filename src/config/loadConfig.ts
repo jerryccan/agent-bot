@@ -3,17 +3,83 @@ import path from "node:path";
 import { config as loadDotEnv } from "dotenv";
 import YAML from "yaml";
 import { appConfigSchema, type AppConfig } from "./schema.js";
+import { defaultConfigPath, defaultDotEnvPath, resolveUserPath } from "./paths.js";
 
 const ENV_PATTERN = /\$\{([A-Z0-9_]+)\}/gi;
+const DEFAULT_CONFIG = `feishu:
+  transport: "auto"
+  appId: "\${FEISHU_APP_ID}"
+  appSecret: "\${FEISHU_APP_SECRET}"
+  useConsoleWhenMissingCredentials: true
+
+console:
+  enabled: true
+
+agents:
+  codex:
+    kind: "codex"
+    title: "Codex"
+    command: "codex"
+    args:
+      - "app-server"
+      - "--enable"
+      - "goals"
+      - "--listen"
+      - "stdio://"
+    env: {}
+
+  coco:
+    title: "Coco"
+    command: "coco"
+    args:
+      - "acp"
+      - "serve"
+    env: {}
+
+  coco-yolo:
+    title: "Coco YOLO"
+    command: "coco"
+    args:
+      - "acp"
+      - "serve"
+      - "--yolo"
+    env: {}
+
+  example:
+    title: "Example ACP Agent"
+    command: "node"
+    args:
+      - "./examples/example-acp-agent.js"
+    env: {}
+
+defaults:
+  agent: "codex"
+  cwd: "."
+
+storage:
+  sqlitePath: "./data/agent-bot.sqlite"
+
+logging:
+  level: "info"
+  path: "./logs/agent-bot.log"
+`;
 
 export function loadConfig(
-  configPath = process.env.AGENT_BOT_CONFIG ?? process.env.ACP_BOT_CONFIG ?? "./agents.yaml",
+  configPath?: string,
 ): AppConfig {
-  loadDotEnv({ quiet: true });
+  loadDotEnv({ path: defaultDotEnvPath(), quiet: true });
 
-  const absolutePath = path.resolve(configPath);
+  const configuredPath = configPath ?? process.env.AGENT_BOT_CONFIG ?? process.env.ACP_BOT_CONFIG;
+  const absolutePath = resolveUserPath(configuredPath ?? defaultConfigPath());
   if (!fs.existsSync(absolutePath)) {
-    throw new Error(`Config file does not exist: ${absolutePath}`);
+    if (configuredPath) throw new Error(`Config file does not exist: ${absolutePath}`);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    const legacyConfigPath = path.join(path.dirname(absolutePath), "agents.yaml");
+    if (fs.existsSync(legacyConfigPath)) {
+      fs.copyFileSync(legacyConfigPath, absolutePath);
+    } else {
+      fs.writeFileSync(absolutePath, DEFAULT_CONFIG);
+    }
   }
 
   const raw = fs.readFileSync(absolutePath, "utf8");
@@ -26,7 +92,8 @@ export function loadConfig(
     throw new Error(`Default agent "${defaultAgent}" is not configured.`);
   }
 
-  const sqlitePath = path.resolve(config.storage.sqlitePath);
+  const configDirectory = path.dirname(absolutePath);
+  const sqlitePath = resolveUserPath(config.storage.sqlitePath, configDirectory);
   return {
     ...config,
     defaults: {
@@ -39,7 +106,7 @@ export function loadConfig(
     },
     logging: {
       ...config.logging,
-      path: config.logging.path ? path.resolve(config.logging.path) : undefined,
+      path: resolveUserPath(config.logging.path, configDirectory),
     },
   };
 }

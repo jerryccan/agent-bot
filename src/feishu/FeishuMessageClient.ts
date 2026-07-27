@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
+import { defaultSqlitePath } from "../config/paths.js";
 import type { AppConfig } from "../config/schema.js";
 import { LOCAL_CARD_IMAGE_PATH } from "./LocalCardImage.js";
 import { renderMarkdownWithLocalImages } from "./LocalImageMarkdown.js";
@@ -516,7 +517,7 @@ export class FeishuMessageClient implements FeishuOutbound {
       if (bytes.byteLength === 0) throw new Error("Feishu returned an empty image.");
       if (bytes.byteLength > 20 * 1024 * 1024) throw new Error("Feishu image exceeds the 20 MiB input limit.");
 
-      const sqlitePath = this.config.storage?.sqlitePath ?? path.resolve("data/agent-bot.sqlite");
+      const sqlitePath = this.config.storage?.sqlitePath ?? defaultSqlitePath();
       const directory = path.join(path.dirname(sqlitePath), "inbound-images");
       await mkdir(directory, { recursive: true });
       const digest = createHash("sha256").update(`${messageId}:${imageKey}`).digest("hex");

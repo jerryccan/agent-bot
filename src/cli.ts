@@ -385,6 +385,8 @@ function printHelp(): void {
   agent-bot skills path [--json] [--target <skills目录>]
 
 说明：
+  默认用户目录是 ~/.agent-bot；配置为 ~/.agent-bot/config.yaml，环境变量为 ~/.agent-bot/.env。
+  可用 AGENT_BOT_HOME 修改用户目录，或用 --config 指向某个配置文件。
   server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
   --immediate（或 --force）跳过空闲等待并立即重启 worker。
   task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。
