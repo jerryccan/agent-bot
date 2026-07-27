@@ -26,7 +26,7 @@ Primary user-facing behavior is documented in `README.md`. Keep that document in
 - `src/utils/` contains small reusable helpers.
 - `tests/` mirrors the source areas with Vitest coverage.
 - `skills/agent-bot/` is the built-in managed Agent Bot skill. Update it when CLI/control behavior changes.
-- `docs/superpowers/` contains design notes and implementation plans.
+- `docs/specs/` contains design notes, and `docs/plans/` contains implementation plans.
 
 ## Commands
 

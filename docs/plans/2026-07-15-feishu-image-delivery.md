@@ -151,7 +151,7 @@ Expected: all tests pass and both TypeScript commands exit successfully.
 - [x] **Step 6: Commit, restart, and test in Feishu**
 
 ```text
-git add src/codex/CodexEventMapper.ts tests/codex/CodexEventMapper.test.ts src/feishu/LocalImageMarkdown.ts tests/feishu/LocalImageMarkdown.test.ts src/feishu/FeishuMessageClient.ts tests/feishu/FeishuMessageClient.test.ts docs/superpowers/plans/2026-07-15-feishu-image-delivery.md
+git add src/codex/CodexEventMapper.ts tests/codex/CodexEventMapper.test.ts src/feishu/LocalImageMarkdown.ts tests/feishu/LocalImageMarkdown.test.ts src/feishu/FeishuMessageClient.ts tests/feishu/FeishuMessageClient.test.ts docs/plans/2026-07-15-feishu-image-delivery.md
 git commit -m "fix: deliver Codex screenshots in Feishu"
 ```
 

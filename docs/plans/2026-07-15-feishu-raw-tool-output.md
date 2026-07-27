@@ -117,7 +117,7 @@ Expected: all tests pass and both TypeScript commands exit successfully.
 - [x] **Step 6: Commit and deploy**
 
 ```text
-git add src/utils/markdown.ts tests/utils/markdown.test.ts src/feishu/CardRenderer.ts tests/feishu/CardRenderer.test.ts docs/superpowers/plans/2026-07-15-feishu-raw-tool-output.md
+git add src/utils/markdown.ts tests/utils/markdown.test.ts src/feishu/CardRenderer.ts tests/feishu/CardRenderer.test.ts docs/plans/2026-07-15-feishu-raw-tool-output.md
 git commit -m "feat: preserve tool output boundaries"
 ```
 

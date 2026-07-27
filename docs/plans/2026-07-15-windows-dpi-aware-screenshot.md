@@ -53,6 +53,6 @@ Restart `agent-bot`, ask the active Feishu Codex session to capture the complete
 - [x] **Step 6: Commit**
 
 ```text
-git add src/codex/CodexRuntime.ts tests/codex/CodexRuntime.test.ts docs/superpowers/specs/2026-07-15-windows-dpi-aware-screenshot-design.md docs/superpowers/plans/2026-07-15-windows-dpi-aware-screenshot.md
+git add src/codex/CodexRuntime.ts tests/codex/CodexRuntime.test.ts docs/specs/2026-07-15-windows-dpi-aware-screenshot-design.md docs/plans/2026-07-15-windows-dpi-aware-screenshot.md
 git commit -m "fix: make Codex screenshots DPI aware"
 ```
