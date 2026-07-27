@@ -32,7 +32,10 @@ agent-bot skills uninstall
 
 ```powershell
 npm install
-Copy-Item .env.example .env
+New-Item -ItemType Directory -Force ~/.agent-bot
+Copy-Item .env.example ~/.agent-bot/.env
+# 可选：首次运行也会自动生成这个文件
+Copy-Item config.example.yaml ~/.agent-bot/config.yaml
 npm run build
 npm start
 ```
@@ -90,12 +93,13 @@ agent-bot task prompt 2 "继续运行测试并汇报结果"
 
 序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止、改标题和发送 Prompt 通过运行中 worker 的本地控制端点执行。`task prompt` 不会切换任何群聊的当前任务；机器人会先把 Prompt 文本发送到该任务最近一次使用的群聊、话题或私聊，发送成功后再提交给任务，思考卡片和最终回答也继续发送到同一位置。
 
-填入 `.env`：
+填入 `~/.agent-bot/.env`：
 
 ```env
 FEISHU_APP_ID=cli_xxxxxxxxxxxxx
 FEISHU_APP_SECRET=your_app_secret
-AGENT_BOT_CONFIG=./agents.yaml
+# 可选：默认使用 ~/.agent-bot/config.yaml
+# AGENT_BOT_CONFIG=~/.agent-bot/config.yaml
 ```
 
 默认会同时启动：
@@ -107,7 +111,7 @@ AGENT_BOT_CONFIG=./agents.yaml
 
 ## Codex 配置
 
-默认 `agents.yaml` 已包含：
+Agent Bot 的用户配置目录默认为 `~/.agent-bot`，可通过 `AGENT_BOT_HOME` 修改。未显式设置 `AGENT_BOT_CONFIG` 时，首次启动会自动创建并读取 `~/.agent-bot/config.yaml`。仓库根目录保留 `config.example.yaml` 作为配置示例，可复制到 `~/.agent-bot/config.yaml` 后再按需修改。默认配置包含：
 
 ```yaml
 console:
@@ -120,6 +124,8 @@ agents:
     command: "codex"
     args:
       - "app-server"
+      - "--enable"
+      - "goals"
       - "--listen"
       - "stdio://"
     env: {}
@@ -127,9 +133,18 @@ agents:
 defaults:
   agent: "codex"
   cwd: "."
+
+storage:
+  sqlitePath: "./data/agent-bot.sqlite"
+
+logging:
+  level: "info"
+  path: "./logs/agent-bot.log"
 ```
 
-`cwd` 是 ACP agent 的默认工作目录。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new 新任务标题 --dir D:\dev\project` 同时指定标题和项目目录。已有任务的工作目录不会在运行中改变。
+配置文件中的 `storage.sqlitePath` 和 `logging.path` 若使用相对路径，会相对配置文件所在目录解析；因此默认 SQLite 位于 `~/.agent-bot/data/agent-bot.sqlite`，日志位于 `~/.agent-bot/logs/agent-bot.log`。`cwd` 是 ACP agent 的默认工作目录，仍按启动 Agent Bot 时的当前工作目录解析。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new 新任务标题 --dir D:\dev\project` 同时指定标题和项目目录。已有任务的工作目录不会在运行中改变。
+
+由 Agent Bot 启动的 Codex 或 ACP agent 子进程都会收到环境变量 `AGENT_BOT=1`，agent 可据此识别自己运行在 Agent Bot 中。
 
 ## 飞书应用配置
 
@@ -193,7 +208,7 @@ defaults:
 
 ## 持久化与恢复
 
-SQLite 默认位于 `./data/agent-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、排队 Prompt、进度快照和最终消息投递账本。
+SQLite 默认位于 `~/.agent-bot/data/agent-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、排队 Prompt、进度快照和最终消息投递账本。
 
 进程重启时会恢复持久化的活动 turn，并通过 `thread/read` 与 Codex 的真实状态校准。运行中收到新的 turn ID、线程终态通知或控制请求失败时也会重新校准；投递账本会阻止已经成功发送的最终回复被重复发送。App Server 请求均有有限超时，不会永久占住飞书消息队列。
 

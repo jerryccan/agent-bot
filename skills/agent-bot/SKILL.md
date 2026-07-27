@@ -19,6 +19,10 @@ agent-bot task list
 
 Add `--json` to status and list commands when machine-readable output helps. If `agent-bot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
 
+By default Agent Bot stores user-owned configuration and runtime state in `~/.agent-bot`: config at `~/.agent-bot/config.yaml`, environment variables at `~/.agent-bot/.env`, SQLite state at `~/.agent-bot/data/agent-bot.sqlite`, logs at `~/.agent-bot/logs/agent-bot.log`, and inbound image cache next to the SQLite database. `AGENT_BOT_HOME` changes this root. Use `--config <path>` only when controlling a non-default configuration.
+
+Agents spawned by Agent Bot receive `AGENT_BOT=1` in their environment so they can detect that they are running under Agent Bot.
+
 ## Manage the service
 
 Use these commands:
