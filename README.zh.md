@@ -37,13 +37,14 @@ npm install
 npm run build
 npm link
 agent-bot init
-# 启用飞书前先填写 ~/.agent-bot/.env
 agent-bot server start
 ```
 
-`agent-bot init` 用于准备首次运行环境：基于随包提供的示例文件创建 Agent Bot 用户目录、`config.yaml`、`.env`、`data/` 和 `logs/`。该命令可重复执行；已有配置和环境文件只会报告为已存在，不会被覆盖。它支持 `AGENT_BOT_HOME`、`AGENT_BOT_CONFIG` 和 `--config <path>`。可添加 `--json` 获取结构化输出。
+`agent-bot init` 用于准备首次运行环境：基于随包提供的示例文件创建 Agent Bot 用户目录、`config.yaml`、`.env`、`data/` 和 `logs/`。缺少飞书凭据时，它会启动飞书一键创建应用流程，显示授权链接和二维码，等待用户确认，然后把获得的 App ID 和 App Secret 写入 `.env`。随后它会审计应用已发布版本中的权限、事件订阅和回调；存在缺项时，会显示增量配置链接和二维码。初始化只等待核心消息能力生效；非核心配置缺失时会说明受影响功能，但不会阻塞完成。已有完整凭据默认保持不变，但仍会接受配置审计。
 
-启动前按需编辑 `~/.agent-bot/.env`。`agent-bot server start` 通过后台常驻 supervisor 启动 Agent Bot。Agent Bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。`npm start` 会在当前终端运行 supervisor。开发调试可使用 `npm run dev` 直接运行单进程。
+只需要 Console 时可使用 `agent-bot init --skip-feishu` 跳过飞书应用创建和配置审计；需要明确替换已有飞书凭据时使用 `agent-bot init --reconfigure-feishu`。该命令支持 `AGENT_BOT_HOME`、`AGENT_BOT_CONFIG` 和 `--config <path>`，可添加 `--json` 获取最终的结构化输出。
+
+`agent-bot server start` 通过后台常驻 supervisor 启动 Agent Bot。Agent Bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。`npm start` 会在当前终端运行 supervisor。开发调试可使用 `npm run dev` 直接运行单进程。
 
 ## Agent Bot 命令行工具
 
@@ -56,7 +57,7 @@ agent-bot --help
 # 未执行 npm link 时：npm run cli -- server status
 ```
 
-安装后执行一次 `agent-bot init`。之后可以安全地重复执行，用来补齐缺失路径，而不会修改已有用户文件。
+安装后执行一次 `agent-bot init`。之后再次运行会补齐缺失路径、保留已有配置，并修复飞书应用已发布版本中缺失的权限或订阅；只有显式传入 `--reconfigure-feishu` 才会替换完整的飞书凭据。
 
 Console UI：
 
@@ -98,7 +99,7 @@ agent-bot task prompt 2 "继续运行测试并汇报结果"
 
 序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止、改标题和发送 Prompt 通过运行中 worker 的本地控制端点执行。`task prompt` 不会切换任何群聊的当前任务；机器人会先把 Prompt 文本发送到该任务最近一次使用的群聊、话题或私聊，发送成功后再提交给任务，思考卡片和最终回答也继续发送到同一位置。
 
-填入 `~/.agent-bot/.env`：
+初始化流程通常会自动填入 `~/.agent-bot/.env`。如果要绑定已有的企业自建应用，也可以手动同时设置以下两个值：
 
 ```env
 FEISHU_APP_ID=cli_xxxxxxxxxxxxx
@@ -147,21 +148,32 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-配置文件中的 `storage.sqlitePath` 和 `logging.path` 若使用相对路径，会相对配置文件所在目录解析；因此默认 SQLite 位于 `~/.agent-bot/data/agent-bot.sqlite`，日志位于 `~/.agent-bot/logs/agent-bot.log`。`cwd` 是 ACP agent 的默认工作目录，仍按启动 Agent Bot 时的当前工作目录解析。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new 新任务标题 --dir D:\dev\project` 同时指定标题和项目目录。已有任务的工作目录不会在运行中改变。
+配置文件中的 `storage.sqlitePath` 和 `logging.path` 若使用相对路径，会相对配置文件所在目录解析；因此默认 SQLite 位于 `~/.agent-bot/data/agent-bot.sqlite`，日志位于 `~/.agent-bot/logs/agent-bot.log`。`cwd` 是 ACP agent 的默认工作目录，仍按启动 Agent Bot 时的当前工作目录解析。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new 新任务标题 --dir <项目目录>` 同时指定标题和项目目录。已有任务的工作目录不会在运行中改变。
 
 由 Agent Bot 启动的 Codex 或 ACP agent 子进程都会收到环境变量 `AGENT_BOT=1`，agent 可据此识别自己运行在 Agent Bot 中。
 
 ## 飞书应用配置
 
-企业自建应用需要：
+`agent-bot init` 发起的一键创建流程使用飞书的个人智能体模板创建机器人。无论是新创建应用还是读取已有凭据，`init` 都会审计应用当前已发布版本。缺失配置会拆成两次独立申请：先显示必须完成的核心增量链接，核心配置生效后，再为剩余项目显示不阻塞初始化的可选链接，避免可选权限的管理员审批影响机器人基础消息收发。
+
+会阻塞初始化的核心要求：
 
 - 开启机器人能力
 - 使用长连接接收事件
 - 订阅 `im.message.receive_v1`
-- 订阅 `card.action.trigger`
-- 开通机器人收发消息、发送卡片和更新消息所需权限
-- 开通 `im:message.reactions:write_only`，用于添加和替换消息处理状态表情
-- 开通 `im:message:readonly`，用于下载用户消息中的图片
+- 开通 `application:application:self_manage`，供 `init` 确认已发布配置
+- 开通接收群聊 @ 消息和私聊消息所需的租户权限
+- 开通 `im:message:send_as_bot` 或覆盖它的更大权限，用于发送回复
+
+同时会请求以下非核心配置以启用更完整的功能：
+
+- `im:chat:create` 用于 `/newgroup` 和 `/forkgroup`
+- `im:chat:read` 与 `im.chat.updated_v1` 用于同步群名称
+- `im:message.reactions:write_only` 用于显示消息处理状态表情
+- 消息读取和资源权限用于接收、发送图片以及设置群头像
+- `card.action.trigger` 回调用于卡片按钮交互
+
+增量配置链接不包含 App Secret。命令会先列出所有缺项再显示链接，只有核心配置缺失时才持续轮询。非核心配置未获授权或需要管理员另行审批时，`init` 会成功结束并提醒受影响功能；之后可重新运行 `agent-bot init` 再次审计和申请。
 
 消息体验：
 
@@ -183,16 +195,16 @@ logging:
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
 - `/new [title] [--dir <cwd> | --nodir]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，`--nodir` 强制创建 Projectless 任务，两者互斥；都不指定时继承当前任务的项目或 Projectless 形态
-- `/newgroup [title]`：创建名为 `[agent] [Project 目录] <title>` 的私有飞书群并邀请命令发送者，不立即创建任务，也不自动发送 Sessions 或 Status 卡片；省略标题时使用 `[agent] [Project 目录] 新任务 - yy-mm-dd hh:mm`。新群使用根据项目名稳定生成的方案 C Identicon 头像：英文/拉丁项目名显示首个单词，中文项目名显示首个汉字，配色和对称节点由完整项目名哈希决定。用户 Home 目录前缀显示为 `~`。Project 目录最多显示 15 个字符，超长时显示为 `...<路径分隔符>最后两级目录`，必要时继续压缩目录名；Windows 使用 `\`，macOS/Linux 使用 `/`。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
+- `/newgroup [title]`：创建名为 `[agent] [Project 目录] <title>` 的私有飞书群并邀请命令发送者，不立即创建任务，也不自动发送 Sessions 或 Status 卡片；省略标题时使用 `[agent] [Project 目录] 新任务 - yy-mm-dd hh:mm`。新群使用根据项目名稳定生成的方案 C Identicon 头像：英文/拉丁项目名显示首个单词，中文项目名显示首个汉字，配色和对称节点由完整项目名哈希决定。用户 Home 目录前缀显示为 `~`。Project 目录最多显示 15 个字符，超长时优先完整显示最后两级目录，放不下时完整显示最后一级目录，仅在最后一级目录本身超长时做尾部截断；Windows 使用 `\`，macOS/Linux 使用 `/`。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
 - `/forkgroup [title]`：从当前 Codex 任务的最新可用已完成轮次创建分支，创建私有飞书群并邀请命令发送者，将新分支设为新群的当前任务；新群不自动发送 Sessions 或 Status 卡片，源群的当前任务和正在执行的轮次不受影响。指定标题时群名不追加日期；省略标题时使用持久递增的 `原任务（分支 N）`，群名仍追加日期
 - `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务创建分支任务，并立即切换到新分支；源任务正在运行时从最近已完成轮次分支，没有已完成轮次时才拒绝；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
 - `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
 - `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑
 - `/nosteer <prompt>`：不修改当前执行中的 turn，将 Prompt 排入当前任务的持久队列；队列卡展示全部待执行项并支持逐项 Cancel
 - `! <命令>`：在当前任务的工作目录直接执行本地命令；没有当前任务时使用默认工作目录
-- `/sessions [关键词]`：用交互卡片列出同一 `CODEX_HOME` 下的 Codex 任务，默认显示 5 条，可通过 `更多任务` 每次继续展开 5 条；每个任务的正文末尾都有链接式文字操作，点击 `New` 可继承该任务的项目目录、模型、思考强度和权限模式，创建并切换到新任务；点击 `Status` 查看详情，当前任务不显示 `Switch`，其他空闲任务可点击 `Switch` 快速切换，外部运行中的任务可点击 `Stop` 发送 Interrupt
+- `/sessions [关键词]`：用交互卡片列出同一 `CODEX_HOME` 下的 Codex 任务，默认显示 5 条，可通过 `More` 每次继续展开 5 条；每个任务的正文末尾都有链接式文字操作，点击 `New` 可继承该任务的项目目录、模型、思考强度和权限模式，创建并切换到新任务；点击 `Status` 查看详情，当前任务不显示 `Switch`，其他空闲任务可点击 `Switch` 快速切换，外部运行中的任务可点击 `Stop` 发送 Interrupt
 - `/switch [序号或 Codex 任务 ID]`：不带参数切回上一个任务；也可按最近一次 `/sessions` 的序号或任务 ID 切换空闲任务
-- `/model`：用交互卡片显示全部支持的模型、当前模型和思考强度；点击链接式 `切换` 操作修改模型后，同一张卡片会进入该模型的思考模式选择界面
+- `/model`：用交互卡片显示全部支持的模型、当前模型和思考强度；点击 `Switch` 修改模型后，同一张卡片会进入该模型的思考模式选择界面，点击 `Back` 返回模型列表
 - `/model <name>`：切换模型，从下一次请求生效；不兼容的思考强度会自动回落到新模型默认值
 - `/thinking`：用交互卡片显示当前思考模式及当前模型支持的模式名称，并可点击切换或返回模型选择
 - `/thinking <level>`：设置思考强度，从下一次请求生效
@@ -200,7 +212,8 @@ logging:
 - `/stop`：停止当前执行
 
 所有以 `/` 开头的消息都会严格按机器人命令解析。未知命令会直接提示用户并建议查看 `/help`，不会作为 Prompt 发送给模型；带图片的斜杠消息也遵循相同规则。
-- `/status [序号或 Codex 任务 ID]`：查看当前任务，或按最近一次 `/sessions` 的序号/任务 ID 查看指定任务的详细状态、执行步骤和最终结果；Status 卡片支持点击 `刷新` 在原卡片获取最新状态
+
+- `/status [序号或 Codex 任务 ID]`：查看当前任务，或按最近一次 `/sessions` 的序号/任务 ID 查看指定任务的详细状态、执行步骤和最终结果；Status 卡片支持点击 `Refresh` 在原卡片获取最新状态
 - `/restart`：优雅重启 Agent Bot；可绕过阻塞的任务消息队列
 - `/agent [agent]`：不带参数列出全部 Agent 并标出当前项；带参数时切换默认 Agent
 - `/use <agent> [cwd]`：切换默认 agent 并创建任务
@@ -209,7 +222,7 @@ logging:
 权限模式：
 
 - `auto`（默认）：Codex 使用 `approvalPolicy=never` 和 `danger-full-access`，工具直接执行
-- `confirm`：需要确认的工具会在进度卡中显示按钮，可允许一次、会话内允许、拒绝或取消
+- `confirm`：需要确认的工具会在进度卡中显示 `Allow Once`、`Allow for Session`、`Deny` 和 `Cancel Task` 按钮
 
 ## 持久化与恢复
 
@@ -221,7 +234,7 @@ supervisor 使用退出码 `75` 区分 `/restart` 发起的主动重启；其他
 
 ### 统一 Codex 任务
 
-`/sessions` 通过只读的 `thread/list` 发现 Codex Desktop、CLI、Agent Bot 或其他 App Server 创建的任务。任务不再按创建端分类，对外统一使用 Codex 任务 ID，并为当前展示结果生成从 1 开始的序号；卡片默认显示前 5 条，点击 `更多任务` 后每次在原卡片继续展开 5 条。每个任务都显示 `New` 和 `Status`：`New` 会重新读取来源任务，并继承其项目目录、模型、思考强度和权限模式来创建新任务，然后把当前聊天切换过去；`Status` 复用 `/status <任务 ID>` 发送该任务的详细状态卡，不改变当前任务。链接式文字操作携带稳定任务 ID，不受列表顺序变化影响。空闲任务显示 `Switch`；从 Agent Bot 切走但当前活跃轮次仍是由 Agent Bot 触发的任务也保持 `Switch`，可以随时切回且不会中断其执行；其他外部运行中的任务显示 `Stop`，点击后只确认向 Codex 发送 Interrupt，并把原卡片操作更新为 `Switch`，后续子进程与 turn 状态由 Codex 自行维护。`/switch` 不带参数时在当前任务和上一个任务之间往返，也可以使用最近一次列表中的序号或任务 ID 切换任务；首次切换时只建立消息路由，保留原任务的工作目录和上下文，不回放历史消息。
+`/sessions` 通过只读的 `thread/list` 发现 Codex Desktop、CLI、Agent Bot 或其他 App Server 创建的任务。任务不再按创建端分类，对外统一使用 Codex 任务 ID，并为当前展示结果生成从 1 开始的序号；卡片默认显示前 5 条，点击 `More` 后每次在原卡片继续展开 5 条。每个任务都显示 `New` 和 `Status`：`New` 会重新读取来源任务，并继承其项目目录、模型、思考强度和权限模式来创建新任务，然后把当前聊天切换过去；`Status` 复用 `/status <任务 ID>` 发送该任务的详细状态卡，不改变当前任务。链接式文字操作携带稳定任务 ID，不受列表顺序变化影响。空闲任务显示 `Switch`；从 Agent Bot 切走但当前活跃轮次仍是由 Agent Bot 触发的任务也保持 `Switch`，可以随时切回且不会中断其执行；其他外部运行中的任务显示 `Stop`，点击后只确认向 Codex 发送 Interrupt，并把原卡片操作更新为 `Switch`，后续子进程与 turn 状态由 Codex 自行维护。`/switch` 不带参数时在当前任务和上一个任务之间往返，也可以使用最近一次列表中的序号或任务 ID 切换任务；首次切换时只建立消息路由，保留原任务的工作目录和上下文，不回放历史消息。
 
 内部仍保存一个本地路由键，用于关联飞书卡片、投递账本和当前聊天，但它不代表另一类任务，也不会在用户界面中显示。为避免干扰其他 Codex 客户端，Agent Bot 只会续写自己启动的当前 turn；首次加载以及每次继续消息前都会核对真实 turn ID。若任务正在其他客户端执行，Agent Bot 不会 `resume` 或 `steer`；只有用户在 `/sessions` 卡片中明确点击 `Stop` 时才会发送 `interrupt`。
 
