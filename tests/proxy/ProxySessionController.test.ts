@@ -2043,7 +2043,7 @@ describe("ProxySessionController", () => {
     const initial = JSON.stringify(initialCard);
     expect(initial).toContain("task_5");
     expect(initial).not.toContain("task_6");
-    expect(initial).toContain('"content":"更多任务"');
+    expect(initial).toContain('"content":"More"');
     expect(initial).toContain('"action":"session_more","visibleCount":"5"');
 
     await controller.onCardAction({
@@ -2058,7 +2058,7 @@ describe("ProxySessionController", () => {
     const expanded = JSON.stringify(expandedCard);
     expect(expanded).toContain("task_6");
     expect(expanded).toContain("task_7");
-    expect(expanded).not.toContain('"content":"更多任务"');
+    expect(expanded).not.toContain('"content":"More"');
   });
 
   test("stops an external task even when another context has a local route for it", async () => {
@@ -2235,7 +2235,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain('"element_id":"status_execution_details"');
     expect(serialized).toContain('"expanded":false');
     expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
-    expect(serialized).toContain("<font color='blue'>刷新</font>");
+    expect(serialized).toContain("<font color='blue'>Refresh</font>");
     expect(serialized).toContain('"action":"session_status_refresh","sessionId":"status_target","cardView":"status"');
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"action":"session_switch","sessionId":"status_target","cardView":"status"');
@@ -2941,7 +2941,7 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("GPT Test");
     expect(serialized).not.toContain("GPT Next");
     expect(serialized).toContain("✅ 当前");
-    expect(serialized).toContain("<font color='blue'>切换</font>");
+    expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"tag":"interactive_container"');
     expect(serialized).not.toContain('"tag":"button"');
     expect(serialized).toContain(`"action":"model_select","sessionId":"${sessionId}"`);
@@ -2990,8 +2990,8 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("medium");
     expect(serialized).toContain("xhigh");
     expect(serialized).toContain("✅ 当前");
-    expect(serialized).toContain("<font color='blue'>切换</font>");
-    expect(serialized).toContain("<font color='blue'>返回模型</font>");
+    expect(serialized).toContain("<font color='blue'>Switch</font>");
+    expect(serialized).toContain("<font color='blue'>Back</font>");
     expect(serialized).toContain('"action":"model_open"');
     expect(serialized).toContain('"action":"reasoning_select"');
     expect(serialized).toContain('"model":"gpt-next","effort":"xhigh"');
@@ -3070,7 +3070,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("low");
     expect(serialized).not.toContain("Fast");
     expect(serialized).not.toContain("Deep");
-    expect(serialized).toContain("<font color='blue'>返回模型</font>");
+    expect(serialized).toContain("<font color='blue'>Back</font>");
     expect(serialized).toContain('"action":"reasoning_select"');
 
     await controller.onMessage(message("/thinking low"));

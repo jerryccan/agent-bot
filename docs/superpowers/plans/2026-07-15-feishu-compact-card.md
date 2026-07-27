@@ -206,7 +206,7 @@ Expected: all tests pass, TypeScript reports no errors, and the production build
 
 - [ ] **Step 2: Restart the feature server**
 
-Stop only the identified Agent Bot process tree. Start `D:\dev\agent-bot\.worktrees\codex-app-server\dist\index.js` with working directory `D:\dev\agent-bot`, hidden window, and `AGENT_BOT_CONFIG` pointing to the worktree config. Confirm a fresh `Feishu WebSocket connector started` log entry.
+Stop only the identified Agent Bot process tree. Start `<repo-root>\.worktrees\codex-app-server\dist\index.js` with working directory `<repo-root>`, hidden window, and `AGENT_BOT_CONFIG` pointing to the worktree config. Confirm a fresh `Feishu WebSocket connector started` log entry.
 
 - [ ] **Step 3: Send and read back a production-renderer card**
 

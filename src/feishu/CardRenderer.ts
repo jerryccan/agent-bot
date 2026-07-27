@@ -3,6 +3,7 @@ import path from "node:path";
 import type { JsonValue } from "../acp/acpTypes.js";
 import type { RuntimeSession } from "../acp/AcpSessionManager.js";
 import type {
+  ApprovalDecision,
   ModelOption,
   PermissionMode,
   ReasoningEffortOption,
@@ -122,7 +123,7 @@ export class CardRenderer {
               elements: isCurrent
                 ? [markdown("✅ 当前")]
                 : [taskActionElement({
-                    text: "切换",
+                    text: "Switch",
                     value: {
                       action: "reasoning_select",
                       sessionId: view.sessionId,
@@ -139,7 +140,7 @@ export class CardRenderer {
     elements.push(
       { tag: "hr" },
       taskActionRow([{
-        text: "返回模型",
+        text: "Back",
         value: {
           action: "model_open",
           sessionId: view.sessionId,
@@ -186,7 +187,7 @@ export class CardRenderer {
               elements: isCurrent
                 ? [markdown("✅ 当前")]
                 : [taskActionElement({
-                    text: "切换",
+                    text: "Switch",
                     value: {
                       action: "model_select",
                       sessionId: view.sessionId,
@@ -402,7 +403,7 @@ export class CardRenderer {
           tag: "button",
           text: {
             tag: "plain_text",
-            content: option.name,
+            content: acpPermissionOptionLabel(option),
           },
           type: option.kind.startsWith("allow") ? "primary" : "default",
           value: {
@@ -575,7 +576,7 @@ function renderTurnElements(
         width: "auto",
         elements: [{
           tag: "button",
-          text: { tag: "plain_text", content: option.label },
+          text: { tag: "plain_text", content: approvalDecisionLabel(option.id) },
           type: option.id === "accept" || option.id === "acceptForSession" ? "primary" : option.id === "cancel" ? "danger" : "default",
           behaviors: [{
             type: "callback",
@@ -1005,6 +1006,26 @@ function escapeCardHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function approvalDecisionLabel(decision: ApprovalDecision): string {
+  const labels: Record<ApprovalDecision, string> = {
+    accept: "Allow Once",
+    acceptForSession: "Allow for Session",
+    decline: "Deny",
+    cancel: "Cancel Task",
+  };
+  return labels[decision];
+}
+
+function acpPermissionOptionLabel(option: { name: string; kind: string }): string {
+  const labels: Record<string, string> = {
+    allow_once: "Allow Once",
+    allow_always: "Always Allow",
+    reject_once: "Deny Once",
+    reject_always: "Always Deny",
+  };
+  return labels[option.kind] ?? (/^[\x20-\x7E]+$/.test(option.name) ? option.name : "Select");
 }
 
 function taskActionRow(actions: TaskListCardAction[]): Record<string, unknown> {

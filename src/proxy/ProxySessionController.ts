@@ -2146,7 +2146,7 @@ export class ProxySessionController {
         "点击 **Status**，或发送 **/status [序号或任务 ID]**，查看当前或指定任务状态。",
       ],
       hasMore ? {
-        text: "更多任务",
+        text: "More",
         type: "primary",
         value: {
           action: "session_more",
@@ -2638,7 +2638,7 @@ function statusRefreshAction(
   contextKey: string,
 ): TaskListCardAction {
   return {
-    text: "刷新",
+    text: "Refresh",
     value: {
       action: "session_status_refresh",
       ...(sessionId ? { sessionId } : {}),

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { RuntimeSession } from "../../src/acp/AcpSessionManager.js";
 import { CardRenderer } from "../../src/feishu/CardRenderer.js";
 import type { TurnViewState } from "../../src/presentation/turnViewTypes.js";
 
@@ -51,6 +52,25 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("renders ACP permission buttons in English regardless of supplied names", () => {
+    const card = new CardRenderer().renderPermissionRequest(
+      { localSessionId: "session_1" } as RuntimeSession,
+      "permission_1",
+      "npm test",
+      [
+        { optionId: "once", name: "允许一次", kind: "allow_once" },
+        { optionId: "always", name: "始终允许", kind: "allow_always" },
+        { optionId: "reject", name: "拒绝一次", kind: "reject_once" },
+        { optionId: "never", name: "始终拒绝", kind: "reject_always" },
+      ],
+    );
+    const labels = collectObjects(card)
+      .filter((item) => item.tag === "button")
+      .map((item) => (item.text as { content: string }).content);
+
+    expect(labels).toEqual(["Allow Once", "Always Allow", "Deny Once", "Always Deny"]);
+  });
+
   test("renders a compact cancellable prompt queue", () => {
     const card = new CardRenderer().renderPromptQueue({
       sessionId: "session_1",
@@ -589,6 +609,7 @@ describe("CardRenderer", () => {
     }));
     expect(objects).toContainEqual(expect.objectContaining({
       tag: "button",
+      text: { tag: "plain_text", content: "Allow Once" },
       type: "primary",
       behaviors: [{
         type: "callback",
@@ -600,6 +621,11 @@ describe("CardRenderer", () => {
           decision: "accept",
         },
       }],
+    }));
+    expect(objects).toContainEqual(expect.objectContaining({
+      tag: "button",
+      text: { tag: "plain_text", content: "Cancel Task" },
+      type: "danger",
     }));
   });
 
@@ -990,14 +1016,14 @@ describe("CardRenderer", () => {
 
   test("renders a full-width footer action for loading more tasks", () => {
     const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [], [], {
-      text: "更多任务",
+      text: "More",
       type: "primary",
       value: { action: "session_more", visibleCount: "5" },
     });
 
     expect(collectObjects(card)).toContainEqual(expect.objectContaining({
       tag: "button",
-      text: { tag: "plain_text", content: "更多任务" },
+      text: { tag: "plain_text", content: "More" },
       type: "primary",
       width: "fill",
       behaviors: [{
