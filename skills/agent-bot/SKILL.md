@@ -1,11 +1,42 @@
 ---
 name: agent-bot
-description: Manage the local Agent Bot service and its Codex or ACP sessions through the agent-bot CLI. Use when a user asks to inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
+description: Detect and work safely inside the Agent Bot runtime, and manage the local Agent Bot service and its Codex or ACP sessions through the agent-bot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
 ---
 
 # Agent Bot
 
 Use the `agent-bot` command as the supported control surface for Agent Bot. Prefer its structured status and control operations over direct process manipulation or database edits.
+
+## Detect the Agent Bot runtime
+
+Agent Bot injects `AGENT_BOT=1` into every Codex and ACP agent process it starts. Test for the exact value `1`:
+
+```powershell
+if ($env:AGENT_BOT -eq "1") { "running in Agent Bot" }
+```
+
+```sh
+if [ "${AGENT_BOT:-}" = "1" ]; then echo "running in Agent Bot"; fi
+```
+
+```js
+const runningInAgentBot = process.env.AGENT_BOT === "1";
+```
+
+```python
+import os
+
+running_in_agent_bot = os.environ.get("AGENT_BOT") == "1"
+```
+
+Treat this environment marker as authoritative. Do not infer Agent Bot execution merely because the CLI is installed, `~/.agent-bot` exists, or an Agent Bot process is running elsewhere. Configured agent environment variables cannot override the marker. Child processes normally inherit it, so the marker identifies the Agent Bot-started process tree unless a child explicitly replaces its environment.
+
+## Behave safely inside Agent Bot
+
+When `AGENT_BOT=1`:
+
+- Do not kill Agent Bot, its supervisor, or agent workers directly. For code changes that must be loaded by the running service, finish verification first and schedule a safe restart; never use an immediate restart from an active hosted task unless the user explicitly accepts interruption.
+- Keep repository contents limited to source and examples. Read user configuration and runtime state from the root selected by `AGENT_BOT_HOME`, defaulting to `~/.agent-bot`.
 
 ## Start with inspection
 
@@ -20,8 +51,6 @@ agent-bot task list
 Add `--json` to status and list commands when machine-readable output helps. If `agent-bot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
 
 By default Agent Bot stores user-owned configuration and runtime state in `~/.agent-bot`: config at `~/.agent-bot/config.yaml`, environment variables at `~/.agent-bot/.env`, SQLite state at `~/.agent-bot/data/agent-bot.sqlite`, logs at `~/.agent-bot/logs/agent-bot.log`, and inbound image cache next to the SQLite database. `AGENT_BOT_HOME` changes this root. Use `--config <path>` only when controlling a non-default configuration.
-
-Agents spawned by Agent Bot receive `AGENT_BOT=1` in their environment so they can detect that they are running under Agent Bot.
 
 ## Manage the service
 
