@@ -3,6 +3,7 @@ import readline from "node:readline";
 import type { Logger } from "pino";
 import type { AgentConfig } from "../config/schema.js";
 import { AcpJsonRpcConnection } from "./AcpJsonRpcConnection.js";
+import { agentBotEnvironment } from "../runtime/agentEnvironment.js";
 import { spawnStdioCommand } from "../utils/spawnCommand.js";
 
 export interface ManagedAcpProcess {
@@ -22,10 +23,7 @@ export class AcpProcessManager {
       throw new Error(`ACP process already exists: ${processKey}`);
     }
 
-    const child = spawnStdioCommand(agent.command, agent.args, {
-      ...process.env,
-      ...agent.env,
-    });
+    const child = spawnStdioCommand(agent.command, agent.args, agentBotEnvironment(process.env, agent.env));
 
     const childLogger = this.logger.child({ processKey, agentName });
     const connection = new AcpJsonRpcConnection(child, childLogger);
