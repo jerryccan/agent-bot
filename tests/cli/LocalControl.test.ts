@@ -20,11 +20,11 @@ describe("local CLI control", () => {
     expect(controlEndpoint(`${sqlitePath}.other`)).not.toBe(endpoint);
   });
 
-  test("keeps the legacy control namespace while using the legacy database", () => {
-    const legacy = controlEndpoint(path.join(os.tmpdir(), "acp-bot.sqlite"));
+  test("uses the Agent Bot namespace for every database name", () => {
+    const custom = controlEndpoint(path.join(os.tmpdir(), "custom.sqlite"));
     const renamed = controlEndpoint(path.join(os.tmpdir(), "agent-bot.sqlite"));
 
-    expect(legacy).toContain("acp-bot-");
+    expect(custom).toContain("agent-bot-");
     expect(renamed).toContain("agent-bot-");
   });
 

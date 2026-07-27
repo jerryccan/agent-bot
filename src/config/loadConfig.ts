@@ -26,7 +26,7 @@ export function loadConfig(
     throw new Error(`Default agent "${defaultAgent}" is not configured.`);
   }
 
-  const sqlitePath = resolveCompatibleStoragePath(path.resolve(config.storage.sqlitePath));
+  const sqlitePath = path.resolve(config.storage.sqlitePath);
   return {
     ...config,
     defaults: {
@@ -42,14 +42,6 @@ export function loadConfig(
       path: config.logging.path ? path.resolve(config.logging.path) : undefined,
     },
   };
-}
-
-function resolveCompatibleStoragePath(configuredPath: string): string {
-  if (fs.existsSync(configuredPath) || path.basename(configuredPath).toLowerCase() !== "agent-bot.sqlite") {
-    return configuredPath;
-  }
-  const legacyPath = path.join(path.dirname(configuredPath), "acp-bot.sqlite");
-  return fs.existsSync(legacyPath) ? legacyPath : configuredPath;
 }
 
 function expandEnv(raw: string): string {

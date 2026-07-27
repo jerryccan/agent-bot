@@ -28,8 +28,7 @@ export interface TaskStatusControlData {
 export function controlEndpoint(sqlitePath: string): string {
   const resolvedPath = path.resolve(sqlitePath);
   const key = createHash("sha256").update(resolvedPath.toLowerCase()).digest("hex").slice(0, 16);
-  const namespace = path.basename(resolvedPath).toLowerCase() === "acp-bot.sqlite" ? "acp-bot" : "agent-bot";
   return process.platform === "win32"
-    ? `\\\\.\\pipe\\${namespace}-${key}`
-    : path.join(path.dirname(resolvedPath), `.${namespace}-${key}.sock`);
+    ? `\\\\.\\pipe\\agent-bot-${key}`
+    : path.join(path.dirname(resolvedPath), `.agent-bot-${key}.sock`);
 }
