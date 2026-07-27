@@ -46,6 +46,33 @@ describe("FeishuMessageClient", () => {
     });
   });
 
+  test("uploads and assigns an avatar while creating a Feishu group", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { image_key: "img_avatar" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { chat_id: "oc_avatar_group" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await client.createGroup({
+      name: "Avatar group",
+      userOpenId: "ou_current_user",
+      avatarPng: new Uint8Array([137, 80, 78, 71]),
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://open.feishu.cn/open-apis/im/v1/images");
+    const form = fetchMock.mock.calls[1]?.[1]?.body as FormData;
+    expect(form.get("image_type")).toBe("avatar");
+    expect(form.get("image")).toBeInstanceOf(Blob);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      chat_mode: "group",
+      chat_type: "private",
+      name: "Avatar group",
+      user_id_list: ["ou_current_user"],
+      avatar: "img_avatar",
+    });
+  });
+
   test("downloads a Feishu message image into the bot data directory and caches it", async () => {
     const clientConfig = config();
     const fetchMock = vi.fn()

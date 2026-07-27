@@ -11,7 +11,6 @@ import {
   STABLE_UPTIME_MS,
   STOP_EXIT_CODE,
 } from "./supervision/restartPolicy.js";
-import { takeRestartReason } from "./supervision/restartReasonStore.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const sqlitePath = loadConfig().storage.sqlitePath;
@@ -20,8 +19,7 @@ let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
 let stopping = false;
 let consecutiveFailures = 0;
-const storedStartReason = takeRestartReason(sqlitePath);
-let nextStartReason = process.env.AGENT_BOT_RESTART_REASON?.trim() || storedStartReason || "Supervisor 启动";
+let nextStartReason = process.env.AGENT_BOT_RESTART_REASON?.trim() || "Supervisor 启动";
 
 async function startChild(): Promise<void> {
   if (stopping || child) return;
@@ -73,7 +71,7 @@ async function handleChildExit(
   }
 
   const intentional = code === RESTART_EXIT_CODE;
-  nextStartReason = takeRestartReason(sqlitePath) ?? describeRestartReason(code, signal, intentional);
+  nextStartReason = describeRestartReason(code, signal, intentional);
   if (intentional || uptimeMs >= STABLE_UPTIME_MS) consecutiveFailures = 0;
   else consecutiveFailures += 1;
   const delayMs = intentional

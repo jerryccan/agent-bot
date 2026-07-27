@@ -22,6 +22,11 @@ export class CommandRouter {
         return parseNewCommand(args);
       case "newgroup":
         return parseNewGroupCommand(args);
+      case "forkgroup":
+        return {
+          type: "forkgroup",
+          title: args.join(" ").trim() || undefined,
+        };
       case "fork":
         if (args.length > 1) throw new Error("/fork 只接受一个可选的任务序号或任务 ID。");
         return args[0] ? { type: "fork", sessionId: args[0] } : { type: "fork" };

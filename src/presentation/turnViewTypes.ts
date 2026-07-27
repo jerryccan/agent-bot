@@ -26,6 +26,7 @@ export interface TurnViewState {
   sessionId: string;
   turnId: string;
   taskTitle?: string;
+  prompt?: string;
   projectCwd?: string;
   replyTarget?: MessageReplyTarget;
   status: TurnViewStatus;

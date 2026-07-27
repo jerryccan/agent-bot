@@ -4,6 +4,7 @@ export type Command =
   | { type: "shell"; command: string }
   | { type: "new"; title?: string; cwd?: string; projectless?: boolean }
   | { type: "newgroup"; title?: string }
+  | { type: "forkgroup"; title?: string }
   | { type: "fork"; sessionId?: string }
   | { type: "title"; title: string }
   | { type: "ask"; text: string }

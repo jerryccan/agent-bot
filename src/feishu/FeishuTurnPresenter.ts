@@ -12,6 +12,10 @@ import type { FeishuOutbound, MessageReplyTarget } from "./types.js";
 import { createId } from "../utils/id.js";
 import { createHash } from "node:crypto";
 
+const THINKING_CARD_RUNNING_REACTION = "OnIt";
+const THINKING_CARD_FAILED_REACTION = "ERROR";
+const THINKING_CARD_CANCELLED_REACTION = "CrossMark";
+
 interface TurnDeliveryRecord {
   finalDelivered: boolean;
   finalMessageIds: string[];
@@ -41,6 +45,8 @@ interface TurnEntry {
   historySnapshot?: TurnViewState;
   initializing: Promise<void>;
   messageId?: string;
+  reactionId?: string;
+  reactionEmoji?: string;
   scheduler?: CardUpdateScheduler<TurnViewState>;
   finalizing?: Promise<void>;
 }
@@ -89,10 +95,16 @@ export class FeishuTurnPresenter {
     contextKey: string,
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
+    prompt?: string,
   ): Promise<void> {
     const existing = this.pendingEntries.get(sessionId);
     if (existing) {
       await existing.initializing;
+      if (prompt && existing.state.prompt !== prompt) {
+        existing.state = { ...existing.state, prompt };
+        this.store.saveTurnSnapshot(existing.state.turnId, sessionId, existing.state, existing.contextKey);
+        if (!existing.historySnapshot) existing.scheduler?.update(existing.state, "critical");
+      }
       return;
     }
     this.sessionContexts.set(sessionId, contextKey);
@@ -104,6 +116,7 @@ export class FeishuTurnPresenter {
       taskTitle ?? this.sessionTitles.get(sessionId),
       replyTarget,
       this.sessionCwds.get(sessionId),
+      prompt,
     );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(state.turnId, entry);
@@ -131,6 +144,7 @@ export class FeishuTurnPresenter {
     } catch (error) {
       this.options.onError?.(error);
     }
+    await this.syncThinkingCardReaction(entry);
   }
 
   async appendSteerMessage(
@@ -189,6 +203,7 @@ export class FeishuTurnPresenter {
             pending.state.taskTitle,
             pending.state.replyTarget,
             pending.state.projectCwd,
+            pending.state.prompt,
           ),
           event,
         );
@@ -310,6 +325,7 @@ export class FeishuTurnPresenter {
           this.sessionTitles.get(event.sessionId),
           undefined,
           this.sessionCwds.get(event.sessionId),
+          undefined,
         );
     const state = reduceTurnEvent(
       initial,
@@ -345,6 +361,7 @@ export class FeishuTurnPresenter {
     });
     entry.scheduler.seed(sentState);
     if (entry.state !== sentState) entry.scheduler.update(entry.state, "critical");
+    await this.syncThinkingCardReaction(entry);
   }
 
   private async finalize(entry: TurnEntry): Promise<void> {
@@ -355,8 +372,46 @@ export class FeishuTurnPresenter {
         this.options.onError?.(error);
       }
     }
+    await this.syncThinkingCardReaction(entry);
     if (entry.state.status !== "completed" || !entry.state.finalResponse) return;
     await this.deliverFinal(entry.contextKey, entry.state);
+  }
+
+  private async syncThinkingCardReaction(entry: TurnEntry): Promise<void> {
+    const messageId = entry.messageId;
+    if (!messageId) return;
+    const desiredEmoji = thinkingCardReactionForStatus(entry.state.status);
+    if (desiredEmoji === entry.reactionEmoji) return;
+
+    if (!desiredEmoji) {
+      if (!entry.reactionId || !this.outbound.deleteReaction) return;
+      try {
+        await this.outbound.deleteReaction(messageId, entry.reactionId);
+        entry.reactionId = undefined;
+        entry.reactionEmoji = undefined;
+      } catch (error) {
+        this.options.onError?.(error);
+      }
+      return;
+    }
+
+    if (!this.outbound.addReaction) return;
+    try {
+      const replacementId = await this.outbound.addReaction(messageId, desiredEmoji);
+      if (!replacementId) return;
+      const previousId = entry.reactionId;
+      entry.reactionId = replacementId;
+      entry.reactionEmoji = desiredEmoji;
+      if (previousId && this.outbound.deleteReaction) {
+        try {
+          await this.outbound.deleteReaction(messageId, previousId);
+        } catch (error) {
+          this.options.onError?.(error);
+        }
+      }
+    } catch (error) {
+      this.options.onError?.(error);
+    }
   }
 
   private async deliverFinal(contextKey: string, state: TurnViewState): Promise<void> {
@@ -409,6 +464,13 @@ function eventPriority(event: AgentEvent): "normal" | "critical" {
 
 function isTerminalEvent(event: AgentEvent): boolean {
   return event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed";
+}
+
+function thinkingCardReactionForStatus(status: TurnViewState["status"]): string | undefined {
+  if (status === "completed") return undefined;
+  if (status === "failed") return THINKING_CARD_FAILED_REACTION;
+  if (status === "cancelled") return THINKING_CARD_CANCELLED_REACTION;
+  return THINKING_CARD_RUNNING_REACTION;
 }
 
 function isTurnViewState(value: unknown): value is TurnViewState {

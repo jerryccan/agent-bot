@@ -9,6 +9,7 @@ import {
   type TaskStatusControlData,
 } from "./cli/controlProtocol.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
+import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
 
 const args = process.argv.slice(2);
@@ -187,6 +188,12 @@ async function taskCommand(input: string[]): Promise<void> {
     const reference = rest.find((value) => !value.startsWith("--"));
     if (!reference) throw new Error(`task ${action} 需要任务序号或任务 ID。`);
     const session = resolveTask(sessions, reference);
+    if (action === "chat") {
+      const route = taskChatRoute(session);
+      if (rest.includes("--json")) printJson(route);
+      else process.stdout.write(`${route.chatId}\n`);
+      return;
+    }
     if (action === "status") {
       const endpoint = controlEndpoint(config.storage.sqlitePath);
       let live: TaskStatusControlData | undefined;
@@ -367,6 +374,7 @@ function printHelp(): void {
   agent-bot [--config <path>] server stop
   agent-bot [--config <path>] server restart [--safe | --immediate] [--reason <text>]
   agent-bot [--config <path>] task list [--context <key>] [--status <status>] [--json]
+  agent-bot [--config <path>] task chat <序号|任务ID> [--json]
   agent-bot [--config <path>] task status <序号|任务ID> [--json]
   agent-bot [--config <path>] task stop <序号|任务ID>
   agent-bot [--config <path>] task title <序号|任务ID> <新标题>
@@ -380,6 +388,7 @@ function printHelp(): void {
   server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
   --immediate（或 --force）跳过空闲等待并立即重启 worker。
   task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。
+  task chat 从本地任务路由中读取飞书会话 ID；话题任务使用 --json 可同时查看 threadId。
   task prompt 不切换任务；机器人先在原会话显示 Prompt，再提交任务，响应继续发送到该会话。
   skills 默认注册到系统通用 ~/.agents/skills 目录；AGENT_BOT_SKILLS_DIR 可修改默认目录。
 `);

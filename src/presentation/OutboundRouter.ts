@@ -16,6 +16,7 @@ export interface TurnPresenter {
     contextKey: string,
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
+    prompt?: string,
   ): Promise<void>;
   failPendingTurn(sessionId: string, message: string): Promise<void>;
   appendSteerMessage(sessionId: string, turnId: string, text: string, messageId?: string): Promise<void>;
@@ -79,13 +80,14 @@ export class OutboundRouter {
     contextKey: string,
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
+    prompt?: string,
   ): Promise<void> {
     const route = this.route(contextKey);
     this.sessionRoutes.set(sessionId, route);
     this.sessionContextKeys.set(sessionId, contextKey);
     if (replyTarget) this.sessionReplyTargets.set(sessionId, replyTarget);
     else this.sessionReplyTargets.delete(sessionId);
-    await route.presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget);
+    await route.presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget, prompt);
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {

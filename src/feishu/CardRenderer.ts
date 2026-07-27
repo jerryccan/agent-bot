@@ -334,7 +334,7 @@ export class CardRenderer {
       }]));
     }
     return turnCard(
-      turnTitle(state.status, state.taskTitle),
+      turnTitle(state.status, state.prompt ?? state.taskTitle),
       turnTemplate(state.status),
       elements,
       renderTurnSubtitle(state),
@@ -643,7 +643,7 @@ function renderActivity(
     const chunks = fullAssistantText
       ? splitText(text, ACTIVITY_TEXT_CHUNK)
       : [truncateText(text, MAX_LIVE_ASSISTANT_TEXT)];
-    return chunks.map((chunk, index) => markdown(index === 0 ? `💬 ${chunk}` : chunk));
+    return chunks.map((chunk, index) => markdown(boldUserActivity(chunk, index === 0)));
   }
   if (activity.kind === "assistant" || (activity.kind === "reasoning" && activity.id.startsWith("commentary:"))) {
     const text = activity.text.trim();
@@ -656,6 +656,16 @@ function renderActivity(
     return renderReasoningGroup([activity]);
   }
   return [toolPanel(activity.tool, projectCwd)];
+}
+
+function boldUserActivity(text: string, showIcon: boolean): string {
+  return text
+    .split("\n")
+    .map((line, index) => {
+      const content = showIcon && index === 0 ? `🙋 ${line}` : line;
+      return content ? `**${content}**` : "";
+    })
+    .join("\n");
 }
 
 function renderActivities(
@@ -941,18 +951,24 @@ function persistedTaskStatus(sessionStatus: string, lastTurnStatus?: string): st
   return labels[lastTurnStatus ?? sessionStatus] ?? lastTurnStatus ?? sessionStatus;
 }
 
-function turnTitle(status: TurnViewStatus, taskTitle?: string): string {
-  const prefix = status === "completed"
-    ? "Codex 已完成"
+function turnTitle(status: TurnViewStatus, prompt?: string): string {
+  const currentStatus = status === "completed"
+    ? "已完成"
     : status === "failed"
-      ? "Codex 执行失败"
+      ? "执行失败"
       : status === "cancelled"
-        ? "Codex 已停止"
+        ? "已停止"
         : status === "waiting_for_approval"
-          ? "Codex 等待确认"
-          : "Codex 正在处理";
-  const compactTitle = taskTitle ? truncateText(taskTitle.replace(/\s+/g, " ").trim(), 60) : "";
-  return compactTitle ? `${prefix}：${compactTitle}` : prefix;
+          ? "等待确认"
+          : "正在处理";
+  const compactPrompt = truncateTurnPrompt(prompt);
+  return compactPrompt ? `${currentStatus}：${compactPrompt}` : currentStatus;
+}
+
+function truncateTurnPrompt(prompt?: string): string {
+  const characters = Array.from(prompt?.replace(/\s+/g, " ").trim() ?? "");
+  if (characters.length <= 40) return characters.join("");
+  return `${characters.slice(0, 37).join("")}...`;
 }
 
 function turnTemplate(status: TurnViewStatus): string {

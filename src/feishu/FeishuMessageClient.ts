@@ -80,6 +80,9 @@ export class FeishuMessageClient implements FeishuOutbound {
   async createGroup(input: CreateGroupInput): Promise<CreatedGroup> {
     try {
       const token = await this.getTenantAccessToken();
+      const avatar = input.avatarPng
+        ? await this.uploadImageBytes(input.avatarPng, "avatar", "group-avatar.png")
+        : undefined;
       const response = await fetch(
         "https://open.feishu.cn/open-apis/im/v1/chats?user_id_type=open_id",
         {
@@ -93,6 +96,7 @@ export class FeishuMessageClient implements FeishuOutbound {
             chat_type: "private",
             name: input.name,
             user_id_list: [input.userOpenId],
+            ...(avatar ? { avatar } : {}),
           }),
         },
       );
@@ -450,27 +454,37 @@ export class FeishuMessageClient implements FeishuOutbound {
   private async uploadImage(filePath: string): Promise<string> {
     try {
       const contents = await readFile(filePath);
-      if (contents.byteLength > 10 * 1024 * 1024) {
-        throw new Error(`Image exceeds Feishu's 10 MiB limit: ${filePath}`);
-      }
-      const token = await this.getTenantAccessToken();
-      const form = new FormData();
-      form.append("image_type", "message");
-      form.append("image", new Blob([new Uint8Array(contents)]), path.basename(filePath));
-      const response = await fetch("https://open.feishu.cn/open-apis/im/v1/images", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      const payload = (await response.json()) as UploadImageResponse;
-      const imageKey = payload.data?.image_key;
-      if (!response.ok || payload.code !== 0 || !imageKey) {
-        throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "upload image", response.status);
-      }
-      return imageKey;
+      return await this.uploadImageBytes(contents, "message", path.basename(filePath));
     } catch (error) {
       throw normalizeTransportError(error, "upload image");
     }
+  }
+
+  private async uploadImageBytes(
+    contents: Uint8Array,
+    imageType: "message" | "avatar",
+    fileName: string,
+  ): Promise<string> {
+    if (contents.byteLength > 10 * 1024 * 1024) {
+      throw new Error(`Image exceeds Feishu's 10 MiB limit: ${fileName}`);
+    }
+    const token = await this.getTenantAccessToken();
+    const form = new FormData();
+    form.append("image_type", imageType);
+    const bytes = new ArrayBuffer(contents.byteLength);
+    new Uint8Array(bytes).set(contents);
+    form.append("image", new Blob([bytes]), fileName);
+    const response = await fetch("https://open.feishu.cn/open-apis/im/v1/images", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    const payload = (await response.json()) as UploadImageResponse;
+    const imageKey = payload.data?.image_key;
+    if (!response.ok || payload.code !== 0 || !imageKey) {
+      throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "upload image", response.status);
+    }
+    return imageKey;
   }
 
   private async downloadImageNow(messageId: string, imageKey: string): Promise<string> {

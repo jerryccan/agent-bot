@@ -77,12 +77,16 @@ agent-bot server restart --immediate --reason "修复阻塞进程"
 agent-bot task list
 agent-bot task list --status running
 agent-bot task list --context "chat_id:oc_xxx"
+agent-bot task chat 019f...
+agent-bot task chat 2 --json
 agent-bot task status 2
 agent-bot task status 019f... --json
 agent-bot task stop 019f...
 agent-bot task title 2 "新的任务标题"
 agent-bot task prompt 2 "继续运行测试并汇报结果"
 ```
+
+`task chat <序号|任务ID>` 根据任务的持久化消息路由输出对应飞书群/会话 ID，便于脚本直接使用。普通输出只有 `chat_id` 的值；`--json` 还包含任务 ID、完整 `contextKey`，话题任务另外包含 `threadId`。该命令只读取本地状态，不要求 Agent Bot server 正在运行。
 
 序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止、改标题和发送 Prompt 通过运行中 worker 的本地控制端点执行。`task prompt` 不会切换任何群聊的当前任务；机器人会先把 Prompt 文本发送到该任务最近一次使用的群聊、话题或私聊，发送成功后再提交给任务，思考卡片和最终回答也继续发送到同一位置。
 
@@ -159,7 +163,8 @@ defaults:
 
 - 普通文本：发送给当前 Codex；没有任务时自动创建
 - `/new [title] [--dir <cwd> | --nodir]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，`--nodir` 强制创建 Projectless 任务，两者互斥；都不指定时继承当前任务的项目或 Projectless 形态
-- `/newgroup [title]`：创建名为 `[agent] <Project 目录> <title|新任务> - yy-mm-dd hh:mm` 的私有飞书群并邀请命令发送者，不立即创建任务，同时在新群正文发送一次 Sessions 卡片；过长的 Project 目录会从中间压缩。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
+- `/newgroup [title]`：创建名为 `[agent] [Project 目录] <title>` 的私有飞书群并邀请命令发送者，不立即创建任务，也不自动发送 Sessions 或 Status 卡片；省略标题时使用 `[agent] [Project 目录] 新任务 - yy-mm-dd hh:mm`。新群使用根据项目名稳定生成的方案 C Identicon 头像：英文/拉丁项目名显示首个单词，中文项目名显示首个汉字，配色和对称节点由完整项目名哈希决定。用户 Home 目录前缀显示为 `~`。Project 目录最多显示 15 个字符，超长时显示为 `...<路径分隔符>最后两级目录`，必要时继续压缩目录名；Windows 使用 `\`，macOS/Linux 使用 `/`。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
+- `/forkgroup [title]`：从当前 Codex 任务的最新可用已完成轮次创建分支，创建私有飞书群并邀请命令发送者，将新分支设为新群的当前任务；新群不自动发送 Sessions 或 Status 卡片，源群的当前任务和正在执行的轮次不受影响。指定标题时群名不追加日期；省略标题时使用持久递增的 `原任务（分支 N）`，群名仍追加日期
 - `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务创建分支任务，并立即切换到新分支；源任务正在运行时从最近已完成轮次分支，没有已完成轮次时才拒绝；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
 - `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
 - `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑

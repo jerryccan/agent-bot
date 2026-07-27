@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import type { Logger } from "pino";
 import { createProjectlessWorkspace, detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import type { AppConfig } from "../config/schema.js";
@@ -12,6 +13,7 @@ import type {
   MessageReplyTarget,
 } from "../feishu/types.js";
 import { CardRenderer, type CardSection, type TaskListCardAction } from "../feishu/CardRenderer.js";
+import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
 import type { AgentRuntimeRegistry } from "../runtime/AgentRuntimeRegistry.js";
@@ -76,6 +78,33 @@ interface SessionExecutionSettings {
   model?: string;
   reasoningEffort?: string;
   permissionMode?: PermissionMode;
+}
+
+interface ForkSessionPlan {
+  source?: SessionRecord;
+  sourceLabel: string;
+  runtime: AgentRuntime;
+  agentName: string;
+  remoteSessionId: string;
+  lastTurnId: string;
+  cwd: string;
+  forkTitle: string;
+  model?: string;
+  reasoningEffort?: string;
+  permissionMode: PermissionMode;
+  lastTurnStatus?: SessionRecord["lastTurnStatus"];
+  sourceWasRunning: boolean;
+  forkedFromHistoricalTurn: boolean;
+}
+
+interface ForkSessionResult {
+  record: SessionRecord;
+  session: RuntimeSession;
+}
+
+interface CreatedFeishuGroupContext {
+  contextKey: string;
+  name: string;
 }
 
 export interface ProxyLifecycle {
@@ -521,6 +550,9 @@ export class ProxySessionController {
           userId,
         );
         return;
+      case "forkgroup":
+        await this.forkCurrentSessionToFeishuGroup(contextKey, command.title, userId);
+        return;
       case "fork":
         await this.forkSessionReference(contextKey, command.sessionId);
         return;
@@ -655,7 +687,7 @@ export class ProxySessionController {
     const configuredRuntime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
     if (!configuredRuntime.getSession(record.localSessionId)) {
       this.outbound.registerSession(record.localSessionId, contextKey, record.title, record.cwd);
-      await this.outbound.startPendingTurn(record.localSessionId, contextKey, record.title, replyTarget);
+      await this.outbound.startPendingTurn(record.localSessionId, contextKey, record.title, replyTarget, text);
     }
     let loaded: LoadedSession;
     try {
@@ -973,6 +1005,26 @@ export class ProxySessionController {
   }
 
   private async forkSessionReference(contextKey: string, reference?: string): Promise<void> {
+    const plan = await this.prepareForkSession(contextKey, reference);
+    const forked = await this.forkSessionIntoContext(contextKey, plan);
+    const forkSourceLabel = plan.forkedFromHistoricalTurn
+      ? `${plan.sourceLabel}最近已完成轮次`
+      : plan.sourceLabel;
+    await this.outbound.sendText(
+      contextKey,
+      `已从${forkSourceLabel}创建分支并切换到新任务：${
+        forked.session.title
+          ? `${forked.session.title}（${forked.session.remoteSessionId}）`
+          : forked.session.remoteSessionId
+      }`,
+    );
+  }
+
+  private async prepareForkSession(
+    contextKey: string,
+    reference?: string,
+    requestedTitle?: string,
+  ): Promise<ForkSessionPlan> {
     const sourceLabel = reference === undefined ? "当前任务" : "指定任务";
     const taskId = reference === undefined ? undefined : this.resolveSessionReference(contextKey, reference);
     let source: SessionRecord | undefined;
@@ -1036,63 +1088,84 @@ export class ProxySessionController {
     const cwd = remote?.cwd || source?.cwd;
     if (!cwd) throw new Error("指定的 Codex 任务没有可用的工作目录，暂时不能 fork。");
     const sourceTitle = remote?.title ?? source?.title ?? remote?.preview;
-    const forkTitle = this.store.nextForkTitle(sourceTitle);
+    const forkTitle = normalizeTaskTitle(requestedTitle) ?? this.store.nextForkTitle(sourceTitle);
     const model = source?.model;
     const reasoningEffort = source?.reasoningEffort;
     const permissionMode = source?.permissionMode ?? "auto";
 
+    return {
+      source,
+      sourceLabel,
+      runtime,
+      agentName,
+      remoteSessionId,
+      lastTurnId,
+      cwd,
+      forkTitle,
+      model,
+      reasoningEffort,
+      permissionMode,
+      lastTurnStatus: forkedFromHistoricalTurn
+        ? "completed"
+        : mapRemoteTurnStatus(remote?.lastTurnStatus)
+        ?? forkedTurnStatus(snapshot?.status)
+        ?? source?.lastTurnStatus,
+      sourceWasRunning: isRunning,
+      forkedFromHistoricalTurn,
+    };
+  }
+
+  private async forkSessionIntoContext(
+    contextKey: string,
+    plan: ForkSessionPlan,
+  ): Promise<ForkSessionResult> {
     const localSessionId = createId("sess");
     const record = this.store.createSession({
       localSessionId,
       contextKey,
-      agentName,
-      cwd,
+      agentName: plan.agentName,
+      cwd: plan.cwd,
       status: "starting",
     });
     this.store.updateRuntimeSession(localSessionId, {
       runtimeKind: "codex",
-      title: forkTitle,
-      model,
-      reasoningEffort,
-      permissionMode,
+      title: plan.forkTitle,
+      model: plan.model,
+      reasoningEffort: plan.reasoningEffort,
+      permissionMode: plan.permissionMode,
     });
 
     try {
-      const forked = await runtime.forkSession({
+      const forked = await plan.runtime.forkSession!({
         localSessionId,
-        remoteSessionId,
-        lastTurnId,
-        agentName,
-        cwd,
-        title: forkTitle,
-        model,
-        reasoningEffort,
-        permissionMode,
+        remoteSessionId: plan.remoteSessionId,
+        lastTurnId: plan.lastTurnId,
+        agentName: plan.agentName,
+        cwd: plan.cwd,
+        title: plan.forkTitle,
+        model: plan.model,
+        reasoningEffort: plan.reasoningEffort,
+        permissionMode: plan.permissionMode,
       });
       this.persistRuntimeSession(record, forked, "ready");
       this.store.updateRuntimeSession(localSessionId, {
-        lastTurnId,
-        lastTurnStatus: forkedFromHistoricalTurn
-          ? "completed"
-          : mapRemoteTurnStatus(remote?.lastTurnStatus)
-          ?? forkedTurnStatus(snapshot?.status)
-          ?? source?.lastTurnStatus,
+        lastTurnId: plan.lastTurnId,
+        lastTurnStatus: plan.lastTurnStatus,
       });
       this.store.setCurrentSession(contextKey, localSessionId);
-      this.outbound.registerSession(localSessionId, contextKey, forked.title ?? forkTitle, cwd);
+      this.outbound.registerSession(localSessionId, contextKey, forked.title ?? plan.forkTitle, plan.cwd);
       this.store.audit(contextKey, "session_forked", {
-        sourceLocalSessionId: source?.localSessionId,
-        sourceRemoteSessionId: remoteSessionId,
-        sourceTurnId: lastTurnId,
-        sourceWasRunning: isRunning,
+        sourceLocalSessionId: plan.source?.localSessionId,
+        sourceRemoteSessionId: plan.remoteSessionId,
+        sourceTurnId: plan.lastTurnId,
+        sourceWasRunning: plan.sourceWasRunning,
         forkedLocalSessionId: localSessionId,
         forkedRemoteSessionId: forked.remoteSessionId,
       });
-      const forkSourceLabel = forkedFromHistoricalTurn ? `${sourceLabel}最近已完成轮次` : sourceLabel;
-      await this.outbound.sendText(
-        contextKey,
-        `已从${forkSourceLabel}创建分支并切换到新任务：${forked.title ? `${forked.title}（${forked.remoteSessionId}）` : forked.remoteSessionId}`,
-      );
+      return {
+        record: this.store.getSession(localSessionId) ?? record,
+        session: forked,
+      };
     } catch (error) {
       this.store.updateSession(localSessionId, { status: "failed" });
       throw error;
@@ -1176,7 +1249,13 @@ export class ProxySessionController {
     const title = currentRecord?.title ?? normalizeTaskTitle(text);
     if (!currentRecord?.title && title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
     if (title) this.outbound.updateSessionTitle(loaded.record.localSessionId, title);
-    await this.outbound.startPendingTurn(loaded.record.localSessionId, loaded.record.contextKey, title, replyTarget);
+    await this.outbound.startPendingTurn(
+      loaded.record.localSessionId,
+      loaded.record.contextKey,
+      title,
+      replyTarget,
+      text,
+    );
     let turnId: string;
     try {
       turnId = await loaded.runtime.startTurn(
@@ -1230,7 +1309,9 @@ export class ProxySessionController {
     this.outbound.registerSession(localSessionId, contextKey, initialTitle, sessionCwd);
     const runtime = this.runtimes.forAgent(agent);
     try {
-      if (prepareTurn) await this.outbound.startPendingTurn(localSessionId, contextKey, initialTitle, replyTarget);
+      if (prepareTurn) {
+        await this.outbound.startPendingTurn(localSessionId, contextKey, initialTitle, replyTarget, prompt);
+      }
       const session = await runtime.createSession({
         localSessionId,
         agentName,
@@ -1262,41 +1343,111 @@ export class ProxySessionController {
     requestedTitle: string | undefined,
     userId: string | undefined,
   ): Promise<void> {
-    if (!userId?.startsWith("ou_")) {
-      throw new Error("/newgroup 只能由具有 open_id 的飞书用户消息触发。");
-    }
     const boundProjectCwd = this.currentProjectCwd(sourceContextKey);
-    const groupName = formatNewGroupName(
+    const explicitTitle = normalizeTaskTitle(requestedTitle);
+    const group = await this.createFeishuGroupContext(
+      sourceContextKey,
       agentName,
+      explicitTitle ?? "新任务",
+      userId,
       boundProjectCwd,
-      normalizeTaskTitle(requestedTitle) ?? "新任务",
-      new Date(),
+      "/newgroup",
+      !explicitTitle,
     );
-    if (Array.from(groupName).length > 60) {
-      throw new Error(`飞书群名最多 60 个字符；当前格式化后的群名为 ${Array.from(groupName).length} 个字符。`);
-    }
-
-    const group = await this.outbound.createGroup(sourceContextKey, {
-      name: groupName,
-      userOpenId: userId,
-    });
-    const groupContextKey = `chat_id:${group.chatId}`;
-    this.store.recordChatContext(groupContextKey, "group");
-    this.store.getOrCreateUserContext(groupContextKey, agentName);
-    if (boundProjectCwd) this.store.setBoundProjectCwd(groupContextKey, boundProjectCwd);
     await this.outbound.sendText(
-      groupContextKey,
+      group.contextKey,
       [
         "群已创建。",
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
         "直接发送消息即可在本群开始一个新任务。",
       ].join("\n"),
     );
-    await this.listSessions(groupContextKey);
     await this.outbound.sendText(
       sourceContextKey,
-      `已创建飞书群：${group.name}，邀请你加入，并在新群中发送了 Sessions 卡片。`,
+      `已创建飞书群：${group.name}，并邀请你加入。`,
     );
+  }
+
+  private async forkCurrentSessionToFeishuGroup(
+    sourceContextKey: string,
+    requestedTitle: string | undefined,
+    userId: string | undefined,
+  ): Promise<void> {
+    if (!userId?.startsWith("ou_")) {
+      throw new Error("/forkgroup 只能由具有 open_id 的飞书用户消息触发。");
+    }
+    const plan = await this.prepareForkSession(sourceContextKey, undefined, requestedTitle);
+    const boundProjectCwd = detectProjectlessWorkspace(plan.cwd) ? undefined : plan.cwd;
+    const group = await this.createFeishuGroupContext(
+      sourceContextKey,
+      plan.agentName,
+      plan.forkTitle,
+      userId,
+      boundProjectCwd,
+      "/forkgroup",
+      !normalizeTaskTitle(requestedTitle),
+    );
+
+    let forked: ForkSessionResult;
+    try {
+      forked = await this.forkSessionIntoContext(group.contextKey, plan);
+    } catch (error) {
+      await this.outbound.sendText(
+        group.contextKey,
+        `群已创建，但 Fork 任务失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+
+    const sourceDescription = plan.forkedFromHistoricalTurn
+      ? "当前任务最近已完成轮次"
+      : "当前任务最新轮次";
+    const taskDescription = forked.session.title
+      ? `${forked.session.title}（${forked.session.remoteSessionId}）`
+      : forked.session.remoteSessionId;
+    await this.outbound.sendText(
+      group.contextKey,
+      [
+        `已从${sourceDescription}创建分支。`,
+        `当前任务：${taskDescription}`,
+        `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
+      ].join("\n"),
+    );
+    await this.outbound.sendText(
+      sourceContextKey,
+      `已将当前任务 Fork 到飞书群：${group.name}；新群当前任务为 ${taskDescription}。`,
+    );
+  }
+
+  private async createFeishuGroupContext(
+    sourceContextKey: string,
+    agentName: string,
+    taskTitle: string,
+    userId: string | undefined,
+    boundProjectCwd: string | undefined,
+    commandName: "/newgroup" | "/forkgroup",
+    includeTimestamp: boolean,
+  ): Promise<CreatedFeishuGroupContext> {
+    if (!userId?.startsWith("ou_")) {
+      throw new Error(`${commandName} 只能由具有 open_id 的飞书用户消息触发。`);
+    }
+    const groupName = formatNewGroupName(agentName, boundProjectCwd, taskTitle, new Date(), includeTimestamp);
+    if (Array.from(groupName).length > 60) {
+      throw new Error(`飞书群名最多 60 个字符；当前格式化后的群名为 ${Array.from(groupName).length} 个字符。`);
+    }
+    const group = await this.outbound.createGroup(sourceContextKey, {
+      name: groupName,
+      userOpenId: userId,
+      avatarPng: generateGroupAvatarPng(
+        resolveGroupAvatarProjectName(boundProjectCwd, taskTitle),
+        boundProjectCwd,
+      ),
+    });
+    const groupContextKey = `chat_id:${group.chatId}`;
+    this.store.recordChatContext(groupContextKey, "group");
+    this.store.getOrCreateUserContext(groupContextKey, agentName);
+    if (boundProjectCwd) this.store.setBoundProjectCwd(groupContextKey, boundProjectCwd);
+    return { contextKey: groupContextKey, name: group.name };
   }
 
   private async loadSession(record: SessionRecord): Promise<LoadedSession> {
@@ -2369,7 +2520,8 @@ export class ProxySessionController {
         title: "任务管理",
         lines: [
           "**/new [title] [--dir &#60;cwd&#62; | --nodir]**　使用默认 Agent 创建任务；--nodir 强制创建 Projectless 任务",
-          "**/newgroup [title]**　创建飞书群并绑定当前项目；邀请当前用户并发送 Sessions 卡片",
+          "**/newgroup [title]**　创建飞书群并绑定当前项目；邀请当前用户",
+          "**/forkgroup [title]**　从当前任务最新已完成轮次创建分支并绑定到新群",
           "**/fork [序号或任务 ID]**　从当前或指定任务创建分支；运行中使用最近已完成轮次",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
           "**/sessions [关键词]**　查找本机任务",
@@ -2403,7 +2555,7 @@ export class ProxySessionController {
         ],
       },
     ];
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Codex 使用帮助", sections));
+    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Agent Bot 使用帮助", sections));
   }
 
   private ensureAgent(agentName: string) {
@@ -2851,24 +3003,61 @@ function formatNewGroupName(
   projectCwd: string | undefined,
   taskTitle: string,
   date: Date,
+  includeTimestamp: boolean,
 ): string {
   const prefix = `[${agentName}] `;
-  const suffix = ` ${taskTitle} - ${formatTimestampTaskTitle(date)}`;
-  const availableProjectLength = 60 - Array.from(prefix).length - Array.from(suffix).length;
-  if (availableProjectLength <= 0) return `${prefix}${projectCwd ?? "Projectless"}${suffix}`;
-  const project = truncateMiddleCharacters(projectCwd ?? "Projectless", availableProjectLength);
-  return `${prefix}${project}${suffix}`;
+  const suffix = ` ${taskTitle}${includeTimestamp ? ` - ${formatTimestampTaskTitle(date)}` : ""}`;
+  return `${prefix}${formatGroupProjectDirectory(projectCwd)}${suffix}`;
 }
 
-function truncateMiddleCharacters(value: string, maxLength: number): string {
+function formatGroupProjectDirectory(projectCwd: string | undefined): string {
+  const value = projectCwd ? abbreviateHomeDirectory(projectCwd) : "Projectless";
+  if (Array.from(value).length <= 15) return `[${value}]`;
+
+  const levels = value
+    .replace(/[\\/]+$/, "")
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .slice(-2);
+  const prefix = `...${path.sep}`;
+  return `[${prefix}${fitTrailingPathLevels(levels, 15 - Array.from(prefix).length, path.sep)}]`;
+}
+
+function abbreviateHomeDirectory(value: string): string {
+  const relative = path.relative(os.homedir(), value);
+  if (relative === "") return "~";
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) return value;
+  return `~${path.sep}${relative}`;
+}
+
+function fitTrailingPathLevels(levels: string[], maxLength: number, separator: string): string {
+  if (levels.length === 0) return "";
+  if (levels.length === 1) return truncatePathLevel(levels[0]!, maxLength);
+  const parent = levels[0]!;
+  const leaf = levels[1]!;
+  const joined = `${parent}${separator}${leaf}`;
+  if (Array.from(joined).length <= maxLength) return joined;
+
+  const available = Math.max(2, maxLength - 1);
+  let parentLength = Math.floor(available / 2);
+  let leafLength = available - parentLength;
+  const parentSize = Array.from(parent).length;
+  const leafSize = Array.from(leaf).length;
+  if (parentSize < parentLength) {
+    leafLength += parentLength - parentSize;
+    parentLength = parentSize;
+  } else if (leafSize < leafLength) {
+    parentLength += leafLength - leafSize;
+    leafLength = leafSize;
+  }
+  return `${truncatePathLevel(parent, parentLength)}${separator}${truncatePathLevel(leaf, leafLength)}`;
+}
+
+function truncatePathLevel(value: string, maxLength: number): string {
   const characters = Array.from(value);
   if (characters.length <= maxLength) return value;
-  if (maxLength <= 0) return "";
-  if (maxLength === 1) return "…";
-  const retained = maxLength - 1;
-  const headLength = Math.ceil(retained / 2);
-  const tailLength = Math.floor(retained / 2);
-  return `${characters.slice(0, headLength).join("")}…${characters.slice(-tailLength).join("")}`;
+  if (maxLength <= 1) return "…";
+  return `…${characters.slice(-(maxLength - 1)).join("")}`;
 }
 
 function parseAgentGroupName(value: string): { agentName: string; title: string } | undefined {

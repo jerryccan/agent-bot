@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AppConfig } from "../../src/config/schema.js";
+import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../../src/feishu/GroupAvatarGenerator.js";
 import type { FeishuOutbound, IncomingMessage } from "../../src/feishu/types.js";
 import type { TurnPresenter } from "../../src/presentation/OutboundRouter.js";
 import { OutboundRouter } from "../../src/presentation/OutboundRouter.js";
@@ -394,6 +395,7 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "inspect this repo",
       undefined,
+      "inspect this repo",
     );
     expect((presenter.startPendingTurn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
       (runtime.createSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
@@ -522,12 +524,14 @@ describe("ProxySessionController", () => {
       "chat_id:group_1",
       "first group task",
       undefined,
+      "first group task",
     );
     expect(presenter.startPendingTurn).toHaveBeenCalledWith(
       second,
       "chat_id:group_2",
       "second group task",
       undefined,
+      "second group task",
     );
 
     await controller.onMessage(groupMessage("group_1", "/sessions"));
@@ -593,6 +597,7 @@ describe("ProxySessionController", () => {
       topicContextKey,
       "build the base task（分支 1）",
       { messageId: "m-omt_branch-continue differently", replyInThread: true },
+      "continue differently",
     );
     expect(outbound.sendText).not.toHaveBeenCalledWith(
       "chat_id:c1",
@@ -663,6 +668,7 @@ describe("ProxySessionController", () => {
       topicContextKey,
       "group base task（分支 1）",
       { messageId: "m-omt_group_branch-continue in group topic", replyInThread: true },
+      "continue in group topic",
     );
   });
 
@@ -737,6 +743,97 @@ describe("ProxySessionController", () => {
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
       "已从当前任务创建分支并切换到新任务：build the source task（分支 1）（thr_1_fork）",
+    );
+  });
+
+  test("forks the current task's latest completed turn into a new Feishu group", async () => {
+    const { controller, runtime, sessions, remoteSessions, store, listeners, outbound, presenter } = fixture();
+    await controller.onMessage(message("build the source task"));
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    const sourceRuntimeSession = sessions.get(sourceSessionId!);
+    if (sourceRuntimeSession) sourceRuntimeSession.activeTurnId = undefined;
+    const sourceRemote = remoteSessions.find((session) => session.id === "thr_1")!;
+    sourceRemote.status = "idle";
+    sourceRemote.lastTurnId = "turn_1";
+    sourceRemote.lastTurnStatus = "completed";
+
+    await controller.onMessage({
+      messageId: "fork-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/forkgroup 并行修复",
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: expect.stringMatching(/^\[codex\] \[(?:.{1,15})\] 并行修复$/u),
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+    const groupSessionId = store.getUserContext("chat_id:oc_new_group")?.currentSessionId;
+    expect(groupSessionId).toBeDefined();
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBe(sourceSessionId);
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: groupSessionId,
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+      title: "并行修复",
+      cwd: store.getSession(sourceSessionId!)?.cwd,
+    }));
+    expect(store.getSession(groupSessionId!)).toMatchObject({
+      contextKey: "chat_id:oc_new_group",
+      remoteSessionId: "thr_1_fork",
+      title: "并行修复",
+      status: "ready",
+      lastTurnId: "turn_1",
+      lastTurnStatus: "completed",
+    });
+    expect(presenter.registerSession).toHaveBeenLastCalledWith(
+      groupSessionId,
+      "chat_id:oc_new_group",
+      "并行修复",
+      store.getSession(sourceSessionId!)?.cwd,
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      expect.stringMatching(/^已从当前任务最新轮次创建分支。\n当前任务：并行修复（thr_1_fork）\n当前 Project 目录：.+$/),
+    );
+    expect((outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls)
+      .not.toContainEqual(["chat_id:oc_new_group", expect.anything()]);
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringMatching(/^已将当前任务 Fork 到飞书群：.+；新群当前任务为 并行修复（thr_1_fork）。$/),
+    );
+  });
+
+  test("does not create a group when the current task has no completed turn to fork", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("long-running source"));
+
+    await controller.onMessage({
+      messageId: "fork-group-too-early",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/forkgroup",
+    });
+
+    expect(outbound.createGroup).not.toHaveBeenCalled();
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("还没有已完成轮次"),
     );
   });
 
@@ -873,7 +970,7 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("creates a Feishu group without initializing a task and sends its sessions card", async () => {
+  test("creates a Feishu group without initializing a task or sending a sessions card", async () => {
     const { controller, runtime, store, outbound, presenter } = fixture();
 
     await controller.onMessage({
@@ -886,8 +983,9 @@ describe("ProxySessionController", () => {
     });
 
     expect(outbound.createGroup).toHaveBeenCalledWith({
-      name: expect.stringMatching(/^\[codex\] Projectless 广州天气 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/),
+      name: "[codex] [Projectless] 广州天气",
       userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
     });
     expect(runtime.createSession).not.toHaveBeenCalled();
     const groupContext = store.getUserContext("chat_id:oc_new_group");
@@ -898,13 +996,11 @@ describe("ProxySessionController", () => {
       "chat_id:oc_new_group",
       "群已创建。\n当前 Project 目录：未绑定（Projectless）\n直接发送消息即可在本群开始一个新任务。",
     );
-    const groupCardCall = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(groupCardCall?.[0]).toBe("chat_id:oc_new_group");
-    expect(groupCardCall?.[1]).toMatchObject({ header: { title: { content: "Codex 任务" } } });
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
       expect.stringMatching(
-        /^已创建飞书群：\[codex\] Projectless 广州天气 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}，邀请你加入，并在新群中发送了 Sessions 卡片。$/,
+        /^已创建飞书群：\[codex\] \[Projectless\] 广州天气，并邀请你加入。$/,
       ),
     );
     expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
@@ -929,6 +1025,8 @@ describe("ProxySessionController", () => {
       currentSessionId: undefined,
       boundProjectCwd: project,
     });
+    expect((outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]?.avatarPng)
+      .toEqual(generateGroupAvatarPng(resolveGroupAvatarProjectName(project, "Project room"), project));
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
       `群已创建。\n当前 Project 目录：${project}\n直接发送消息即可在本群开始一个新任务。`,
@@ -978,12 +1076,32 @@ describe("ProxySessionController", () => {
 
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(groupInput.name).toMatch(
-      /^\[codex\] Projectless 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/,
+      /^\[codex\] \[Projectless\] 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/,
     );
     expect(runtime.createSession).not.toHaveBeenCalled();
   });
 
-  test("middle-truncates a long project directory in the generated group name", async () => {
+  test("uses a tilde for a project directory inside the user home directory", async () => {
+    const { controller, outbound } = fixture();
+    await controller.onMessage(message(`/new --dir "${os.homedir()}"`));
+
+    await controller.onMessage({
+      messageId: "new-home-project-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Home project",
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: "[codex] [~] Home project",
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+  });
+
+  test("uses the platform path separator for a shortened project directory in the generated group name", async () => {
     const { controller, outbound } = fixture();
     const project = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-long-project-")),
@@ -1004,10 +1122,12 @@ describe("ProxySessionController", () => {
     });
 
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(Array.from(groupInput.name)).toHaveLength(60);
-    expect(groupInput.name).toMatch(
-      /^\[codex\] .+….+project-tail 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/,
-    );
+    expect(groupInput.name).toMatch(/^\[codex\] \[[^\]]+\] 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    const projectDisplay = /^\[codex\] \[([^\]]+)\]/.exec(groupInput.name)?.[1];
+    expect(Array.from(projectDisplay ?? "")).toHaveLength(15);
+    expect(projectDisplay?.startsWith(`...${path.sep}`)).toBe(true);
+    expect(projectDisplay?.slice(4).split(path.sep)).toHaveLength(2);
+    expect(projectDisplay).toContain("…tail");
   });
 
   test("rejects newgroup when the message does not contain a Feishu open_id", async () => {
@@ -1388,7 +1508,7 @@ describe("ProxySessionController", () => {
 
     expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
       "chat_id:c1",
-      expect.objectContaining({ header: expect.objectContaining({ title: expect.objectContaining({ content: "Codex 使用帮助" }) }) }),
+      expect.objectContaining({ header: expect.objectContaining({ title: expect.objectContaining({ content: "Agent Bot 使用帮助" }) }) }),
     );
     releaseSteer();
     await blockedPrompt;
@@ -2716,6 +2836,7 @@ describe("ProxySessionController", () => {
       "chat_id:latest",
       "start task for targeted CLI prompt",
       undefined,
+      "continue from CLI",
     );
     expect(store.getUserContext("chat_id:latest")?.currentSessionId).toBe("other_current_task");
   });
@@ -2785,6 +2906,7 @@ describe("ProxySessionController", () => {
       threadContextKey,
       "start task before threaded CLI prompt",
       { messageId: "om_cli_prompt", replyInThread: true },
+      "continue in this thread",
     );
   });
 
@@ -3277,7 +3399,7 @@ describe("ProxySessionController", () => {
     expect(outbound.sendMarkdown).not.toHaveBeenCalled();
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
-    expect(card).toMatchObject({ header: { title: { content: "Codex 使用帮助" } } });
+    expect(card).toMatchObject({ header: { title: { content: "Agent Bot 使用帮助" } } });
     expect(serialized).toContain("**任务管理**");
     expect(serialized).toContain("**执行设置**");
     expect(serialized).toContain("**Agent**");

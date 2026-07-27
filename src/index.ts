@@ -25,8 +25,8 @@ import { StateStore } from "./state/StateStore.js";
 import { StartupNotifier } from "./startup/StartupNotifier.js";
 import { SessionMetadataHydrator } from "./startup/SessionMetadataHydrator.js";
 import { startFeishu } from "./startup/startFeishu.js";
-import { RESTART_EXIT_CODE, STOP_EXIT_CODE } from "./supervision/restartPolicy.js";
-import { saveRestartReason } from "./supervision/restartReasonStore.js";
+import { STOP_EXIT_CODE } from "./supervision/restartPolicy.js";
+import { replacementSupervisorEnvironment } from "./supervision/replacementSupervisor.js";
 import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
 
@@ -143,32 +143,12 @@ async function initiateRestart(reason: string, contextKey?: string): Promise<voi
   restartRequested = true;
   safeRestart.cancel();
   await safeRestartNotifier?.flush();
-  saveRestartReason(config.storage.sqlitePath, reason);
   if (contextKey) {
     await outbound.sendText(contextKey, "Agent Bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
       logger.warn({ error, contextKey }, "Failed to send restart acknowledgement.");
     });
   }
-  setTimeout(() => {
-    if (supervised) {
-      void shutdown(RESTART_EXIT_CODE);
-      return;
-    }
-    const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
-    const supervisor = spawn(process.execPath, [supervisorEntry], {
-      cwd: process.cwd(),
-      detached: true,
-      windowsHide: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        AGENT_BOT_START_DELAY_MS: "1000",
-        AGENT_BOT_RESTART_REASON: "用户执行 /restart 命令",
-      },
-    });
-    supervisor.unref();
-    void shutdown(0);
-  }, 100);
+  setTimeout(() => void shutdown(supervised ? STOP_EXIT_CODE : 0, reason), 100);
 }
 
 async function handleControlRequest(request: ControlRequest): Promise<ControlResponse> {
@@ -212,7 +192,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
   }
 }
 
-async function shutdown(exitCode: number): Promise<void> {
+async function shutdown(exitCode: number, restartReason?: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ exitCode }, "Shutting down Agent Bot.");
@@ -228,7 +208,20 @@ async function shutdown(exitCode: number): Promise<void> {
   acpProcessManager.stopAll();
   await controlServer?.close().catch((error: unknown) => logger.warn({ error }, "Failed to close local control endpoint."));
   store.close();
+  if (restartReason) startReplacementSupervisor(restartReason);
   process.exit(exitCode);
+}
+
+function startReplacementSupervisor(restartReason: string): void {
+  const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
+  const supervisor = spawn(process.execPath, [supervisorEntry], {
+    cwd: process.cwd(),
+    detached: true,
+    windowsHide: true,
+    stdio: "ignore",
+    env: replacementSupervisorEnvironment(restartReason),
+  });
+  supervisor.unref();
 }
 
 function delay(milliseconds: number): Promise<void> {

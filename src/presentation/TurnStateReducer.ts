@@ -14,11 +14,13 @@ export function createTurnViewState(
   taskTitle?: string,
   replyTarget?: MessageReplyTarget,
   projectCwd?: string,
+  prompt?: string,
 ): TurnViewState {
   return {
     sessionId,
     turnId,
     taskTitle,
+    prompt,
     projectCwd,
     replyTarget,
     status: "starting",

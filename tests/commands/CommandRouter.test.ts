@@ -133,6 +133,12 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/fork 1 extra")).toThrow("只接受一个");
   });
 
+  test("parses forkgroup with an optional title", () => {
+    expect(router.parse("/forkgroup")).toEqual({ type: "forkgroup", title: undefined });
+    expect(router.parse("/forkgroup 并行修复")).toEqual({ type: "forkgroup", title: "并行修复" });
+    expect(router.parse('/forkgroup "Parallel fix"')).toEqual({ type: "forkgroup", title: "Parallel fix" });
+  });
+
   test("parses a title containing spaces", () => {
     expect(router.parse("/title 修复会话列表时间")).toEqual({ type: "title", title: "修复会话列表时间" });
     expect(router.parse('/title "Fix session title"')).toEqual({ type: "title", title: "Fix session title" });

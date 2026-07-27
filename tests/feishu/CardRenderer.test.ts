@@ -31,6 +31,7 @@ function state(): TurnViewState {
   return {
     sessionId: "s1",
     turnId: "turn_1",
+    prompt: "检查卡片渲染",
     status: "running",
     startedAt: 1_000,
     durationMs: 51_600,
@@ -527,10 +528,11 @@ describe("CardRenderer", () => {
     expect(completedCard).not.toContain("turn_cancel");
   });
 
-  test("includes the current task title in every turn card header", () => {
+  test("uses the current status and prompt in every turn card header", () => {
     const completed = {
       ...state(),
-      taskTitle: "优化飞书交互体验",
+      taskTitle: "任务标题不应出现在思考卡片中",
+      prompt: "优化飞书交互体验",
       status: "completed" as const,
       completedAt: 4_000,
       durationMs: 3_000,
@@ -540,7 +542,21 @@ describe("CardRenderer", () => {
       header: { title: { content: string } };
     };
 
-    expect(card.header.title.content).toBe("Codex 已完成：优化飞书交互体验");
+    expect(card.header.title.content).toBe("已完成：优化飞书交互体验");
+  });
+
+  test("limits the prompt part of the turn title to 40 characters with three trailing dots", () => {
+    const exact = new CardRenderer().renderTurn({
+      ...state(),
+      prompt: "问".repeat(40),
+    }) as { header: { title: { content: string } } };
+    const truncated = new CardRenderer().renderTurn({
+      ...state(),
+      prompt: `${"问".repeat(40)}🙂`,
+    }) as { header: { title: { content: string } } };
+
+    expect(exact.header.title.content).toBe(`正在处理：${"问".repeat(40)}`);
+    expect(truncated.header.title.content).toBe(`正在处理：${"问".repeat(37)}...`);
   });
 
   test("renders approval controls with Card 2.0 callback behaviors", () => {
@@ -715,20 +731,26 @@ describe("CardRenderer", () => {
     running.fileSummary = [];
     running.activities = [
       { kind: "reasoning", id: "reasoning:1", text: "先检查代码" },
-      { kind: "user", id: "steer:m1", text: "同时补充测试" },
+      { kind: "user", id: "steer:m1", text: "同时补充测试\n并检查结果" },
       { kind: "reasoning", id: "reasoning:2", text: "继续处理" },
     ];
 
     const renderer = new CardRenderer();
     const card = renderer.renderTurn(running);
     const serialized = JSON.stringify(card);
-    expect(collectObjects(card)).toContainEqual({ tag: "markdown", content: "💬 同时补充测试" });
+    expect(collectObjects(card)).toContainEqual({
+      tag: "markdown",
+      content: "**🙋 同时补充测试**\n**并检查结果**",
+    });
     expect(serialized).not.toContain("用户追加");
     expect(serialized.indexOf("先检查代码")).toBeLessThan(serialized.indexOf("同时补充测试"));
     expect(serialized.indexOf("同时补充测试")).toBeLessThan(serialized.indexOf("继续处理"));
 
     const history = renderer.renderActivityHistory(running, 0);
-    expect(collectObjects(history)).toContainEqual({ tag: "markdown", content: "💬 同时补充测试" });
+    expect(collectObjects(history)).toContainEqual({
+      tag: "markdown",
+      content: "**🙋 同时补充测试**\n**并检查结果**",
+    });
   });
 
   test("shows an ellipsis before retained activities when older history was discarded", () => {

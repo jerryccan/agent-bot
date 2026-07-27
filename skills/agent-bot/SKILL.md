@@ -42,6 +42,7 @@ List tasks before resolving a numeric reference because task numbers follow the 
 
 ```powershell
 agent-bot task list
+agent-bot task chat <number-or-task-id> [--json]
 agent-bot task status <number-or-task-id>
 agent-bot task stop <number-or-task-id>
 agent-bot task title <number-or-task-id> <new-title>
@@ -50,11 +51,15 @@ agent-bot task prompt <number-or-task-id> <prompt>
 
 Task IDs may be supplied in full or as an unambiguous prefix. Use `task stop` to ask the running worker to send the Codex Interrupt signal; leave child-process lifecycle management to Codex.
 
+Use `task chat <number-or-task-id>` to read the Feishu chat ID associated with a task from local routing state. Plain output is only the chat ID for scripting. Add `--json` to include the stable task ID, complete context key, and the thread ID for a topic-bound task. This read-only command does not require the Agent Bot server to be running.
+
 Use `task prompt` to send input to a specific task without changing any chat's current task. The bot first posts the Prompt text to the task's existing Feishu chat, thread, or private-chat route, then submits it to the task. If posting fails, the task is not started or steered. The thinking card and final response continue to the same route; the command line only reports whether the Prompt was accepted.
 
 For a long-running objective in the active Feishu task, use `/goal <objective>`. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control automatic continuation, `/goal edit <objective>` to revise it, and `/goal clear` to remove it. Stopping a Goal turn through Agent Bot also pauses the Goal before sending Interrupt so it does not immediately continue.
 
-Use `/newgroup [title]` in Feishu to create a private group named `[agent] <project directory> <title or 新任务> - yy-mm-dd hh:mm` and invite the command sender without creating a task. Long project directories are truncated in the middle to keep the name within Feishu's 60-character limit. Agent Bot sends a notification containing the current Project directory plus a Sessions card to the new group body immediately. If the source chat's current task belongs to a project, the new group persists that project as its default; the first ordinary message or `/new` inherits it unless `/new --dir <cwd>` or `/new --nodir` explicitly overrides it.
+Use `/newgroup [title]` in Feishu to create a private group named `[agent] [project directory] <title>` and invite the command sender without creating a task. When the title is omitted, use `[agent] [project directory] 新任务 - yy-mm-dd hh:mm`; an explicit title never gets a timestamp suffix. Every new group gets a deterministic scheme-C Identicon avatar: Latin project names display their first word, Chinese names display up to their first four characters, and the normalized full project path hashes into the palette and symmetric node pattern. Projectless groups use the title as the stable seed. Replace the user's home-directory prefix with `~`. The bracketed project-directory value is limited to 15 characters. Longer paths use `...<separator><parent><separator><leaf>`, shortening the two trailing directory names further when necessary. Use `\` on Windows and `/` on macOS/Linux. Do not automatically send a Sessions or Status card to the new group. If the source chat's current task belongs to a project, the new group persists that project as its default; the first ordinary message or `/new` inherits it unless `/new --dir <cwd>` or `/new --nodir` explicitly overrides it.
+
+Use `/forkgroup [title]` in Feishu to fork the current Codex task's latest available completed turn into a newly created private group. Agent Bot invites the command sender and binds the fork as the new group's current task, but does not automatically send a Sessions or Status card there. The source chat keeps its current task, and an active source turn is not interrupted. If the current task has no completed turn yet, Agent Bot rejects the command before creating a group. An explicit title is used without a timestamp suffix in the group name. Without an explicit title, the fork uses the persistent `source title（分支 N）` sequence and keeps the timestamp suffix in the group name.
 
 Use `/new [title] --nodir` to force a new Codex Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
 

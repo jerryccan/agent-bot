@@ -25,6 +25,7 @@ export interface MessageReplyTarget {
 export interface CreateGroupInput {
   name: string;
   userOpenId: string;
+  avatarPng?: Uint8Array;
 }
 
 export interface CreatedGroup {
