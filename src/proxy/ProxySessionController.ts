@@ -1385,7 +1385,7 @@ export class ProxySessionController {
       userId,
       boundProjectCwd,
       "/forkgroup",
-      !normalizeTaskTitle(requestedTitle),
+      false,
     );
 
     let forked: ForkSessionResult;
@@ -1432,9 +1432,6 @@ export class ProxySessionController {
       throw new Error(`${commandName} 只能由具有 open_id 的飞书用户消息触发。`);
     }
     const groupName = formatNewGroupName(agentName, boundProjectCwd, taskTitle, new Date(), includeTimestamp);
-    if (Array.from(groupName).length > 60) {
-      throw new Error(`飞书群名最多 60 个字符；当前格式化后的群名为 ${Array.from(groupName).length} 个字符。`);
-    }
     const group = await this.outbound.createGroup(sourceContextKey, {
       name: groupName,
       userOpenId: userId,
@@ -2989,13 +2986,10 @@ function runtimePrompt(text: string, localImagePaths?: string[]): RuntimePrompt 
   return localImagePaths?.length ? { text, localImagePaths } : text;
 }
 
-function formatTimestampTaskTitle(date: Date): string {
-  const year = String(date.getFullYear()).slice(-2);
+function formatGroupDateSuffix(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
-  const hour = String(date.getHours()).padStart(2, "0");
-  const minute = String(date.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day} ${hour}:${minute}`;
+  return `${month}-${day}`;
 }
 
 function formatNewGroupName(
@@ -3006,10 +3000,17 @@ function formatNewGroupName(
   includeTimestamp: boolean,
 ): string {
   const prefix = `[${agentName}] `;
-  const suffix = ` ${taskTitle}${includeTimestamp ? ` - ${formatTimestampTaskTitle(date)}` : ""}`;
-  return `${prefix}${formatGroupProjectDirectory(projectCwd)}${suffix}`;
+  const project = formatGroupProjectDirectory(projectCwd);
+  const titlePrefix = `${prefix}${project} `;
+  const timestampSuffix = includeTimestamp ? ` (${formatGroupDateSuffix(date)})` : "";
+  const availableTitleLength = FEISHU_GROUP_NAME_MAX_LENGTH
+    - Array.from(titlePrefix).length
+    - Array.from(timestampSuffix).length;
+  const title = truncateTail(taskTitle, availableTitleLength);
+  return truncateTail(`${titlePrefix}${title}${timestampSuffix}`, FEISHU_GROUP_NAME_MAX_LENGTH);
 }
 
+const FEISHU_GROUP_NAME_MAX_LENGTH = 60;
 const GROUP_PROJECT_DIRECTORY_MAX_LENGTH = 15;
 
 function formatGroupProjectDirectory(projectCwd: string | undefined): string {
@@ -3043,6 +3044,10 @@ function fitTrailingPathLevels(levels: string[], maxLength: number, separator: s
 }
 
 function truncatePathLevel(value: string, maxLength: number): string {
+  return truncateTail(value, maxLength);
+}
+
+function truncateTail(value: string, maxLength: number): string {
   const characters = Array.from(value);
   if (characters.length <= maxLength) return value;
   if (maxLength <= 0) return "";

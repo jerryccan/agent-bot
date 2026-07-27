@@ -136,6 +136,8 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/nosteer` to always create a later turn.
 
+When `/newgroup` omits the title, the default group name is `[agent] [project dir] 新任务 (mm-dd)`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
+
 ## Configuration And Data
 
 Agent Bot keeps user-owned files outside the repository:

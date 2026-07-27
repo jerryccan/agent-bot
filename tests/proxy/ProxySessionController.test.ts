@@ -816,6 +816,84 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("uses the same generated branch title for forkgroup as fork", async () => {
+    const { controller, runtime, sessions, remoteSessions, store, listeners, outbound } = fixture();
+    await controller.onMessage(message("build the source task"));
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    const sourceRuntimeSession = sessions.get(sourceSessionId!);
+    if (sourceRuntimeSession) sourceRuntimeSession.activeTurnId = undefined;
+    const sourceRemote = remoteSessions.find((session) => session.id === "thr_1")!;
+    sourceRemote.status = "idle";
+    sourceRemote.lastTurnId = "turn_1";
+    sourceRemote.lastTurnStatus = "completed";
+
+    await controller.onMessage({
+      messageId: "fork-group-default-title",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/forkgroup",
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: expect.stringMatching(/^\[codex\] \[(?:.{1,15})\] build the source task（分支 1）$/u),
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: "build the source task（分支 1）",
+    }));
+  });
+
+  test("truncates a long generated forkgroup name without changing the fork task title", async () => {
+    const { controller, runtime, sessions, remoteSessions, store, listeners, outbound } = fixture();
+    const longSourceTitle = "修复一个特别长的源任务标题用于验证 forkgroup 群名不会超过飞书限制";
+    await controller.onMessage(message(longSourceTitle));
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    const sourceRuntimeSession = sessions.get(sourceSessionId!);
+    if (sourceRuntimeSession) sourceRuntimeSession.activeTurnId = undefined;
+    const sourceRemote = remoteSessions.find((session) => session.id === "thr_1")!;
+    sourceRemote.status = "idle";
+    sourceRemote.lastTurnId = "turn_1";
+    sourceRemote.lastTurnStatus = "completed";
+
+    await controller.onMessage({
+      messageId: "fork-group-long-name",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/forkgroup",
+    });
+
+    const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(Array.from(groupInput.name)).toHaveLength(60);
+    expect(groupInput.name).not.toMatch(/ \(\d{2}-\d{2}\)$/);
+    expect(groupInput.name).toContain("...");
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: `${longSourceTitle}（分支 1）`,
+    }));
+  });
+
   test("does not create a group when the current task has no completed turn to fork", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("long-running source"));
@@ -1062,7 +1140,7 @@ describe("ProxySessionController", () => {
     }));
   });
 
-  test("uses the local yy-mm-dd hh:mm time when newgroup omits the title", async () => {
+  test("uses the local mm-dd date when newgroup omits the title", async () => {
     const { controller, runtime, outbound } = fixture();
 
     await controller.onMessage({
@@ -1076,7 +1154,7 @@ describe("ProxySessionController", () => {
 
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(groupInput.name).toMatch(
-      /^\[codex\] \[Projectless\] 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/,
+      /^\[codex\] \[Projectless\] 新任务 \(\d{2}-\d{2}\)$/,
     );
     expect(runtime.createSession).not.toHaveBeenCalled();
   });
@@ -1122,7 +1200,7 @@ describe("ProxySessionController", () => {
     });
 
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(groupInput.name).toMatch(/^\[codex\] \[[^\]]+\] 新任务 - \d{2}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(groupInput.name).toMatch(/^\[codex\] \[[^\]]+\] 新任务 \(\d{2}-\d{2}\)$/);
     const projectDisplay = /^\[codex\] \[([^\]]+)\]/.exec(groupInput.name)?.[1];
     expect(projectDisplay).toBe(`dev${path.sep}agent-bot`);
   });
