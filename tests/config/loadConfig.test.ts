@@ -11,10 +11,8 @@ describe("loadConfig", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-home-"));
     const previousHome = process.env.AGENT_BOT_HOME;
     const previousConfig = process.env.AGENT_BOT_CONFIG;
-    const previousAcpConfig = process.env.ACP_BOT_CONFIG;
     process.env.AGENT_BOT_HOME = directory;
-    delete process.env.AGENT_BOT_CONFIG;
-    delete process.env.ACP_BOT_CONFIG;
+    process.env.AGENT_BOT_CONFIG = "";
 
     try {
       const config = loadConfig();
@@ -30,7 +28,6 @@ describe("loadConfig", () => {
     } finally {
       restoreEnv("AGENT_BOT_HOME", previousHome);
       restoreEnv("AGENT_BOT_CONFIG", previousConfig);
-      restoreEnv("ACP_BOT_CONFIG", previousAcpConfig);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -73,37 +70,6 @@ describe("loadConfig", () => {
     }
   });
 
-  test("copies a legacy user agents.yaml to config.yaml when using defaults", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-home-"));
-    const previousHome = process.env.AGENT_BOT_HOME;
-    const previousConfig = process.env.AGENT_BOT_CONFIG;
-    const previousAcpConfig = process.env.ACP_BOT_CONFIG;
-    process.env.AGENT_BOT_HOME = directory;
-    delete process.env.AGENT_BOT_CONFIG;
-    delete process.env.ACP_BOT_CONFIG;
-    fs.writeFileSync(path.join(directory, "agents.yaml"), [
-      "agents:",
-      "  example:",
-      "    title: Example",
-      "    command: node",
-      "feishu: {}",
-      "defaults:",
-      "  agent: example",
-    ].join("\n"));
-
-    try {
-      const config = loadConfig();
-
-      expect(fs.existsSync(path.join(directory, "config.yaml"))).toBe(true);
-      expect(config.defaults.agent).toBe("example");
-      expect(config.agents.example?.kind).toBe("acp");
-    } finally {
-      restoreEnv("AGENT_BOT_HOME", previousHome);
-      restoreEnv("AGENT_BOT_CONFIG", previousConfig);
-      restoreEnv("ACP_BOT_CONFIG", previousAcpConfig);
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
 });
 
 test("uses ACP when agent kind is omitted", () => {

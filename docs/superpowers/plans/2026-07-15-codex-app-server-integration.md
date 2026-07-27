@@ -29,7 +29,7 @@
 - Modify: `src/config/schema.ts`
 - Modify: `src/state/migrations.ts`
 - Modify: `src/state/StateStore.ts`
-- Modify: `agents.yaml`
+- Modify: `config.yaml`
 - Test: `tests/runtime/registry.test.ts`
 - Test: `tests/config/loadConfig.test.ts`
 - Test: `tests/state/StateStore.test.ts`
@@ -93,7 +93,7 @@ export interface AgentRuntime {
 }
 ```
 
-Add `kind: z.enum(["acp", "codex"]).default("acp")` to agent configuration, add `console: { enabled: z.boolean().default(true) }`, and add the Codex agent to `agents.yaml`. Implement `AcpRuntimeAdapter` by delegating create, prompt, cancel, close, mode, events, and permissions to the existing `AcpSessionManager`; return unsupported capability errors for Codex-only model operations.
+Add `kind: z.enum(["acp", "codex"]).default("acp")` to agent configuration, add `console: { enabled: z.boolean().default(true) }`, and add the Codex agent to `config.yaml`. Implement `AcpRuntimeAdapter` by delegating create, prompt, cancel, close, mode, events, and permissions to the existing `AcpSessionManager`; return unsupported capability errors for Codex-only model operations.
 
 - [ ] **Step 4: Write failing persistence migration tests**
 
@@ -122,7 +122,7 @@ Run: `npx vitest run tests/runtime/registry.test.ts tests/config/loadConfig.test
 
 Expected: PASS.
 
-Commit files: `git add src/runtime src/config/schema.ts src/state agents.yaml tests/runtime tests/config tests/state`, then `git commit -m "feat: add runtime contracts and persistent session metadata"`.
+Commit files: `git add src/runtime src/config/schema.ts src/state config.yaml tests/runtime tests/config tests/state`, then `git commit -m "feat: add runtime contracts and persistent session metadata"`.
 
 ---
 
@@ -472,7 +472,7 @@ Commit files: `git add src/commands src/proxy src/feishu src/console src/present
 - Modify: `src/index.ts`
 - Modify: `README.md`
 - Modify: `.env.example`
-- Modify: `agents.yaml`
+- Modify: `config.yaml`
 - Test: `tests/integration/codex-flow.test.ts`
 
 **Interfaces:**
@@ -536,4 +536,4 @@ Expected: both configured Feishu WebSocket and console connectors start; a conso
 
 Confirm every acceptance criterion in the design document has either an automated assertion or a recorded manual verification result.
 
-Commit files: `git add src/index.ts README.md .env.example agents.yaml tests/integration`, then `git commit -m "feat: integrate Codex app-server with Feishu-first UX"`.
+Commit files: `git add src/index.ts README.md .env.example config.yaml tests/integration`, then `git commit -m "feat: integrate Codex app-server with Feishu-first UX"`.

@@ -160,7 +160,7 @@ Expected: all tests pass and both TypeScript commands exit 0.
 
 - [ ] **Step 3: Restart the live process**
 
-Gracefully terminate the current TypeScript application process, start it again from `D:/dev/agent-bot` with `AGENT_BOT_CONFIG` pointing to the worktree `agents.yaml`, and keep the process hidden.
+Gracefully terminate the current TypeScript application process, start it again from `D:/dev/agent-bot` with `AGENT_BOT_CONFIG` pointing to the worktree `config.yaml`, and keep the process hidden.
 
 - [ ] **Step 4: Verify the real notification**
 

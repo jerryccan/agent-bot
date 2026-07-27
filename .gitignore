@@ -7,6 +7,5 @@ data/*.sqlite-*
 data/inbound-images/
 logs/*.log
 .env
-agents.yaml
 config.yaml
 .agent-bot/

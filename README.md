@@ -1,24 +1,26 @@
-# Agent Bot：通过飞书使用本机 Codex
+# Agent Bot: Use Local Codex from Feishu
 
-Agent Bot 把本机 Codex App Server 接到飞书机器人，并保留一个并行的命令行入口用于测试。飞书是主界面：每次请求只创建一张进度卡，卡片会原地更新；完成后再单独发送最终 Markdown 回复。
+English | [简体中文](README.zh.md)
 
-## 使用前提
+Agent Bot connects a local Codex App Server to a Feishu bot and keeps a parallel command-line interface for testing. Feishu is the primary interface: each request creates a single progress card that updates in place, followed by a separate final Markdown response when the task completes.
+
+## Prerequisites
 
 - Node.js 20+
-- 已安装 Codex CLI，并能在运行机器上执行 `codex`
-- 用运行 Agent Bot 的同一个系统用户完成过 Codex 登录
+- Codex CLI installed and available as `codex` on the host machine
+- A completed Codex login under the same operating-system user that runs Agent Bot
 
-检查登录状态：
+Check the login status:
 
 ```powershell
 codex login status
 ```
 
-App Server 直接复用本机 Codex 的登录状态，不需要机器人用户或飞书侧再次登录 ChatGPT。若通过服务账号启动，需要确保它与登录 Codex 时使用相同的 `CODEX_HOME` 和凭证目录。
+App Server reuses the local Codex login directly. Neither the bot user nor the Feishu user needs to sign in to ChatGPT again. When running Agent Bot under a service account, make sure it uses the same `CODEX_HOME` and credentials directory as the account that logged in to Codex.
 
-## 系统 Skill
+## System Skill
 
-项目内置了标准 Agent Bot Skill，可通过 CLI 注册到系统通用的 `~/.agents/skills`：
+The project includes a standard Agent Bot skill that can be registered in the system-wide `~/.agents/skills` directory through the CLI:
 
 ```powershell
 agent-bot skills install
@@ -26,55 +28,58 @@ agent-bot skills status
 agent-bot skills uninstall
 ```
 
-`register`/`unregister` 分别是 `install`/`uninstall` 的别名。注册采用受管复制；更新会覆盖旧的受管版本，反注册不会删除非 Agent Bot 创建的同名目录。可用 `--target <skills目录>` 或 `AGENT_BOT_SKILLS_DIR` 修改目标根目录。
+`register` and `unregister` are aliases for `install` and `uninstall`, respectively. Registration creates a managed copy: updating replaces the previous managed version, while unregistering never removes a same-named directory that Agent Bot did not create. Use `--target <skills-directory>` or `AGENT_BOT_SKILLS_DIR` to select a different skills root.
 
-## 启动
+## Start Agent Bot
 
 ```powershell
 npm install
-New-Item -ItemType Directory -Force ~/.agent-bot
-Copy-Item .env.example ~/.agent-bot/.env
-# 可选：首次运行也会自动生成这个文件
-Copy-Item config.example.yaml ~/.agent-bot/config.yaml
 npm run build
-npm start
+npm link
+agent-bot init
+# Fill in ~/.agent-bot/.env before enabling Feishu
+agent-bot server start
 ```
 
-`npm start` 通过常驻 supervisor 启动 Agent Bot。Agent Bot 异常退出时会自动重启；连续崩溃时采用 1～30 秒指数退避，避免形成高频崩溃循环。开发调试可使用 `npm run dev` 直接运行单进程。
+`agent-bot init` prepares the first-run environment. It creates the Agent Bot home, `config.yaml`, `.env`, `data/`, and `logs/`, using the bundled example files as templates. The command is idempotent: existing configuration and environment files are reported but never overwritten. It respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Add `--json` for structured output.
 
-## Agent Bot 命令行工具
+Edit `~/.agent-bot/.env` as needed before starting the server. `agent-bot server start` launches Agent Bot through a detached resident supervisor. The supervisor automatically restarts Agent Bot after an unexpected exit and applies exponential backoff from 1 to 30 seconds after repeated crashes to avoid a tight crash loop. `npm start` runs the supervisor in the current terminal. For development, use `npm run dev` to run a single process directly.
 
-构建后可以通过 npm 注册本地 `agent-bot` 命令，或直接使用 `npm run cli --`：
+## Agent Bot CLI
+
+After building, register the local `agent-bot` command through npm or invoke it with `npm run cli --`:
 
 ```powershell
 npm run build
 npm link
 agent-bot --help
-# 未执行 npm link 时：npm run cli -- server status
+# Without npm link: npm run cli -- server status
 ```
 
-Console UI：
+Run `agent-bot init` once after installation. It is safe to run again to create any missing paths without changing existing user files.
+
+Console UI:
 
 ```powershell
 agent-bot console
 ```
 
-Console UI 默认拒绝与已运行的 server 争用同一份任务状态；只有明确需要并理解风险时才使用 `agent-bot console --force`。
+By default, the Console UI refuses to compete with a running server for the same task state. Use `agent-bot console --force` only when concurrent access is intentional and you understand the risks.
 
-Server 管理：
+Server management:
 
 ```powershell
 agent-bot server status
 agent-bot server start
 agent-bot server stop
-agent-bot server restart                         # 默认安全重启
-agent-bot server restart --safe --reason "部署卡片更新"
-agent-bot server restart --immediate --reason "修复阻塞进程"
+agent-bot server restart                         # Safe restart by default
+agent-bot server restart --safe --reason "Deploy card updates"
+agent-bot server restart --immediate --reason "Recover a stuck worker"
 ```
 
-安全重启会等待所有群聊、话题和私聊任务结束，确认最终回答完成投递，并连续 15 秒没有新消息后再重启。等待期间新任务会重置空闲计时。`--immediate`（或 `--force`）跳过任务空闲判断，适合明确需要立刻替换 worker 的场景。
+A safe restart waits for all group-chat, thread, and private-chat tasks to finish, confirms that final responses have been delivered, and then requires 15 consecutive seconds without a new message before restarting. New work during this period resets the idle timer. `--immediate` (or `--force`) skips the idle checks and is intended only for cases where the worker must be replaced immediately.
 
-任务查询和管理：
+Task inspection and management:
 
 ```powershell
 agent-bot task list
@@ -85,33 +90,33 @@ agent-bot task chat 2 --json
 agent-bot task status 2
 agent-bot task status 019f... --json
 agent-bot task stop 019f...
-agent-bot task title 2 "新的任务标题"
-agent-bot task prompt 2 "继续运行测试并汇报结果"
+agent-bot task title 2 "New task title"
+agent-bot task prompt 2 "Continue running the tests and report the result"
 ```
 
-`task chat <序号|任务ID>` 根据任务的持久化消息路由输出对应飞书群/会话 ID，便于脚本直接使用。普通输出只有 `chat_id` 的值；`--json` 还包含任务 ID、完整 `contextKey`，话题任务另外包含 `threadId`。该命令只读取本地状态，不要求 Agent Bot server 正在运行。
+`task chat <number-or-task-id>` prints the Feishu chat or conversation ID from a task's persisted message route, which makes it convenient for scripts. Plain output contains only the `chat_id`; `--json` also includes the task ID, full `contextKey`, and, for a thread-bound task, its `threadId`. This command only reads local state and does not require the Agent Bot server to be running.
 
-序号以当前 `task list` 排序为准。任务也可以使用完整或唯一前缀形式的本地 ID、Codex task ID。查询命令直接读取持久化状态；停止、改标题和发送 Prompt 通过运行中 worker 的本地控制端点执行。`task prompt` 不会切换任何群聊的当前任务；机器人会先把 Prompt 文本发送到该任务最近一次使用的群聊、话题或私聊，发送成功后再提交给任务，思考卡片和最终回答也继续发送到同一位置。
+Numeric references follow the current `task list` order. A task can also be identified by its full local ID, an unambiguous local-ID prefix, or its Codex task ID. Query commands read persisted state directly; stop, rename, and Prompt operations use the running worker's local control endpoint. `task prompt` does not switch the current task in any chat. The bot first posts the Prompt text to the task's most recent group, thread, or private-chat route and submits it to the task only after delivery succeeds. The thinking card and final response continue on that same route.
 
-填入 `~/.agent-bot/.env`：
+Set the following values in `~/.agent-bot/.env`:
 
 ```env
 FEISHU_APP_ID=cli_xxxxxxxxxxxxx
 FEISHU_APP_SECRET=your_app_secret
-# 可选：默认使用 ~/.agent-bot/config.yaml
+# Optional: defaults to ~/.agent-bot/config.yaml
 # AGENT_BOT_CONFIG=~/.agent-bot/config.yaml
 ```
 
-默认会同时启动：
+By default, Agent Bot starts both:
 
-- 飞书 WebSocket 长连接（配置凭证时）
-- 本地测试终端（`console.enabled: true`）
+- A Feishu WebSocket connection when credentials are configured
+- A local test terminal when `console.enabled: true`
 
-两条入口各自维护当前任务，不会互相切换会话。未配置飞书凭证时，仍可直接在终端测试 Codex。
+Each entry point maintains its own current task, so they do not switch each other's sessions. Codex can still be tested from the terminal when Feishu credentials are not configured.
 
-## Codex 配置
+## Codex Configuration
 
-Agent Bot 的用户配置目录默认为 `~/.agent-bot`，可通过 `AGENT_BOT_HOME` 修改。未显式设置 `AGENT_BOT_CONFIG` 时，首次启动会自动创建并读取 `~/.agent-bot/config.yaml`。仓库根目录保留 `config.example.yaml` 作为配置示例，可复制到 `~/.agent-bot/config.yaml` 后再按需修改。默认配置包含：
+Agent Bot stores user configuration under `~/.agent-bot` by default. Set `AGENT_BOT_HOME` to choose another root. When `AGENT_BOT_CONFIG` is not explicitly set, the first run creates and loads `~/.agent-bot/config.yaml`. The repository keeps `config.example.yaml` as a configuration example; copy it to `~/.agent-bot/config.yaml` and customize it as needed. The default configuration includes:
 
 ```yaml
 console:
@@ -142,87 +147,88 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-配置文件中的 `storage.sqlitePath` 和 `logging.path` 若使用相对路径，会相对配置文件所在目录解析；因此默认 SQLite 位于 `~/.agent-bot/data/agent-bot.sqlite`，日志位于 `~/.agent-bot/logs/agent-bot.log`。`cwd` 是 ACP agent 的默认工作目录，仍按启动 Agent Bot 时的当前工作目录解析。首次创建 Codex 任务且未指定目录时，会创建真正的无项目任务：工作区位于 `~/Documents/Codex/<日期>/<任务名>`，并能被 Codex Desktop 识别到 Tasks 列表。已有当前任务时，无参数 `/new` 会继承其项目形态：项目任务复用当前项目目录，Projectless 任务创建新的 Projectless 工作区；也可以用 `/new 新任务标题 --dir D:\dev\project` 同时指定标题和项目目录。已有任务的工作目录不会在运行中改变。
+Relative `storage.sqlitePath` and `logging.path` values are resolved against the directory containing the configuration file. The default SQLite database is therefore `~/.agent-bot/data/agent-bot.sqlite`, and the default log file is `~/.agent-bot/logs/agent-bot.log`. `cwd` is the default working directory for ACP agents and remains relative to the directory from which Agent Bot was started. Creating a Codex task without a directory for the first time creates a true Projectless task under `~/Documents/Codex/<date>/<task-name>`, which Codex Desktop recognizes in its Tasks list. When a current task already exists, `/new` without arguments preserves its project shape: project tasks reuse the current project directory, while Projectless tasks create a new Projectless workspace. Use `/new New task --dir D:\dev\project` to provide both a title and a project directory. The working directory of an existing task never changes while it is running.
 
-由 Agent Bot 启动的 Codex 或 ACP agent 子进程都会收到环境变量 `AGENT_BOT=1`，agent 可据此识别自己运行在 Agent Bot 中。
+Every Codex or ACP agent process started by Agent Bot receives `AGENT_BOT=1`, allowing the agent to detect that it is running under Agent Bot.
 
-## 飞书应用配置
+## Feishu App Configuration
 
-企业自建应用需要：
+An enterprise custom app must:
 
-- 开启机器人能力
-- 使用长连接接收事件
-- 订阅 `im.message.receive_v1`
-- 订阅 `card.action.trigger`
-- 开通机器人收发消息、发送卡片和更新消息所需权限
-- 开通 `im:message.reactions:write_only`，用于添加和替换消息处理状态表情
-- 开通 `im:message:readonly`，用于下载用户消息中的图片
+- Enable bot capability
+- Receive events through a persistent connection
+- Subscribe to `im.message.receive_v1`
+- Subscribe to `card.action.trigger`
+- Have the permissions required to receive and send bot messages, send cards, and update messages
+- Have `im:message.reactions:write_only` to add and replace message-processing status reactions
+- Have `im:message:readonly` to download images from user messages
 
-消息体验：
+Message behavior:
 
-- 收到消息并完成去重后，先在原消息上添加 `OnIt` 表情；任务完成后替换为 `DONE`，失败替换为 `ERROR`，取消替换为 `CrossMark`。消息与 Codex turn 的绑定会持久化，重启恢复后仍可补齐终态；表情操作失败不会阻断任务处理
-- 私聊正文和群正文分别按 `chat_id` 隔离当前任务；群正文中 @ 机器人后的文本会作为命令或提示词处理，机器人直接在群正文回复，不会主动创建话题
-- 私聊和群聊采用统一的话题逻辑：只要收到的消息带有 `thread_id`，该话题就拥有独立当前任务，命令、卡片回调、思考卡与最终回答都留在话题中
-- 在用户消息、思考卡或最终回答上创建话题后，话题内第一条消息会通过 Codex `thread/fork` 从来源轮次创建独立任务；来源轮次仍在执行或无法映射时不会猜测 fork 位置，而会明确报错；新任务会重命名为 `原任务（分支 N）`
-- 直接发文字时，若没有当前任务会自动创建 Codex thread
-- 可以直接发送单张图片，或发送同一条富文本中的文字和图片；图片会缓存到 SQLite 同目录下的 `inbound-images` 并作为 Codex `localImage` 输入，纯图片默认按“请分析这张图片”处理。ACP Agent 不支持图片输入时会明确报错，不会静默丢图
-- Codex 运行中继续发文字，会通过 steering 追加到当前 turn；若恰好完成，则自动排为下一次请求
-- `/nosteer <prompt>` 会跳过 steering，将 Prompt 持久排到当前任务的后续轮次；紧凑队列卡可逐项 Cancel，多个 Prompt 按 FIFO 顺序执行
-- 每个 turn 只有一张进度卡，普通更新最多每 2 秒一次，关键状态最短间隔 500ms
-- 当前工具直接展示；命令行工具在执行中增量显示最近输出，并按卡片更新节流合并刷新；成功工具折叠；失败工具展开；文件变更折叠汇总
-- 完成后先把进度卡更新为终态，再单独发送最终 Markdown；长代码块会安全分片
-- 重启后会恢复原 Codex thread，但不会读取或重发已经发送成功的历史消息
-- 卡片的“查看详情”只读取本地有界快照，不会触发 App Server 历史回放
+- After a message is received and deduplicated, Agent Bot adds an `OnIt` reaction to the original message. It replaces that reaction with `DONE` on success, `ERROR` on failure, or `CrossMark` on cancellation. Message-to-Codex-turn bindings are persisted so the terminal reaction can still be applied after restart recovery. Reaction failures do not block task processing.
+- Private chats and the main timeline of each group independently isolate their current tasks by `chat_id`. In a group timeline, text following an @ mention of the bot is processed as a command or Prompt. The bot replies directly in the group timeline and does not create a thread automatically.
+- Private and group chats share the same thread behavior: whenever an incoming message has a `thread_id`, that thread owns an independent current task. Commands, card callbacks, thinking cards, and final responses all remain in the thread.
+- When a user starts a thread from a user message, thinking card, or final response, the first message in that thread creates an independent task through Codex `thread/fork` from the source turn. If the source turn is still running or cannot be mapped, Agent Bot reports the problem instead of guessing a fork point. The new task receives the literal suffix `（分支 N）`, producing a title such as `Source task（分支 1）`.
+- Sending plain text automatically creates a Codex thread when no current task exists.
+- A user can send one image directly or combine text and images in a single rich-text message. Images are cached in `inbound-images` next to the SQLite database and passed to Codex as `localImage` inputs. An image-only message uses the literal Prompt `请分析这张图片。` ("Please analyze this image."). If an ACP agent does not support image input, Agent Bot reports the limitation instead of silently discarding the image.
+- Text received while Codex is running is appended to the current turn through steering. If the turn completes at the same moment, the text is automatically queued as the next request.
+- `/nosteer <prompt>` skips steering and persistently queues the Prompt for a later turn on the current task. A compact queue card allows each item to be canceled, and multiple Prompts run in FIFO order.
+- Each turn has exactly one progress card. Normal updates are limited to once every 2 seconds, while critical state changes have a minimum interval of 500 ms.
+- The active tool is shown directly. Command-line tools stream their most recent output while running, with updates coalesced by card throttling. Successful tools collapse, failed tools expand, and file changes appear as a collapsed summary.
+- On completion, Agent Bot first updates the progress card to its terminal state and then sends a separate final Markdown response. Long code blocks are split safely.
+- After a restart, Agent Bot restores the original Codex thread without reading or resending previously delivered history.
+- The card's "View details" action reads only a bounded local snapshot and never triggers App Server history replay.
 
-## 命令
+## Commands
 
-- 普通文本：发送给当前 Codex；没有任务时自动创建
-- `/new [title] [--dir <cwd> | --nodir]`：使用当前默认 Agent 创建新任务；普通参数作为标题，`--dir` 显式指定工作目录，`--nodir` 强制创建 Projectless 任务，两者互斥；都不指定时继承当前任务的项目或 Projectless 形态
-- `/newgroup [title]`：创建名为 `[agent] [Project 目录] <title>` 的私有飞书群并邀请命令发送者，不立即创建任务，也不自动发送 Sessions 或 Status 卡片；省略标题时使用 `[agent] [Project 目录] 新任务 - yy-mm-dd hh:mm`。新群使用根据项目名稳定生成的方案 C Identicon 头像：英文/拉丁项目名显示首个单词，中文项目名显示首个汉字，配色和对称节点由完整项目名哈希决定。用户 Home 目录前缀显示为 `~`。Project 目录最多显示 15 个字符，超长时显示为 `...<路径分隔符>最后两级目录`，必要时继续压缩目录名；Windows 使用 `\`，macOS/Linux 使用 `/`。来源任务属于 Project 时，新群会持久化绑定该 Project，首次普通消息或无目录参数的 `/new` 默认继承它；`/new --dir <cwd>` 和 `/new --nodir` 可显式覆盖。群正文绑定任务后，把群名改为匹配当前 Agent 的 `[agent name] 新标题` 会同步修改当前任务标题
-- `/forkgroup [title]`：从当前 Codex 任务的最新可用已完成轮次创建分支，创建私有飞书群并邀请命令发送者，将新分支设为新群的当前任务；新群不自动发送 Sessions 或 Status 卡片，源群的当前任务和正在执行的轮次不受影响。指定标题时群名不追加日期；省略标题时使用持久递增的 `原任务（分支 N）`，群名仍追加日期
-- `/fork [序号或 Codex 任务 ID]`：从当前或指定 Codex 任务创建分支任务，并立即切换到新分支；源任务正在运行时从最近已完成轮次分支，没有已完成轮次时才拒绝；序号来自最近一次 `/sessions`，新任务标题使用持久递增的 `原任务（分支 N）`
-- `/title <新标题>`：修改当前任务标题；Codex 任务会同步更新 App Server 中的任务名称
-- `/goal [目标]`：查看或创建当前 Codex 任务的持久 Goal；支持 `/goal pause`、`/goal resume`、`/goal edit <新目标>`、`/goal clear`，Goal 活跃时 Codex 会自动续跑
-- `/nosteer <prompt>`：不修改当前执行中的 turn，将 Prompt 排入当前任务的持久队列；队列卡展示全部待执行项并支持逐项 Cancel
-- `! <命令>`：在当前任务的工作目录直接执行本地命令；没有当前任务时使用默认工作目录
-- `/sessions [关键词]`：用交互卡片列出同一 `CODEX_HOME` 下的 Codex 任务，默认显示 5 条，可通过 `更多任务` 每次继续展开 5 条；每个任务的正文末尾都有链接式文字操作，点击 `New` 可继承该任务的项目目录、模型、思考强度和权限模式，创建并切换到新任务；点击 `Status` 查看详情，当前任务不显示 `Switch`，其他空闲任务可点击 `Switch` 快速切换，外部运行中的任务可点击 `Stop` 发送 Interrupt
-- `/switch [序号或 Codex 任务 ID]`：不带参数切回上一个任务；也可按最近一次 `/sessions` 的序号或任务 ID 切换空闲任务
-- `/model`：用交互卡片显示全部支持的模型、当前模型和思考强度；点击链接式 `切换` 操作修改模型后，同一张卡片会进入该模型的思考模式选择界面
-- `/model <name>`：切换模型，从下一次请求生效；不兼容的思考强度会自动回落到新模型默认值
-- `/thinking`：用交互卡片显示当前思考模式及当前模型支持的模式名称，并可点击切换或返回模型选择
-- `/thinking <level>`：设置思考强度，从下一次请求生效
-- `/permissions auto|confirm`：切换权限模式
-- `/stop`：停止当前执行
+- Plain text: send it to the current Codex task, creating one automatically if none exists.
+- `/new [title] [--dir <cwd> | --nodir]`: create a task with the current default agent. Positional arguments become the title. `--dir` explicitly selects a working directory, while `--nodir` forces a Projectless task; the two options are mutually exclusive. Without either option, the current task's project or Projectless shape is inherited.
+- `/newgroup [title]`: create a private Feishu group named `[agent] [Project directory] <title>` and invite the command sender without immediately creating a task or automatically sending a Sessions or Status card. Without a title, the literal name format is `[agent] [Project directory] 新任务 - yy-mm-dd hh:mm`. The new group receives a stable scheme-C Identicon generated from the project name: English or Latin project names display the first word, Chinese project names display the first character, and the full project-name hash determines the colors and symmetric node pattern. The user's home-directory prefix is displayed as `~`. The Project directory is limited to 15 displayed characters; longer paths become `...<path-separator><last-two-directories>`, with further directory-name shortening when necessary. Windows uses `\`, while macOS and Linux use `/`. If the source task belongs to a project, the new group persistently binds that project, and its first plain message or `/new` without directory options inherits it. `/new --dir <cwd>` and `/new --nodir` explicitly override that default. After the group timeline has a bound task, renaming the group to `[agent name] <new title>` with the current agent name also renames the current task.
+- `/forkgroup [title]`: fork the latest available completed turn of the current Codex task, create a private Feishu group, invite the command sender, and make the fork the new group's current task. The new group does not automatically receive a Sessions or Status card, while the source group's current task and active turn remain unaffected. An explicit title does not receive a date suffix in the group name. Without a title, the command uses the persistent `<source task title>（分支 N）` sequence and still appends the date to the group name.
+- `/fork [number-or-Codex-task-ID]`: fork the current or specified Codex task and immediately switch to the new branch. If the source task is running, the fork uses its latest completed turn and is rejected only when no completed turn exists. The number comes from the most recent `/sessions` result. New task titles use the persistent `<source task title>（分支 N）` sequence.
+- `/title <new-title>`: rename the current task. Codex tasks are also renamed in App Server.
+- `/goal [objective]`: inspect or create a persistent Goal for the current Codex task. `/goal pause`, `/goal resume`, `/goal edit <new-objective>`, and `/goal clear` are also supported. Codex continues automatically while a Goal is active.
+- `/nosteer <prompt>`: queue a Prompt persistently for a later turn without modifying the currently running turn. The queue card shows every pending item and allows each one to be canceled.
+- `! <command>`: run a local command directly in the current task's working directory, or in the default working directory when no current task exists.
+- `/sessions [keyword]`: show an interactive card listing Codex tasks under the same `CODEX_HOME`. Five tasks are shown initially, and `更多任务` (More tasks) expands five more in place each time. Link-style actions appear at the end of every task. `New` creates and switches to a task that inherits the source task's project directory, model, reasoning effort, and permission mode. `Status` shows details. The current task omits `Switch`; other idle tasks can be switched to immediately, while externally running tasks expose `Stop` to send an Interrupt.
+- `/switch [number-or-Codex-task-ID]`: without an argument, switch back to the previous task. A number from the latest `/sessions` result or a task ID selects an idle task directly.
+- `/model`: show an interactive card containing every supported model, the current model, and reasoning effort. Selecting the link-style `切换` (Switch) action for another model changes the card in place to that model's reasoning-mode selector.
+- `/model <name>`: change the model for the next request. An incompatible reasoning effort automatically falls back to the new model's default.
+- `/thinking`: show an interactive card containing the current reasoning mode and the modes supported by the current model, with actions to change the mode or return to model selection.
+- `/thinking <level>`: set the reasoning effort for the next request.
+- `/permissions auto|confirm`: change the permission mode.
+- `/stop`: stop the current execution.
 
-所有以 `/` 开头的消息都会严格按机器人命令解析。未知命令会直接提示用户并建议查看 `/help`，不会作为 Prompt 发送给模型；带图片的斜杠消息也遵循相同规则。
-- `/status [序号或 Codex 任务 ID]`：查看当前任务，或按最近一次 `/sessions` 的序号/任务 ID 查看指定任务的详细状态、执行步骤和最终结果；Status 卡片支持点击 `刷新` 在原卡片获取最新状态
-- `/restart`：优雅重启 Agent Bot；可绕过阻塞的任务消息队列
-- `/agent [agent]`：不带参数列出全部 Agent 并标出当前项；带参数时切换默认 Agent
-- `/use <agent> [cwd]`：切换默认 agent 并创建任务
-- `/help`：显示帮助
+Every message whose trimmed text starts with `/` is parsed strictly as an Agent Bot command. Unknown commands produce an error with a `/help` hint and are never forwarded as Prompts, including slash-prefixed messages that contain images.
 
-权限模式：
+- `/status [number-or-Codex-task-ID]`: show the current task, or use a number from the latest `/sessions` result or a task ID to show another task's detailed status, execution steps, and final result. The Status card's `刷新` (Refresh) action updates the same card in place.
+- `/restart`: gracefully restart Agent Bot, bypassing a blocked task message queue when necessary.
+- `/agent [agent]`: without an argument, list all agents and mark the current default. With an argument, change the default agent.
+- `/use <agent> [cwd]`: change the default agent and create a task.
+- `/help`: show help.
 
-- `auto`（默认）：Codex 使用 `approvalPolicy=never` 和 `danger-full-access`，工具直接执行
-- `confirm`：需要确认的工具会在进度卡中显示按钮，可允许一次、会话内允许、拒绝或取消
+Permission modes:
 
-## 持久化与恢复
+- `auto` (default): Codex uses `approvalPolicy=never` and `danger-full-access`, so tools run directly.
+- `confirm`: tools that require confirmation display actions on the progress card to allow once, allow for the session, decline, or cancel.
 
-SQLite 默认位于 `~/.agent-bot/data/agent-bot.sqlite`，保存入口当前任务、上一个任务、Codex thread ID、模型、权限模式、排队 Prompt、进度快照和最终消息投递账本。
+## Persistence and Recovery
 
-进程重启时会恢复持久化的活动 turn，并通过 `thread/read` 与 Codex 的真实状态校准。运行中收到新的 turn ID、线程终态通知或控制请求失败时也会重新校准；投递账本会阻止已经成功发送的最终回复被重复发送。App Server 请求均有有限超时，不会永久占住飞书消息队列。
+By default, SQLite is stored at `~/.agent-bot/data/agent-bot.sqlite`. It persists each entry point's current and previous tasks, Codex thread IDs, models, permission modes, queued Prompts, progress snapshots, and the final-message delivery ledger.
 
-supervisor 使用退出码 `75` 区分 `/restart` 发起的主动重启；其他意外退出同样会自动拉起。重启后的 Card 2.0 启动状态卡会显示本次重启原因，包括 `/restart`、退出码或退出信号。`/status` 会显示当前保活机制是否已启用。
+After a process restart, Agent Bot restores persisted active turns and reconciles them with Codex's actual state through `thread/read`. It also reconciles when a new turn ID arrives, when it receives a terminal thread notification, or when a control request fails. The delivery ledger prevents successful final responses from being sent again. Every App Server request has a finite timeout, so it cannot occupy the Feishu message queue indefinitely.
 
-### 统一 Codex 任务
+The supervisor uses exit code `75` to distinguish an intentional restart initiated by `/restart`. Other unexpected exits are also restarted automatically. After restart, the Card 2.0 startup status card includes the restart reason, such as `/restart`, an exit code, or an exit signal. `/status` reports whether the supervisor is enabled.
 
-`/sessions` 通过只读的 `thread/list` 发现 Codex Desktop、CLI、Agent Bot 或其他 App Server 创建的任务。任务不再按创建端分类，对外统一使用 Codex 任务 ID，并为当前展示结果生成从 1 开始的序号；卡片默认显示前 5 条，点击 `更多任务` 后每次在原卡片继续展开 5 条。每个任务都显示 `New` 和 `Status`：`New` 会重新读取来源任务，并继承其项目目录、模型、思考强度和权限模式来创建新任务，然后把当前聊天切换过去；`Status` 复用 `/status <任务 ID>` 发送该任务的详细状态卡，不改变当前任务。链接式文字操作携带稳定任务 ID，不受列表顺序变化影响。空闲任务显示 `Switch`；从 Agent Bot 切走但当前活跃轮次仍是由 Agent Bot 触发的任务也保持 `Switch`，可以随时切回且不会中断其执行；其他外部运行中的任务显示 `Stop`，点击后只确认向 Codex 发送 Interrupt，并把原卡片操作更新为 `Switch`，后续子进程与 turn 状态由 Codex 自行维护。`/switch` 不带参数时在当前任务和上一个任务之间往返，也可以使用最近一次列表中的序号或任务 ID 切换任务；首次切换时只建立消息路由，保留原任务的工作目录和上下文，不回放历史消息。
+### Unified Codex Tasks
 
-内部仍保存一个本地路由键，用于关联飞书卡片、投递账本和当前聊天，但它不代表另一类任务，也不会在用户界面中显示。为避免干扰其他 Codex 客户端，Agent Bot 只会续写自己启动的当前 turn；首次加载以及每次继续消息前都会核对真实 turn ID。若任务正在其他客户端执行，Agent Bot 不会 `resume` 或 `steer`；只有用户在 `/sessions` 卡片中明确点击 `Stop` 时才会发送 `interrupt`。
+`/sessions` uses the read-only `thread/list` API to discover tasks created by Codex Desktop, CLI, Agent Bot, or another App Server client. Tasks are no longer classified by their creator. The UI consistently uses Codex task IDs and assigns one-based numbers to the current result set. The card initially shows five tasks; each click on `更多任务` (More tasks) expands five more in place. Every task shows `New` and `Status`. `New` rereads the source task, creates a new task that inherits its project directory, model, reasoning effort, and permission mode, and switches the current chat to it. `Status` reuses `/status <task-ID>` to send that task's detailed status card without changing the current task. Link-style actions carry stable task IDs and are unaffected by list reordering. Idle tasks show `Switch`. A task switched away from Agent Bot while its current active turn was started by Agent Bot also keeps `Switch`, so it can be revisited without interrupting execution. Other externally running tasks show `Stop`; clicking it only confirms that an Interrupt was sent to Codex and updates the original card action to `Switch`, while Codex continues to own the child process and turn state. `/switch` without arguments alternates between the current and previous tasks, and it can also select a task by the latest list number or task ID. A first switch only establishes message routing, preserving the task's working directory and context without replaying history.
 
-## 保留 ACP Agent
+Agent Bot still stores an internal local routing key to associate Feishu cards, the delivery ledger, and the current chat. It does not represent a separate task type and is not shown in the UI. To avoid interfering with other Codex clients, Agent Bot only continues active turns that it started. It checks the real turn ID on first load and before each continuation message. If another client is running the task, Agent Bot neither resumes nor steers it; it sends `interrupt` only when the user explicitly selects `Stop` in the `/sessions` card.
 
-未写 `kind` 的 agent 仍按 `acp` 处理：
+## ACP Agent Compatibility
+
+An agent without an explicit `kind` continues to be treated as `acp`:
 
 ```yaml
 agents:
@@ -233,4 +239,4 @@ agents:
     args: ["./examples/example-acp-agent.js"]
 ```
 
-Codex 是默认入口。`/agent` 用于查看或设置后续新任务的默认 Agent；`/use` 用于切换默认 Agent 并立即创建任务；`/new` 始终使用当前默认 Agent。
+Codex is the default entry point. `/agent` displays or changes the default agent used by future tasks. `/use` changes the default agent and immediately creates a task. `/new` always uses the current default agent.

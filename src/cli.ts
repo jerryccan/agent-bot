@@ -8,6 +8,7 @@ import {
   type ControlResponse,
   type TaskStatusControlData,
 } from "./cli/controlProtocol.js";
+import { initializeAgentBot, type InitializationResult, type InitializationStatus } from "./cli/Initializer.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
@@ -27,6 +28,10 @@ async function main(input: string[]): Promise<void> {
     printHelp();
     return;
   }
+  if (command === "init") {
+    initCommand(rest, parsed.configPath);
+    return;
+  }
   if (command === "console") {
     await consoleCommand(rest);
     return;
@@ -44,6 +49,14 @@ async function main(input: string[]): Promise<void> {
     return;
   }
   throw new Error(`未知命令：${command}。使用 agent-bot --help 查看帮助。`);
+}
+
+function initCommand(input: string[], configPath?: string): void {
+  const unsupported = input.filter((value) => value !== "--json");
+  if (unsupported.length > 0) throw new Error(`init 不支持参数：${unsupported.join(" ")}`);
+  const result = initializeAgentBot({ configPath });
+  if (input.includes("--json")) printJson(result);
+  else printInitializationResult(result);
 }
 
 function skillsCommand(input: string[]): void {
@@ -337,6 +350,21 @@ function printSkillStatus(status: SkillRegistrationStatus): void {
   }
 }
 
+function printInitializationResult(result: InitializationResult): void {
+  process.stdout.write("Agent Bot 初始化完成。\n");
+  process.stdout.write(`用户目录：${result.home.path}（${initializationStatusLabel(result.home.status)}）\n`);
+  process.stdout.write(`配置文件：${result.config.path}（${initializationStatusLabel(result.config.status)}）\n`);
+  process.stdout.write(`环境文件：${result.env.path}（${initializationStatusLabel(result.env.status)}）\n`);
+  process.stdout.write(`数据目录：${result.data.path}（${initializationStatusLabel(result.data.status)}）\n`);
+  process.stdout.write(`日志目录：${result.logs.path}（${initializationStatusLabel(result.logs.status)}）\n`);
+  process.stdout.write(`下一步：按需编辑 ${result.env.path} 和 ${result.config.path}，然后运行 agent-bot server start。\n`);
+}
+
+function initializationStatusLabel(status: InitializationStatus): string {
+  if (status === "created") return "已创建";
+  return "已存在，未修改";
+}
+
 function printResponse(response: ControlResponse): void {
   ensureOk(response);
   process.stdout.write(`${response.message ?? "操作成功。"}\n`);
@@ -368,6 +396,7 @@ function printHelp(): void {
   process.stdout.write(`Agent Bot 命令行工具
 
 用法：
+  agent-bot [--config <path>] init [--json]
   agent-bot [--config <path>] console [--force]
   agent-bot [--config <path>] server status [--json]
   agent-bot [--config <path>] server start
@@ -387,6 +416,7 @@ function printHelp(): void {
 说明：
   默认用户目录是 ~/.agent-bot；配置为 ~/.agent-bot/config.yaml，环境变量为 ~/.agent-bot/.env。
   可用 AGENT_BOT_HOME 修改用户目录，或用 --config 指向某个配置文件。
+  init 创建用户目录、示例配置、环境文件、数据目录和日志目录；已有文件不会被覆盖。
   server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
   --immediate（或 --force）跳过空闲等待并立即重启 worker。
   task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。

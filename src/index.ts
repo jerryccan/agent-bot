@@ -31,9 +31,8 @@ import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
 
 const processStartedAt = new Date();
-const supervised = process.env.AGENT_BOT_SUPERVISED === "1" || process.env.ACP_BOT_SUPERVISED === "1";
+const supervised = process.env.AGENT_BOT_SUPERVISED === "1";
 const startupReason = process.env.AGENT_BOT_RESTART_REASON?.trim()
-  || process.env.ACP_BOT_RESTART_REASON?.trim()
   || (supervised ? "Supervisor 启动" : "直接启动");
 const consoleOnly = process.env.AGENT_BOT_CONSOLE_ONLY === "1";
 const config = loadConfig();

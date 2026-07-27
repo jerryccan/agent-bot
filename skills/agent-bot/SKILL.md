@@ -1,6 +1,6 @@
 ---
 name: agent-bot
-description: Detect and work safely inside the Agent Bot runtime, and manage the local Agent Bot service and its Codex or ACP sessions through the agent-bot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
+description: Initialize Agent Bot, detect and work safely inside its runtime, and manage the local service and its Codex or ACP sessions through the agent-bot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to initialize, inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
 ---
 
 # Agent Bot
@@ -37,6 +37,16 @@ When `AGENT_BOT=1`:
 
 - Do not kill Agent Bot, its supervisor, or agent workers directly. For code changes that must be loaded by the running service, finish verification first and schedule a safe restart; never use an immediate restart from an active hosted task unless the user explicitly accepts interruption.
 - Keep repository contents limited to source and examples. Read user configuration and runtime state from the root selected by `AGENT_BOT_HOME`, defaulting to `~/.agent-bot`.
+
+## Initialize after installation
+
+Run initialization once after installing or linking the CLI:
+
+```powershell
+agent-bot init
+```
+
+Initialization creates the Agent Bot home, `config.yaml`, `.env`, `data/`, and `logs/` from the bundled examples. It is idempotent and never overwrites existing configuration or environment files. It respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Use `agent-bot init --json` when structured output helps.
 
 ## Start with inspection
 

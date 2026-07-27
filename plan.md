@@ -43,7 +43,7 @@
 - ACP SDK：`@agentclientprotocol/sdk`。
 - 本地进程：Node `child_process`，必要时引入 `node-pty`。
 - 状态存储：SQLite，优先使用 `better-sqlite3`。
-- 配置文件：`agents.yaml`。
+- 配置文件：`config.yaml`。
 - 配置解析：`yaml`。
 - 日志：`pino` 结构化 JSON 日志，便于后续排查和审计。
 - 测试：`vitest`。
@@ -55,7 +55,7 @@
 agent-bot/
   package.json
   tsconfig.json
-  agents.yaml
+  config.yaml
   .env.example
   src/
     index.ts
@@ -157,7 +157,7 @@ agent-bot/
 
 ### 3. ACP Process Manager
 
-- 根据 `agents.yaml` 启动 agent 子进程。
+- 根据 `config.yaml` 启动 agent 子进程。
 - 管理 stdin/stdout JSON-RPC 消息。
 - 捕获 stderr 日志并写入本地日志。
 - 处理进程退出、异常和重启。
@@ -223,7 +223,7 @@ agent-bot/
 
 ### 阶段 2：会话与多 Agent
 
-- 增加 `agents.yaml`。
+- 增加 `config.yaml`。
 - 支持 `/agents`、`/new`、`/sessions`、`/switch`。
 - 支持多会话状态持久化。
 - 支持 agent 进程生命周期管理。

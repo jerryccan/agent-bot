@@ -262,7 +262,7 @@ Expected: all tests pass, TypeScript reports no errors, and `dist` builds succes
 
 - [ ] **Step 3: Restart the running feature server**
 
-Stop only the known Agent Bot process tree, then launch `npm start` from the feature worktree with working directory `D:\dev\agent-bot` and `AGENT_BOT_CONFIG` pointing at the feature worktree `agents.yaml`. Confirm the log contains a fresh `Feishu WebSocket connector started` entry.
+Stop only the known Agent Bot process tree, then launch `npm start` from the feature worktree with working directory `D:\dev\agent-bot` and `AGENT_BOT_CONFIG` pointing at the feature worktree `config.yaml`. Confirm the log contains a fresh `Feishu WebSocket connector started` entry.
 
 - [ ] **Step 4: Verify the Feishu chain**
 

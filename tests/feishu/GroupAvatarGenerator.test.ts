@@ -16,7 +16,7 @@ afterEach(() => {
 describe("GroupAvatarGenerator", () => {
   test.each([
     ["Agent Bot", "Agent"],
-    ["acp-bot", "acp"],
+    ["task-runner", "task"],
     ["广州天气", "广州天气"],
     ["智能客服自动化平台", "智能客服"],
   ])("derives the avatar label from %s", (projectName, expected) => {

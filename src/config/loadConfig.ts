@@ -69,17 +69,12 @@ export function loadConfig(
 ): AppConfig {
   loadDotEnv({ path: defaultDotEnvPath(), quiet: true });
 
-  const configuredPath = configPath ?? process.env.AGENT_BOT_CONFIG ?? process.env.ACP_BOT_CONFIG;
+  const configuredPath = firstNonBlank(configPath, process.env.AGENT_BOT_CONFIG);
   const absolutePath = resolveUserPath(configuredPath ?? defaultConfigPath());
   if (!fs.existsSync(absolutePath)) {
     if (configuredPath) throw new Error(`Config file does not exist: ${absolutePath}`);
     fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-    const legacyConfigPath = path.join(path.dirname(absolutePath), "agents.yaml");
-    if (fs.existsSync(legacyConfigPath)) {
-      fs.copyFileSync(legacyConfigPath, absolutePath);
-    } else {
-      fs.writeFileSync(absolutePath, DEFAULT_CONFIG);
-    }
+    fs.writeFileSync(absolutePath, DEFAULT_CONFIG);
   }
 
   const raw = fs.readFileSync(absolutePath, "utf8");
@@ -113,4 +108,8 @@ export function loadConfig(
 
 function expandEnv(raw: string): string {
   return raw.replace(ENV_PATTERN, (_match, name: string) => process.env[name] ?? "");
+}
+
+function firstNonBlank(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value !== undefined && value.trim().length > 0);
 }
