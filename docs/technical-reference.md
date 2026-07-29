@@ -6,7 +6,7 @@ This document covers deployment, configuration, runtime behavior, persistence, a
 
 ## Runtime Architecture
 
-Agent Bot is a Node.js 20+ ESM TypeScript application built around these components:
+Agent Bot is a Node.js 22+ ESM TypeScript application built around these components:
 
 - The supervisor owns the long-running service and restarts the worker.
 - The worker starts the configured Codex and ACP runtimes, Feishu transport, Console transport, local control server, and SQLite store.
@@ -245,14 +245,46 @@ agent-bot skills uninstall
 
 The default target is `~/.agents/skills`. `AGENT_BOT_SKILLS_DIR` or `--target` selects another root. Installation is a managed copy; uninstall does not remove an unrelated same-named directory.
 
-## Development And Verification
+## npm Package And Releases
+
+The public package is `@keyou007/agent-bot`; its executable remains `agent-bot`. The package uses a `files` allowlist so runtime code, templates, the managed skill, source code, and user-facing documentation are published without tests or internal design plans.
+
+`npm-shrinkwrap.json` is published with the CLI to keep transitive runtime dependencies reproducible. Direct runtime and development dependencies are also pinned to exact versions.
+
+Package lifecycle:
+
+- `prepublishOnly` runs type checking and the full test suite.
+- `prepack` builds a clean `dist/` and validates the tarball manifest.
+- `npm run package:smoke` packs the project, installs the tarball into a temporary directory, runs the CLI, and performs Console-only initialization.
+
+The first public release requires an npm account that owns the `@keyou007` scope:
 
 ```powershell
-npm install
+npm login
+npm ci
+npm run verify
+npm run package:smoke
+npm publish --access public
+```
+
+After the first release, configure an npm Trusted Publisher for:
+
+- GitHub owner: `keyou`
+- Repository: `agent-bot`
+- Workflow: `publish.yml`
+- Allowed action: `npm publish`
+
+The publish workflow is triggered by a GitHub Release whose tag exactly matches `v<package version>`. It uses GitHub OIDC instead of a long-lived npm token and publishes from a GitHub-hosted Node.js 24 runner.
+
+## Development And Source Installation
+
+```powershell
+npm ci
 npm run dev
 npm run typecheck
 npm test
 npm run build
+npm link
 ```
 
-`npm run dev` runs one foreground worker. `npm start` runs the supervisor in the current terminal. Built CLI commands can be invoked without `npm link` through `npm run cli --`.
+`npm link` registers the checkout's `agent-bot` executable globally. Without it, built CLI commands can be invoked through `npm run cli --`. `npm run dev` runs one foreground worker, while `npm start` runs the supervisor in the current terminal.

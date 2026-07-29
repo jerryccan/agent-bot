@@ -6,7 +6,7 @@
 
 ## 运行架构
 
-Agent Bot 是基于 Node.js 20+、ESM 和 TypeScript 的应用，主要组件如下：
+Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如下：
 
 - Supervisor 负责常驻服务和 worker 自动重启
 - Worker 启动 Codex/ACP Runtime、飞书传输、Console 传输、本地控制服务和 SQLite
@@ -245,14 +245,46 @@ agent-bot skills uninstall
 
 默认目标为 `~/.agents/skills`，可通过 `AGENT_BOT_SKILLS_DIR` 或 `--target` 修改。安装使用受管复制；卸载不会删除无关的同名目录。
 
-## 开发与验证
+## npm 包与发布
+
+公开包名为 `@keyou007/agent-bot`，安装后的可执行命令仍为 `agent-bot`。包使用 `files` 白名单，只发布运行代码、模板、受管 Skill、源码和用户文档，不包含测试及内部设计计划。
+
+CLI 随包发布 `npm-shrinkwrap.json`，以固定传递运行依赖；直接运行依赖和开发依赖也使用精确版本。
+
+包生命周期：
+
+- `prepublishOnly` 执行类型检查和完整测试
+- `prepack` 清理并构建 `dist/`，然后检查 tarball 清单
+- `npm run package:smoke` 打包项目、在临时目录安装 tarball、运行 CLI，并执行仅 Console 的初始化
+
+首次公开发布需要拥有 `@keyou007` scope 的 npm 账号：
 
 ```powershell
-npm install
+npm login
+npm ci
+npm run verify
+npm run package:smoke
+npm publish --access public
+```
+
+首次发布后，为 npm 包配置以下 Trusted Publisher：
+
+- GitHub 所有者：`keyou`
+- 仓库：`agent-bot`
+- Workflow：`publish.yml`
+- 允许操作：`npm publish`
+
+发布工作流由 GitHub Release 触发，Release tag 必须严格匹配 `v<包版本>`。工作流使用 GitHub OIDC，不保存长期 npm token，并从 GitHub 托管的 Node.js 24 runner 发布。
+
+## 开发与源码安装
+
+```powershell
+npm ci
 npm run dev
 npm run typecheck
 npm test
 npm run build
+npm link
 ```
 
-`npm run dev` 运行单个前台 worker，`npm start` 在当前终端运行 supervisor。未执行 `npm link` 时，可通过 `npm run cli --` 调用构建后的 CLI。
+`npm link` 会把当前 checkout 的 `agent-bot` 命令注册到全局。未执行时，可通过 `npm run cli --` 调用构建后的 CLI。`npm run dev` 运行单个前台 worker，`npm start` 在当前终端运行 supervisor。

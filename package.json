@@ -1,11 +1,45 @@
 {
-  "name": "agent-bot",
+  "name": "@keyou007/agent-bot",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "Feishu-first Agent Bot for local Codex App Server and ACP agents.",
+  "description": "Using Codex in Lark/Feishu feels just like using native Codex.",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keyou/agent-bot.git"
+  },
+  "homepage": "https://github.com/keyou/agent-bot#readme",
+  "bugs": {
+    "url": "https://github.com/keyou/agent-bot/issues"
+  },
+  "keywords": [
+    "agent",
+    "codex",
+    "acp",
+    "feishu",
+    "lark",
+    "cli"
+  ],
   "bin": {
     "agent-bot": "dist/cli.js"
+  },
+  "files": [
+    ".env.example",
+    "CHANGELOG.md",
+    "config.example.yaml",
+    "dist/",
+    "docs/technical-reference.md",
+    "docs/technical-reference.zh.md",
+    "npm-shrinkwrap.json",
+    "README.zh.md",
+    "SECURITY.md",
+    "skills/agent-bot/",
+    "src/",
+    "tsconfig.json"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -15,33 +49,39 @@
     "start:once": "node dist/index.js",
     "cli": "node dist/cli.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "verify": "npm run typecheck && npm test",
+    "prepack": "npm run build && node scripts/check-package.mjs",
+    "prepublishOnly": "npm run verify",
+    "package:check": "npm run prepack",
+    "package:smoke": "node scripts/smoke-package.mjs"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "latest",
+    "@agentclientprotocol/sdk": "1.2.1",
     "@larksuiteoapi/node-sdk": "1.56.1",
-    "@resvg/resvg-js": "^2.6.2",
-    "better-sqlite3": "latest",
-    "dotenv": "latest",
-    "pino": "latest",
-    "qrcode-terminal": "^0.12.0",
-    "yaml": "latest",
-    "zod": "latest"
+    "@resvg/resvg-js": "2.6.2",
+    "better-sqlite3": "12.11.1",
+    "dotenv": "17.4.2",
+    "pino": "10.3.1",
+    "qrcode-terminal": "0.12.0",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "latest",
-    "@types/node": "latest",
-    "@types/qrcode-terminal": "^0.12.2",
-    "eslint": "latest",
-    "prettier": "latest",
-    "tsx": "latest",
-    "typescript": "latest",
-    "vitest": "latest"
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.18.11",
+    "@types/qrcode-terminal": "0.12.2",
+    "eslint": "10.6.0",
+    "prettier": "3.9.5",
+    "tsx": "4.23.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
   },
   "overrides": {
     "axios": "1.18.1"
   },
   "engines": {
-    "node": ">=20"
-  }
+    "node": ">=22"
+  },
+  "packageManager": "npm@11.12.1"
 }

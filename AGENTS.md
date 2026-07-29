@@ -4,7 +4,7 @@ Guidance for agents working in this repository.
 
 ## Project Overview
 
-Agent Bot is a Feishu-first bridge to local Codex App Server and ACP agents, with a console entry point for local testing. The runtime is a Node.js 20+ TypeScript application using ESM, strict TypeScript, Vitest, SQLite persistence, and YAML configuration.
+Agent Bot is a Feishu-first bridge to local Codex App Server and ACP agents, with a console entry point for local testing. The runtime is a Node.js 22+ TypeScript application using ESM, strict TypeScript, Vitest, SQLite persistence, and YAML configuration.
 
 Primary user-facing behavior is documented in `README.md`. Keep that document in sync when changing commands, message routing, Feishu card behavior, task/session semantics, restart behavior, configuration, or install/start instructions.
 
@@ -26,6 +26,7 @@ Primary user-facing behavior is documented in `README.md`. Keep that document in
 - `src/utils/` contains small reusable helpers.
 - `tests/` mirrors the source areas with Vitest coverage.
 - `skills/agent-bot/` is the built-in managed Agent Bot skill. Update it when CLI/control behavior changes.
+- `scripts/check-package.mjs` and `scripts/smoke-package.mjs` validate the npm tarball and installed CLI.
 - `docs/specs/` contains design notes, and `docs/plans/` contains implementation plans.
 
 ## Commands
@@ -37,6 +38,7 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm run package:smoke
 ```
 
 Useful runtime commands after building:

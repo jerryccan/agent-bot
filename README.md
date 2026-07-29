@@ -19,7 +19,7 @@ Agent Bot runs on your computer and connects a Feishu bot to your local Codex en
 
 ### Requirements
 
-- Node.js 20 or later
+- Node.js 22 or later
 - Codex CLI installed and available as `codex`
 - A completed local Codex login
 
@@ -31,15 +31,11 @@ codex login status
 
 ### Install
 
-Run from the repository root:
-
 ```powershell
-npm install
-npm run build
-npm link
+npm install --global @keyou007/agent-bot
 ```
 
-`npm link` registers the local `agent-bot` command. Without it, use `npm run cli --` before CLI arguments.
+This installs the `agent-bot` command globally. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
 ### Initialize
 
@@ -74,6 +70,25 @@ Stop the service with:
 ```powershell
 agent-bot server stop
 ```
+
+### Update Or Uninstall
+
+Stop the running service before replacing or removing the global package:
+
+```powershell
+agent-bot server stop
+npm install --global @keyou007/agent-bot@latest
+agent-bot server start
+```
+
+To uninstall:
+
+```powershell
+agent-bot server stop
+npm uninstall --global @keyou007/agent-bot
+```
+
+Uninstalling the npm package does not delete your data under `~/.agent-bot`.
 
 ## Daily Commands
 
@@ -166,4 +181,5 @@ Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yam
 
 - [Technical Reference](docs/technical-reference.md): configuration, permissions, routing, persistence, recovery, and runtime behavior
 - [Example Configuration](config.example.yaml)
-- [Agent Development Guide](AGENTS.md)
+- [Changelog](CHANGELOG.md)
+- [Agent Development Guide](https://github.com/keyou/agent-bot/blob/master/AGENTS.md)

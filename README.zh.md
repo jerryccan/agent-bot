@@ -19,7 +19,7 @@ Agent Bot 运行在你的电脑上，把飞书机器人连接到本机 Codex 环
 
 ### 使用前提
 
-- Node.js 20 或更高版本
+- Node.js 22 或更高版本
 - 已安装 Codex CLI，并可直接执行 `codex`
 - 已完成本机 Codex 登录
 
@@ -31,15 +31,11 @@ codex login status
 
 ### 安装
 
-在仓库根目录执行：
-
 ```powershell
-npm install
-npm run build
-npm link
+npm install --global @keyou007/agent-bot
 ```
 
-`npm link` 会在本机注册 `agent-bot` 命令。未执行时，可在 CLI 参数前使用 `npm run cli --`。
+该命令会全局安装 `agent-bot`。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
 
 ### 初始化
 
@@ -74,6 +70,25 @@ agent-bot server status
 ```powershell
 agent-bot server stop
 ```
+
+### 更新或卸载
+
+替换或移除全局包前，先停止正在运行的服务：
+
+```powershell
+agent-bot server stop
+npm install --global @keyou007/agent-bot@latest
+agent-bot server start
+```
+
+卸载：
+
+```powershell
+agent-bot server stop
+npm uninstall --global @keyou007/agent-bot
+```
+
+卸载 npm 包不会删除 `~/.agent-bot` 中的用户数据。
 
 ## 日常命令
 
@@ -122,7 +137,7 @@ agent-bot task stop <任务>
 | `/title <标题>`                         | 修改当前任务标题           |
 | `/stop`                                 | 停止当前执行               |
 | `/queue <prompt>`                       | 排队一个独立的后续 Prompt  |
-| `/nosteer <prompt>`                     | 与 `/queue` 相同            |
+| `/nosteer <prompt>`                     | 与 `/queue` 相同           |
 | `/goal [目标]`                          | 查看或管理持久 Goal        |
 | `/model [名称]`                         | 查看或切换模型             |
 | `/thinking [级别]`                      | 查看或切换思考强度         |
@@ -166,4 +181,5 @@ Agent Bot 将用户相关文件保存在仓库之外：
 
 - [技术参考](docs/technical-reference.zh.md)：配置、权限、路由、持久化、恢复和运行机制
 - [配置示例](config.example.yaml)
-- [Agent 开发指南](AGENTS.md)
+- [更新日志](CHANGELOG.md)
+- [Agent 开发指南](https://github.com/keyou/agent-bot/blob/master/AGENTS.md)
