@@ -57,10 +57,13 @@ Existing complete Feishu credentials are preserved but still audited and repaire
 Verify the CLI and current service state before changing anything:
 
 ```powershell
+agent-bot --version
 agent-bot --help
 agent-bot server status
 agent-bot task list
 ```
+
+`agent-bot --help` uses Chinese when the system locale is Chinese and English otherwise.
 
 Add `--json` to status and list commands when machine-readable output helps. If `agent-bot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
 

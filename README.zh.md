@@ -33,9 +33,11 @@ codex login status
 
 ```powershell
 npm install --global @keyou007/agent-bot
+agent-bot --version
+agent-bot --help
 ```
 
-该命令会全局安装 `agent-bot`。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
+该命令会全局安装 `agent-bot`。系统语言为中文时显示中文帮助，否则显示英文帮助。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
 
 ### 初始化
 

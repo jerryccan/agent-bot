@@ -33,9 +33,11 @@ codex login status
 
 ```powershell
 npm install --global @keyou007/agent-bot
+agent-bot --version
+agent-bot --help
 ```
 
-This installs the `agent-bot` command globally. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
+This installs the `agent-bot` command globally. Help is displayed in Chinese when the system locale is Chinese and in English otherwise. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
 ### Initialize
 

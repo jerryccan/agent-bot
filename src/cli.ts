@@ -26,7 +26,9 @@ import {
   type EnsureFeishuAppConfigurationResult,
   type FeishuConfigurationChallenge,
 } from "./cli/FeishuAppConfiguration.js";
+import { renderCliHelp } from "./cli/help.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
+import { readPackageVersion } from "./cli/packageVersion.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
 
@@ -43,6 +45,10 @@ async function main(input: string[]): Promise<void> {
   const [command, ...rest] = parsed.args;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
+    return;
+  }
+  if (command === "--version" || command === "-v") {
+    process.stdout.write(`${readPackageVersion()}\n`);
     return;
   }
   if (command === "init") {
@@ -594,37 +600,5 @@ function printJson(value: unknown): void {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Agent Bot 命令行工具
-
-用法：
-  agent-bot [--config <path>] init [--json] [--skip-feishu | --reconfigure-feishu]
-  agent-bot [--config <path>] console [--force]
-  agent-bot [--config <path>] server status [--json]
-  agent-bot [--config <path>] server start
-  agent-bot [--config <path>] server stop
-  agent-bot [--config <path>] server restart [--safe | --immediate] [--reason <text>]
-  agent-bot [--config <path>] task list [--context <key>] [--status <status>] [--json]
-  agent-bot [--config <path>] task chat <序号|任务ID> [--json]
-  agent-bot [--config <path>] task status <序号|任务ID> [--json]
-  agent-bot [--config <path>] task stop <序号|任务ID>
-  agent-bot [--config <path>] task title <序号|任务ID> <新标题>
-  agent-bot [--config <path>] task prompt <序号|任务ID> <prompt>
-  agent-bot skills status [--json] [--target <skills目录>]
-  agent-bot skills install|register [--json] [--target <skills目录>]
-  agent-bot skills uninstall|unregister [--json] [--target <skills目录>]
-  agent-bot skills path [--json] [--target <skills目录>]
-
-说明：
-  默认用户目录是 ~/.agent-bot；配置为 ~/.agent-bot/config.yaml，环境变量为 ~/.agent-bot/.env。
-  可用 AGENT_BOT_HOME 修改用户目录，或用 --config 指向某个配置文件。
-  init 创建用户目录和运行文件；创建或读取飞书凭证后会审计并补齐已发布的权限、事件和回调。
-  仅核心消息能力缺失会阻塞初始化；非核心配置缺失只提醒受影响功能。
-  --skip-feishu 跳过飞书创建及配置审计并保留 Console 模式；--reconfigure-feishu 明确替换已有飞书凭证。
-  server restart 默认执行安全重启；等待全部任务完成、结果投递完成且连续 15 秒无新消息。
-  --immediate（或 --force）跳过空闲等待并立即重启 worker。
-  task 序号来自 task list 当前排序；任务管理操作通过运行中 server 执行。
-  task chat 从本地任务路由中读取飞书会话 ID；话题任务使用 --json 可同时查看 threadId。
-  task prompt 不切换任务；机器人先在原会话显示 Prompt，再提交任务，响应继续发送到该会话。
-  skills 默认注册到系统通用 ~/.agents/skills 目录；AGENT_BOT_SKILLS_DIR 可修改默认目录。
-`);
+  process.stdout.write(renderCliHelp(readPackageVersion()));
 }

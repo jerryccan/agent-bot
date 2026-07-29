@@ -61,7 +61,18 @@ try {
   }
 
   const cliEntry = path.join(installedPackageRoot, "dist", "cli.js");
-  run(process.execPath, [cliEntry, "--help"], installRoot);
+  const helpResult = run(process.execPath, [cliEntry, "--help"], installRoot);
+  for (const expected of [packageJson.version, "agent-bot server start", "-v, --version"]) {
+    if (!helpResult.stdout.includes(expected)) {
+      throw new Error(`Packaged CLI help is missing: ${expected}`);
+    }
+  }
+  const versionResult = run(process.execPath, [cliEntry, "--version"], installRoot);
+  if (versionResult.stdout.trim() !== packageJson.version) {
+    throw new Error(
+      `Packaged CLI reported version ${versionResult.stdout.trim()} instead of ${packageJson.version}.`,
+    );
+  }
   const initResult = run(
     process.execPath,
     [cliEntry, "init", "--skip-feishu", "--json"],
