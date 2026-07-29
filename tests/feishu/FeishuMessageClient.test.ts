@@ -219,6 +219,38 @@ describe("FeishuMessageClient", () => {
     });
   });
 
+  test("makes fenced code blocks nested under list items visible in Feishu cards", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_final" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+    const markdown = [
+      "1. Actor 错误全部转为：",
+      "",
+      "   ```cpp",
+      "   BuaRendererActionError::kActionFailed",
+      "   ```",
+    ].join("\n");
+
+    await client.sendMarkdown("chat_id:c1", markdown);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    const card = JSON.parse(String(body.content)) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    expect(card.body.elements).toEqual([{
+      tag: "markdown",
+      content: [
+        "1. Actor 错误全部转为：",
+        "",
+        "```cpp",
+        "BuaRendererActionError::kActionFailed",
+        "```",
+      ].join("\n"),
+    }]);
+  });
+
   test("classifies network failures during card update as retryable", async () => {
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

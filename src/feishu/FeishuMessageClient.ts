@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { defaultSqlitePath } from "../config/paths.js";
 import type { AppConfig } from "../config/schema.js";
+import { normalizeFeishuMarkdown } from "./FeishuMarkdown.js";
 import { LOCAL_CARD_IMAGE_PATH } from "./LocalCardImage.js";
 import { renderMarkdownWithLocalImages } from "./LocalImageMarkdown.js";
 import type {
@@ -179,7 +180,7 @@ export class FeishuMessageClient implements FeishuOutbound {
 
   async sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined> {
     const elements = await renderMarkdownWithLocalImages(
-      markdown,
+      normalizeFeishuMarkdown(markdown),
       (filePath) => this.uploadImageCached(filePath),
       (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
     );
@@ -209,7 +210,7 @@ export class FeishuMessageClient implements FeishuOutbound {
     idempotencyKey?: string,
   ): Promise<string | undefined> {
     const elements = await renderMarkdownWithLocalImages(
-      markdown,
+      normalizeFeishuMarkdown(markdown),
       (filePath) => this.uploadImageCached(filePath),
       (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
     );
