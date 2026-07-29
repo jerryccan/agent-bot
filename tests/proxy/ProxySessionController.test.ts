@@ -702,6 +702,176 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("forkgroup in an unbound topic forks the original turn without creating a topic task", async () => {
+    const { controller, runtime, store, listeners } = fixture();
+    await controller.onMessage({
+      messageId: "om_forkgroup_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "build forkgroup source",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    await vi.waitFor(() => {
+      expect(store.findTurnAnchorByMessageId("om_forkgroup_source")?.turnId).toBe("turn_1");
+    });
+    (runtime.forkSession as ReturnType<typeof vi.fn>).mockClear();
+
+    await controller.onMessage({
+      ...threadMessage("c1", "p2p", "omt_forkgroup_unbound", "om_forkgroup_source", "/forkgroup"),
+      userId: "ou_current_user",
+    });
+
+    expect(runtime.forkSession).toHaveBeenCalledOnce();
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+    }));
+    expect(store.getUserContext("chat_id:c1:thread_id:omt_forkgroup_unbound")?.currentSessionId)
+      .toBeUndefined();
+    expect(store.getUserContext("chat_id:oc_new_group")?.currentSessionId).toBeDefined();
+  });
+
+  test("forkgroup in a bound topic with no completed topic turn falls back to the original turn", async () => {
+    const { controller, runtime, sessions, store, listeners } = fixture();
+    await controller.onMessage({
+      messageId: "om_bound_forkgroup_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "build bound forkgroup source",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    await vi.waitFor(() => {
+      expect(store.findTurnAnchorByMessageId("om_bound_forkgroup_source")?.turnId).toBe("turn_1");
+    });
+
+    const topicContextKey = "chat_id:c1:thread_id:omt_forkgroup_bound";
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      "omt_forkgroup_bound",
+      "om_bound_forkgroup_source",
+      "/sessions",
+    ));
+    const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
+    expect(topicSessionId).toBeDefined();
+    store.saveTurnSnapshot("turn_topic_running", topicSessionId!, {
+      sessionId: topicSessionId,
+      turnId: "turn_topic_running",
+      status: "running",
+      startedAt: 10,
+    }, topicContextKey);
+    store.updateSession(topicSessionId!, { status: "running" });
+    store.updateRuntimeSession(topicSessionId!, {
+      lastTurnId: "turn_topic_running",
+      lastTurnStatus: "running",
+    });
+    sessions.get(topicSessionId!)!.activeTurnId = "turn_topic_running";
+    (runtime.forkSession as ReturnType<typeof vi.fn>).mockClear();
+
+    await controller.onMessage({
+      ...threadMessage("c1", "p2p", "omt_forkgroup_bound", "om_bound_forkgroup_source", "/forkgroup"),
+      userId: "ou_current_user",
+    });
+
+    expect(runtime.forkSession).toHaveBeenCalledOnce();
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+    }));
+    expect(store.getUserContext(topicContextKey)?.currentSessionId).toBe(topicSessionId);
+  });
+
+  test("forkgroup in a bound topic forks its latest completed turn while a later turn is running", async () => {
+    const { controller, runtime, sessions, store, listeners } = fixture();
+    await controller.onMessage({
+      messageId: "om_progressed_forkgroup_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "build progressed forkgroup source",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    await vi.waitFor(() => {
+      expect(store.findTurnAnchorByMessageId("om_progressed_forkgroup_source")?.turnId).toBe("turn_1");
+    });
+
+    const topicContextKey = "chat_id:c1:thread_id:omt_forkgroup_progressed";
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      "omt_forkgroup_progressed",
+      "om_progressed_forkgroup_source",
+      "/sessions",
+    ));
+    const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
+    const topicSession = store.getSession(topicSessionId!);
+    expect(topicSession?.remoteSessionId).toBe("thr_1_fork");
+    store.saveTurnSnapshot("turn_topic_completed", topicSessionId!, {
+      sessionId: topicSessionId,
+      turnId: "turn_topic_completed",
+      status: "completed",
+      startedAt: 20,
+      completedAt: 30,
+    }, topicContextKey);
+    store.saveTurnSnapshot("turn_topic_running", topicSessionId!, {
+      sessionId: topicSessionId,
+      turnId: "turn_topic_running",
+      status: "running",
+      startedAt: 40,
+    }, topicContextKey);
+    store.updateSession(topicSessionId!, { status: "running" });
+    store.updateRuntimeSession(topicSessionId!, {
+      lastTurnId: "turn_topic_running",
+      lastTurnStatus: "running",
+    });
+    sessions.get(topicSessionId!)!.activeTurnId = "turn_topic_running";
+    (runtime.forkSession as ReturnType<typeof vi.fn>).mockClear();
+
+    await controller.onMessage({
+      ...threadMessage(
+        "c1",
+        "p2p",
+        "omt_forkgroup_progressed",
+        "om_progressed_forkgroup_source",
+        "/forkgroup",
+      ),
+      userId: "ou_current_user",
+    });
+
+    expect(runtime.forkSession).toHaveBeenCalledOnce();
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thr_1_fork",
+      lastTurnId: "turn_topic_completed",
+    }));
+    expect(store.getUserContext(topicContextKey)?.currentSessionId).toBe(topicSessionId);
+  });
+
   test("forks the current completed Codex task and switches to the new branch", async () => {
     const { controller, runtime, sessions, remoteSessions, store, listeners, outbound, presenter } = fixture();
     await controller.onMessage(message("build the source task"));

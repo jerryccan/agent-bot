@@ -388,6 +388,39 @@ describe("StateStore runtime metadata", () => {
     });
   });
 
+  test("finds the latest completed turn owned by a session in one context", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.saveTurnSnapshot("turn_anchor", "source", {
+      status: "completed",
+      completedAt: 500,
+    }, "chat_id:c1");
+    store.saveTurnSnapshot("turn_topic_running", "topic", {
+      status: "running",
+      startedAt: 600,
+    }, "chat_id:c1:thread_id:t1");
+    store.saveTurnSnapshot("turn_topic_old", "topic", {
+      status: "completed",
+      completedAt: 200,
+    }, "chat_id:c1:thread_id:t1");
+    store.saveTurnSnapshot("turn_topic_latest", "topic", {
+      status: "completed",
+      completedAt: 400,
+    }, "chat_id:c1:thread_id:t1");
+    store.saveTurnSnapshot("turn_other_topic", "topic", {
+      status: "completed",
+      completedAt: 700,
+    }, "chat_id:c1:thread_id:t2");
+
+    expect(store.findLatestCompletedTurnId("topic", "chat_id:c1:thread_id:t1"))
+      .toBe("turn_topic_latest");
+    expect(store.findLatestCompletedTurnId("source", "chat_id:c1:thread_id:t1"))
+      .toBeUndefined();
+  });
+
   test("atomically promotes a pending turn snapshot and progress delivery", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

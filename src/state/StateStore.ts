@@ -601,6 +601,27 @@ export class StateStore {
     return row ? JSON.parse(row.snapshot_json) : undefined;
   }
 
+  findLatestCompletedTurnId(localSessionId: string, contextKey: string): string | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT turn_id
+        FROM turn_snapshots
+        WHERE local_session_id = ?
+          AND context_key = ?
+          AND json_extract(snapshot_json, '$.status') = 'completed'
+        ORDER BY
+          coalesce(
+            json_extract(snapshot_json, '$.completedAt'),
+            json_extract(snapshot_json, '$.startedAt'),
+            0
+          ) DESC,
+          updated_at DESC
+        LIMIT 1
+      `)
+      .get(localSessionId, contextKey) as { turn_id: string } | undefined;
+    return row?.turn_id;
+  }
+
   saveTurnDelivery(
     turnId: string,
     patch: { progressMessageId?: string; lastCardHash?: string },

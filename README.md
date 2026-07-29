@@ -143,7 +143,7 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/thinking [level]`                      | View or change reasoning effort             |
 | `/permissions auto\|confirm`             | Change tool approval behavior               |
 | `/newgroup [title]`                      | Create a private group for a new task       |
-| `/forkgroup [title]`                     | Fork the current task into a private group  |
+| `/forkgroup [title]`                     | Fork the current position into a private group |
 | `/agent [name]`                          | View or change the default agent            |
 | `/use <agent> [cwd]`                     | Select an agent and create a task           |
 | `! <command>`                            | Run a local command in the task directory   |
@@ -151,6 +151,8 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/help`                                  | Show in-chat help                           |
 
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
+
+Inside a thread, `/forkgroup` forks from the thread's original turn until the thread task completes its own turn. After that, it forks from the thread task's latest completed turn. A currently running turn is never used as a fork point.
 
 `/newgroup` immediately creates a new task in the new group. It inherits the current task's project directory, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
 

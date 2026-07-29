@@ -34,6 +34,7 @@ import {
   type MessageReactionStatus,
   type QueuedPromptRecord,
   type SessionRecord,
+  type TurnAnchorRecord,
 } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
 import { asInlineCode, codeBlock, truncateMiddle, truncateText } from "../utils/markdown.js";
@@ -101,6 +102,17 @@ interface ForkSessionPlan {
 interface ForkSessionResult {
   record: SessionRecord;
   session: RuntimeSession;
+}
+
+interface ForkGroupSessionPlan {
+  plan: ForkSessionPlan;
+  sourceDescription: string;
+}
+
+interface ResolvedThreadForkAnchor {
+  anchor: TurnAnchorRecord;
+  source: SessionRecord;
+  snapshot?: TurnViewState;
 }
 
 interface CreatedFeishuGroupContext {
@@ -239,7 +251,7 @@ export class ProxySessionController {
     if (isQueueIndependentCommand(command)) {
       await this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
-          await this.ensureThreadFork(message);
+          if (command.type !== "forkgroup") await this.ensureThreadFork(message);
           await this.execute(
             message.contextKey,
             command,
@@ -247,6 +259,7 @@ export class ProxySessionController {
             replyTarget,
             localImagePaths,
             message.userId,
+            message,
           );
           if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
         } catch (error) {
@@ -261,7 +274,7 @@ export class ProxySessionController {
     const next = previous.catch(() => undefined).then(() =>
       this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
-          await this.ensureThreadFork(message);
+          if (command.type !== "forkgroup") await this.ensureThreadFork(message);
           await this.execute(
             message.contextKey,
             command,
@@ -269,6 +282,7 @@ export class ProxySessionController {
             replyTarget,
             localImagePaths,
             message.userId,
+            message,
           );
           if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
         } catch (error) {
@@ -522,6 +536,7 @@ export class ProxySessionController {
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
     userId?: string,
+    incomingMessage?: IncomingMessage,
   ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     switch (command.type) {
@@ -552,7 +567,7 @@ export class ProxySessionController {
         );
         return;
       case "forkgroup":
-        await this.forkCurrentSessionToFeishuGroup(contextKey, command.title, userId);
+        await this.forkCurrentSessionToFeishuGroup(contextKey, command.title, userId, incomingMessage);
         return;
       case "fork":
         await this.forkSessionReference(contextKey, command.sessionId);
@@ -919,31 +934,7 @@ export class ProxySessionController {
   }
 
   private async forkThreadSession(message: IncomingMessage): Promise<void> {
-    const anchorMessageIds = [message.rootMessageId, message.parentMessageId]
-      .filter((messageId): messageId is string => Boolean(messageId && messageId !== message.messageId));
-    const anchor = [...new Set(anchorMessageIds)]
-      .map((messageId) => this.store.findTurnAnchorByMessageId(messageId))
-      .find((candidate) => candidate !== undefined);
-    if (!anchor) {
-      throw new Error("无法确定这个话题对应的 Codex 轮次，因此没有创建分支任务。请从该轮的用户消息、思考卡片或最终回答创建话题。");
-    }
-
-    const source = anchor.contextKey
-      ? this.store.getSessionForContext(anchor.localSessionId, anchor.contextKey)
-      : this.store.getSession(anchor.localSessionId);
-    if (!source || !source.remoteSessionId || !this.isCodexSession(source)) {
-      throw new Error("这个话题的来源不是可 fork 的 Codex 任务。");
-    }
-    if (baseChatContextKey(anchor.contextKey ?? source.contextKey) !== `chat_id:${message.chatId}`) {
-      throw new Error("话题来源任务不属于当前会话，已拒绝创建分支。");
-    }
-
-    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(anchor.turnId));
-    if (isTurnStillRunning(snapshot?.status)
-      || (source.lastTurnId === anchor.turnId && source.lastTurnStatus === "running")) {
-      throw new Error("话题对应的轮次仍在执行，Codex 暂时不能从这一轮 fork。请等待该轮完成后再在话题中发送消息。");
-    }
-
+    const { anchor, source, snapshot } = this.resolveThreadForkAnchor(message);
     const agent = this.ensureAgent(source.agentName);
     const runtime = this.runtimes.forAgent(agent);
     if (runtime.kind !== "codex" || !runtime.forkSession) {
@@ -975,7 +966,7 @@ export class ProxySessionController {
     try {
       const forked = await runtime.forkSession({
         localSessionId,
-        remoteSessionId: source.remoteSessionId,
+        remoteSessionId: source.remoteSessionId!,
         lastTurnId: anchor.turnId,
         agentName: source.agentName,
         cwd: source.cwd,
@@ -1004,6 +995,38 @@ export class ProxySessionController {
       this.outbound.unregisterSession(localSessionId);
       throw error;
     }
+  }
+
+  private resolveThreadForkAnchor(message: IncomingMessage): ResolvedThreadForkAnchor {
+    if (!message.threadContext || !message.threadId || !message.chatId) {
+      throw new Error("当前消息不属于可识别的飞书话题。");
+    }
+    const anchorMessageIds = [message.rootMessageId, message.parentMessageId]
+      .filter((messageId): messageId is string => Boolean(messageId && messageId !== message.messageId));
+    const anchor = [...new Set(anchorMessageIds)]
+      .map((messageId) => this.store.findTurnAnchorByMessageId(messageId))
+      .find((candidate) => candidate !== undefined);
+    if (!anchor) {
+      throw new Error("无法确定这个话题对应的 Codex 轮次，因此没有创建分支任务。请从该轮的用户消息、思考卡片或最终回答创建话题。");
+    }
+
+    const source = anchor.contextKey
+      ? this.store.getSessionForContext(anchor.localSessionId, anchor.contextKey)
+      : this.store.getSession(anchor.localSessionId);
+    if (!source || !source.remoteSessionId || !this.isCodexSession(source)) {
+      throw new Error("这个话题的来源不是可 fork 的 Codex 任务。");
+    }
+    if (baseChatContextKey(anchor.contextKey ?? source.contextKey) !== `chat_id:${message.chatId}`) {
+      throw new Error("话题来源任务不属于当前会话，已拒绝创建分支。");
+    }
+
+    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(anchor.turnId));
+    if (isTurnStillRunning(snapshot?.status)
+      || (source.lastTurnId === anchor.turnId && source.lastTurnStatus === "running")) {
+      throw new Error("话题对应的轮次仍在执行，Codex 暂时不能从这一轮 fork。请等待该轮完成后再在话题中发送消息。");
+    }
+
+    return { anchor, source, snapshot };
   }
 
   private async forkSessionReference(contextKey: string, reference?: string): Promise<void> {
@@ -1114,6 +1137,94 @@ export class ProxySessionController {
         ?? source?.lastTurnStatus,
       sourceWasRunning: isRunning,
       forkedFromHistoricalTurn,
+    };
+  }
+
+  private async prepareForkGroupSession(
+    contextKey: string,
+    requestedTitle: string | undefined,
+    incomingMessage: IncomingMessage | undefined,
+  ): Promise<ForkGroupSessionPlan> {
+    if (!incomingMessage?.threadContext) {
+      const plan = await this.prepareForkSession(contextKey, undefined, requestedTitle);
+      return {
+        plan,
+        sourceDescription: plan.forkedFromHistoricalTurn
+          ? "当前任务最近已完成轮次"
+          : "当前任务最新轮次",
+      };
+    }
+
+    const resolved = this.resolveThreadForkAnchor(incomingMessage);
+    const topicSession = this.currentSession(contextKey);
+    const topicTurnId = topicSession
+      ? this.store.findLatestCompletedTurnId(topicSession.localSessionId, contextKey)
+      : undefined;
+    if (topicSession && topicTurnId) {
+      return {
+        plan: this.prepareForkSessionFromTurn(
+          topicSession,
+          topicTurnId,
+          requestedTitle,
+          "当前话题任务",
+        ),
+        sourceDescription: "当前话题任务最近已完成轮次",
+      };
+    }
+
+    return {
+      plan: this.prepareForkSessionFromTurn(
+        resolved.source,
+        resolved.anchor.turnId,
+        requestedTitle,
+        "话题原始轮次",
+      ),
+      sourceDescription: "话题原始轮次",
+    };
+  }
+
+  private prepareForkSessionFromTurn(
+    source: SessionRecord,
+    lastTurnId: string,
+    requestedTitle: string | undefined,
+    sourceLabel: string,
+  ): ForkSessionPlan {
+    if (!source.remoteSessionId || !this.isCodexSession(source)) {
+      throw new Error(`${sourceLabel}不是可 fork 的 Codex 任务。`);
+    }
+    const runtime = this.runtimes.forAgent(this.ensureAgent(source.agentName));
+    if (runtime.kind !== "codex" || !runtime.forkSession) {
+      throw new Error("当前 Codex 运行时不支持 fork 任务。");
+    }
+
+    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(lastTurnId));
+    if (isTurnStillRunning(snapshot?.status)) {
+      throw new Error(`${sourceLabel}仍在执行，Codex 暂时不能从这一轮 fork。`);
+    }
+    const sourceWasRunning = Boolean(
+      runtime.getSession(source.localSessionId)?.activeTurnId
+      || source.lastTurnStatus === "running"
+      || source.status === "running",
+    );
+    const forkTitle = normalizeTaskTitle(requestedTitle) ?? this.store.nextForkTitle(source.title);
+
+    return {
+      source,
+      sourceLabel,
+      runtime,
+      agentName: source.agentName,
+      remoteSessionId: source.remoteSessionId,
+      lastTurnId,
+      cwd: source.cwd,
+      forkTitle,
+      model: source.model,
+      reasoningEffort: source.reasoningEffort,
+      permissionMode: source.permissionMode ?? "auto",
+      lastTurnStatus: forkedTurnStatus(snapshot?.status)
+        ?? (source.lastTurnId === lastTurnId ? source.lastTurnStatus : undefined)
+        ?? "completed",
+      sourceWasRunning,
+      forkedFromHistoricalTurn: sourceWasRunning && source.lastTurnId !== lastTurnId,
     };
   }
 
@@ -1410,11 +1521,13 @@ export class ProxySessionController {
     sourceContextKey: string,
     requestedTitle: string | undefined,
     userId: string | undefined,
+    incomingMessage: IncomingMessage | undefined,
   ): Promise<void> {
     if (!userId?.startsWith("ou_")) {
       throw new Error("/forkgroup 只能由具有 open_id 的飞书用户消息触发。");
     }
-    const plan = await this.prepareForkSession(sourceContextKey, undefined, requestedTitle);
+    const prepared = await this.prepareForkGroupSession(sourceContextKey, requestedTitle, incomingMessage);
+    const { plan } = prepared;
     const boundProjectCwd = detectProjectlessWorkspace(plan.cwd) ? undefined : plan.cwd;
     const group = await this.createFeishuGroupContext(
       sourceContextKey,
@@ -1437,23 +1550,22 @@ export class ProxySessionController {
       throw error;
     }
 
-    const sourceDescription = plan.forkedFromHistoricalTurn
-      ? "当前任务最近已完成轮次"
-      : "当前任务最新轮次";
     const taskDescription = forked.session.title
       ? `${forked.session.title}（${forked.session.remoteSessionId}）`
       : forked.session.remoteSessionId;
     await this.outbound.sendText(
       group.contextKey,
       [
-        `已从${sourceDescription}创建分支。`,
+        `已从${prepared.sourceDescription}创建分支。`,
         `当前任务：${taskDescription}`,
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
       ].join("\n"),
     );
     await this.outbound.sendText(
       sourceContextKey,
-      `已将当前任务 Fork 到飞书群：${group.name}；新群当前任务为 ${taskDescription}。`,
+      `已将${
+        incomingMessage?.threadContext ? prepared.sourceDescription : "当前任务"
+      } Fork 到飞书群：${group.name}；新群当前任务为 ${taskDescription}。`,
     );
   }
 
