@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Make npm release retries recover a missing GitHub Release from the version tag.
+
 ## [0.1.1] - 2026-07-29
 
 - Add `npm run release` to prepare the next stable version and changelog.

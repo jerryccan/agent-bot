@@ -89,19 +89,27 @@ jobs:
             echo "should_publish=${should_publish}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Validate an existing release tag
-        if: steps.package.outputs.should_publish == 'true'
+      - name: Ensure release tag
+        id: release_tag
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.package.outputs.tag }}
+          SHOULD_PUBLISH: ${{ steps.package.outputs.should_publish }}
         run: |
           set -euo pipefail
           if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
             tag_sha=$(git rev-list -n 1 "${RELEASE_TAG}")
-            if [[ "${tag_sha}" != "${RELEASE_SHA}" ]]; then
+            if [[ "${SHOULD_PUBLISH}" == "true" && "${tag_sha}" != "${RELEASE_SHA}" ]]; then
               echo "::error::${RELEASE_TAG} points to ${tag_sha}, expected ${RELEASE_SHA}."
               exit 1
             fi
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          elif [[ "${SHOULD_PUBLISH}" == "true" ]]; then
+            git tag "${RELEASE_TAG}" "${RELEASE_SHA}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
           fi
 
       - if: steps.package.outputs.should_publish == 'true'
@@ -114,7 +122,7 @@ jobs:
         run: npm publish --access public
 
       - name: Create GitHub Release
-        if: steps.package.outputs.should_publish == 'true'
+        if: steps.release_tag.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.package.outputs.tag }}
@@ -123,6 +131,6 @@ jobs:
             echo "GitHub Release ${RELEASE_TAG} already exists; leaving it unchanged."
           else
             gh release create "${RELEASE_TAG}" \
-              --target "${RELEASE_SHA}" \
               --title "${RELEASE_TAG}" \
               --generate-notes
+          fi
