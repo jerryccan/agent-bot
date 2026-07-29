@@ -37,21 +37,22 @@ describe("StateStore runtime metadata", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const dbPath = path.join(directory, "state.sqlite");
+    const projectCwd = path.join(directory, "project");
     const first = new StateStore(dbPath);
     stores.push(first);
 
     first.getOrCreateUserContext("chat_id:new_group", "codex");
-    first.setBoundProjectCwd("chat_id:new_group", "D:\\work\\project");
+    first.setBoundProjectCwd("chat_id:new_group", projectCwd);
     expect(first.getUserContext("chat_id:new_group")).toMatchObject({
       currentSessionId: undefined,
-      boundProjectCwd: "D:\\work\\project",
+      boundProjectCwd: projectCwd,
     });
     first.close();
     stores.pop();
 
     const second = new StateStore(dbPath);
     stores.push(second);
-    expect(second.getUserContext("chat_id:new_group")?.boundProjectCwd).toBe("D:\\work\\project");
+    expect(second.getUserContext("chat_id:new_group")?.boundProjectCwd).toBe(projectCwd);
   });
 
   test("persists Feishu chat types independently from task contexts", () => {

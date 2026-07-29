@@ -13,6 +13,14 @@ import { AgentRuntimeRegistry } from "../../src/runtime/AgentRuntimeRegistry.js"
 import type { AgentRuntime, RemoteSessionSummary, RuntimeEvent, RuntimeGoal, RuntimeSession } from "../../src/runtime/types.js";
 import { StateStore } from "../../src/state/StateStore.js";
 
+vi.mock("../../src/feishu/GroupAvatarGenerator.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/feishu/GroupAvatarGenerator.js")>();
+  return {
+    ...actual,
+    generateGroupAvatarPng: vi.fn(() => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])),
+  };
+});
+
 const tempDirs: string[] = [];
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -371,7 +379,7 @@ describe("ProxySessionController", () => {
 
   test("executes bang commands in the current task directory and returns their output", async () => {
     const { controller, outbound, shellCommandExecutor } = fixture();
-    const cwd = "D:\\work space\\shell-project";
+    const cwd = path.resolve("test-workspaces", "work space", "shell-project");
     await controller.onMessage(message(`/new --dir "${cwd}"`));
 
     await controller.onMessage(message("! ls"));
@@ -379,9 +387,10 @@ describe("ProxySessionController", () => {
     expect(shellCommandExecutor).toHaveBeenCalledWith("ls", cwd);
     expect(outbound.sendMarkdown).toHaveBeenCalledWith(
       "chat_id:c1",
-      expect.stringMatching(/```text\n\$  ls\nREADME\.md\nsrc\ntests\n```\n`D:\\work space\\shell-project` · 退出码 0$/),
+      expect.stringContaining("```text\n$  ls\nREADME.md\nsrc\ntests\n```"),
     );
     const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(markdown).toContain(`\`${cwd}\` · 退出码 0`);
     expect(markdown).not.toContain("**目录**");
     expect(markdown).not.toContain("**命令**");
   });
@@ -1179,16 +1188,17 @@ describe("ProxySessionController", () => {
 
   test("new always uses the current default agent and accepts cwd through --dir", async () => {
     const { controller, runtime, store } = fixture();
+    const cwd = path.resolve("test-workspaces", "work space", "repo");
     await controller.onMessage(message("/agent acp"));
-    await controller.onMessage(message('/new --dir "D:\\work space\\repo"'));
+    await controller.onMessage(message(`/new --dir "${cwd}"`));
 
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
       agentName: "acp",
-      cwd: "D:\\work space\\repo",
+      cwd,
     }));
     expect(store.listSessions("chat_id:c1").at(-1)).toMatchObject({
       agentName: "acp",
-      cwd: "D:\\work space\\repo",
+      cwd,
     });
   });
 
@@ -1207,12 +1217,13 @@ describe("ProxySessionController", () => {
 
   test("creates a task with an explicit title and synchronizes it with the runtime", async () => {
     const { controller, runtime, store, presenter, outbound } = fixture();
+    const cwd = path.resolve("test-workspaces", "work");
 
-    await controller.onMessage(message("/new 修复会话列表时间 --dir D:\\work"));
+    await controller.onMessage(message(`/new 修复会话列表时间 --dir "${cwd}"`));
 
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
       title: "修复会话列表时间",
-      cwd: "D:\\work",
+      cwd,
     }));
     const session = store.listSessions("chat_id:c1")[0]!;
     expect(session.title).toBe("修复会话列表时间");
@@ -1220,7 +1231,7 @@ describe("ProxySessionController", () => {
       session.localSessionId,
       "chat_id:c1",
       "修复会话列表时间",
-      "D:\\work",
+      cwd,
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
@@ -2351,10 +2362,11 @@ describe("ProxySessionController", () => {
 
   test("creates and switches to a new task in the selected sessions-card project", async () => {
     const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    const cwd = path.resolve("test-workspaces", "card-new-source");
     remoteSessions.push({
       id: "card_new_source",
       title: "Card new source",
-      cwd: "D:\\work\\card-new-source",
+      cwd,
       source: "desktop",
       status: "active",
       model: "gpt-5.6-sol",
@@ -2381,7 +2393,7 @@ describe("ProxySessionController", () => {
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
       localSessionId: createdSessionId,
       agentName: "codex",
-      cwd: "D:\\work\\card-new-source",
+      cwd,
       title: undefined,
       model: "gpt-5.6-sol",
       reasoningEffort: "xhigh",
@@ -2389,7 +2401,7 @@ describe("ProxySessionController", () => {
     }));
     expect(store.getSession(createdSessionId!)).toMatchObject({
       remoteSessionId: "thr_1",
-      cwd: "D:\\work\\card-new-source",
+      cwd,
       model: "gpt-5.6-sol",
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
@@ -2405,11 +2417,12 @@ describe("ProxySessionController", () => {
 
   test("inherits locally tracked execution settings when the remote task omits them", async () => {
     const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    const cwd = path.resolve("test-workspaces", "locally-tracked-source");
     store.createSession({
       localSessionId: "local_card_new_source",
       contextKey: "chat_id:source",
       agentName: "codex",
-      cwd: "D:\\work\\locally-tracked-source",
+      cwd,
       status: "ready",
     });
     store.updateRuntimeSession("local_card_new_source", {
@@ -2421,7 +2434,7 @@ describe("ProxySessionController", () => {
     });
     remoteSessions.push({
       id: "locally_tracked_source",
-      cwd: "D:\\work\\locally-tracked-source",
+      cwd,
       source: "agent-bot",
       status: "idle",
     });
@@ -2439,7 +2452,7 @@ describe("ProxySessionController", () => {
     });
 
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      cwd: "D:\\work\\locally-tracked-source",
+      cwd,
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
       permissionMode: "auto",

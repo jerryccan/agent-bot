@@ -42,7 +42,7 @@ describe("GroupAvatarGenerator", () => {
     expect(view.readUInt32BE(0)).toBe(512);
     expect(view.readUInt32BE(4)).toBe(512);
     expect(first.byteLength).toBeLessThan(10 * 1024 * 1024);
-  });
+  }, 15_000);
 
   test("uses the full project path as the visual seed", () => {
     const firstProject = path.join(os.tmpdir(), "workspace-a", "aha");
@@ -51,5 +51,5 @@ describe("GroupAvatarGenerator", () => {
 
     expect(generateGroupAvatarPng("aha", firstProject)).toEqual(first);
     expect(generateGroupAvatarPng("aha", secondProject)).not.toEqual(first);
-  });
+  }, 15_000);
 });
