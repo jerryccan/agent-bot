@@ -4,10 +4,18 @@ import type { FeishuOutbound } from "../feishu/types.js";
 import type { StateStore } from "../state/StateStore.js";
 import type { SafeRestartStatus } from "./SafeRestartScheduler.js";
 
+const DEFAULT_INITIAL_CARD_DELAY_MS = 3_000;
+
+export interface SafeRestartNotifierOptions {
+  initialCardDelayMs?: number;
+}
+
 export class SafeRestartNotifier {
   private readonly messageIds = new Map<string, string>();
   private readonly cardHashes = new Map<string, string>();
   private activeScheduleId?: number;
+  private pendingInitialStatus?: SafeRestartStatus;
+  private initialCardTimer?: NodeJS.Timeout;
   private queue = Promise.resolve();
 
   constructor(
@@ -15,25 +23,57 @@ export class SafeRestartNotifier {
     private readonly outbound: FeishuOutbound,
     private readonly renderer: CardRenderer,
     private readonly logger: Pick<Logger, "warn">,
+    private readonly options: SafeRestartNotifierOptions = {},
   ) {}
 
   update(status: SafeRestartStatus): Promise<void> {
-    const queued = this.queue.catch(() => undefined).then(() => this.publishStatus(status));
-    this.queue = queued;
-    return queued;
-  }
-
-  async flush(): Promise<void> {
-    await this.queue;
-  }
-
-  private async publishStatus(status: SafeRestartStatus): Promise<void> {
     if (this.activeScheduleId !== status.scheduleId) {
       this.activeScheduleId = status.scheduleId;
       this.messageIds.clear();
       this.cardHashes.clear();
+      this.clearInitialCardTimer();
+      this.pendingInitialStatus = status;
+      const delayMs = this.options.initialCardDelayMs ?? DEFAULT_INITIAL_CARD_DELAY_MS;
+      if (delayMs <= 0) return this.publishPendingInitialStatus();
+      this.initialCardTimer = setTimeout(() => {
+        this.initialCardTimer = undefined;
+        void this.publishPendingInitialStatus().catch((error: unknown) => {
+          this.logger.warn({ error }, "Failed to publish delayed safe restart status.");
+        });
+      }, delayMs);
+      return Promise.resolve();
     }
-    await this.publish(status);
+    if (this.pendingInitialStatus) {
+      this.pendingInitialStatus = status;
+      return Promise.resolve();
+    }
+    return this.enqueue(status);
+  }
+
+  async flush(): Promise<void> {
+    await this.publishPendingInitialStatus();
+    await this.queue;
+  }
+
+  private publishPendingInitialStatus(): Promise<void> {
+    this.clearInitialCardTimer();
+    const status = this.pendingInitialStatus;
+    this.pendingInitialStatus = undefined;
+    return status ? this.enqueue(status) : this.queue;
+  }
+
+  private enqueue(status: SafeRestartStatus): Promise<void> {
+    const queued = this.queue.catch(() => undefined).then(async () => {
+      if (this.activeScheduleId !== status.scheduleId) return;
+      await this.publish(status);
+    });
+    this.queue = queued;
+    return queued;
+  }
+
+  private clearInitialCardTimer(): void {
+    if (this.initialCardTimer) clearTimeout(this.initialCardTimer);
+    this.initialCardTimer = undefined;
   }
 
   private async publish(status: SafeRestartStatus): Promise<void> {

@@ -11,6 +11,7 @@ const directories: string[] = [];
 const stores: StateStore[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const store of stores.splice(0)) store.close();
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -39,7 +40,13 @@ describe("SafeRestartNotifier", () => {
       sendInteractiveCard,
       updateInteractiveCard,
     };
-    const notifier = new SafeRestartNotifier(store, outbound, new CardRenderer(), { warn: vi.fn() });
+    const notifier = new SafeRestartNotifier(
+      store,
+      outbound,
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
 
     notifier.update({
       scheduleId: 1,
@@ -109,7 +116,13 @@ describe("SafeRestartNotifier", () => {
       sendInteractiveCard: vi.fn(async () => "om_restart"),
       updateInteractiveCard,
     };
-    const notifier = new SafeRestartNotifier(store, outbound, new CardRenderer(), { warn: vi.fn() });
+    const notifier = new SafeRestartNotifier(
+      store,
+      outbound,
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
 
     await notifier.update({
       scheduleId: 1,
@@ -141,5 +154,93 @@ describe("SafeRestartNotifier", () => {
     expect(updateInteractiveCard).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(updateInteractiveCard.mock.calls[0]?.[1])).toContain("14s");
     expect(JSON.stringify(updateInteractiveCard.mock.calls[1]?.[1])).toContain("13s");
+  });
+
+  test("delays the initial card and publishes the latest status received during the delay", async () => {
+    vi.useFakeTimers();
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-delay-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.recordChatContext("chat_id:private", "p2p");
+    const sendInteractiveCard = vi.fn(async (
+      _contextKey: string,
+      _card: Record<string, unknown>,
+    ) => "om_restart");
+    const outbound: FeishuOutbound = {
+      sendText: vi.fn(async () => "text"),
+      sendMarkdown: vi.fn(async () => "markdown"),
+      sendInteractiveCard,
+      updateInteractiveCard: vi.fn(async () => undefined),
+    };
+    const notifier = new SafeRestartNotifier(
+      store,
+      outbound,
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 3_000 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "new build",
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await notifier.update({
+      scheduleId: 1,
+      reason: "new build",
+      phase: "countdown",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 12_000,
+    });
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(sendInteractiveCard).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await notifier.flush();
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("12s");
+  });
+
+  test("flushes a delayed initial card immediately before restart", async () => {
+    vi.useFakeTimers();
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-delay-flush-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.recordChatContext("chat_id:private", "p2p");
+    const sendInteractiveCard = vi.fn(async (
+      _contextKey: string,
+      _card: Record<string, unknown>,
+    ) => "om_restart");
+    const outbound: FeishuOutbound = {
+      sendText: vi.fn(async () => "text"),
+      sendMarkdown: vi.fn(async () => "markdown"),
+      sendInteractiveCard,
+      updateInteractiveCard: vi.fn(async () => undefined),
+    };
+    const notifier = new SafeRestartNotifier(
+      store,
+      outbound,
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 3_000 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "new build",
+      phase: "restarting",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 0,
+    });
+    await notifier.flush();
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
   });
 });
