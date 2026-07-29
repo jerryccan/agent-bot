@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-29
+
 - Add `npm run release` to prepare the next stable version and changelog.
 - Publish new package versions automatically after successful CI for a push to `master`.
 

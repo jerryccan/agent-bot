@@ -1,6 +1,6 @@
 {
   "name": "@keyou007/agent-bot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Using Codex in Lark/Feishu feels just like using native Codex.",
   "license": "GPL-3.0-only",
