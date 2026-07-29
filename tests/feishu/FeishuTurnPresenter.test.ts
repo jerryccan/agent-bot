@@ -211,7 +211,7 @@ describe("FeishuTurnPresenter", () => {
       "progress_1",
       expect.objectContaining({
         header: expect.objectContaining({
-          title: expect.objectContaining({ content: "正在处理：Current prompt" }),
+          title: expect.objectContaining({ tag: "plain_text", content: "⏳ 正在处理：Current prompt" }),
         }),
       }),
     );
@@ -234,7 +234,7 @@ describe("FeishuTurnPresenter", () => {
       "progress_1",
       expect.objectContaining({
         header: expect.objectContaining({
-          title: expect.objectContaining({ content: "正在处理：Actual prompt" }),
+          title: expect.objectContaining({ tag: "plain_text", content: "⏳ 正在处理：Actual prompt" }),
         }),
       }),
     );

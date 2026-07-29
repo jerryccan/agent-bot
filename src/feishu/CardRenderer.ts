@@ -953,6 +953,15 @@ function persistedTaskStatus(sessionStatus: string, lastTurnStatus?: string): st
 }
 
 function turnTitle(status: TurnViewStatus, prompt?: string): string {
+  const reactionEmoji = status === "completed"
+    ? "✅"
+    : status === "failed"
+      ? "❌"
+      : status === "cancelled"
+        ? "⏹️"
+        : status === "waiting_for_approval"
+          ? "🙋"
+          : "⏳";
   const currentStatus = status === "completed"
     ? "已完成"
     : status === "failed"
@@ -963,7 +972,8 @@ function turnTitle(status: TurnViewStatus, prompt?: string): string {
           ? "等待确认"
           : "正在处理";
   const compactPrompt = truncateTurnPrompt(prompt);
-  return compactPrompt ? `${currentStatus}：${compactPrompt}` : currentStatus;
+  const title = compactPrompt ? `${currentStatus}：${compactPrompt}` : currentStatus;
+  return `${reactionEmoji} ${title}`;
 }
 
 function truncateTurnPrompt(prompt?: string): string {

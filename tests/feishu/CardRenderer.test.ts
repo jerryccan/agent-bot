@@ -562,7 +562,29 @@ describe("CardRenderer", () => {
       header: { title: { content: string } };
     };
 
-    expect(card.header.title.content).toBe("已完成：优化飞书交互体验");
+    expect(card.header.title).toEqual({
+      tag: "plain_text",
+      content: "✅ 已完成：优化飞书交互体验",
+    });
+  });
+
+  test.each([
+    ["starting", "⏳ 正在处理"],
+    ["running", "⏳ 正在处理"],
+    ["tool_running", "⏳ 正在处理"],
+    ["waiting_for_approval", "🙋 等待确认"],
+    ["completed", "✅ 已完成"],
+    ["failed", "❌ 执行失败"],
+    ["cancelled", "⏹️ 已停止"],
+  ] as const)("prefixes the %s turn title with its reaction emoji", (status, expectedTitle) => {
+    const card = new CardRenderer().renderTurn({
+      ...state(),
+      prompt: undefined,
+      taskTitle: undefined,
+      status,
+    }) as { header: { title: { content: string } } };
+
+    expect(card.header.title.content).toBe(expectedTitle);
   });
 
   test("limits the prompt part of the turn title to 40 characters with three trailing dots", () => {
@@ -575,8 +597,20 @@ describe("CardRenderer", () => {
       prompt: `${"问".repeat(40)}🙂`,
     }) as { header: { title: { content: string } } };
 
-    expect(exact.header.title.content).toBe(`正在处理：${"问".repeat(40)}`);
-    expect(truncated.header.title.content).toBe(`正在处理：${"问".repeat(37)}...`);
+    expect(exact.header.title.content).toBe(`⏳ 正在处理：${"问".repeat(40)}`);
+    expect(truncated.header.title.content).toBe(`⏳ 正在处理：${"问".repeat(37)}...`);
+  });
+
+  test("keeps markup-like prompt text literal in a plain-text turn title", () => {
+    const card = new CardRenderer().renderTurn({
+      ...state(),
+      prompt: "<at id=all></at> :DONE:",
+    }) as { header: { title: { tag: string; content: string } } };
+
+    expect(card.header.title).toEqual({
+      tag: "plain_text",
+      content: "⏳ 正在处理：<at id=all></at> :DONE:",
+    });
   });
 
   test("renders approval controls with Card 2.0 callback behaviors", () => {
