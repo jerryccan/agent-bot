@@ -1,12 +1,15 @@
 name: Publish to npm
 
 on:
-  release:
+  workflow_run:
+    workflows:
+      - CI
     types:
-      - published
+      - completed
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -15,10 +18,24 @@ concurrency:
 
 jobs:
   publish:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'master' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     runs-on: ubuntu-latest
+    env:
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -31,11 +48,81 @@ jobs:
 
       - run: npm ci
 
-      - name: Verify release tag matches package version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: node -e "const p=require('./package.json'); if (process.env.RELEASE_TAG !== 'v'+p.version) throw new Error('Release tag must be v'+p.version)"
+      - name: Inspect package version
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - run: npm run verify
-      - run: npm run package:smoke
-      - run: npm publish --access public
+          package_name=$(node -p "require('./package.json').name")
+          package_version=$(node -p "require('./package.json').version")
+          release_tag="v${package_version}"
+
+          if [[ ! "${package_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only stable semantic versions can be published automatically: ${package_version}"
+            exit 1
+          fi
+
+          set +e
+          registry_output=$(npm view "${package_name}@${package_version}" version --json 2>&1)
+          registry_status=$?
+          set -e
+
+          if [[ ${registry_status} -eq 0 ]]; then
+            should_publish=false
+            echo "${package_name}@${package_version} is already published; skipping."
+          elif grep -q "E404" <<<"${registry_output}"; then
+            should_publish=true
+            if ! grep -Fq "## [${package_version}]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md must contain a ## [${package_version}] release section."
+              exit 1
+            fi
+          else
+            printf '%s\n' "${registry_output}"
+            exit "${registry_status}"
+          fi
+
+          {
+            echo "name=${package_name}"
+            echo "version=${package_version}"
+            echo "tag=${release_tag}"
+            echo "should_publish=${should_publish}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Validate an existing release tag
+        if: steps.package.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            tag_sha=$(git rev-list -n 1 "${RELEASE_TAG}")
+            if [[ "${tag_sha}" != "${RELEASE_SHA}" ]]; then
+              echo "::error::${RELEASE_TAG} points to ${tag_sha}, expected ${RELEASE_SHA}."
+              exit 1
+            fi
+          fi
+
+      - if: steps.package.outputs.should_publish == 'true'
+        run: npm run verify
+
+      - if: steps.package.outputs.should_publish == 'true'
+        run: npm run package:smoke
+
+      - if: steps.package.outputs.should_publish == 'true'
+        run: npm publish --access public
+
+      - name: Create GitHub Release
+        if: steps.package.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub Release ${RELEASE_TAG} already exists; leaving it unchanged."
+          else
+            gh release create "${RELEASE_TAG}" \
+              --target "${RELEASE_SHA}" \
+              --title "${RELEASE_TAG}" \
+              --generate-notes

@@ -261,24 +261,28 @@ Package lifecycle:
 - `prepack` builds a clean `dist/` and validates the tarball manifest.
 - `npm run package:smoke` packs the project, installs the tarball into a temporary directory, runs the CLI, and performs Console-only initialization.
 
-The first public release requires an npm account that owns the `@keyou007` scope:
+Prepare a new stable version before publishing:
 
 ```powershell
-npm login
-npm ci
-npm run verify
-npm run package:smoke
-npm publish --access public
+npm version 0.1.1 --no-git-tag-version
+# Move the relevant CHANGELOG.md entries from Unreleased to a [0.1.1] section.
+git add package.json npm-shrinkwrap.json CHANGELOG.md
+git commit -m "release: v0.1.1"
+git push origin master
 ```
 
-After the first release, configure an npm Trusted Publisher for:
+No local publish command is required after the push. When CI succeeds for a first-party push to `master`, `publish.yml` checks the package version against npm. An existing version is skipped successfully. An unpublished stable version requires a matching `CHANGELOG.md` section, then runs verification and the package smoke test before publishing. After npm accepts the package, the workflow creates the matching `v<package version>` GitHub Release.
+
+The workflow can also be retried manually from **GitHub Actions → Publish to npm → Run workflow** on `master`. Pull requests, forked repositories, failed CI runs, and pushes to other branches cannot enter the publish job.
+
+The npm Trusted Publisher is configured for:
 
 - GitHub owner: `keyou`
 - Repository: `agent-bot`
 - Workflow: `publish.yml`
 - Allowed action: `npm publish`
 
-The publish workflow is triggered by a GitHub Release whose tag exactly matches `v<package version>`. It uses GitHub OIDC instead of a long-lived npm token and publishes from a GitHub-hosted Node.js 24 runner.
+The publish workflow uses GitHub OIDC instead of a long-lived npm token and publishes from a GitHub-hosted Node.js 24 runner.
 
 ## Development And Source Installation
 

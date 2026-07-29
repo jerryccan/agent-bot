@@ -261,24 +261,28 @@ CLI 随包发布 `npm-shrinkwrap.json`，以固定传递运行依赖；直接运
 - `prepack` 清理并构建 `dist/`，然后检查 tarball 清单
 - `npm run package:smoke` 打包项目、在临时目录安装 tarball、运行 CLI，并执行仅 Console 的初始化
 
-首次公开发布需要拥有 `@keyou007` scope 的 npm 账号：
+发布前先准备新的稳定版本：
 
 ```powershell
-npm login
-npm ci
-npm run verify
-npm run package:smoke
-npm publish --access public
+npm version 0.1.1 --no-git-tag-version
+# 把 CHANGELOG.md 中的相关内容从 Unreleased 移到 [0.1.1] 小节。
+git add package.json npm-shrinkwrap.json CHANGELOG.md
+git commit -m "release: v0.1.1"
+git push origin master
 ```
 
-首次发布后，为 npm 包配置以下 Trusted Publisher：
+推送完成后无需再执行本地发布命令。本仓库自身对 `master` 的 push 通过 CI 后，`publish.yml` 会查询 npm 中的包版本：版本已存在时正常跳过；发现尚未发布的稳定版本时，要求 `CHANGELOG.md` 存在匹配小节，并在发布前再次执行完整验证和包安装 smoke test。npm 接受新包后，workflow 自动创建对应的 `v<包版本>` GitHub Release。
+
+需要补跑时，可以在 **GitHub Actions → Publish to npm → Run workflow** 中选择 `master` 手动执行。Pull Request、外部 fork、CI 失败以及其他分支的 push 都不能进入发布 job。
+
+npm Trusted Publisher 配置为：
 
 - GitHub 所有者：`keyou`
 - 仓库：`agent-bot`
 - Workflow：`publish.yml`
 - 允许操作：`npm publish`
 
-发布工作流由 GitHub Release 触发，Release tag 必须严格匹配 `v<包版本>`。工作流使用 GitHub OIDC，不保存长期 npm token，并从 GitHub 托管的 Node.js 24 runner 发布。
+发布 workflow 使用 GitHub OIDC，不保存长期 npm token，并从 GitHub 托管的 Node.js 24 runner 发布。
 
 ## 开发与源码安装
 
