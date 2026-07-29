@@ -432,6 +432,86 @@ describe("ProxySessionController", () => {
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
   });
 
+  test("waits for the received reaction before chat persistence, image download, and command execution", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    let releaseReaction!: (reactionId: string) => void;
+    const reactionVisible = new Promise<string>((resolve) => { releaseReaction = resolve; });
+    (outbound.addReaction as ReturnType<typeof vi.fn>).mockReturnValueOnce(reactionVisible);
+    const recordChatContext = vi.spyOn(store, "recordChatContext");
+    const incoming = {
+      ...groupMessage("reaction_barrier", "/sessions"),
+      images: [{ imageKey: "img_barrier" }],
+    };
+
+    const processing = controller.onMessage(incoming);
+    await vi.waitFor(() => expect(outbound.addReaction).toHaveBeenCalledWith(
+      incoming.messageId,
+      "OnIt",
+    ));
+
+    expect(recordChatContext).not.toHaveBeenCalled();
+    expect(outbound.downloadImage).not.toHaveBeenCalled();
+    expect(runtime.listRemoteSessions).not.toHaveBeenCalled();
+
+    releaseReaction("reaction_visible");
+    await processing;
+
+    expect(recordChatContext).toHaveBeenCalledWith("chat_id:reaction_barrier", "group");
+    expect(outbound.downloadImage).toHaveBeenCalledWith(incoming.messageId, "img_barrier");
+    expect(runtime.listRemoteSessions).toHaveBeenCalled();
+  });
+
+  test("waits for the received reaction before shell execution", async () => {
+    const { controller, outbound, shellCommandExecutor } = fixture();
+    let releaseReaction!: (reactionId: string) => void;
+    const reactionVisible = new Promise<string>((resolve) => { releaseReaction = resolve; });
+    (outbound.addReaction as ReturnType<typeof vi.fn>).mockReturnValueOnce(reactionVisible);
+
+    const processing = controller.onMessage(message("! Get-ChildItem"));
+    await vi.waitFor(() => expect(outbound.addReaction).toHaveBeenCalledOnce());
+
+    expect(shellCommandExecutor).not.toHaveBeenCalled();
+
+    releaseReaction("reaction_visible");
+    await processing;
+
+    expect(shellCommandExecutor).toHaveBeenCalledWith("Get-ChildItem", process.cwd());
+  });
+
+  test("acknowledges a queued message before the previous slow operation completes", async () => {
+    const { controller, outbound, shellCommandExecutor } = fixture();
+    let finishFirstCommand!: () => void;
+    const firstCommand = new Promise<void>((resolve) => { finishFirstCommand = resolve; });
+    (shellCommandExecutor as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () => {
+        await firstCommand;
+        return {
+          stdout: "first complete",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          outputTruncated: false,
+        };
+      });
+
+    const first = controller.onMessage(message("! first-slow-command"));
+    await vi.waitFor(() => expect(shellCommandExecutor).toHaveBeenCalledTimes(1));
+
+    const second = controller.onMessage(message("! second-queued-command"));
+    await vi.waitFor(() => expect(outbound.addReaction).toHaveBeenCalledTimes(2));
+
+    expect(outbound.addReaction).toHaveBeenNthCalledWith(
+      2,
+      "m-! second-queued-command",
+      "OnIt",
+    );
+    expect(shellCommandExecutor).toHaveBeenCalledTimes(1);
+
+    finishFirstCommand();
+    await Promise.all([first, second]);
+    expect(shellCommandExecutor).toHaveBeenCalledTimes(2);
+  });
+
   test("records base Feishu chat types for restart notification routing", async () => {
     const { controller, store } = fixture();
 

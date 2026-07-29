@@ -176,9 +176,8 @@ export class ProxySessionController {
   }
 
   async onMessage(message: IncomingMessage): Promise<void> {
-    if (message.chatId && message.chatType) {
-      this.store.recordChatContext(baseChatContextKey(message.contextKey), message.chatType);
-    }
+    // The durable deduplication claim is the only operation allowed before acknowledgement.
+    // It prevents event retries from adding duplicate reactions.
     if (!this.store.claimInboundEvent(message.messageId, "message")) return;
     try {
       const reactionId = await this.outbound.addReaction(
@@ -194,6 +193,9 @@ export class ProxySessionController {
         { error, messageId: message.messageId, contextKey: message.contextKey },
         "Failed to acknowledge the incoming Feishu message with a reaction.",
       );
+    }
+    if (message.chatId && message.chatType) {
+      this.store.recordChatContext(baseChatContextKey(message.contextKey), message.chatType);
     }
     const replyTarget = message.replyInThread
       ? { messageId: message.messageId, replyInThread: true as const }

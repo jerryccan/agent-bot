@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Show the incoming-message reaction before chat persistence, image downloads, queue waits, commands, or runtime work begins.
+
 ## [0.1.2] - 2026-07-29
 
 - Make npm release retries recover a missing GitHub Release from the version tag.

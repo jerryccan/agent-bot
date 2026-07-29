@@ -175,7 +175,7 @@ AGENT_BOT=1
 
 每个 turn 只有一张进度卡。普通更新最多每两秒一次，关键更新最短间隔 500 毫秒。完成时先把进度卡更新为终态，再单独发送 Markdown 最终回答。
 
-消息去重后，Agent Bot 会尝试添加 `OnIt` 表情。Turn 成功、失败或取消时分别替换为 `DONE`、`ERROR` 或 `CrossMark`。表情操作失败不会阻塞任务。
+完成持久化消息去重占位后，Agent Bot 会等待 `OnIt` 表情添加成功，再进行聊天信息持久化、图片下载、队列等待、命令执行或 Runtime 调用。Turn 成功、失败或取消时分别替换为 `DONE`、`ERROR` 或 `CrossMark`。表情操作失败会记录日志，但不会阻塞任务。
 
 富文本图片会下载到输入图片缓存，并以 `localImage` 传给 Codex。纯图片消息使用默认 Prompt `请分析这张图片。`。ACP Runtime 不支持图片输入时会明确报错。
 
