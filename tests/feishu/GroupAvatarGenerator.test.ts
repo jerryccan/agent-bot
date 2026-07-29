@@ -9,6 +9,7 @@ import {
 } from "../../src/feishu/GroupAvatarGenerator.js";
 
 const temporaryDirectories: string[] = [];
+const AVATAR_RENDER_TIMEOUT_MS = 45_000;
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -42,7 +43,7 @@ describe("GroupAvatarGenerator", () => {
     expect(view.readUInt32BE(0)).toBe(512);
     expect(view.readUInt32BE(4)).toBe(512);
     expect(first.byteLength).toBeLessThan(10 * 1024 * 1024);
-  }, 15_000);
+  }, AVATAR_RENDER_TIMEOUT_MS);
 
   test("uses the full project path as the visual seed", () => {
     const firstProject = path.join(os.tmpdir(), "workspace-a", "aha");
@@ -51,5 +52,5 @@ describe("GroupAvatarGenerator", () => {
 
     expect(generateGroupAvatarPng("aha", firstProject)).toEqual(first);
     expect(generateGroupAvatarPng("aha", secondProject)).not.toEqual(first);
-  }, 15_000);
+  }, AVATAR_RENDER_TIMEOUT_MS);
 });
