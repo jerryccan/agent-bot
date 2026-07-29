@@ -261,15 +261,16 @@ CLI 随包发布 `npm-shrinkwrap.json`，以固定传递运行依赖；直接运
 - `prepack` 清理并构建 `dist/`，然后检查 tarball 清单
 - `npm run package:smoke` 打包项目、在临时目录安装 tarball、运行 CLI，并执行仅 Console 的初始化
 
-发布前先准备新的稳定版本：
+在干净工作树中准备下一个 patch 版本：
 
 ```powershell
-npm version 0.1.1 --no-git-tag-version
-# 把 CHANGELOG.md 中的相关内容从 Unreleased 移到 [0.1.1] 小节。
+npm run release
 git add package.json npm-shrinkwrap.json CHANGELOG.md
 git commit -m "release: v0.1.1"
 git push origin master
 ```
+
+`npm run release` 默认递增 patch 版本，并把当前 `Unreleased` 条目归档到带日期的版本小节。可以使用 `npm run release -- minor`、`npm run release -- major` 或 `npm run release -- 0.2.0` 指定其他稳定版本。工作树不干净或 `Unreleased` 没有内容时，命令会拒绝修改文件。
 
 推送完成后无需再执行本地发布命令。本仓库自身对 `master` 的 push 通过 CI 后，`publish.yml` 会查询 npm 中的包版本：版本已存在时正常跳过；发现尚未发布的稳定版本时，要求 `CHANGELOG.md` 存在匹配小节，并在发布前再次执行完整验证和包安装 smoke test。npm 接受新包后，workflow 自动创建对应的 `v<包版本>` GitHub Release。
 

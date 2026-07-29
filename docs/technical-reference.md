@@ -261,15 +261,16 @@ Package lifecycle:
 - `prepack` builds a clean `dist/` and validates the tarball manifest.
 - `npm run package:smoke` packs the project, installs the tarball into a temporary directory, runs the CLI, and performs Console-only initialization.
 
-Prepare a new stable version before publishing:
+Prepare the next patch release from a clean worktree:
 
 ```powershell
-npm version 0.1.1 --no-git-tag-version
-# Move the relevant CHANGELOG.md entries from Unreleased to a [0.1.1] section.
+npm run release
 git add package.json npm-shrinkwrap.json CHANGELOG.md
 git commit -m "release: v0.1.1"
 git push origin master
 ```
+
+`npm run release` increments the patch version by default and moves the current `Unreleased` entries into a dated version section. Use `npm run release -- minor`, `npm run release -- major`, or `npm run release -- 0.2.0` to select another stable version. The command refuses to modify a dirty worktree or publish an empty changelog.
 
 No local publish command is required after the push. When CI succeeds for a first-party push to `master`, `publish.yml` checks the package version against npm. An existing version is skipped successfully. An unpublished stable version requires a matching `CHANGELOG.md` section, then runs verification and the package smoke test before publishing. After npm accepts the package, the workflow creates the matching `v<package version>` GitHub Release.
 

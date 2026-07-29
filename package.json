@@ -54,7 +54,8 @@
     "prepack": "npm run build && node scripts/check-package.mjs",
     "prepublishOnly": "npm run verify",
     "package:check": "npm run prepack",
-    "package:smoke": "node scripts/smoke-package.mjs"
+    "package:smoke": "node scripts/smoke-package.mjs",
+    "release": "node scripts/prepare-release.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.2.1",
