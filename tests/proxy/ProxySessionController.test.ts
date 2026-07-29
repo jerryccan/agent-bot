@@ -1100,7 +1100,7 @@ describe("ProxySessionController", () => {
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      "群和新任务已创建。\n当前任务：广州天气（thr_1）\n当前 Project 目录：未绑定（Projectless）\n模型 / 思考强度 / 权限：gpt-test / high / auto",
+      "群和新任务已创建。\n当前任务：广州天气（thr_1）\n当前 Project 目录：未绑定（Projectless）\n当前模型：gpt-test\n思考强度：high",
     );
     expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
@@ -1143,7 +1143,7 @@ describe("ProxySessionController", () => {
     }));
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      `群和新任务已创建。\n当前任务：Project room（thr_2）\n当前 Project 目录：${project}\n模型 / 思考强度 / 权限：gpt-test / high / auto`,
+      `群和新任务已创建。\n当前任务：Project room（thr_2）\n当前 Project 目录：${project}\n当前模型：gpt-test\n思考强度：high`,
     );
 
     const createCount = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls.length;

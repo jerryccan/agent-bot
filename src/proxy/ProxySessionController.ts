@@ -1396,7 +1396,8 @@ export class ProxySessionController {
         "群和新任务已创建。",
         `当前任务：${taskDescription}`,
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
-        `模型 / 思考强度 / 权限：${task.model ?? "默认"} / ${task.reasoningEffort ?? "自动"} / ${task.permissionMode ?? "auto"}`,
+        `当前模型：${task.model ?? "默认"}`,
+        `思考强度：${task.reasoningEffort ?? "自动"}`,
       ].join("\n"),
     );
     await this.outbound.sendText(
