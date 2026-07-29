@@ -320,7 +320,7 @@ export class CardRenderer {
     lines.push(
       `**服务状态 / 启动时间**：🟢 在线 / ${formatStartupTime(view.startedAt)}`,
       `**重启原因**：${inlineCode(view.restartReason)}`,
-      "发送普通消息继续当前任务；发送 `/new` 创建新任务；发送 `/status` 查看详情。",
+      "> 发送消息即可开始对话；发送 `/new` 创建新任务；发送 `/help` 查看帮助。",
     );
     return sectionCard("Agent Bot 已启动", [markdown(lines.join("\n"))], "green");
   }

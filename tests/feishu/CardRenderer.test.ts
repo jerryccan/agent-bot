@@ -165,8 +165,8 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("任务状态 / Agent");
     expect(serialized).toContain("服务状态 / 启动时间");
     expect(serialized).toContain("下一条消息时恢复");
-    expect(serialized).toContain("/new");
-    expect(serialized).toContain("/status");
+    expect(serialized).toContain("> 发送消息即可开始对话；发送 `/new` 创建新任务；发送 `/help` 查看帮助。");
+    expect(serialized).not.toContain("发送 /status 查看详情");
     expect(objects.filter((item) => item.tag === "button" || item.tag === "action")).toHaveLength(0);
     const content = String(objects.find((item) => item.tag === "markdown")?.content);
     expect(content.indexOf("当前任务")).toBeLessThan(content.indexOf("工作目录"));
