@@ -18,8 +18,9 @@ describe("startFeishu", () => {
       startedAt,
       "test restart",
       async () => { order.push("control"); },
+      () => { order.push("ready"); },
     );
 
-    expect(order).toEqual(["control", "connector", "notification"]);
+    expect(order).toEqual(["control", "connector", "ready", "notification"]);
   });
 });

@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseDotEnv } from "dotenv";
@@ -44,8 +46,15 @@ export interface FeishuCredentials {
   appSecret: string;
 }
 
+export interface InitializationLock {
+  path: string;
+  release(): void;
+}
+
 const DEFAULT_CONFIG_TEMPLATE = fileURLToPath(new URL("../../config.example.yaml", import.meta.url));
 const DEFAULT_ENV_TEMPLATE = fileURLToPath(new URL("../../.env.example", import.meta.url));
+const INITIALIZATION_LOCK_NAME = "init.lock";
+const MAX_INITIALIZATION_LOCK_AGE_MS = 30 * 60_000;
 
 export function initializeAgentBot(options: InitializationOptions = {}): InitializationResult {
   const env = options.env ?? process.env;
@@ -63,14 +72,7 @@ export function initializeAgentBot(options: InitializationOptions = {}): Initial
   const home = ensureDirectory(homePath);
   fs.mkdirSync(configDirectory, { recursive: true });
 
-  let config: InitializedPath;
-  if (fs.existsSync(configPath)) {
-    config = { path: configPath, status: "existing" };
-  } else {
-    fs.copyFileSync(configTemplatePath, configPath, fs.constants.COPYFILE_EXCL);
-    config = { path: configPath, status: "created" };
-  }
-
+  const config = copyIfMissing(configTemplatePath, configPath);
   const envFile = copyIfMissing(envTemplatePath, envPath);
   restrictFilePermissions(envFile.path);
   const data = ensureDirectory(path.join(configDirectory, "data"));
@@ -97,13 +99,91 @@ export function writeFeishuCredentials(envPath: string, credentials: FeishuCrede
 
   fs.mkdirSync(path.dirname(envPath), { recursive: true });
   const temporaryPath = `${envPath}.${process.pid}.${Date.now()}.tmp`;
+  let temporaryFile: number | undefined;
   try {
-    fs.writeFileSync(temporaryPath, updated, { encoding: "utf8", mode: 0o600 });
+    temporaryFile = fs.openSync(temporaryPath, "wx", 0o600);
+    fs.writeFileSync(temporaryFile, updated, "utf8");
+    fs.fsyncSync(temporaryFile);
+    fs.closeSync(temporaryFile);
+    temporaryFile = undefined;
     fs.renameSync(temporaryPath, envPath);
+    syncDirectory(path.dirname(envPath));
     restrictFilePermissions(envPath);
+    const persisted = readFeishuCredentials(envPath, {});
+    if (
+      persisted.status !== "configured"
+      || persisted.appId !== credentials.appId
+      || persisted.appSecret !== credentials.appSecret
+    ) {
+      throw new Error("飞书凭据写入后校验失败。");
+    }
   } finally {
+    if (temporaryFile !== undefined) fs.closeSync(temporaryFile);
     fs.rmSync(temporaryPath, { force: true });
   }
+}
+
+export function shouldCreateFeishuApp(
+  credentials: FeishuCredentialState,
+  reconfigureFeishu: boolean,
+): boolean {
+  return reconfigureFeishu || credentials.status !== "configured";
+}
+
+export function acquireInitializationLock(lockDirectory: string): InitializationLock {
+  fs.mkdirSync(lockDirectory, { recursive: true });
+  const lockPath = path.join(lockDirectory, INITIALIZATION_LOCK_NAME);
+  const owner = {
+    token: randomUUID(),
+    pid: process.pid,
+    hostname: os.hostname(),
+    startedAt: new Date().toISOString(),
+  };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let lockFile: number | undefined;
+    let created = false;
+    try {
+      lockFile = fs.openSync(lockPath, "wx", 0o600);
+      created = true;
+      fs.writeFileSync(lockFile, `${JSON.stringify(owner)}\n`, "utf8");
+      fs.fsyncSync(lockFile);
+      fs.closeSync(lockFile);
+      lockFile = undefined;
+      return {
+        path: lockPath,
+        release: () => {
+          const current = readInitializationLock(lockPath);
+          if (current?.token === owner.token) fs.rmSync(lockPath, { force: true });
+        },
+      };
+    } catch (error) {
+      if (lockFile !== undefined) fs.closeSync(lockFile);
+      if (created) fs.rmSync(lockPath, { force: true });
+      if (!isFileExistsError(error)) throw error;
+      if (!isStaleInitializationLock(lockPath)) {
+        throw new Error(`另一个 agent-bot init 正在运行（锁文件：${lockPath}）。`);
+      }
+      fs.rmSync(lockPath, { force: true });
+    }
+  }
+
+  throw new Error(`无法获取初始化锁：${lockPath}`);
+}
+
+export function cleanupFeishuCredentialTemporaryFiles(envPath: string): number {
+  const directory = path.dirname(envPath);
+  if (!fs.existsSync(directory)) return 0;
+  const prefix = `${path.basename(envPath)}.`;
+  let removed = 0;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix) || !entry.name.endsWith(".tmp")) continue;
+    const middle = entry.name.slice(prefix.length, -".tmp".length);
+    if (!/^\d+\.\d+$/.test(middle)) continue;
+    fs.rmSync(path.join(directory, entry.name), { force: true });
+    removed += 1;
+  }
+  return removed;
 }
 
 function assertTemplate(templatePath: string): void {
@@ -121,8 +201,13 @@ function ensureDirectory(directoryPath: string): InitializedPath {
 function copyIfMissing(sourcePath: string, targetPath: string): InitializedPath {
   if (fs.existsSync(targetPath)) return { path: targetPath, status: "existing" };
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.copyFileSync(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
-  return { path: targetPath, status: "created" };
+  try {
+    fs.copyFileSync(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+    return { path: targetPath, status: "created" };
+  } catch (error) {
+    if (isFileExistsError(error)) return { path: targetPath, status: "existing" };
+    throw error;
+  }
 }
 
 function upsertDotEnvValue(contents: string, key: string, value: string): string {
@@ -152,6 +237,74 @@ function restrictFilePermissions(filePath: string): void {
   } catch {
     // Windows and some mounted filesystems do not implement POSIX modes.
   }
+}
+
+function syncDirectory(directoryPath: string): void {
+  let directory: number | undefined;
+  try {
+    directory = fs.openSync(directoryPath, "r");
+    fs.fsyncSync(directory);
+  } catch {
+    // Directory fsync is not supported on every Windows or mounted filesystem.
+  } finally {
+    if (directory !== undefined) fs.closeSync(directory);
+  }
+}
+
+interface InitializationLockOwner {
+  token: string;
+  pid: number;
+  hostname: string;
+  startedAt: string;
+}
+
+function readInitializationLock(lockPath: string): InitializationLockOwner | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const value = parsed as Record<string, unknown>;
+    if (
+      typeof value.token !== "string"
+      || typeof value.pid !== "number"
+      || typeof value.hostname !== "string"
+      || typeof value.startedAt !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      token: value.token,
+      pid: value.pid,
+      hostname: value.hostname,
+      startedAt: value.startedAt,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isStaleInitializationLock(lockPath: string): boolean {
+  const owner = readInitializationLock(lockPath);
+  const modifiedAt = fs.statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs ?? Date.now();
+  const ageMs = Date.now() - modifiedAt;
+  if (!owner) return ageMs >= 5_000;
+  if (owner.hostname === os.hostname()) return !isProcessRunning(owner.pid);
+  const startedAt = Date.parse(owner.startedAt);
+  const ownerAgeMs = Number.isFinite(startedAt) ? Date.now() - startedAt : ageMs;
+  return ownerAgeMs >= MAX_INITIALIZATION_LOCK_AGE_MS;
+}
+
+function isProcessRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "EEXIST";
 }
 
 function firstNonBlank(...values: Array<string | undefined>): string | undefined {

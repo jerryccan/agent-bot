@@ -41,7 +41,18 @@ export async function sendControlRequest(
 export async function isServerRunning(endpoint: string): Promise<boolean> {
   try {
     const response = await sendControlRequest(endpoint, { action: "health" }, 1_000);
-    return response.ok;
+    if (!response.ok) return false;
+    if (!response.data || typeof response.data !== "object") return true;
+    return (response.data as Record<string, unknown>).ready !== false;
+  } catch {
+    return false;
+  }
+}
+
+export async function isServerReachable(endpoint: string): Promise<boolean> {
+  try {
+    await sendControlRequest(endpoint, { action: "health" }, 1_000);
+    return true;
   } catch {
     return false;
   }

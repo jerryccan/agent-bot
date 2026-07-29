@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { isServerRunning } from "./cli/LocalControlClient.js";
+import { isServerReachable } from "./cli/LocalControlClient.js";
 import { controlEndpoint } from "./cli/controlProtocol.js";
 import { loadConfig } from "./config/loadConfig.js";
+import { requireServerFeishuTransport } from "./feishu/transport.js";
 import {
   crashRestartDelayMs,
   describeRestartReason,
@@ -13,7 +14,9 @@ import {
 } from "./supervision/restartPolicy.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
-const sqlitePath = loadConfig().storage.sqlitePath;
+const config = loadConfig();
+requireServerFeishuTransport(config.feishu);
+const sqlitePath = config.storage.sqlitePath;
 const serverEndpoint = controlEndpoint(sqlitePath);
 let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
@@ -23,7 +26,7 @@ let nextStartReason = process.env.AGENT_BOT_RESTART_REASON?.trim() || "Superviso
 
 async function startChild(): Promise<void> {
   if (stopping || child) return;
-  if (await isServerRunning(serverEndpoint)) {
+  if (await isServerReachable(serverEndpoint)) {
     writeSupervisorLog("existing_server_detected", { endpoint: serverEndpoint });
     process.exit(0);
     return;
@@ -64,7 +67,7 @@ async function handleChildExit(
     process.exit(0);
     return;
   }
-  if (await isServerRunning(serverEndpoint)) {
+  if (await isServerReachable(serverEndpoint)) {
     writeSupervisorLog("duplicate_supervisor_stopped", { endpoint: serverEndpoint });
     process.exit(0);
     return;

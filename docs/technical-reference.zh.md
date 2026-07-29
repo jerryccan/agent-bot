@@ -60,10 +60,12 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 - 进程环境变量优先于 `~/.agent-bot/.env`
 - `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 必须同时存在
 - 除非使用 `--reconfigure-feishu`，完整凭据不会被替换
-- 凭据只有一项时会直接报错，不会静默覆盖
-- 新创建的凭据以原子方式写入 `.env`
+- 缺少凭据或只有一项时会重新创建应用
+- 新创建的凭据经过 fsync、原子替换写入 `.env`，并在配置权限前读回校验
 
-缺少凭据时，初始化会启动飞书一键创建流程，并以文本和二维码显示验证链接。无论凭据是新创建还是已存在，之后都会检查应用当前已发布版本。
+初始化期间会持有 `~/.agent-bot/init.lock`，避免使用不同配置路径的并发命令重复创建应用。进程异常退出遗留的锁会在下次运行时恢复，凭据写入中断留下的临时文件也会被清理。
+
+没有完整凭据时，初始化会启动飞书一键创建流程，并以文本和二维码显示验证链接。注册中的设备码不会恢复：如果进程在完整凭据持久化前退出，下次会重新创建应用。凭据持久化后会检查应用当前已发布版本；这一权限审计阶段中断后可以安全继续。
 
 缺失配置分两阶段处理：
 
@@ -103,10 +105,8 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 ```yaml
 feishu:
-  transport: "auto"
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
-  useConsoleWhenMissingCredentials: true
 
 console:
   enabled: true
@@ -131,11 +131,7 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-`feishu.transport` 支持：
-
-- `auto`：存在凭据时使用 SDK，否则按 `useConsoleWhenMissingCredentials` 决定是否回退 Console
-- `sdk`：要求飞书凭据并启动长连接客户端
-- `console`：禁用飞书传输
+`agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。命令会等待 SDK 的 WebSocket 长连接建立后才报告 Server 就绪；缺少凭据时启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
 
 必须至少配置一个 Agent，`defaults.agent` 必须指向已配置的 Agent。
 

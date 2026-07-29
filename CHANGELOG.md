@@ -7,6 +7,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - Make npm release retries recover a missing GitHub Release from the version tag.
+- Wait for the Feishu WebSocket connection before reporting the server as ready, and reject server startup when bot credentials are missing.
+- Make Feishu initialization recover safely from interruption with exclusive initialization locking, durable credential writes, and new app registration whenever a complete credential pair was not saved.
 
 ## [0.1.1] - 2026-07-29
 

@@ -2,7 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { initializeAgentBot, readFeishuCredentials, writeFeishuCredentials } from "../../src/cli/Initializer.js";
+import {
+  acquireInitializationLock,
+  cleanupFeishuCredentialTemporaryFiles,
+  initializeAgentBot,
+  readFeishuCredentials,
+  shouldCreateFeishuApp,
+  writeFeishuCredentials,
+} from "../../src/cli/Initializer.js";
 
 const directories: string[] = [];
 
@@ -83,6 +90,9 @@ describe("initializeAgentBot", () => {
       appId: "cli_created",
       appSecret: "secret-created",
     });
+    expect(
+      fs.readdirSync(path.dirname(result.env.path)).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
   });
 
   test("reports incomplete credentials", () => {
@@ -95,6 +105,72 @@ describe("initializeAgentBot", () => {
       appId: "cli_only",
       appSecret: undefined,
     });
+  });
+
+  test("creates a new app unless a complete credential pair is available", () => {
+    expect(shouldCreateFeishuApp({ status: "missing" }, false)).toBe(true);
+    expect(shouldCreateFeishuApp({ status: "incomplete", appId: "cli_only" }, false)).toBe(true);
+    expect(
+      shouldCreateFeishuApp(
+        { status: "configured", appId: "cli_existing", appSecret: "secret" },
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      shouldCreateFeishuApp(
+        { status: "configured", appId: "cli_existing", appSecret: "secret" },
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  test("prevents concurrent initialization and releases an owned lock", () => {
+    const fixture = createFixture();
+    const dataDirectory = path.join(fixture.home, "data");
+    const first = acquireInitializationLock(dataDirectory);
+
+    expect(() => acquireInitializationLock(dataDirectory)).toThrow("另一个 agent-bot init 正在运行");
+    expect(fs.existsSync(first.path)).toBe(true);
+
+    first.release();
+    expect(fs.existsSync(first.path)).toBe(false);
+    const next = acquireInitializationLock(dataDirectory);
+    next.release();
+  });
+
+  test("recovers an initialization lock left by a dead process", () => {
+    const fixture = createFixture();
+    const dataDirectory = path.join(fixture.home, "data");
+    fs.mkdirSync(dataDirectory, { recursive: true });
+    const lockPath = path.join(dataDirectory, "init.lock");
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        token: "stale",
+        pid: 2_000_000_000,
+        hostname: os.hostname(),
+        startedAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+
+    const recovered = acquireInitializationLock(dataDirectory);
+
+    expect(recovered.path).toBe(lockPath);
+    recovered.release();
+  });
+
+  test("cleans credential temporary files left by an interrupted write", () => {
+    const fixture = createFixture();
+    const result = initializeAgentBot(fixture.options);
+    const staleTemporaryPath = `${result.env.path}.123.456.tmp`;
+    const unrelatedPath = `${result.env.path}.notes.tmp`;
+    fs.writeFileSync(staleTemporaryPath, "partial", "utf8");
+    fs.writeFileSync(unrelatedPath, "keep", "utf8");
+
+    expect(cleanupFeishuCredentialTemporaryFiles(result.env.path)).toBe(1);
+    expect(fs.existsSync(staleTemporaryPath)).toBe(false);
+    expect(fs.existsSync(unrelatedPath)).toBe(true);
   });
 });
 

@@ -1,24 +1,15 @@
 import type { AppConfig } from "../config/schema.js";
 
-export type FeishuTransportMode = "sdk" | "console";
-
 type FeishuTransportConfig = Pick<
   AppConfig["feishu"],
-  "transport" | "appId" | "appSecret" | "useConsoleWhenMissingCredentials"
+  "appId" | "appSecret"
 >;
 
-export function resolveFeishuTransport(config: FeishuTransportConfig): FeishuTransportMode {
-  if (config.transport === "console") {
-    return "console";
+export function requireServerFeishuTransport(config: FeishuTransportConfig): "sdk" {
+  if (!config.appId || !config.appSecret) {
+    throw new Error(
+      "飞书机器人尚未配置。请先运行 agent-bot init 完成初始化；仅需本地调试时请使用 agent-bot console。",
+    );
   }
-
-  const hasCredentials = Boolean(config.appId && config.appSecret);
-  if (config.transport === "sdk" || !config.useConsoleWhenMissingCredentials) {
-    if (!hasCredentials) {
-      throw new Error("Feishu appId/appSecret are required.");
-    }
-    return "sdk";
-  }
-
-  return hasCredentials ? "sdk" : "console";
+  return "sdk";
 }

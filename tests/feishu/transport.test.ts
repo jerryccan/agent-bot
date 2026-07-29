@@ -1,9 +1,9 @@
 import type { Logger } from "pino";
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { AppConfig } from "../../src/config/schema.js";
 import { appConfigSchema } from "../../src/config/schema.js";
 import { FeishuConnector } from "../../src/feishu/FeishuConnector.js";
-import { resolveFeishuTransport } from "../../src/feishu/transport.js";
+import { requireServerFeishuTransport } from "../../src/feishu/transport.js";
 
 const larkSdkMock = vi.hoisted(() => ({
   handlers: {} as Record<string, (data: unknown) => Promise<unknown>>,
@@ -11,11 +11,21 @@ const larkSdkMock = vi.hoisted(() => ({
     larkSdkMock.handlers = handlers;
     return { kind: "eventDispatcher" };
   }),
-  start: vi.fn(),
+  sdkLogger: undefined as undefined | {
+    error: (...messages: unknown[]) => void;
+    debug: (...messages: unknown[]) => void;
+  },
+  constructorOptions: undefined as undefined | Record<string, unknown>,
+  start: vi.fn(async () => {
+    larkSdkMock.sdkLogger?.debug("[ws]", "ws connect success");
+  }),
 }));
 
 vi.mock("@larksuiteoapi/node-sdk", () => ({
-  WSClient: vi.fn(function () {
+  LoggerLevel: { debug: 4 },
+  WSClient: vi.fn(function (options: Record<string, unknown>) {
+    larkSdkMock.constructorOptions = options;
+    larkSdkMock.sdkLogger = options.logger as typeof larkSdkMock.sdkLogger;
     return { start: larkSdkMock.start };
   }),
   EventDispatcher: vi.fn(function () {
@@ -23,44 +33,25 @@ vi.mock("@larksuiteoapi/node-sdk", () => ({
   }),
 }));
 
-const options = {
-  transport: "auto" as const,
-  appId: undefined,
-  appSecret: undefined,
-  useConsoleWhenMissingCredentials: true,
-};
+beforeEach(() => {
+  vi.clearAllMocks();
+  larkSdkMock.handlers = {};
+  larkSdkMock.sdkLogger = undefined;
+  larkSdkMock.constructorOptions = undefined;
+  larkSdkMock.start.mockImplementation(async () => {
+    larkSdkMock.sdkLogger?.debug("[ws]", "ws connect success");
+  });
+});
 
-describe("resolveFeishuTransport", () => {
-  test("uses the SDK in auto mode when both credentials exist", () => {
-    expect(resolveFeishuTransport({ ...options, appId: "cli_app", appSecret: "secret" })).toBe("sdk");
+describe("requireServerFeishuTransport", () => {
+  test("uses the SDK when both credentials exist", () => {
+    expect(requireServerFeishuTransport({ appId: "cli_app", appSecret: "secret" })).toBe("sdk");
   });
 
-  test("uses console in auto mode when credentials are missing and fallback is enabled", () => {
-    expect(resolveFeishuTransport(options)).toBe("console");
-  });
-
-  test("rejects auto mode without credentials when fallback is disabled", () => {
-    expect(() => resolveFeishuTransport({ ...options, useConsoleWhenMissingCredentials: false })).toThrow(
-      "Feishu appId/appSecret are required.",
+  test("rejects a server start without complete credentials", () => {
+    expect(() => requireServerFeishuTransport({ appId: "cli_app" })).toThrow(
+      "飞书机器人尚未配置。请先运行 agent-bot init",
     );
-  });
-
-  test("rejects explicit SDK mode without complete credentials", () => {
-    expect(() => resolveFeishuTransport({ ...options, transport: "sdk" })).toThrow(
-      "Feishu appId/appSecret are required.",
-    );
-  });
-
-  test("rejects explicit SDK mode when only one credential is configured", () => {
-    expect(() => resolveFeishuTransport({ ...options, transport: "sdk", appId: "cli_app" })).toThrow(
-      "Feishu appId/appSecret are required.",
-    );
-  });
-
-  test("honors explicit console mode even when credentials exist", () => {
-    expect(
-      resolveFeishuTransport({ ...options, transport: "console", appId: "cli_app", appSecret: "secret" }),
-    ).toBe("console");
   });
 });
 
@@ -71,6 +62,68 @@ test("the configuration rejects unsupported transport values", () => {
       agents: { example: { title: "Example", command: "node" } },
     }),
   ).toThrow();
+});
+
+test("waits for the Feishu WebSocket to actually connect", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = {
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+  larkSdkMock.start.mockResolvedValue(undefined);
+  const connector = new FeishuConnector(config, handler, logger, { connectTimeoutMs: 1_000 });
+  let resolved = false;
+
+  const starting = connector.start().then(() => { resolved = true; });
+  await vi.waitFor(() => expect(larkSdkMock.sdkLogger).toBeDefined());
+  await Promise.resolve();
+  expect(resolved).toBe(false);
+
+  larkSdkMock.sdkLogger?.debug("[ws]", "ws connect success");
+  await starting;
+
+  expect(larkSdkMock.constructorOptions?.loggerLevel).toBe(4);
+  expect(logger.info).toHaveBeenCalledWith("Feishu WebSocket connector connected.");
+});
+
+test("fails startup when the Feishu WebSocket does not connect before the timeout", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = {
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+  larkSdkMock.start.mockImplementation(async () => {
+    larkSdkMock.sdkLogger?.error("[ws]", "invalid app credentials");
+  });
+  const connector = new FeishuConnector(config, handler, logger, { connectTimeoutMs: 10 });
+
+  await expect(connector.start()).rejects.toThrow(
+    "Timed out after 10ms waiting for the Feishu WebSocket connection. Last SDK error: [ws] invalid app credentials",
+  );
+  expect(logger.error).toHaveBeenCalledWith(
+    { component: "feishu-websocket", sdkMessage: "[ws] invalid app credentials" },
+    "Feishu SDK error.",
+  );
 });
 
 test("dispatches direct Feishu SDK message events", async () => {

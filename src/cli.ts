@@ -3,15 +3,18 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import qrcode from "qrcode-terminal";
 import { loadConfig } from "./config/loadConfig.js";
-import { sendControlRequest, isServerRunning } from "./cli/LocalControlClient.js";
+import { sendControlRequest, isServerReachable, isServerRunning } from "./cli/LocalControlClient.js";
 import {
   controlEndpoint,
   type ControlResponse,
   type TaskStatusControlData,
 } from "./cli/controlProtocol.js";
 import {
+  acquireInitializationLock,
+  cleanupFeishuCredentialTemporaryFiles,
   initializeAgentBot,
   readFeishuCredentials,
+  shouldCreateFeishuApp,
   writeFeishuCredentials,
   type InitializationResult,
   type InitializationStatus,
@@ -27,6 +30,7 @@ import {
   type FeishuConfigurationChallenge,
 } from "./cli/FeishuAppConfiguration.js";
 import { renderCliHelp } from "./cli/help.js";
+import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
@@ -97,57 +101,73 @@ async function initCommand(input: string[], configPath?: string): Promise<void> 
 
   const paths = initializeAgentBot({ configPath });
   if (!json) printInitializationPaths(paths);
+  const initializationLock = acquireInitializationLock(paths.home.path);
 
+  try {
+    cleanupFeishuCredentialTemporaryFiles(paths.env.path);
+    const feishu = await initializeFeishu(
+      paths,
+      { json, skipFeishu, reconfigureFeishu },
+    );
+    const result: InitCommandResult = { ...paths, feishu };
+    if (json) printJson(result);
+    else printInitializationResult(result);
+  } finally {
+    initializationLock.release();
+  }
+}
+
+async function initializeFeishu(
+  paths: InitializationResult,
+  options: { json: boolean; skipFeishu: boolean; reconfigureFeishu: boolean },
+): Promise<InitCommandResult["feishu"]> {
   const existing = readFeishuCredentials(paths.env.path);
-  let feishu: InitCommandResult["feishu"];
-  if (skipFeishu) {
-    feishu = {
+  if (options.skipFeishu) {
+    return {
       status: "skipped",
       ...(existing.appId ? { appId: existing.appId } : {}),
     };
-  } else {
-    const controller = new AbortController();
-    const onInterrupt = (): void => controller.abort(new Error("已取消初始化。"));
-    process.once("SIGINT", onInterrupt);
-    try {
-      let credentials: FeishuAppCredentials;
-      let status: Exclude<FeishuInitializationStatus, "skipped">;
-      if (existing.status === "configured" && !reconfigureFeishu) {
-        credentials = {
-          appId: existing.appId!,
-          appSecret: existing.appSecret!,
-        };
-        status = "existing";
-      } else {
-        if (existing.status === "incomplete" && !reconfigureFeishu) {
-          throw new Error(`检测到不完整的飞书凭证：请补全 ${paths.env.path}，或使用 --reconfigure-feishu 重新创建应用。`);
-        }
-        credentials = await registerFeishuApp({
-          signal: controller.signal,
-          onVerification: (challenge) => printFeishuVerification(challenge, json),
-        });
-        writeFeishuCredentials(paths.env.path, credentials);
-        status = "created";
-      }
-
-      if (!json) process.stdout.write("\n正在检查飞书应用权限、事件和回调配置...\n");
-      const configuration = await ensureFeishuAppConfiguration(credentials, {
-        signal: controller.signal,
-        onVerification: (challenge) => printFeishuConfigurationVerification(challenge, json),
-      });
-      feishu = {
-        status,
-        appId: credentials.appId,
-        configuration,
-      };
-    } finally {
-      process.removeListener("SIGINT", onInterrupt);
-    }
   }
 
-  const result: InitCommandResult = { ...paths, feishu };
-  if (json) printJson(result);
-  else printInitializationResult(result);
+  const controller = new AbortController();
+  const onInterrupt = (): void => controller.abort(new Error("已取消初始化。"));
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onInterrupt);
+  try {
+    let credentials: FeishuAppCredentials;
+    let status: Exclude<FeishuInitializationStatus, "skipped">;
+    if (!shouldCreateFeishuApp(existing, options.reconfigureFeishu)) {
+      credentials = {
+        appId: existing.appId!,
+        appSecret: existing.appSecret!,
+      };
+      status = "existing";
+    } else {
+      if (existing.status === "incomplete" && !options.json) {
+        process.stdout.write("\n检测到未完整保存的飞书凭据，将重新创建机器人。\n");
+      }
+      credentials = await registerFeishuApp({
+        signal: controller.signal,
+        onVerification: (challenge) => printFeishuVerification(challenge, options.json),
+      });
+      writeFeishuCredentials(paths.env.path, credentials);
+      status = "created";
+    }
+
+    if (!options.json) process.stdout.write("\n正在检查飞书应用权限、事件和回调配置...\n");
+    const configuration = await ensureFeishuAppConfiguration(credentials, {
+      signal: controller.signal,
+      onVerification: (challenge) => printFeishuConfigurationVerification(challenge, options.json),
+    });
+    return {
+      status,
+      appId: credentials.appId,
+      configuration,
+    };
+  } finally {
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onInterrupt);
+  }
 }
 
 function skillsCommand(input: string[]): void {
@@ -196,7 +216,7 @@ async function consoleCommand(input: string[]): Promise<void> {
   const config = loadConfig();
   const endpoint = controlEndpoint(config.storage.sqlitePath);
   const force = input.includes("--force");
-  if (!force && await isServerRunning(endpoint)) {
+  if (!force && await isServerReachable(endpoint)) {
     throw new Error("agent-bot server 正在运行。为避免争用同一任务状态，请先停止 server，或明确使用 --force。");
   }
   const entry = fileURLToPath(new URL("./index.js", import.meta.url));
@@ -227,8 +247,15 @@ async function serverCommand(input: string[]): Promise<void> {
     return;
   }
   if (action === "start") {
+    requireServerFeishuTransport(config.feishu);
     if (await isServerRunning(endpoint)) {
       process.stdout.write("agent-bot server 已在运行。\n");
+      return;
+    }
+    if (await isServerReachable(endpoint)) {
+      const running = await waitForServer(endpoint, 45_000);
+      if (!running) throw new Error("agent-bot server 已启动，但未能连接飞书机器人。请检查日志。");
+      process.stdout.write("agent-bot server 已启动。\n");
       return;
     }
     const entry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
@@ -240,8 +267,8 @@ async function serverCommand(input: string[]): Promise<void> {
       env: { ...process.env, AGENT_BOT_RESTART_REASON: "通过 agent-bot CLI 启动" },
     });
     child.unref();
-    const running = await waitForServer(endpoint, 30_000);
-    if (!running) throw new Error("已启动 Supervisor，但 server 未在 30 秒内就绪。请检查日志。");
+    const running = await waitForServer(endpoint, 45_000);
+    if (!running) throw new Error("已启动 Supervisor，但 server 未在 45 秒内连接飞书机器人。请检查日志。");
     process.stdout.write("agent-bot server 已启动。\n");
     return;
   }
@@ -422,7 +449,11 @@ function printServerStatus(data: unknown): void {
   const activity = value.activity && typeof value.activity === "object"
     ? value.activity as Record<string, unknown>
     : {};
-  process.stdout.write("agent-bot server：运行中\n");
+  process.stdout.write(
+    value.ready === false
+      ? "agent-bot server：启动中（正在连接飞书机器人）\n"
+      : "agent-bot server：运行中\n",
+  );
   process.stdout.write(`PID：${value.pid ?? "-"}\n`);
   process.stdout.write(`启动时间：${value.startedAt ?? "-"}\n`);
   process.stdout.write(`Supervisor：${value.supervised ? "已启用" : "未启用"}\n`);

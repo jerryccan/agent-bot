@@ -7,10 +7,8 @@ import { defaultConfigPath, defaultDotEnvPath, resolveUserPath } from "./paths.j
 
 const ENV_PATTERN = /\$\{([A-Z0-9_]+)\}/gi;
 const DEFAULT_CONFIG = `feishu:
-  transport: "auto"
   appId: "\${FEISHU_APP_ID}"
   appSecret: "\${FEISHU_APP_SECRET}"
-  useConsoleWhenMissingCredentials: true
 
 console:
   enabled: true

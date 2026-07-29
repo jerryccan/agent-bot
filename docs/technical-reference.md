@@ -60,10 +60,12 @@ Credential behavior:
 - Environment values take precedence over values in `~/.agent-bot/.env`.
 - Both `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are required.
 - Complete credentials are preserved unless `--reconfigure-feishu` is used.
-- An incomplete credential pair is rejected instead of being silently replaced.
-- Newly registered credentials are written atomically to `.env`.
+- Missing or incomplete credentials cause a new app registration.
+- Newly registered credentials are fsynced, atomically replaced in `.env`, and read back before configuration begins.
 
-When credentials are absent, initialization uses Feishu one-click registration and reports its verification URL as text and a QR code. After registration, or when complete credentials already exist, it audits the currently published app version.
+Initialization holds `~/.agent-bot/init.lock` so concurrent commands cannot create multiple apps, including commands that use different config paths. A lock left by a dead process is recovered on the next run, and credential temporary files left by an interrupted write are removed.
+
+When complete credentials are absent, initialization uses Feishu one-click registration and reports its verification URL as text and a QR code. In-progress registration codes are not resumed: if the process exits before the complete credential pair is persisted, the next run starts a new app registration. After credentials are persisted, initialization audits the currently published app version and can safely resume that audit after interruption.
 
 Missing app configuration is handled in two stages:
 
@@ -103,10 +105,8 @@ The complete example is [config.example.yaml](../config.example.yaml). The main 
 
 ```yaml
 feishu:
-  transport: "auto"
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
-  useConsoleWhenMissingCredentials: true
 
 console:
   enabled: true
@@ -131,11 +131,7 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-`feishu.transport` accepts:
-
-- `auto`: use the SDK when credentials exist; otherwise follow `useConsoleWhenMissingCredentials`
-- `sdk`: require Feishu credentials and start the WebSocket client
-- `console`: disable Feishu transport
+`agent-bot server start` requires both Feishu credentials. The command waits for the SDK's persistent WebSocket connection before reporting the server as ready. Missing credentials fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
 
 At least one agent must be configured. `defaults.agent` must name a configured agent.
 

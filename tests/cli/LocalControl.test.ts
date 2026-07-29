@@ -2,7 +2,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { LocalControlServer } from "../../src/cli/LocalControlServer.js";
-import { isServerRunning, sendControlRequest } from "../../src/cli/LocalControlClient.js";
+import {
+  isServerReachable,
+  isServerRunning,
+  sendControlRequest,
+} from "../../src/cli/LocalControlClient.js";
 import { controlEndpoint } from "../../src/cli/controlProtocol.js";
 
 const servers: LocalControlServer[] = [];
@@ -38,6 +42,7 @@ describe("local CLI control", () => {
     await server.start();
 
     await expect(isServerRunning(endpoint)).resolves.toBe(true);
+    await expect(isServerReachable(endpoint)).resolves.toBe(true);
     await expect(sendControlRequest(endpoint, { action: "health" })).resolves.toEqual({
       ok: true,
       data: { pid: 42 },
@@ -46,6 +51,19 @@ describe("local CLI control", () => {
       ok: false,
       message: "rejected",
     });
+  });
+
+  test("distinguishes a reachable starting process from a ready server", async () => {
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-starting-${process.pid}-${Date.now()}.sqlite`));
+    const server = new LocalControlServer(endpoint, async () => ({
+      ok: true,
+      data: { ready: false, phase: "connecting_feishu" },
+    }));
+    servers.push(server);
+    await server.start();
+
+    await expect(isServerReachable(endpoint)).resolves.toBe(true);
+    await expect(isServerRunning(endpoint)).resolves.toBe(false);
   });
 
   test("round-trips a targeted task prompt request", async () => {

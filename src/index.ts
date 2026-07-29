@@ -15,7 +15,7 @@ import { ConsoleFeishuClient } from "./feishu/ConsoleFeishuClient.js";
 import { FeishuConnector } from "./feishu/FeishuConnector.js";
 import { FeishuMessageClient } from "./feishu/FeishuMessageClient.js";
 import { FeishuTurnPresenter } from "./feishu/FeishuTurnPresenter.js";
-import { resolveFeishuTransport } from "./feishu/transport.js";
+import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { createLogger } from "./logging/logger.js";
 import { OutboundRouter, type OutboundRoute } from "./presentation/OutboundRouter.js";
 import { ProxySessionController } from "./proxy/ProxySessionController.js";
@@ -36,6 +36,7 @@ const startupReason = process.env.AGENT_BOT_RESTART_REASON?.trim()
   || (supervised ? "Supervisor 启动" : "直接启动");
 const consoleOnly = process.env.AGENT_BOT_CONSOLE_ONLY === "1";
 const config = loadConfig();
+const transport = consoleOnly ? "console" : requireServerFeishuTransport(config.feishu);
 const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
 
@@ -52,13 +53,13 @@ const codexProcessManager = new CodexProcessManager(
 const codexRuntime = new CodexRuntime(codexProcessManager, logger);
 const runtimes = new AgentRuntimeRegistry({ acp: acpRuntime, codex: codexRuntime });
 
-const transport = consoleOnly ? "console" : resolveFeishuTransport(config.feishu);
 const routes: OutboundRoute[] = [];
 let feishuConnector: FeishuConnector | undefined;
 let consoleConnector: ConsoleConnector | undefined;
 let startupNotifier: StartupNotifier | undefined;
 let safeRestartNotifier: SafeRestartNotifier | undefined;
 let controlServer: LocalControlServer | undefined;
+let serverReady = false;
 
 const feishuOutbound = transport === "sdk" ? new FeishuMessageClient(config, logger) : undefined;
 if (feishuOutbound) {
@@ -123,10 +124,18 @@ const startControlServer = async (): Promise<void> => {
 };
 
 if (feishuConnector && startupNotifier) {
-  await startFeishu(feishuConnector, startupNotifier, processStartedAt, startupReason, startControlServer);
+  await startFeishu(
+    feishuConnector,
+    startupNotifier,
+    processStartedAt,
+    startupReason,
+    startControlServer,
+    () => { serverReady = true; },
+  );
 } else {
   await startControlServer();
   await feishuConnector?.start();
+  serverReady = true;
 }
 consoleConnector?.start();
 
@@ -156,6 +165,8 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       return {
         ok: true,
         data: {
+          ready: serverReady,
+          phase: serverReady ? "ready" : "connecting_feishu",
           pid: process.pid,
           startedAt: processStartedAt.toISOString(),
           supervised,
