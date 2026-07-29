@@ -166,6 +166,8 @@ Commands, card callbacks, progress cards, and final responses stay on the origin
 
 Starting a Feishu thread from a mapped user message, progress card, or final response forks from the associated completed Codex turn. If no reliable completed source turn exists, the operation fails instead of selecting an arbitrary point.
 
+`/forkgroup` has thread-aware source selection. An unbound thread, or a bound thread task with no completed turn of its own, forks directly from the thread's original anchor turn without creating an intermediate thread task. Once the thread task has completed a turn, `/forkgroup` uses its latest locally persisted completed turn. A newer active turn does not block the command and is excluded from the fork point.
+
 ## Turn And Message Behavior
 
 - Plain text creates a task when the route has no current task.
@@ -223,6 +225,8 @@ A safe restart waits for:
 3. A 15-second quiet inbound-message window
 
 New messages reset the quiet timer. `--immediate` and `--force` skip these checks. Exit code `75` identifies an intentional worker restart.
+
+The first safe-restart status card is delayed by three seconds so a task's final response can usually arrive first. Status changes during that window are coalesced into the initial card. The delay does not block scheduler polling, and shutdown flushes any pending card immediately.
 
 The local control server implements task mutations and service restart requests. Read-only task queries access SQLite directly.
 

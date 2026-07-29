@@ -77,7 +77,7 @@ agent-bot server restart --reason "reason for restart"
 agent-bot server stop
 ```
 
-Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window.
+Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window. The first safe-restart status card is delayed by three seconds so the active task's final response can usually be delivered first; this presentation delay does not postpone scheduler polling.
 
 Use `agent-bot server restart --immediate` only when the user explicitly requests an immediate restart or accepts interruption. Never use `taskkill`, `Stop-Process`, or equivalent commands for routine Agent Bot restart management.
 
@@ -110,7 +110,7 @@ Use `/newgroup [title]` in Feishu to create a private group named `[agent] [proj
 
 Group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When the generated name would exceed that limit, truncate only the title portion in the Feishu group name; preserve the underlying Agent Bot task title.
 
-Use `/forkgroup [title]` in Feishu to fork the current Codex task's latest available completed turn into a newly created private group. Agent Bot invites the command sender and binds the fork as the new group's current task, but does not automatically send a Sessions or Status card there. The source chat keeps its current task, and an active source turn is not interrupted. If the current task has no completed turn yet, Agent Bot rejects the command before creating a group. An explicit title is used directly. Without an explicit title, both the forked task and group name use the same persistent `source title（分支 N）` sequence as `/fork`. `/forkgroup` does not add a date suffix.
+Use `/forkgroup [title]` in Feishu to fork the current position into a newly created private group. In a Feishu thread, use the thread's original anchor turn when the thread has no bound task or its bound task has not completed a turn of its own. Once the bound thread task has completed a turn, use its latest locally persisted completed turn; exclude any newer active turn without interrupting it. Resolve this source before generic thread initialization so an unbound thread does not create an intermediate task. Outside a thread, fork the current Codex task's latest available completed turn. Agent Bot invites the command sender and binds the fork as the new group's current task, but does not automatically send a Sessions or Status card there. An explicit title is used directly. Without an explicit title, both the forked task and group name use the same persistent `source title（分支 N）` sequence as `/fork`. `/forkgroup` does not add a date suffix.
 
 Use `/new [title] --nodir` to force a new Codex Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
 
