@@ -151,10 +151,13 @@ describe("CommandRouter", () => {
   });
 
   test("parses a no-steer queued prompt", () => {
-    expect(router.parse("/nosteer 完成后再运行全部测试")).toEqual({
+    const expected = {
       type: "nosteer",
       text: "完成后再运行全部测试",
-    });
+    };
+    expect(router.parse("/queue 完成后再运行全部测试")).toEqual(expected);
+    expect(router.parse("/nosteer 完成后再运行全部测试")).toEqual(expected);
+    expect(() => router.parse("/queue")).toThrow("请输入要排队的 Prompt");
     expect(() => router.parse("/nosteer")).toThrow("请输入要排队的 Prompt");
   });
 

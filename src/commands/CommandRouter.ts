@@ -35,9 +35,10 @@ export class CommandRouter {
         return { type: "title", title: args.join(" ") };
       case "ask":
         return { type: "ask", text: trimmed.slice(rawCommand.length).trim() };
+      case "queue":
       case "nosteer": {
         const prompt = trimmed.slice(rawCommand.length).trim();
-        if (!prompt) throw new Error("请输入要排队的 Prompt，例如：/nosteer 完成后再运行全部测试。");
+        if (!prompt) throw new Error(`请输入要排队的 Prompt，例如：/${command} 完成后再运行全部测试。`);
         return { type: "nosteer", text: prompt };
       }
       case "sessions":

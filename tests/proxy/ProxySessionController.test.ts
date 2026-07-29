@@ -59,6 +59,7 @@ function threadMessage(
 function fixture() {
   const sessions = new Map<string, RuntimeSession>();
   const remoteSessions: RemoteSessionSummary[] = [];
+  let nextRemoteSessionNumber = 1;
   const goals = new Map<string, RuntimeGoal>();
   const listeners = new Set<(event: RuntimeEvent) => void>();
   const runtime: AgentRuntime = {
@@ -66,7 +67,7 @@ function fixture() {
     createSession: vi.fn(async (input) => {
       const session: RuntimeSession = {
         ...input,
-        remoteSessionId: "thr_1",
+        remoteSessionId: `thr_${nextRemoteSessionNumber++}`,
         runtimeKind: "codex",
         model: input.model ?? "gpt-test",
         reasoningEffort: input.reasoningEffort ?? "high",
@@ -1057,8 +1058,11 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("creates a Feishu group without initializing a task or sending a sessions card", async () => {
+  test("creates a Feishu group with a bound task without sending a sessions card", async () => {
     const { controller, runtime, store, outbound, presenter } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-newgroup-home-"));
+    tempDirs.push(home);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
 
     await controller.onMessage({
       messageId: "new-group",
@@ -1074,26 +1078,41 @@ describe("ProxySessionController", () => {
       userOpenId: "ou_current_user",
       avatarPng: expect.any(Uint8Array),
     });
-    expect(runtime.createSession).not.toHaveBeenCalled();
     const groupContext = store.getUserContext("chat_id:oc_new_group");
-    expect(groupContext).toMatchObject({ defaultAgent: "codex", currentSessionId: undefined });
-    expect(store.listSessions("chat_id:oc_new_group")).toHaveLength(0);
-    expect(presenter.registerSession).not.toHaveBeenCalled();
+    const groupSessions = store.listSessions("chat_id:oc_new_group");
+    expect(groupSessions).toHaveLength(1);
+    expect(groupContext).toMatchObject({
+      defaultAgent: "codex",
+      currentSessionId: groupSessions[0]!.localSessionId,
+    });
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: groupSessions[0]!.localSessionId,
+      title: "广州天气",
+      model: undefined,
+      reasoningEffort: undefined,
+      permissionMode: "auto",
+    }));
+    expect(presenter.registerSession).toHaveBeenCalledWith(
+      groupSessions[0]!.localSessionId,
+      "chat_id:oc_new_group",
+      "广州天气",
+      expect.any(String),
+    );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      "群已创建。\n当前 Project 目录：未绑定（Projectless）\n直接发送消息即可在本群开始一个新任务。",
+      "群和新任务已创建。\n当前任务：广州天气（thr_1）\n当前 Project 目录：未绑定（Projectless）\n模型 / 思考强度 / 权限：gpt-test / high / auto",
     );
     expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
       expect.stringMatching(
-        /^已创建飞书群：\[codex\] \[Projectless\] 广州天气，并邀请你加入。$/,
+        /^已创建飞书群：\[codex\] \[Projectless\] 广州天气，并创建新任务 广州天气（thr_1）。$/,
       ),
     );
     expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
   });
 
-  test("binds a new group to the source project and uses it for the first automatic task", async () => {
+  test("binds a new group task to the source project and reuses it for the first prompt", async () => {
     const { controller, runtime, store, outbound } = fixture();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
     tempDirs.push(project);
@@ -1108,23 +1127,72 @@ describe("ProxySessionController", () => {
       text: "/newgroup Project room",
     });
 
-    expect(store.getUserContext("chat_id:oc_new_group")).toMatchObject({
-      currentSessionId: undefined,
+    const groupContext = store.getUserContext("chat_id:oc_new_group");
+    expect(groupContext).toMatchObject({
+      currentSessionId: expect.any(String),
       boundProjectCwd: project,
     });
     expect((outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]?.avatarPng)
       .toEqual(generateGroupAvatarPng(resolveGroupAvatarProjectName(project, "Project room"), project));
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: project,
+      title: "Project room",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    }));
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      `群已创建。\n当前 Project 目录：${project}\n直接发送消息即可在本群开始一个新任务。`,
+      `群和新任务已创建。\n当前任务：Project room（thr_2）\n当前 Project 目录：${project}\n模型 / 思考强度 / 权限：gpt-test / high / auto`,
     );
 
+    const createCount = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls.length;
     await controller.onMessage(groupMessage("oc_new_group", "inspect this project"));
+
+    expect(runtime.createSession).toHaveBeenCalledTimes(createCount);
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      groupContext!.currentSessionId,
+      "inspect this project",
+    );
+  });
+
+  test("inherits model, reasoning effort, and permission mode from the source task", async () => {
+    const { controller, runtime, store } = fixture();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
+    tempDirs.push(project);
+    await controller.onMessage(message(`/new --dir "${project}"`));
+    const sourceSessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    const source = store.getSession(sourceSessionId)!;
+    store.updateRuntimeSession(source.localSessionId, {
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
+
+    await controller.onMessage({
+      messageId: "new-inherited-settings-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Inherited settings",
+    });
 
     expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
       cwd: project,
-      title: "inspect this project",
+      title: "Inherited settings",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
     }));
+    const groupSessionId = store.getUserContext("chat_id:oc_new_group")!.currentSessionId!;
+    expect(store.getSession(groupSessionId)).toMatchObject({
+      cwd: project,
+      title: "Inherited settings",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
   });
 
   test("lets an explicit directory override a new group's bound project", async () => {
@@ -1151,6 +1219,9 @@ describe("ProxySessionController", () => {
 
   test("uses the local mm-dd date when newgroup omits the title", async () => {
     const { controller, runtime, outbound } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-newgroup-home-"));
+    tempDirs.push(home);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
 
     await controller.onMessage({
       messageId: "new-group-default-title",
@@ -1165,7 +1236,36 @@ describe("ProxySessionController", () => {
     expect(groupInput.name).toMatch(
       /^\[codex\] \[Projectless\] 新任务 \(\d{2}-\d{2}\)$/,
     );
-    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: "新任务",
+      model: undefined,
+      reasoningEffort: undefined,
+      permissionMode: "auto",
+    }));
+  });
+
+  test("reports a new task creation failure inside the already-created group", async () => {
+    const { controller, runtime, outbound } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-newgroup-home-"));
+    tempDirs.push(home);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    (runtime.createSession as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("thread/start failed"));
+
+    await controller.onMessage({
+      messageId: "new-group-task-failure",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Broken task",
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledOnce();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      "群已创建，但新任务创建失败：thread/start failed",
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "thread/start failed");
   });
 
   test("uses a tilde for a project directory inside the user home directory", async () => {
@@ -1682,7 +1782,7 @@ describe("ProxySessionController", () => {
     await blockedPrompt;
   });
 
-  test("/nosteer can enqueue while a normal steer request is blocked", async () => {
+  test("/queue can enqueue while a normal steer request is blocked", async () => {
     const { controller, runtime, outbound, presenter, store } = fixture();
     await controller.onMessage(message("build it"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
@@ -1693,7 +1793,7 @@ describe("ProxySessionController", () => {
 
     const blockedPrompt = controller.onMessage(message("also update docs"));
     await vi.waitFor(() => expect(runtime.steerTurn).toHaveBeenCalled());
-    await controller.onMessage(message("/nosteer run tests afterwards"));
+    await controller.onMessage(message("/queue run tests afterwards"));
 
     expect(store.listQueuedPrompts(sessionId).map((prompt) => prompt.text)).toEqual([
       "run tests afterwards",
@@ -2802,13 +2902,13 @@ describe("ProxySessionController", () => {
     expect(runtime.steerTurn).not.toHaveBeenCalled();
   });
 
-  test("queues multiple /nosteer prompts, cancels one, and starts the rest in FIFO order", async () => {
+  test("queues multiple /queue and /nosteer prompts, cancels one, and starts the rest in FIFO order", async () => {
     const { controller, runtime, sessions, remoteSessions, outbound, store, listeners } = fixture();
     await controller.onMessage(message("active turn"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
 
-    await controller.onMessage({ messageId: "nosteer-1", contextKey: "chat_id:c1", text: "/nosteer run tests" });
-    await controller.onMessage({ messageId: "nosteer-2", contextKey: "chat_id:c1", text: "/nosteer update docs" });
+    await controller.onMessage({ messageId: "nosteer-1", contextKey: "chat_id:c1", text: "/queue run tests" });
+    await controller.onMessage({ messageId: "nosteer-2", contextKey: "chat_id:c1", text: "/queue update docs" });
     await controller.onMessage({ messageId: "nosteer-3", contextKey: "chat_id:c1", text: "/nosteer report result" });
 
     expect(runtime.steerTurn).not.toHaveBeenCalled();
@@ -3611,6 +3711,7 @@ describe("ProxySessionController", () => {
     expect(serialized.match(/\/newgroup/g)).toHaveLength(1);
     expect(serialized.match(/\/stop/g)).toHaveLength(1);
     expect(serialized.match(/\/nosteer/g)).toHaveLength(1);
+    expect(serialized.match(/\/queue/g)).toHaveLength(1);
     expect(serialized.match(/\/agent \[name\]/g)).toHaveLength(1);
     expect(serialized).not.toContain("/attach");
     expect(serialized).not.toContain("/detach");

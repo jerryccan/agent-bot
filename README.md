@@ -121,7 +121,8 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/status [task]`                         | View task progress and results              |
 | `/title <title>`                         | Rename the current task                     |
 | `/stop`                                  | Stop the current execution                  |
-| `/nosteer <prompt>`                      | Queue a separate follow-up Prompt           |
+| `/queue <prompt>`                        | Queue a separate follow-up Prompt           |
+| `/nosteer <prompt>`                      | Same as `/queue`                            |
 | `/goal [objective]`                      | View or manage a persistent Goal            |
 | `/model [name]`                          | View or change the model                    |
 | `/thinking [level]`                      | View or change reasoning effort             |
@@ -134,9 +135,11 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/restart`                               | Gracefully restart Agent Bot                |
 | `/help`                                  | Show in-chat help                           |
 
-Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/nosteer` to always create a later turn.
+Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
 
-When `/newgroup` omits the title, the default group name is `[agent] [project dir] 新任务 (mm-dd)`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
+`/newgroup` immediately creates a new task in the new group. It inherits the current task's project directory, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
+
+When `/newgroup` omits the title, the task title is `新任务` and the default group name is `[agent] [project dir] 新任务 (mm-dd)`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
 
 ## Configuration And Data
 

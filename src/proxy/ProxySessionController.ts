@@ -1345,28 +1345,63 @@ export class ProxySessionController {
     requestedTitle: string | undefined,
     userId: string | undefined,
   ): Promise<void> {
+    const source = this.currentSession(sourceContextKey);
     const boundProjectCwd = this.currentProjectCwd(sourceContextKey);
     const explicitTitle = normalizeTaskTitle(requestedTitle);
+    const taskTitle = explicitTitle ?? "新任务";
+    const executionSettings: SessionExecutionSettings = source?.agentName === agentName
+      ? {
+          model: source.model,
+          reasoningEffort: source.reasoningEffort,
+          permissionMode: source.permissionMode,
+        }
+      : {};
     const group = await this.createFeishuGroupContext(
       sourceContextKey,
       agentName,
-      explicitTitle ?? "新任务",
+      taskTitle,
       userId,
       boundProjectCwd,
       "/newgroup",
       !explicitTitle,
     );
+
+    let task: SessionRecord;
+    try {
+      task = await this.createSession(
+        group.contextKey,
+        agentName,
+        boundProjectCwd,
+        false,
+        false,
+        undefined,
+        undefined,
+        taskTitle,
+        executionSettings,
+      );
+    } catch (error) {
+      await this.outbound.sendText(
+        group.contextKey,
+        `群已创建，但新任务创建失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+
+    const taskDescription = task.title
+      ? `${task.title}（${task.remoteSessionId}）`
+      : task.remoteSessionId ?? task.localSessionId;
     await this.outbound.sendText(
       group.contextKey,
       [
-        "群已创建。",
+        "群和新任务已创建。",
+        `当前任务：${taskDescription}`,
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
-        "直接发送消息即可在本群开始一个新任务。",
+        `模型 / 思考强度 / 权限：${task.model ?? "默认"} / ${task.reasoningEffort ?? "自动"} / ${task.permissionMode ?? "auto"}`,
       ].join("\n"),
     );
     await this.outbound.sendText(
       sourceContextKey,
-      `已创建飞书群：${group.name}，并邀请你加入。`,
+      `已创建飞书群：${group.name}，并创建新任务 ${taskDescription}。`,
     );
   }
 
@@ -2551,7 +2586,7 @@ export class ProxySessionController {
         title: "任务管理",
         lines: [
           "**/new [title] [--dir &#60;cwd&#62; | --nodir]**　使用默认 Agent 创建任务；--nodir 强制创建 Projectless 任务",
-          "**/newgroup [title]**　创建飞书群并绑定当前项目；邀请当前用户",
+          "**/newgroup [title]**　创建飞书群和新任务；继承当前项目与执行设置",
           "**/forkgroup [title]**　从当前任务最新已完成轮次创建分支并绑定到新群",
           "**/fork [序号或任务 ID]**　从当前或指定任务创建分支；运行中使用最近已完成轮次",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
@@ -2564,7 +2599,7 @@ export class ProxySessionController {
         lines: [
           "**! &#60;命令&#62;**　在当前任务目录直接执行本地命令",
           "**/stop**　停止当前执行",
-          "**/nosteer &#60;prompt&#62;**　不追加到当前轮次，按顺序排队为后续轮次",
+          "**/queue &#60;prompt&#62;**（兼容 **/nosteer**）　不追加到当前轮次，按顺序排队为后续轮次",
           "**/goal [目标]**　查看或创建长任务 Goal；支持 pause、resume、edit、clear",
           "**/model [name]**　查看或切换模型",
           "**/thinking [level]**　查看或设置思考强度",
