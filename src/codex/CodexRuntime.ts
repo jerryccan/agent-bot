@@ -6,6 +6,7 @@ import type {
   ForkRuntimeSessionInput,
   ModelOption,
   PermissionMode,
+  RemoteSessionActivity,
   RemoteSessionPage,
   RemoteSessionSummary,
   ResumeRuntimeSessionInput,
@@ -33,6 +34,9 @@ const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
 const SESSION_REQUEST_TIMEOUT_MS = 30_000;
 const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const SYNC_REQUEST_TIMEOUT_MS = 5_000;
+// A timed-out fork keeps running in App Server and can create an orphan thread.
+// Wait for its response; connection closure still rejects the request.
+const FORK_REQUEST_TIMEOUT_MS = 0;
 
 export interface AppServerClient {
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
@@ -52,6 +56,8 @@ export interface AppServerClientProvider {
 }
 
 interface CodexSession extends RuntimeSession {
+  activeTurnStartedAt?: number;
+  terminalTurnIds: Set<string>;
   finalText: string;
   messagePhases: Map<string, "commentary" | "final_answer">;
   needsResume: boolean;
@@ -135,7 +141,7 @@ export class CodexRuntime implements AgentRuntime {
       threadSource: "user",
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
-    }, SESSION_REQUEST_TIMEOUT_MS);
+    }, FORK_REQUEST_TIMEOUT_MS);
     const requestedTitle = normalizeTaskTitle(input.title);
     if (requestedTitle) {
       await client.request("thread/name/set", {
@@ -234,6 +240,28 @@ export class CodexRuntime implements AgentRuntime {
     return {
       ...activeSummary,
       ...settings?.get(remoteSessionId),
+    };
+  }
+
+  async inspectRemoteSessionActivity(remoteSessionId: string): Promise<RemoteSessionActivity> {
+    const [response, activeThreads] = await Promise.all([
+      (await this.client()).request<ThreadReadResponse>(
+        "thread/read",
+        { threadId: remoteSessionId, includeTurns: false },
+        SYNC_REQUEST_TIMEOUT_MS,
+      ),
+      this.localActivityDetector?.activeThreads([remoteSessionId]),
+    ]);
+    const runtimeSession = [...this.sessions.values()]
+      .find((session) => session.remoteSessionId === remoteSessionId);
+    const detectedTurnId = activeThreads?.get(remoteSessionId);
+    const active = remoteThreadStatus(response.thread.status?.type) === "active"
+      || Boolean(runtimeSession?.activeTurnId)
+      || Boolean(activeThreads?.has(remoteSessionId));
+    const activeTurnId = detectedTurnId ?? runtimeSession?.activeTurnId;
+    return {
+      active,
+      ...(activeTurnId ? { activeTurnId } : {}),
     };
   }
 
@@ -442,8 +470,33 @@ export class CodexRuntime implements AgentRuntime {
     if (!mapped) return;
     const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === mapped.threadId);
     if (!session) return;
+    if (session.terminalTurnIds.has(mapped.turnId)) {
+      this.logger.debug(
+        { sessionId: session.localSessionId, turnId: mapped.turnId, method },
+        "Ignoring a replayed terminal Codex turn event.",
+      );
+      return;
+    }
     if (mapped.kind === "turn_started") {
       if (session.activeTurnId === mapped.turnId) return;
+      if (
+        session.activeTurnId
+        && session.activeTurnStartedAt !== undefined
+        && mapped.startedAt !== undefined
+        && mapped.startedAt < session.activeTurnStartedAt
+      ) {
+        this.logger.debug(
+          {
+            sessionId: session.localSessionId,
+            activeTurnId: session.activeTurnId,
+            activeTurnStartedAt: session.activeTurnStartedAt,
+            notificationTurnId: mapped.turnId,
+            notificationStartedAt: mapped.startedAt,
+          },
+          "Ignoring a replayed historical Codex turn start.",
+        );
+        return;
+      }
       if (session.activeTurnId) this.supersedeTurn(session, session.activeTurnId);
       this.adoptTurn(session, mapped.turnId, mapped.startedAt ?? Date.now());
       return;
@@ -511,6 +564,8 @@ export class CodexRuntime implements AgentRuntime {
       });
     } else if (mapped.kind === "terminal") {
       session.activeTurnId = undefined;
+      session.activeTurnStartedAt = undefined;
+      session.terminalTurnIds.add(mapped.turnId);
       session.messagePhases.clear();
       if (mapped.status === "cancelled") {
         this.emit({ type: "turn_cancelled", sessionId, turnId: mapped.turnId });
@@ -615,6 +670,7 @@ export class CodexRuntime implements AgentRuntime {
     if (!latest) {
       if (thread.status?.type !== "active") {
         session.activeTurnId = undefined;
+        session.activeTurnStartedAt = undefined;
         session.messagePhases.clear();
         this.emit({
           type: "turn_failed",
@@ -635,13 +691,18 @@ export class CodexRuntime implements AgentRuntime {
 
   private adoptTurn(session: CodexSession, turnId: string, startedAt: number): void {
     session.activeTurnId = turnId;
+    session.activeTurnStartedAt = startedAt;
     session.finalText = "";
     session.messagePhases.clear();
     this.emit({ type: "turn_started", sessionId: session.localSessionId, turnId, startedAt });
   }
 
   private supersedeTurn(session: CodexSession, turnId: string): void {
-    if (session.activeTurnId === turnId) session.activeTurnId = undefined;
+    if (session.activeTurnId === turnId) {
+      session.activeTurnId = undefined;
+      session.activeTurnStartedAt = undefined;
+    }
+    session.terminalTurnIds.add(turnId);
     session.messagePhases.clear();
     this.emit({ type: "turn_cancelled", sessionId: session.localSessionId, turnId });
   }
@@ -649,6 +710,8 @@ export class CodexRuntime implements AgentRuntime {
   private finishSnapshotTurn(session: CodexSession, turn: CodexTurnSnapshot): void {
     if (session.activeTurnId !== turn.id) return;
     session.activeTurnId = undefined;
+    session.activeTurnStartedAt = undefined;
+    session.terminalTurnIds.add(turn.id);
     session.messagePhases.clear();
     if (turn.status === "interrupted") {
       this.emit({ type: "turn_cancelled", sessionId: session.localSessionId, turnId: turn.id });
@@ -692,6 +755,15 @@ export class CodexRuntime implements AgentRuntime {
       reasoningEffort,
       permissionMode: input.permissionMode,
       activeTurnId: "activeTurnId" in input ? input.activeTurnId : undefined,
+      activeTurnStartedAt: undefined,
+      terminalTurnIds: new Set(
+        "lastTurnStatus" in input
+        && input.lastTurnId
+        && input.lastTurnStatus
+        && input.lastTurnStatus !== "running"
+          ? [input.lastTurnId]
+          : [],
+      ),
       finalText: "",
       messagePhases: new Map(),
       needsResume: false,
@@ -723,6 +795,7 @@ export class CodexRuntime implements AgentRuntime {
       const turnId = session.activeTurnId;
       if (!turnId) continue;
       session.activeTurnId = undefined;
+      session.activeTurnStartedAt = undefined;
       this.emit({
         type: "turn_failed",
         sessionId: session.localSessionId,

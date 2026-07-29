@@ -388,6 +388,31 @@ describe("StateStore runtime metadata", () => {
     });
   });
 
+  test("atomically promotes a pending turn snapshot and progress delivery", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.saveTurnSnapshot("pending_1", "s1", { turnId: "pending_1", status: "starting" }, "chat_id:c1");
+    store.saveTurnDelivery("pending_1", { progressMessageId: "om_progress" });
+    store.promotePendingTurn(
+      "pending_1",
+      "turn_1",
+      "s1",
+      { turnId: "turn_1", status: "running" },
+      "chat_id:c1",
+    );
+
+    expect(store.getTurnSnapshot("pending_1")).toBeUndefined();
+    expect(store.getTurnDelivery("pending_1")).toBeUndefined();
+    expect(store.getTurnSnapshot("turn_1")).toEqual({ turnId: "turn_1", status: "running" });
+    expect(store.getTurnDelivery("turn_1")).toMatchObject({
+      progressMessageId: "om_progress",
+      finalDelivered: false,
+    });
+  });
+
   test("resolves fork anchors from inbound, progress, and final message ids", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

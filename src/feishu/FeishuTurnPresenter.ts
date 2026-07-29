@@ -17,12 +17,20 @@ const THINKING_CARD_FAILED_REACTION = "ERROR";
 const THINKING_CARD_CANCELLED_REACTION = "CrossMark";
 
 interface TurnDeliveryRecord {
+  progressMessageId?: string;
   finalDelivered: boolean;
   finalMessageIds: string[];
 }
 
 export interface TurnPresentationStore {
   saveTurnSnapshot(turnId: string, localSessionId: string, snapshot: unknown, contextKey?: string): void;
+  promotePendingTurn(
+    pendingTurnId: string,
+    turnId: string,
+    localSessionId: string,
+    snapshot: unknown,
+    contextKey?: string,
+  ): void;
   getTurnSnapshot(turnId: string): unknown;
   getTurnContextKey?(turnId: string): string | undefined;
   saveTurnDelivery(turnId: string, patch: { progressMessageId?: string; lastCardHash?: string }): void;
@@ -49,6 +57,7 @@ interface TurnEntry {
   reactionEmoji?: string;
   scheduler?: CardUpdateScheduler<TurnViewState>;
   finalizing?: Promise<void>;
+  lastFinalizedStatus?: TurnViewState["status"];
 }
 
 export class FeishuTurnPresenter {
@@ -193,9 +202,8 @@ export class FeishuTurnPresenter {
     if (!existing && event.type === "turn_started") {
       const pending = this.pendingEntries.get(event.sessionId);
       if (pending) {
-        this.pendingEntries.delete(event.sessionId);
-        this.entries.delete(pending.state.turnId);
-        pending.state = reduceTurnEvent(
+        const pendingTurnId = pending.state.turnId;
+        const state = reduceTurnEvent(
           createTurnViewState(
             event.sessionId,
             event.turnId,
@@ -207,8 +215,17 @@ export class FeishuTurnPresenter {
           ),
           event,
         );
+        this.store.promotePendingTurn(
+          pendingTurnId,
+          event.turnId,
+          event.sessionId,
+          state,
+          pending.contextKey,
+        );
+        this.pendingEntries.delete(event.sessionId);
+        this.entries.delete(pendingTurnId);
+        pending.state = state;
         this.entries.set(event.turnId, pending);
-        this.store.saveTurnSnapshot(event.turnId, event.sessionId, pending.state, pending.contextKey);
         existing = pending;
         eventApplied = true;
       }
@@ -225,14 +242,17 @@ export class FeishuTurnPresenter {
     if (!entry.scheduler) return;
 
     if (isTerminalEvent(event)) {
-      if (!entry.finalizing) {
-        const finalizing = this.finalize(entry);
-        entry.finalizing = finalizing;
-        void finalizing.catch(() => {
-          if (entry.finalizing === finalizing) entry.finalizing = undefined;
-        });
+      if (entry.finalizing) await entry.finalizing;
+      const terminalState = entry.state;
+      if (entry.lastFinalizedStatus === terminalState.status) return;
+      const finalizing = this.finalize(entry, terminalState);
+      entry.finalizing = finalizing;
+      try {
+        await finalizing;
+        entry.lastFinalizedStatus = terminalState.status;
+      } finally {
+        if (entry.finalizing === finalizing) entry.finalizing = undefined;
       }
-      await entry.finalizing;
       return;
     }
 
@@ -341,14 +361,22 @@ export class FeishuTurnPresenter {
   private async initializeEntry(entry: TurnEntry): Promise<void> {
     const sentState = entry.state;
     const card = this.renderer.renderTurn(sentState);
-    const messageId = sentState.replyTarget && this.outbound.replyInteractiveCard
-      ? await this.outbound.replyInteractiveCard(
-          entry.contextKey,
-          sentState.replyTarget,
-          card,
-          progressMessageKey(sentState.turnId),
-        )
-      : await this.outbound.sendInteractiveCard(entry.contextKey, card);
+    const delivery = this.store.getTurnDelivery(sentState.turnId);
+    const persistedMessageId = delivery?.progressMessageId;
+    if (delivery?.finalDelivered && !persistedMessageId) return;
+    let messageId = persistedMessageId;
+    if (messageId) {
+      await this.outbound.updateInteractiveCard(messageId, card);
+    } else {
+      messageId = sentState.replyTarget && this.outbound.replyInteractiveCard
+        ? await this.outbound.replyInteractiveCard(
+            entry.contextKey,
+            sentState.replyTarget,
+            card,
+            progressMessageKey(sentState.turnId),
+          )
+        : await this.outbound.sendInteractiveCard(entry.contextKey, card);
+    }
     entry.messageId = messageId;
     if (!messageId) return;
     this.store.saveTurnDelivery(entry.state.turnId, { progressMessageId: messageId });
@@ -364,17 +392,17 @@ export class FeishuTurnPresenter {
     await this.syncThinkingCardReaction(entry);
   }
 
-  private async finalize(entry: TurnEntry): Promise<void> {
+  private async finalize(entry: TurnEntry, state: TurnViewState): Promise<void> {
     if (!entry.historySnapshot) {
       try {
-        await entry.scheduler?.flush(entry.state);
+        await entry.scheduler?.flush(state);
       } catch (error) {
         this.options.onError?.(error);
       }
     }
     await this.syncThinkingCardReaction(entry);
-    if (entry.state.status !== "completed" || !entry.state.finalResponse) return;
-    await this.deliverFinal(entry.contextKey, entry.state);
+    if (state.status !== "completed" || !state.finalResponse) return;
+    await this.deliverFinal(entry.contextKey, state);
   }
 
   private async syncThinkingCardReaction(entry: TurnEntry): Promise<void> {

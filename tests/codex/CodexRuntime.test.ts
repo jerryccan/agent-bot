@@ -151,6 +151,10 @@ describe("CodexRuntime", () => {
         sandbox: "danger-full-access",
       }),
     });
+    expect(client.timeouts).toContainEqual({
+      method: "thread/fork",
+      timeoutMs: 0,
+    });
     expect(client.requests).toContainEqual({
       method: "thread/name/set",
       params: { threadId: "thr_forked", name: "Forked task（分支 1）" },
@@ -531,9 +535,10 @@ describe("CodexRuntime", () => {
     await runtime.createSession({ localSessionId: "s1", agentName: "codex", cwd: process.cwd(), permissionMode: "auto" });
     await runtime.startTurn("s1", "start");
 
+    const newerStartedAt = Math.floor(Date.now() / 1_000) + 1;
     client.emit("turn/started", {
       threadId: "thr_1",
-      turn: { id: "turn_2", status: "inProgress", startedAt: 42, items: [] },
+      turn: { id: "turn_2", status: "inProgress", startedAt: newerStartedAt, items: [] },
     });
     client.emit("item/started", {
       threadId: "thr_1",
@@ -552,13 +557,69 @@ describe("CodexRuntime", () => {
     });
 
     expect(events).toContainEqual({ type: "turn_cancelled", sessionId: "s1", turnId: "turn_1" });
-    expect(events).toContainEqual({ type: "turn_started", sessionId: "s1", turnId: "turn_2", startedAt: 42_000 });
+    expect(events).toContainEqual({
+      type: "turn_started",
+      sessionId: "s1",
+      turnId: "turn_2",
+      startedAt: newerStartedAt * 1_000,
+    });
     expect(events).toContainEqual(expect.objectContaining({
       type: "turn_completed",
       turnId: "turn_2",
       finalResponse: "done",
     }));
     expect(runtime.getSession("s1")?.activeTurnId).toBeUndefined();
+  });
+
+  test("ignores a replayed historical turn start while a newer turn is active", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.startTurn("s1", "start");
+    events.length = 0;
+
+    client.emit("turn/started", {
+      threadId: "thr_1",
+      turn: { id: "historical_turn", status: "inProgress", startedAt: 1, items: [] },
+    });
+
+    expect(runtime.getSession("s1")?.activeTurnId).toBe("turn_1");
+    expect(events).toEqual([]);
+  });
+
+  test("ignores replayed events for the terminal turn known at resume time", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.resumeSession({
+      localSessionId: "s1",
+      remoteSessionId: "thr_1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+      lastTurnId: "completed_turn",
+      lastTurnStatus: "completed",
+    });
+
+    client.emit("turn/started", {
+      threadId: "thr_1",
+      turn: { id: "completed_turn", status: "inProgress", startedAt: 1, items: [] },
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: "completed_turn", status: "completed" },
+    });
+
+    expect(runtime.getSession("s1")?.activeTurnId).toBeUndefined();
+    expect(events).toEqual([]);
   });
 
   test("reconciles an idle thread status notification when completion was missed", async () => {
@@ -711,6 +772,52 @@ describe("CodexRuntime", () => {
     expect(client.requests).toContainEqual({
       method: "thread/read",
       params: { threadId: "thr_1", includeTurns: false },
+    });
+  });
+
+  test("inspects thread activity without loading turns", async () => {
+    const client = new FakeAppServerClient();
+    client.readResult = {
+      thread: {
+        id: "large_thread",
+        status: { type: "active" },
+      },
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.inspectRemoteSessionActivity("large_thread")).resolves.toEqual({
+      active: true,
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/read",
+      params: { threadId: "large_thread", includeTurns: false },
+    });
+    expect(client.timeouts).toContainEqual({
+      method: "thread/read",
+      timeoutMs: 5_000,
+    });
+  });
+
+  test("reports the in-memory turn id for activity owned by Agent Bot", async () => {
+    const client = new FakeAppServerClient();
+    client.readResult = {
+      thread: {
+        id: "thr_1",
+        status: { type: "notLoaded" },
+      },
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.startTurn("s1", "work");
+
+    await expect(runtime.inspectRemoteSessionActivity("thr_1")).resolves.toEqual({
+      active: true,
+      activeTurnId: "turn_1",
     });
   });
 

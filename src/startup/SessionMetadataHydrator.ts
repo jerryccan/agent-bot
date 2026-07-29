@@ -21,6 +21,8 @@ export class SessionMetadataHydrator {
         localSessionId: session.localSessionId,
         remoteSessionId: session.remoteSessionId,
         activeTurnId: session.lastTurnId,
+        lastTurnId: session.lastTurnId,
+        lastTurnStatus: session.lastTurnStatus,
         agentName: session.agentName,
         cwd: session.cwd,
         title: session.title,

@@ -129,6 +129,15 @@ function fixture() {
       if (!session) throw new Error(`Unknown remote session: ${id}`);
       return session;
     }),
+    inspectRemoteSessionActivity: vi.fn(async (id: string) => {
+      const session = remoteSessions.find((candidate) => candidate.id === id);
+      if (!session) throw new Error(`Unknown remote session: ${id}`);
+      const active = session.status === "active" || session.lastTurnStatus === "inProgress";
+      return {
+        active,
+        ...(active && session.lastTurnId ? { activeTurnId: session.lastTurnId } : {}),
+      };
+    }),
     synchronizeSession: vi.fn(async (id) => sessions.get(id)!),
     startTurn: vi.fn(async (sessionId) => {
       const session = sessions.get(sessionId)!;
@@ -1535,6 +1544,39 @@ describe("ProxySessionController", () => {
     expect(outbound.deleteReaction).toHaveBeenCalledWith("m-long task", "reaction_on_it");
   });
 
+  test("does not apply a stale cancelled reaction after the same turn is active again", async () => {
+    const { controller, store, outbound, listeners, presenter } = fixture();
+    (outbound.addReaction as ReturnType<typeof vi.fn>).mockResolvedValue("reaction_on_it");
+    let releaseCancelledPresentation!: () => void;
+    const cancelledPresentation = new Promise<void>((resolve) => { releaseCancelledPresentation = resolve; });
+    (presenter.onEvent as ReturnType<typeof vi.fn>).mockImplementation(async (event: RuntimeEvent) => {
+      if (event.type === "turn_cancelled") await cancelledPresentation;
+    });
+
+    await controller.onMessage(message("keep running"));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    for (const listener of listeners) {
+      listener({ type: "turn_cancelled", sessionId: session.localSessionId, turnId: "turn_1" });
+    }
+    await vi.waitFor(() => expect(presenter.onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "turn_cancelled",
+      turnId: "turn_1",
+    })));
+    for (const listener of listeners) {
+      listener({
+        type: "turn_started",
+        sessionId: session.localSessionId,
+        turnId: "turn_1",
+        startedAt: Date.now(),
+      });
+    }
+    releaseCancelledPresentation();
+
+    await vi.waitFor(() => expect(store.getSession(session.localSessionId)?.lastTurnStatus).toBe("running"));
+    expect(store.getMessageReaction("m-keep running")).toMatchObject({ status: "pending", emojiType: "OnIt" });
+    expect(outbound.addReaction).not.toHaveBeenCalledWith("m-keep running", "CrossMark");
+  });
+
   test("plain text steers an active turn, inserts it into the thinking card, and stop bypasses prompt completion", async () => {
     const { controller, runtime, outbound, presenter, store } = fixture();
     await controller.onMessage(message("build it"));
@@ -1800,7 +1842,7 @@ describe("ProxySessionController", () => {
   test("starts the first turn of a new Codex thread before it is materialized", async () => {
     const { controller, runtime } = fixture();
     await controller.onMessage(message("/new"));
-    (runtime.readRemoteSession as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+    (runtime.inspectRemoteSessionActivity as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error(
         "thread/read failed: thread thr_1 is not materialized yet; includeTurns is unavailable before first user message",
       ),
@@ -1810,6 +1852,37 @@ describe("ProxySessionController", () => {
 
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), "hello from the first turn");
     expect(runtime.synchronizeSession).not.toHaveBeenCalled();
+  });
+
+  test("starts a prompt on a completed large task without reading or synchronizing its full history", async () => {
+    const { controller, runtime, sessions, remoteSessions, store } = fixture();
+    await controller.onMessage(message("first prompt"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    sessions.get(sessionId)!.activeTurnId = undefined;
+    Object.assign(remoteSessions[0]!, {
+      status: "idle",
+      lastTurnId: "turn_1",
+      lastTurnStatus: "completed",
+    });
+    store.updateSession(sessionId, { status: "ready" });
+    store.updateRuntimeSession(sessionId, {
+      lastTurnId: "turn_1",
+      lastTurnStatus: "completed",
+    });
+    (runtime.readRemoteSession as ReturnType<typeof vi.fn>).mockClear();
+    (runtime.inspectRemoteSessionActivity as ReturnType<typeof vi.fn>).mockClear();
+    (runtime.synchronizeSession as ReturnType<typeof vi.fn>).mockClear();
+    (runtime.startTurn as ReturnType<typeof vi.fn>).mockClear();
+
+    await controller.onMessage(message("continue without loading 300 MB of history"));
+
+    expect(runtime.inspectRemoteSessionActivity).toHaveBeenCalledWith("thr_1");
+    expect(runtime.readRemoteSession).not.toHaveBeenCalled();
+    expect(runtime.synchronizeSession).not.toHaveBeenCalled();
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      sessionId,
+      "continue without loading 300 MB of history",
+    );
   });
 
   test("recreates an empty Codex thread after restart instead of resuming a missing rollout", async () => {

@@ -21,12 +21,15 @@ function createFixture(delivered = false) {
   };
   const store = {
     saveTurnSnapshot: vi.fn(),
+    promotePendingTurn: vi.fn(),
     getTurnSnapshot: vi.fn(),
     getTurnContextKey: vi.fn(),
     saveTurnDelivery: vi.fn(),
     saveFinalDeliveryProgress: vi.fn(),
     markFinalDelivered: vi.fn(),
-    getTurnDelivery: vi.fn(() => (delivered ? { finalDelivered: true, finalMessageIds: ["old"] } : undefined)),
+    getTurnDelivery: vi.fn(() => (delivered
+      ? { progressMessageId: undefined as string | undefined, finalDelivered: true, finalMessageIds: ["old"] }
+      : undefined)),
   };
   const presenter = new FeishuTurnPresenter(outbound, store, undefined, {
     normalIntervalMs: 1,
@@ -55,6 +58,25 @@ describe("FeishuTurnPresenter", () => {
       "s1",
       expect.objectContaining({ projectCwd: "D:\\dev\\agent-bot" }),
       "chat_id:c1",
+    );
+  });
+
+  test("delivers completion after an earlier cancelled event for the same turn", async () => {
+    const { presenter, outbound } = createFixture();
+    await presenter.onEvent({
+      type: "turn_started",
+      sessionId: "s1",
+      turnId: "turn_1",
+      startedAt: Date.now() - 1_000,
+    });
+    await presenter.onEvent({ type: "turn_cancelled", sessionId: "s1", turnId: "turn_1" });
+    await presenter.onEvent(completed("completed after stale cancellation"));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "completed after stale cancellation",
+      expect.stringMatching(/^codex-final-/),
     );
   });
 
@@ -89,6 +111,7 @@ describe("FeishuTurnPresenter", () => {
     (outbound.addReaction as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("missing reaction scope"));
     const resilientPresenter = new FeishuTurnPresenter(outbound, {
       saveTurnSnapshot: vi.fn(),
+      promotePendingTurn: vi.fn(),
       getTurnSnapshot: vi.fn(),
       getTurnContextKey: vi.fn(),
       saveTurnDelivery: vi.fn(),
@@ -111,11 +134,38 @@ describe("FeishuTurnPresenter", () => {
   });
 
   test("reuses the immediate starting card when the real turn id arrives", async () => {
-    const { presenter, outbound } = createFixture();
+    const { presenter, outbound, store } = createFixture();
     await presenter.startPendingTurn("s1", "chat_id:c1");
+    const pendingTurnId = (store.saveTurnSnapshot as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() - 1_000 });
     expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(store.promotePendingTurn).toHaveBeenCalledWith(
+      pendingTurnId,
+      "turn_1",
+      "s1",
+      expect.objectContaining({ turnId: "turn_1", status: "running" }),
+      "chat_id:c1",
+    );
     await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalled());
+  });
+
+  test("updates a persisted progress card instead of sending another card after restart", async () => {
+    const { presenter, outbound, store } = createFixture();
+    store.getTurnDelivery.mockReturnValue({
+      progressMessageId: "persisted_progress",
+      finalDelivered: false,
+      finalMessageIds: [],
+    });
+
+    await presenter.onEvent({
+      type: "turn_started",
+      sessionId: "s1",
+      turnId: "turn_1",
+      startedAt: Date.now(),
+    });
+
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("persisted_progress", expect.any(Object));
   });
 
   test("keeps a group turn progress card and final answer inside the triggering message thread", async () => {
@@ -397,6 +447,20 @@ describe("FeishuTurnPresenter", () => {
     expect(outbound.sendMarkdown).not.toHaveBeenCalled();
   });
 
+  test("does not recreate a missing progress card for an already-delivered historical turn", async () => {
+    const { presenter, outbound } = createFixture(true);
+
+    await presenter.onEvent({
+      type: "turn_started",
+      sessionId: "s1",
+      turnId: "turn_1",
+      startedAt: Date.now() - 1_000,
+    });
+
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
+    expect(outbound.updateInteractiveCard).not.toHaveBeenCalled();
+  });
+
   test("details are rendered from the saved snapshot without runtime history", async () => {
     const { presenter, outbound, store } = createFixture();
     store.getTurnSnapshot.mockReturnValue({
@@ -447,15 +511,37 @@ describe("FeishuTurnPresenter", () => {
 class MemoryStore implements TurnPresentationStore {
   private readonly snapshots = new Map<string, unknown>();
   private readonly contexts = new Map<string, string>();
-  private readonly deliveries = new Map<string, { finalDelivered: boolean; finalMessageIds: string[] }>();
+  private readonly deliveries = new Map<
+    string,
+    { progressMessageId?: string; finalDelivered: boolean; finalMessageIds: string[] }
+  >();
   saveTurnSnapshot(turnId: string, _sessionId: string, snapshot: unknown, contextKey?: string): void {
     this.snapshots.set(turnId, snapshot);
     if (contextKey) this.contexts.set(turnId, contextKey);
   }
   getTurnSnapshot(turnId: string): unknown { return this.snapshots.get(turnId); }
   getTurnContextKey(turnId: string): string | undefined { return this.contexts.get(turnId); }
-  saveTurnDelivery(turnId: string): void {
-    if (!this.deliveries.has(turnId)) this.deliveries.set(turnId, { finalDelivered: false, finalMessageIds: [] });
+  promotePendingTurn(
+    pendingTurnId: string,
+    turnId: string,
+    localSessionId: string,
+    snapshot: unknown,
+    contextKey?: string,
+  ): void {
+    this.saveTurnSnapshot(turnId, localSessionId, snapshot, contextKey);
+    const delivery = this.deliveries.get(pendingTurnId);
+    if (delivery) this.deliveries.set(turnId, delivery);
+    this.snapshots.delete(pendingTurnId);
+    this.contexts.delete(pendingTurnId);
+    this.deliveries.delete(pendingTurnId);
+  }
+  saveTurnDelivery(turnId: string, patch: { progressMessageId?: string }): void {
+    const existing = this.deliveries.get(turnId);
+    this.deliveries.set(turnId, {
+      progressMessageId: patch.progressMessageId ?? existing?.progressMessageId,
+      finalDelivered: existing?.finalDelivered ?? false,
+      finalMessageIds: existing?.finalMessageIds ?? [],
+    });
   }
   saveFinalDeliveryProgress(turnId: string, messageIds: string[]): void {
     this.deliveries.set(turnId, { finalDelivered: false, finalMessageIds: [...messageIds] });

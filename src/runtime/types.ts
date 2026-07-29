@@ -132,6 +132,11 @@ export interface RemoteSessionPage {
   nextCursor?: string;
 }
 
+export interface RemoteSessionActivity {
+  active: boolean;
+  activeTurnId?: string;
+}
+
 export interface RuntimeSession {
   localSessionId: string;
   remoteSessionId: string;
@@ -158,6 +163,8 @@ export interface CreateRuntimeSessionInput {
 export interface ResumeRuntimeSessionInput extends CreateRuntimeSessionInput {
   remoteSessionId: string;
   activeTurnId?: string;
+  lastTurnId?: string;
+  lastTurnStatus?: string;
 }
 
 export interface ForkRuntimeSessionInput extends CreateRuntimeSessionInput {
@@ -187,6 +194,7 @@ export interface AgentRuntime {
   readSessionMetadata(remoteSessionId: string): Promise<RuntimeSessionMetadata>;
   listRemoteSessions?(input?: { searchTerm?: string; cursor?: string; limit?: number }): Promise<RemoteSessionPage>;
   readRemoteSession?(remoteSessionId: string): Promise<RemoteSessionSummary>;
+  inspectRemoteSessionActivity?(remoteSessionId: string): Promise<RemoteSessionActivity>;
   synchronizeSession(sessionId: string): Promise<RuntimeSession>;
   startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string>;
   steerTurn(sessionId: string, turnId: string, prompt: RuntimePrompt): Promise<void>;

@@ -569,6 +569,31 @@ export class StateStore {
       .run(turnId, localSessionId, contextKey ?? null, JSON.stringify(snapshot), now);
   }
 
+  promotePendingTurn(
+    pendingTurnId: string,
+    turnId: string,
+    localSessionId: string,
+    snapshot: unknown,
+    contextKey?: string,
+  ): void {
+    if (pendingTurnId === turnId) {
+      this.saveTurnSnapshot(turnId, localSessionId, snapshot, contextKey);
+      return;
+    }
+    this.db.transaction(() => {
+      const pendingDelivery = this.getTurnDelivery(pendingTurnId);
+      this.saveTurnSnapshot(turnId, localSessionId, snapshot, contextKey);
+      if (pendingDelivery) {
+        this.saveTurnDelivery(turnId, {
+          progressMessageId: pendingDelivery.progressMessageId,
+          lastCardHash: pendingDelivery.lastCardHash,
+        });
+      }
+      this.db.prepare("DELETE FROM turn_deliveries WHERE turn_id = ?").run(pendingTurnId);
+      this.db.prepare("DELETE FROM turn_snapshots WHERE turn_id = ?").run(pendingTurnId);
+    })();
+  }
+
   getTurnSnapshot(turnId: string): unknown {
     const row = this.db
       .prepare("SELECT snapshot_json FROM turn_snapshots WHERE turn_id = ?")

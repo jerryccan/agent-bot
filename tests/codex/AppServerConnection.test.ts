@@ -76,6 +76,37 @@ describe("AppServerConnection", () => {
     await rejection;
   });
 
+  test("summarizes late responses without logging their payload", async () => {
+    vi.useFakeTimers();
+    const process = fakeChildProcess();
+    const testLogger = logger();
+    const connection = new AppServerConnection(process.child, testLogger);
+    const request = connection.request("thread/read", {}, 1000);
+    const rejection = expect(request).rejects.toThrow("App Server request timed out: thread/read");
+    await vi.advanceTimersByTimeAsync(1000);
+    await rejection;
+
+    process.pushStdout({
+      id: 1,
+      result: {
+        thread: {
+          id: "large_thread",
+          turns: [{ items: [{ text: "large payload" }] }],
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      { responseId: 1, responseKind: "result" },
+      "Received Codex App Server response for unknown request.",
+    );
+    expect(testLogger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.anything() }),
+      expect.anything(),
+    );
+  });
+
   test("ignores malformed output and rejects pending requests when closed", async () => {
     const process = fakeChildProcess();
     const testLogger = logger();

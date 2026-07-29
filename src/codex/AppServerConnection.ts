@@ -119,7 +119,13 @@ export class AppServerConnection {
   private handleResponse(message: AppServerResponse): void {
     const pending = this.pending.get(message.id);
     if (!pending) {
-      this.logger.warn({ message }, "Received Codex App Server response for unknown request.");
+      this.logger.warn(
+        {
+          responseId: message.id,
+          responseKind: "error" in message ? "error" : "result",
+        },
+        "Received Codex App Server response for unknown request.",
+      );
       return;
     }
     this.pending.delete(message.id);

@@ -21,6 +21,7 @@ import type {
   AgentRuntime,
   ApprovalDecision,
   PermissionMode,
+  RemoteSessionActivity,
   RemoteSessionSummary,
   RuntimeGoal,
   RuntimeEvent,
@@ -696,13 +697,14 @@ export class ProxySessionController {
       await this.outbound.failPendingTurn(record.localSessionId, error instanceof Error ? error.message : String(error));
       throw error;
     }
+    let remoteActivity: RemoteSessionActivity | undefined;
     try {
-      await this.assertSessionTurnOwnership(loaded.record, loaded.runtime);
+      remoteActivity = await this.assertSessionTurnOwnership(loaded.record, loaded.runtime);
     } catch (error) {
       await this.outbound.failPendingTurn(record.localSessionId, error instanceof Error ? error.message : String(error));
       throw error;
     }
-    if (loaded.record.lastTurnId || loaded.session.activeTurnId) {
+    if (needsFullSessionSynchronization(loaded.record, loaded.session, remoteActivity)) {
       try {
         loaded.session = await loaded.runtime.synchronizeSession(record.localSessionId);
       } catch (error) {
@@ -1484,6 +1486,8 @@ export class ProxySessionController {
             activeTurnId: agent.kind === "codex" && record.status === "running" && record.lastTurnStatus === "running"
               ? record.lastTurnId
               : undefined,
+            lastTurnId: record.lastTurnId,
+            lastTurnStatus: record.lastTurnStatus,
           });
         } catch (error) {
           if (!(agent.kind === "codex" && !record.lastTurnId && isMissingRolloutError(error))) throw error;
@@ -1555,10 +1559,15 @@ export class ProxySessionController {
     try {
       await this.outbound.onEvent(event);
       if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
-        await this.finalizeTurnMessageReactions(
-          event.turnId,
-          event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
-        );
+        const terminalStatus = event.type === "turn_completed"
+          ? "completed"
+          : event.type === "turn_cancelled"
+            ? "cancelled"
+            : "failed";
+        const latest = this.store.getSession(event.sessionId);
+        if (latest?.lastTurnId === event.turnId && latest.lastTurnStatus === terminalStatus) {
+          await this.finalizeTurnMessageReactions(event.turnId, terminalStatus);
+        }
       }
     } finally {
       if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
@@ -1595,8 +1604,8 @@ export class ProxySessionController {
     let prompt: QueuedPromptRecord | undefined;
     try {
       let loaded = await this.loadSession(baseRecord);
-      await this.assertSessionTurnOwnership(loaded.record, loaded.runtime);
-      if (loaded.record.lastTurnId || loaded.session.activeTurnId) {
+      const remoteActivity = await this.assertSessionTurnOwnership(loaded.record, loaded.runtime);
+      if (needsFullSessionSynchronization(loaded.record, loaded.session, remoteActivity)) {
         loaded = { ...loaded, session: await loaded.runtime.synchronizeSession(sessionId) };
       }
       if (loaded.session.activeTurnId) return;
@@ -2291,8 +2300,32 @@ export class ProxySessionController {
     return listing[position - 1]!;
   }
 
-  private async assertSessionTurnOwnership(record: SessionRecord, runtime: AgentRuntime): Promise<void> {
+  private async assertSessionTurnOwnership(
+    record: SessionRecord,
+    runtime: AgentRuntime,
+  ): Promise<RemoteSessionActivity | undefined> {
     if (runtime.kind !== "codex" || !record.remoteSessionId || !runtime.readRemoteSession) return;
+    if (runtime.inspectRemoteSessionActivity) {
+      let activity: RemoteSessionActivity;
+      try {
+        activity = await runtime.inspectRemoteSessionActivity(record.remoteSessionId);
+      } catch (error) {
+        if (!record.lastTurnId && isUnmaterializedCodexThreadError(error)) return { active: false };
+        throw error;
+      }
+      const localActiveTurnId = runtime.getSession(record.localSessionId)?.activeTurnId;
+      const runtimeOwnsActiveTurn = Boolean(localActiveTurnId)
+        && (!activity.activeTurnId || activity.activeTurnId === localActiveTurnId);
+      const persistedTurnMatches = record.status === "running"
+        && record.lastTurnStatus === "running"
+        && Boolean(record.lastTurnId)
+        && activity.activeTurnId === record.lastTurnId;
+      const botOwnsActiveTurn = runtimeOwnsActiveTurn || persistedTurnMatches;
+      if (activity.active && !botOwnsActiveTurn) {
+        throw new Error("这个任务正在外部 Codex 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
+      }
+      return activity;
+    }
     let remote: RemoteSessionSummary;
     try {
       remote = await runtime.readRemoteSession(record.remoteSessionId);
@@ -2306,6 +2339,7 @@ export class ProxySessionController {
     if ((remote.status === "active" || remote.lastTurnStatus === "inProgress") && !botOwnsActiveTurn) {
       throw new Error("这个任务正在外部 Codex 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
     }
+    return undefined;
   }
 
   private async setDefaultAgent(contextKey: string, agentName: string): Promise<void> {
@@ -2955,6 +2989,15 @@ function forkedTurnStatus(status?: TurnViewState["status"]): string | undefined 
   if (status === "failed") return "failed";
   if (status === "completed") return "completed";
   return undefined;
+}
+
+function needsFullSessionSynchronization(
+  record: SessionRecord,
+  session: RuntimeSession,
+  remoteActivity: RemoteSessionActivity | undefined,
+): boolean {
+  if (!remoteActivity) return Boolean(record.lastTurnId || session.activeTurnId);
+  return Boolean(session.activeTurnId && !remoteActivity.active);
 }
 
 function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummary): boolean {
