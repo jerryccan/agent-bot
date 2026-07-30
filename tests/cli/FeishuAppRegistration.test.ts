@@ -21,6 +21,10 @@ describe("registerFeishuApp", () => {
       return jsonResponse({
         client_id: "cli_created",
         client_secret: "secret-created",
+        user_info: {
+          open_id: "ou_initializer",
+          tenant_brand: "feishu",
+        },
       });
     });
     const challenges: FeishuAppRegistrationChallenge[] = [];
@@ -35,6 +39,7 @@ describe("registerFeishuApp", () => {
     expect(result).toEqual({
       appId: "cli_created",
       appSecret: "secret-created",
+      userOpenId: "ou_initializer",
     });
     expect(requests).toHaveLength(2);
     expect(requests[0]?.url).toBe("https://accounts.feishu.cn/oauth/v1/app/registration");

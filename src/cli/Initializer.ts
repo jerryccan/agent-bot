@@ -39,11 +39,13 @@ export interface FeishuCredentialState {
   status: FeishuCredentialStatus;
   appId?: string;
   appSecret?: string;
+  userOpenId?: string;
 }
 
 export interface FeishuCredentials {
   appId: string;
   appSecret: string;
+  userOpenId?: string;
 }
 
 export interface InitializationLock {
@@ -85,17 +87,21 @@ export function readFeishuCredentials(envPath: string, env: NodeJS.ProcessEnv = 
   const fileValues = fs.existsSync(envPath) ? parseDotEnv(fs.readFileSync(envPath, "utf8")) : {};
   const appId = firstNonBlank(env.FEISHU_APP_ID, fileValues.FEISHU_APP_ID);
   const appSecret = firstNonBlank(env.FEISHU_APP_SECRET, fileValues.FEISHU_APP_SECRET);
-  if (appId && appSecret) return { status: "configured", appId, appSecret };
-  if (appId || appSecret) return { status: "incomplete", appId, appSecret };
-  return { status: "missing" };
+  const userOpenId = firstNonBlank(env.FEISHU_USER_OPEN_ID, fileValues.FEISHU_USER_OPEN_ID);
+  const user = userOpenId ? { userOpenId } : {};
+  if (appId && appSecret) return { status: "configured", appId, appSecret, ...user };
+  if (appId || appSecret) return { status: "incomplete", appId, appSecret, ...user };
+  return { status: "missing", ...user };
 }
 
 export function writeFeishuCredentials(envPath: string, credentials: FeishuCredentials): void {
   assertDotEnvValue("FEISHU_APP_ID", credentials.appId);
   assertDotEnvValue("FEISHU_APP_SECRET", credentials.appSecret);
+  if (credentials.userOpenId) assertDotEnvValue("FEISHU_USER_OPEN_ID", credentials.userOpenId);
   const original = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
   let updated = upsertDotEnvValue(original, "FEISHU_APP_ID", credentials.appId);
   updated = upsertDotEnvValue(updated, "FEISHU_APP_SECRET", credentials.appSecret);
+  updated = upsertDotEnvValue(updated, "FEISHU_USER_OPEN_ID", credentials.userOpenId ?? "");
 
   fs.mkdirSync(path.dirname(envPath), { recursive: true });
   const temporaryPath = `${envPath}.${process.pid}.${Date.now()}.tmp`;
@@ -114,6 +120,7 @@ export function writeFeishuCredentials(envPath: string, credentials: FeishuCrede
       persisted.status !== "configured"
       || persisted.appId !== credentials.appId
       || persisted.appSecret !== credentials.appSecret
+      || persisted.userOpenId !== credentials.userOpenId
     ) {
       throw new Error("飞书凭据写入后校验失败。");
     }

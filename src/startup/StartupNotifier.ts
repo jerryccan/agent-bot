@@ -2,17 +2,23 @@ import type { Logger } from "pino";
 import { detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import { CardRenderer } from "../feishu/CardRenderer.js";
 import type { FeishuOutbound } from "../feishu/types.js";
-import type { SessionRecord, StateStore } from "../state/StateStore.js";
+import type { SessionRecord, StateStore, UserContextRecord } from "../state/StateStore.js";
 
 export interface StartupNotificationOptions {
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
   workspaceKind?: "project" | "projectless";
+  defaultUserOpenId?: string;
 }
 
 export interface StartupTaskMetadataHydrator {
   hydrate(session: SessionRecord): Promise<SessionRecord>;
+}
+
+interface StartupNotificationTarget {
+  contextKey: string;
+  context?: UserContextRecord;
 }
 
 export class StartupNotifier {
@@ -26,7 +32,7 @@ export class StartupNotifier {
   ) {}
 
   async notify(startedAt: Date, restartReason: string): Promise<void> {
-    let targets;
+    let targets: StartupNotificationTarget[];
     try {
       const activeGroupSince = new Date(startedAt.getTime() - 3 * 60 * 1_000);
       const chats = [
@@ -40,10 +46,16 @@ export class StartupNotifier {
       }));
     } catch (error) {
       this.logger.warn({ error }, "Failed to load startup notification targets.");
-      return;
+      throw new Error("Failed to load startup notification targets.", { cause: error });
     }
 
-    await Promise.all(targets.map(async ({ contextKey, context }) => {
+    if (targets.length === 0) {
+      const defaultUserOpenId = this.options.defaultUserOpenId?.trim();
+      if (!defaultUserOpenId) return;
+      targets = [{ contextKey: `open_id:${defaultUserOpenId}` }];
+    }
+
+    const deliveries = await Promise.all(targets.map(async ({ contextKey, context }) => {
       let session = context?.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
       if (session && this.metadataHydrator) {
         try {
@@ -81,12 +93,17 @@ export class StartupNotifier {
       });
       try {
         await this.outbound.sendInteractiveCard(contextKey, card);
+        return true;
       } catch (error) {
         this.logger.warn(
           { error, contextKey },
           "Failed to send startup status notification.",
         );
+        return false;
       }
     }));
+    if (deliveries.length > 0 && !deliveries.some(Boolean)) {
+      throw new Error("Failed to send any startup status notification.");
+    }
   }
 }

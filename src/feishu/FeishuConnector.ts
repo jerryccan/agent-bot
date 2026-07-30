@@ -3,18 +3,11 @@ import type { AppConfig } from "../config/schema.js";
 import { threadContextKey } from "./contextKey.js";
 import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
 
-const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
-
-interface FeishuConnectorOptions {
-  connectTimeoutMs?: number;
-}
-
 export class FeishuConnector {
   constructor(
     private readonly config: AppConfig,
     private readonly handler: FeishuEventHandler,
     private readonly logger: Logger,
-    private readonly options: FeishuConnectorOptions = {},
   ) {}
 
   async start(): Promise<void> {
@@ -83,86 +76,12 @@ export class FeishuConnector {
         };
       },
     });
-    const connected = createConnectionWaiter(this.logger, this.options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
-    try {
-      const wsClient = new lark.WSClient({
-        appId,
-        appSecret,
-        logger: connected.sdkLogger,
-        loggerLevel: lark.LoggerLevel.debug,
-      });
-      await wsClient.start({ eventDispatcher });
-      await connected.promise;
-      this.logger.info("Feishu WebSocket connector connected.");
-    } finally {
-      connected.dispose();
-    }
-  }
-}
-
-function createConnectionWaiter(
-  logger: Logger,
-  timeoutMs: number,
-): {
-  promise: Promise<void>;
-  sdkLogger: {
-    error: (...messages: unknown[]) => void;
-    warn: (...messages: unknown[]) => void;
-    info: (...messages: unknown[]) => void;
-    debug: (...messages: unknown[]) => void;
-    trace: (...messages: unknown[]) => void;
-  };
-  dispose: () => void;
-} {
-  let resolveConnected!: () => void;
-  let rejectConnected!: (error: Error) => void;
-  let lastError: string | undefined;
-  let settled = false;
-  const promise = new Promise<void>((resolve, reject) => {
-    resolveConnected = resolve;
-    rejectConnected = reject;
-  });
-  const timer = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    const detail = lastError ? ` Last SDK error: ${lastError}` : "";
-    rejectConnected(new Error(`Timed out after ${timeoutMs}ms waiting for the Feishu WebSocket connection.${detail}`));
-  }, timeoutMs);
-  const logValues = (messages: unknown[]): string => messages.map(formatSdkLogValue).join(" ");
-  const sdkLogger = {
-    error: (...messages: unknown[]) => {
-      lastError = logValues(messages);
-      logger.error({ component: "feishu-websocket", sdkMessage: lastError }, "Feishu SDK error.");
-    },
-    warn: (...messages: unknown[]) => {
-      logger.warn({ component: "feishu-websocket", sdkMessage: logValues(messages) }, "Feishu SDK warning.");
-    },
-    info: (...messages: unknown[]) => {
-      logger.debug({ component: "feishu-websocket", sdkMessage: logValues(messages) }, "Feishu SDK status.");
-    },
-    debug: (...messages: unknown[]) => {
-      if (!messages.some((message) => message === "ws connect success")) return;
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolveConnected();
-    },
-    trace: () => undefined,
-  };
-  return {
-    promise,
-    sdkLogger,
-    dispose: () => clearTimeout(timer),
-  };
-}
-
-function formatSdkLogValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value instanceof Error) return value.message;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
+    const wsClient = new lark.WSClient({
+      appId,
+      appSecret,
+    });
+    await wsClient.start({ eventDispatcher });
+    this.logger.info("Feishu WebSocket connector started.");
   }
 }
 

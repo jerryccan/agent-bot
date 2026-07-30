@@ -46,6 +46,7 @@ const options = {
   defaultAgentName: "codex",
   defaultAgentTitle: "Codex",
   cwd: "D:\\dev\\agent-bot",
+  defaultUserOpenId: "ou_initializer",
 };
 
 describe("StartupNotifier", () => {
@@ -194,5 +195,71 @@ describe("StartupNotifier", () => {
       expect.objectContaining({ contextKey: "chat_id:c1" }),
       "Failed to send startup status notification.",
     );
+  });
+
+  test("fails startup when every notification delivery fails", async () => {
+    const store = createStore();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.getOrCreateUserContext("chat_id:c2", "codex");
+    markActive(store, "chat_id:c1", "p2p");
+    markActive(store, "chat_id:c2", "group");
+    const sendInteractiveCard = vi.fn(async () => { throw new Error("delivery failed"); });
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard),
+      new CardRenderer(),
+      { warn: vi.fn() },
+      options,
+    );
+
+    await expect(notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "Supervisor 启动",
+    )).rejects.toThrow("Failed to send any startup status notification.");
+
+    expect(sendInteractiveCard).toHaveBeenCalledTimes(2);
+  });
+
+  test("sends the first startup notification privately to the initializing user", async () => {
+    const store = createStore();
+    const sendInteractiveCard = vi.fn(async () => "om_startup");
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard),
+      new CardRenderer(),
+      { warn: vi.fn() },
+      options,
+    );
+
+    await expect(notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "首次启动",
+    )).resolves.toBeUndefined();
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(sendInteractiveCard).toHaveBeenCalledWith("open_id:ou_initializer", expect.any(Object));
+  });
+
+  test("allows first startup when neither a known chat nor an initializing user is available", async () => {
+    const store = createStore();
+    const sendInteractiveCard = vi.fn(async () => "om_startup");
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard),
+      new CardRenderer(),
+      { warn: vi.fn() },
+      {
+        defaultAgentName: options.defaultAgentName,
+        defaultAgentTitle: options.defaultAgentTitle,
+        cwd: options.cwd,
+      },
+    );
+
+    await expect(notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "首次启动",
+    )).resolves.toBeUndefined();
+
+    expect(sendInteractiveCard).not.toHaveBeenCalled();
   });
 });

@@ -78,6 +78,7 @@ if (feishuOutbound) {
     defaultAgentTitle: defaultAgent?.title ?? defaultAgentName,
     cwd: path.resolve(config.defaults.cwd),
     workspaceKind: defaultAgent?.kind === "codex" ? "projectless" : "project",
+    defaultUserOpenId: config.feishu.userOpenId,
   }, metadataHydrator);
   safeRestartNotifier = new SafeRestartNotifier(store, feishuOutbound, renderer, logger);
 }

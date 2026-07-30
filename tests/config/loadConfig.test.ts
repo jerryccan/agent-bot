@@ -21,7 +21,7 @@ describe("loadConfig", () => {
       expect(fs.existsSync(path.join(directory, "config.yaml"))).toBe(true);
       expect(config.feishu.transport).toBe("auto");
       expect(Object.keys(config.feishu).sort()).toEqual(
-        ["appId", "appSecret", "transport", "useConsoleWhenMissingCredentials"].sort(),
+        ["appId", "appSecret", "transport", "userOpenId", "useConsoleWhenMissingCredentials"].sort(),
       );
       expect(config.storage.sqlitePath).toBe(path.join(directory, "data", "agent-bot.sqlite"));
       expect(config.logging.path).toBe(path.join(directory, "logs", "agent-bot.log"));

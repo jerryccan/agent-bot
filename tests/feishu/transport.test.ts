@@ -11,21 +11,13 @@ const larkSdkMock = vi.hoisted(() => ({
     larkSdkMock.handlers = handlers;
     return { kind: "eventDispatcher" };
   }),
-  sdkLogger: undefined as undefined | {
-    error: (...messages: unknown[]) => void;
-    debug: (...messages: unknown[]) => void;
-  },
   constructorOptions: undefined as undefined | Record<string, unknown>,
-  start: vi.fn(async () => {
-    larkSdkMock.sdkLogger?.debug("[ws]", "ws connect success");
-  }),
+  start: vi.fn(async () => undefined),
 }));
 
 vi.mock("@larksuiteoapi/node-sdk", () => ({
-  LoggerLevel: { debug: 4 },
   WSClient: vi.fn(function (options: Record<string, unknown>) {
     larkSdkMock.constructorOptions = options;
-    larkSdkMock.sdkLogger = options.logger as typeof larkSdkMock.sdkLogger;
     return { start: larkSdkMock.start };
   }),
   EventDispatcher: vi.fn(function () {
@@ -36,11 +28,8 @@ vi.mock("@larksuiteoapi/node-sdk", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   larkSdkMock.handlers = {};
-  larkSdkMock.sdkLogger = undefined;
   larkSdkMock.constructorOptions = undefined;
-  larkSdkMock.start.mockImplementation(async () => {
-    larkSdkMock.sdkLogger?.debug("[ws]", "ws connect success");
-  });
+  larkSdkMock.start.mockResolvedValue(undefined);
 });
 
 describe("requireServerFeishuTransport", () => {
@@ -64,7 +53,7 @@ test("the configuration rejects unsupported transport values", () => {
   ).toThrow();
 });
 
-test("waits for the Feishu WebSocket to actually connect", async () => {
+test("starts the Feishu WebSocket without inspecting SDK logs or private state", async () => {
   const config = {
     feishu: {
       transport: "sdk",
@@ -80,50 +69,16 @@ test("waits for the Feishu WebSocket to actually connect", async () => {
     error: vi.fn(),
     debug: vi.fn(),
   } as unknown as Logger;
-  larkSdkMock.start.mockResolvedValue(undefined);
-  const connector = new FeishuConnector(config, handler, logger, { connectTimeoutMs: 1_000 });
-  let resolved = false;
+  const connector = new FeishuConnector(config, handler, logger);
 
-  const starting = connector.start().then(() => { resolved = true; });
-  await vi.waitFor(() => expect(larkSdkMock.sdkLogger).toBeDefined());
-  await Promise.resolve();
-  expect(resolved).toBe(false);
+  await connector.start();
 
-  larkSdkMock.sdkLogger?.debug("[ws]", "ws connect success");
-  await starting;
-
-  expect(larkSdkMock.constructorOptions?.loggerLevel).toBe(4);
-  expect(logger.info).toHaveBeenCalledWith("Feishu WebSocket connector connected.");
-});
-
-test("fails startup when the Feishu WebSocket does not connect before the timeout", async () => {
-  const config = {
-    feishu: {
-      transport: "sdk",
-      appId: "cli_app",
-      appSecret: "secret",
-      useConsoleWhenMissingCredentials: true,
-    },
-  } as AppConfig;
-  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
-  const logger = {
-    warn: vi.fn(),
-    info: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  } as unknown as Logger;
-  larkSdkMock.start.mockImplementation(async () => {
-    larkSdkMock.sdkLogger?.error("[ws]", "invalid app credentials");
+  expect(larkSdkMock.constructorOptions).toEqual({
+    appId: "cli_app",
+    appSecret: "secret",
   });
-  const connector = new FeishuConnector(config, handler, logger, { connectTimeoutMs: 10 });
-
-  await expect(connector.start()).rejects.toThrow(
-    "Timed out after 10ms waiting for the Feishu WebSocket connection. Last SDK error: [ws] invalid app credentials",
-  );
-  expect(logger.error).toHaveBeenCalledWith(
-    { component: "feishu-websocket", sdkMessage: "[ws] invalid app credentials" },
-    "Feishu SDK error.",
-  );
+  expect(larkSdkMock.start).toHaveBeenCalledWith({ eventDispatcher: { kind: "eventDispatcher" } });
+  expect(logger.info).toHaveBeenCalledWith("Feishu WebSocket connector started.");
 });
 
 test("dispatches direct Feishu SDK message events", async () => {

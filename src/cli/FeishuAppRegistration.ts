@@ -16,6 +16,7 @@ export interface FeishuAppRegistrationChallenge {
 export interface FeishuAppCredentials {
   appId: string;
   appSecret: string;
+  userOpenId?: string;
 }
 
 export interface FeishuAppRegistrationOptions {
@@ -94,7 +95,14 @@ export async function registerFeishuApp(options: FeishuAppRegistrationOptions = 
     if (!errorCode) {
       const appId = readString(payload, "client_id");
       const appSecret = readString(payload, "client_secret");
-      if (appId && appSecret) return { appId, appSecret };
+      if (appId && appSecret) {
+        const userOpenId = readString(readObject(payload, "user_info"), "open_id");
+        return {
+          appId,
+          appSecret,
+          ...(userOpenId ? { userOpenId } : {}),
+        };
+      }
       continue;
     }
 
@@ -163,6 +171,11 @@ function throwRegistrationError(payload: RegistrationPayload, prefix: string): v
 function readString(value: RegistrationPayload, key: string): string {
   const field = value[key];
   return typeof field === "string" ? field.trim() : "";
+}
+
+function readObject(value: RegistrationPayload, key: string): RegistrationPayload {
+  const field = value[key];
+  return isRecord(field) ? field : {};
 }
 
 function readPositiveInteger(value: RegistrationPayload, key: string): number | undefined {

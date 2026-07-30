@@ -9,6 +9,7 @@ const ENV_PATTERN = /\$\{([A-Z0-9_]+)\}/gi;
 const DEFAULT_CONFIG = `feishu:
   appId: "\${FEISHU_APP_ID}"
   appSecret: "\${FEISHU_APP_SECRET}"
+  userOpenId: "\${FEISHU_USER_OPEN_ID}"
 
 console:
   enabled: true

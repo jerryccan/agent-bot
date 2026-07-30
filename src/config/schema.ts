@@ -21,6 +21,7 @@ export const appConfigSchema = z.object({
     transport: z.enum(["auto", "sdk", "console"]).default("auto"),
     appId: z.string().optional(),
     appSecret: z.string().optional(),
+    userOpenId: z.string().optional(),
     useConsoleWhenMissingCredentials: z.boolean().default(false),
   }),
   agents: z.record(z.string().min(1), agentConfigSchema).refine(

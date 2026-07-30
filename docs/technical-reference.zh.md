@@ -59,6 +59,7 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 - 进程环境变量优先于 `~/.agent-bot/.env`
 - `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 必须同时存在
+- 一键注册还会把授权用户的 `open_id` 保存为 `FEISHU_USER_OPEN_ID`
 - 除非使用 `--reconfigure-feishu`，完整凭据不会被替换
 - 缺少凭据或只有一项时会重新创建应用
 - 新创建的凭据经过 fsync、原子替换写入 `.env`，并在配置权限前读回校验
@@ -107,6 +108,7 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 feishu:
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
+  userOpenId: "${FEISHU_USER_OPEN_ID}"
 
 console:
   enabled: true
@@ -131,7 +133,7 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-`agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。命令会等待 SDK 的 WebSocket 长连接建立后才报告 Server 就绪；缺少凭据时启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
+`agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
 
 必须至少配置一个 Agent，`defaults.agent` 必须指向已配置的 Agent。
 

@@ -140,6 +140,7 @@ async function initializeFeishu(
       credentials = {
         appId: existing.appId!,
         appSecret: existing.appSecret!,
+        userOpenId: existing.userOpenId,
       };
       status = "existing";
     } else {

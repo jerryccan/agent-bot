@@ -45,7 +45,7 @@ agent-bot --help
 agent-bot init
 ```
 
-打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据并检查所需权限。
+打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据和授权用户，并检查所需权限。
 
 只有 App ID 和 App Secret 都已保存到本地才视为机器人创建成功。如果初始化在完整凭据保存前中断，再次运行 `agent-bot init` 会创建新机器人；如果凭据已经保存，则会继续检查该机器人的远端权限和订阅。
 
@@ -67,7 +67,7 @@ agent-bot server start
 agent-bot server status
 ```
 
-`server start` 要求已经配置飞书机器人，并会等待机器人的长连接就绪。缺少凭据时请先运行 `agent-bot init`；仅在本地使用时请改用 `agent-bot console`。
+`server start` 要求已经配置飞书机器人。存在可用接收目标时，Agent Bot 会先发送启动通知，成功后才报告服务就绪；首次安装尚无历史会话时，通知默认私聊发送给授权机器人创建的用户。缺少凭据时请先运行 `agent-bot init`；仅在本地使用时请改用 `agent-bot console`。
 
 打开飞书，找到机器人并发送消息。当前会话没有任务时，Agent Bot 会自动创建。
 

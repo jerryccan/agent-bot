@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { startFeishu } from "../../src/startup/startFeishu.js";
 
 describe("startFeishu", () => {
@@ -21,6 +21,21 @@ describe("startFeishu", () => {
       () => { order.push("ready"); },
     );
 
-    expect(order).toEqual(["control", "connector", "ready", "notification"]);
+    expect(order).toEqual(["control", "connector", "notification", "ready"]);
+  });
+
+  test("does not mark the server ready when startup notification delivery fails", async () => {
+    const ready = vi.fn();
+
+    await expect(startFeishu(
+      { start: async () => undefined },
+      { notify: async () => { throw new Error("delivery failed"); } },
+      new Date("2026-07-15T05:45:00.000Z"),
+      "test restart",
+      undefined,
+      ready,
+    )).rejects.toThrow("delivery failed");
+
+    expect(ready).not.toHaveBeenCalled();
   });
 });

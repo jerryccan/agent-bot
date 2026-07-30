@@ -16,6 +16,6 @@ export async function startFeishu(
 ): Promise<void> {
   await prepare?.();
   await connector.start();
-  onConnected?.();
   await notifier.notify(startedAt, restartReason);
+  onConnected?.();
 }

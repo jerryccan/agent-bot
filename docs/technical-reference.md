@@ -59,6 +59,7 @@ Credential behavior:
 
 - Environment values take precedence over values in `~/.agent-bot/.env`.
 - Both `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are required.
+- One-click registration also stores the authorizing user's `open_id` as `FEISHU_USER_OPEN_ID`.
 - Complete credentials are preserved unless `--reconfigure-feishu` is used.
 - Missing or incomplete credentials cause a new app registration.
 - Newly registered credentials are fsynced, atomically replaced in `.env`, and read back before configuration begins.
@@ -107,6 +108,7 @@ The complete example is [config.example.yaml](../config.example.yaml). The main 
 feishu:
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
+  userOpenId: "${FEISHU_USER_OPEN_ID}"
 
 console:
   enabled: true
@@ -131,7 +133,7 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-`agent-bot server start` requires both Feishu credentials. The command waits for the SDK's persistent WebSocket connection before reporting the server as ready. Missing credentials fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
+`agent-bot server start` requires both Feishu credentials. The worker starts the SDK's persistent connection without inspecting SDK logs or private connection state, then sends startup status cards as an outbound readiness check. It normally targets known private chats and recently active groups. If the database has no known chat yet, it sends the card to `feishu.userOpenId` using an `open_id` private message. When notification targets exist, at least one card must be delivered before the server reports ready; individual target failures remain isolated. If neither a known chat nor `feishu.userOpenId` is available, startup continues without the outbound check. Missing credentials still fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
 
 At least one agent must be configured. `defaults.agent` must name a configured agent.
 

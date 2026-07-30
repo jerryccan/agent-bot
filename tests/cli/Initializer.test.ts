@@ -74,6 +74,7 @@ describe("initializeAgentBot", () => {
     writeFeishuCredentials(result.env.path, {
       appId: "cli_created",
       appSecret: "secret-created",
+      userOpenId: "ou_initializer",
     });
 
     expect(fs.readFileSync(result.env.path, "utf8")).toBe(
@@ -82,6 +83,7 @@ describe("initializeAgentBot", () => {
         "FEISHU_APP_ID=cli_created",
         "CUSTOM_VALUE=keep-me",
         "FEISHU_APP_SECRET=secret-created",
+        "FEISHU_USER_OPEN_ID=ou_initializer",
         "",
       ].join("\n"),
     );
@@ -89,6 +91,7 @@ describe("initializeAgentBot", () => {
       status: "configured",
       appId: "cli_created",
       appSecret: "secret-created",
+      userOpenId: "ou_initializer",
     });
     expect(
       fs.readdirSync(path.dirname(result.env.path)).filter((name) => name.endsWith(".tmp")),
