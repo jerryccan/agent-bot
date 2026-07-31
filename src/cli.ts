@@ -33,6 +33,7 @@ import { renderCliHelp } from "./cli/help.js";
 import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
+import { applyExplicitProfile, parseGlobalOptions } from "./cli/profile.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
 
@@ -45,7 +46,8 @@ void main(args).catch((error: unknown) => {
 
 async function main(input: string[]): Promise<void> {
   const parsed = parseGlobalOptions(input);
-  if (parsed.configPath) process.env.AGENT_BOT_CONFIG = parsed.configPath;
+  if (parsed.profilePath) applyExplicitProfile(parsed.profilePath);
+  else if (parsed.configPath) process.env.AGENT_BOT_CONFIG = parsed.configPath;
   const [command, ...rest] = parsed.args;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
@@ -373,16 +375,6 @@ async function taskCommand(input: string[]): Promise<void> {
   } finally {
     store.close();
   }
-}
-
-function parseGlobalOptions(input: string[]): { configPath?: string; args: string[] } {
-  const args = [...input];
-  const configIndex = args.indexOf("--config");
-  if (configIndex < 0) return { args };
-  const configPath = args[configIndex + 1];
-  if (!configPath) throw new Error("--config 需要配置文件路径。");
-  args.splice(configIndex, 2);
-  return { configPath, args };
 }
 
 function filterSessions(sessions: SessionRecord[], args: string[]): SessionRecord[] {

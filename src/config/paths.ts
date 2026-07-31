@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 export const AGENT_BOT_HOME_ENV = "AGENT_BOT_HOME";
+export const AGENT_BOT_EXPLICIT_PROFILE_ENV = "AGENT_BOT_EXPLICIT_PROFILE";
 export const DEFAULT_CONFIG_FILE = "config.yaml";
 export const DEFAULT_ENV_FILE = ".env";
 export const DEFAULT_SQLITE_PATH = "./data/agent-bot.sqlite";

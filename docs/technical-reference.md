@@ -33,6 +33,8 @@ Relevant source areas:
 
 The default user-data root is `~/.agent-bot`. `AGENT_BOT_HOME` replaces that root.
 
+The CLI also supports explicit directory-based profiles. Without `--profile`, commands use the main profile and the normal environment-based path rules. `--profile <directory>` pins both `AGENT_BOT_HOME` and `AGENT_BOT_CONFIG` for the command and every spawned supervisor or worker, with the configuration fixed at `<directory>/config.yaml`. It also clears inherited Feishu credential variables before loading the selected profile's `.env`, which prevents a secondary service launched from inside the primary Agent Bot process tree from accidentally reusing the primary bot. It cannot be combined with `--config`. Alternative profiles must be selected explicitly on every command; Agent Bot does not maintain a named-profile registry.
+
 | Default path                         | Contents                           |
 | ------------------------------------ | ---------------------------------- |
 | `~/.agent-bot/config.yaml`           | Main YAML configuration            |
@@ -43,9 +45,10 @@ The default user-data root is `~/.agent-bot`. `AGENT_BOT_HOME` replaces that roo
 
 Configuration path precedence:
 
-1. CLI `--config <path>`
-2. `AGENT_BOT_CONFIG`
-3. `~/.agent-bot/config.yaml`
+1. CLI `--profile <directory>` selects `<directory>/config.yaml`
+2. CLI `--config <path>`
+3. `AGENT_BOT_CONFIG`
+4. `<AGENT_BOT_HOME>/config.yaml`, defaulting to `~/.agent-bot/config.yaml`
 
 The default `.env` is always loaded from the Agent Bot home. YAML values in the form `${NAME}` are expanded from the process environment after `.env` loading.
 

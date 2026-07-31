@@ -56,6 +56,7 @@ agent-bot init
 | `--skip-feishu`        | 仅初始化 Console 使用环境 |
 | `--reconfigure-feishu` | 替换已有飞书凭据          |
 | `--json`               | 输出便于程序读取的结果    |
+| `--profile <目录>`     | 使用指定目录中的独立 Profile |
 | `--config <路径>`      | 使用指定配置文件          |
 
 之后可以重新运行 `agent-bot init` 检查或补齐机器人配置。
@@ -176,6 +177,18 @@ Agent Bot 将用户相关文件保存在仓库之外：
 | `~/.agent-bot/logs/`       | 运行日志           |
 
 可通过 `AGENT_BOT_HOME` 修改用户数据目录。配置示例见 [config.example.yaml](config.example.yaml)。
+
+### 多 Profile
+
+不指定 `--profile` 时使用位于 `~/.agent-bot` 的主 Profile。运行其他相互隔离的机器人时，需要在每次命令中显式指定其目录：
+
+```powershell
+agent-bot --profile ~/.agent-bot-rescue init
+agent-bot --profile ~/.agent-bot-rescue server start
+agent-bot --profile ~/.agent-bot-rescue server status
+```
+
+其他 Profile 不按名称注册，而是直接使用目录。每个 Profile 都在所选目录内保存自己的 `config.yaml`、`.env`、`data/` 和 `logs/`，飞书凭据与本地控制端点也相互隔离。`--profile` 不能和 `--config` 同时使用。
 
 ## 常见问题
 

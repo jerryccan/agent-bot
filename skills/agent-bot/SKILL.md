@@ -52,6 +52,15 @@ When running `init` on the user's behalf, relay every exact authorization or inc
 
 Existing complete Feishu credentials are preserved but still audited and repaired when needed. Missing or incomplete credentials mean app creation did not complete, so a later `init` starts a new registration instead of resuming the previous device code. Once both credentials are durably saved, an interrupted permission audit resumes against the same remote app. `init` also holds a local lock to prevent concurrent registrations. Use `agent-bot init --skip-feishu` only for console-only initialization because it skips both registration and configuration auditing. Use `agent-bot init --reconfigure-feishu` only when the user explicitly wants to replace existing complete credentials. The command respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Use `agent-bot init --json` when structured final output helps.
 
+For an isolated secondary bot, pass its profile directory explicitly on every command:
+
+```powershell
+agent-bot --profile ~/.agent-bot-rescue init
+agent-bot --profile ~/.agent-bot-rescue server status
+```
+
+No `--profile` selects the main profile at `~/.agent-bot` by default. `--profile <directory>` selects that directory's `config.yaml`, `.env`, data, logs, and local control endpoint and propagates the selection to the supervisor and worker. Alternative profiles are not registered by name. Do not combine `--profile` with `--config`.
+
 ## Start with inspection
 
 Verify the CLI and current service state before changing anything:
@@ -67,7 +76,7 @@ agent-bot task list
 
 Add `--json` to status and list commands when machine-readable output helps. If `agent-bot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
 
-By default Agent Bot stores user-owned configuration and runtime state in `~/.agent-bot`: config at `~/.agent-bot/config.yaml`, environment variables at `~/.agent-bot/.env`, SQLite state at `~/.agent-bot/data/agent-bot.sqlite`, logs at `~/.agent-bot/logs/agent-bot.log`, and inbound image cache next to the SQLite database. `AGENT_BOT_HOME` changes this root. Use `--config <path>` only when controlling a non-default configuration.
+By default Agent Bot stores user-owned configuration and runtime state in `~/.agent-bot`: config at `~/.agent-bot/config.yaml`, environment variables at `~/.agent-bot/.env`, SQLite state at `~/.agent-bot/data/agent-bot.sqlite`, logs at `~/.agent-bot/logs/agent-bot.log`, and inbound image cache next to the SQLite database. `AGENT_BOT_HOME` changes this root. Prefer `--profile <directory>` when controlling a complete isolated instance; use `--config <path>` only when selecting a non-default configuration without changing the whole profile.
 
 ## Manage the service
 
@@ -131,7 +140,7 @@ Messages whose trimmed text starts with `/` are always parsed as Agent Bot comma
 
 When a group body has a current task, renaming the Feishu group to `[agent-name] new title` also renames that current task if the prefix matches the task's configured agent. Malformed names, agent mismatches, empty groups, and thread-specific tasks are ignored.
 
-Use `--context <key>` or `--status <status>` to narrow `task list`. Use `--config <path>` before the command when controlling a non-default Agent Bot configuration.
+Use `--context <key>` or `--status <status>` to narrow `task list`. Use `--profile <directory>` before the command when controlling an isolated Agent Bot instance, or `--config <path>` for only a non-default configuration.
 
 ## Apply code changes safely
 

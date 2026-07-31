@@ -33,6 +33,8 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 默认用户数据根目录为 `~/.agent-bot`，可通过 `AGENT_BOT_HOME` 整体替换。
 
+CLI 还支持显式指定目录的 Profile。不使用 `--profile` 时，命令使用主 Profile 以及原有的环境变量路径规则。`--profile <目录>` 会为当前命令及其启动的 Supervisor、Worker 固定 `AGENT_BOT_HOME` 和 `AGENT_BOT_CONFIG`，配置文件固定为 `<目录>/config.yaml`。它还会先清除继承的飞书凭据环境变量，再加载所选 Profile 的 `.env`，避免从主 Agent Bot 进程树中启动辅助实例时误用主机器人的凭据。`--profile` 不能和 `--config` 同时使用。其他 Profile 必须在每次命令中显式选择；Agent Bot 不维护按名称注册的 Profile。
+
 | 默认路径                             | 内容                 |
 | ------------------------------------ | -------------------- |
 | `~/.agent-bot/config.yaml`           | YAML 主配置          |
@@ -43,9 +45,10 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 配置文件优先级：
 
-1. CLI `--config <路径>`
-2. `AGENT_BOT_CONFIG`
-3. `~/.agent-bot/config.yaml`
+1. CLI `--profile <目录>` 选择 `<目录>/config.yaml`
+2. CLI `--config <路径>`
+3. `AGENT_BOT_CONFIG`
+4. `<AGENT_BOT_HOME>/config.yaml`，默认为 `~/.agent-bot/config.yaml`
 
 默认 `.env` 始终从 Agent Bot 用户目录加载。加载 `.env` 后，YAML 中的 `${NAME}` 会使用进程环境变量展开。
 

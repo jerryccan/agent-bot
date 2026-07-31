@@ -41,6 +41,7 @@ function renderChineseHelp(version: string): string {
   skills install                    安装内置 Skill
 
 选项：
+  --profile <directory>             使用指定目录中的独立 Profile
   --config <path>                   使用指定配置文件
   --json                            在支持的命令中输出 JSON
   -h, --help                        显示帮助
@@ -48,6 +49,7 @@ function renderChineseHelp(version: string): string {
 
 示例：
   agent-bot init
+  agent-bot --profile ~/.agent-bot-rescue init
   agent-bot server start
   agent-bot server status
   agent-bot task list
@@ -79,6 +81,7 @@ Common commands:
   skills install                    Install the built-in Skill
 
 Options:
+  --profile <directory>             Use an isolated profile directory
   --config <path>                   Use a specific config file
   --json                            Print JSON when supported
   -h, --help                        Show help
@@ -86,6 +89,7 @@ Options:
 
 Examples:
   agent-bot init
+  agent-bot --profile ~/.agent-bot-rescue init
   agent-bot server start
   agent-bot server status
   agent-bot task list

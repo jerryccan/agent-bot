@@ -3,7 +3,12 @@ import path from "node:path";
 import { config as loadDotEnv } from "dotenv";
 import YAML from "yaml";
 import { appConfigSchema, type AppConfig } from "./schema.js";
-import { defaultConfigPath, defaultDotEnvPath, resolveUserPath } from "./paths.js";
+import {
+  AGENT_BOT_EXPLICIT_PROFILE_ENV,
+  defaultConfigPath,
+  defaultDotEnvPath,
+  resolveUserPath,
+} from "./paths.js";
 
 const ENV_PATTERN = /\$\{([A-Z0-9_]+)\}/gi;
 const DEFAULT_CONFIG = `feishu:
@@ -66,7 +71,11 @@ logging:
 export function loadConfig(
   configPath?: string,
 ): AppConfig {
-  loadDotEnv({ path: defaultDotEnvPath(), quiet: true });
+  loadDotEnv({
+    path: defaultDotEnvPath(),
+    quiet: true,
+    override: process.env[AGENT_BOT_EXPLICIT_PROFILE_ENV] === "1",
+  });
 
   const configuredPath = firstNonBlank(configPath, process.env.AGENT_BOT_CONFIG);
   const absolutePath = resolveUserPath(configuredPath ?? defaultConfigPath());

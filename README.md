@@ -56,6 +56,7 @@ Missing optional permissions do not block initialization. Agent Bot reports whic
 | `--skip-feishu`        | Initialize for Console-only use     |
 | `--reconfigure-feishu` | Replace existing Feishu credentials |
 | `--json`               | Print a machine-readable result     |
+| `--profile <directory>`| Use an isolated profile directory   |
 | `--config <path>`      | Use a specific configuration file   |
 
 You can rerun `agent-bot init` later to check or complete the bot configuration.
@@ -176,6 +177,18 @@ Agent Bot keeps user-owned files outside the repository:
 | `~/.agent-bot/logs/`       | Runtime logs                |
 
 Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yaml](config.example.yaml) for configuration examples.
+
+### Multiple Profiles
+
+Commands without `--profile` use the main profile at `~/.agent-bot`. To run another bot with isolated credentials, configuration, data, logs, and local control endpoint, pass its directory explicitly on every command:
+
+```powershell
+agent-bot --profile ~/.agent-bot-rescue init
+agent-bot --profile ~/.agent-bot-rescue server start
+agent-bot --profile ~/.agent-bot-rescue server status
+```
+
+Alternative profiles are directory-based and are not registered by name. Each one uses `config.yaml`, `.env`, `data/`, and `logs/` inside the selected directory. `--profile` cannot be combined with `--config`.
 
 ## Troubleshooting
 
