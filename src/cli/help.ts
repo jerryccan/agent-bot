@@ -25,7 +25,7 @@ function renderChineseHelp(version: string): string {
   agent-bot [选项] <命令>
 
 常用命令：
-  init                              初始化配置、数据目录和飞书应用
+  init                              初始化配置和飞书应用，并启动服务
   console                           打开本地 Console
   server start                      在后台启动 Agent Bot
   server status                     查看服务和安全重启状态
@@ -65,7 +65,7 @@ Usage:
   agent-bot [options] <command>
 
 Common commands:
-  init                              Initialize config, data directories, and the Lark app
+  init                              Initialize the Lark app and start the service
   console                           Open the local console
   server start                      Start Agent Bot in the background
   server status                     Show server and safe-restart status

@@ -45,7 +45,7 @@ This installs the `agent-bot` command globally. Help is displayed in Chinese whe
 agent-bot init
 ```
 
-Follow the displayed link or scan the QR code to create and authorize the Feishu bot. Initialization prepares `~/.agent-bot`, saves the bot credentials and the authorizing user, and checks the required permissions.
+Follow the displayed link or scan the QR code to create and authorize the Feishu bot. Initialization prepares `~/.agent-bot`, saves the bot credentials and the authorizing user, checks the required permissions, and starts Agent Bot automatically.
 
 Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agent-bot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
 
@@ -53,22 +53,21 @@ Missing optional permissions do not block initialization. Agent Bot reports whic
 
 | Option                 | Purpose                             |
 | ---------------------- | ----------------------------------- |
-| `--skip-feishu`        | Initialize for Console-only use     |
+| `--skip-feishu`        | Initialize for Console only; do not start the server |
 | `--reconfigure-feishu` | Replace existing Feishu credentials |
 | `--json`               | Print a machine-readable result     |
 | `--profile <directory>`| Use an isolated profile directory   |
 | `--config <path>`      | Use a specific configuration file   |
 
-You can rerun `agent-bot init` later to check or complete the bot configuration.
+You can rerun `agent-bot init` later to check or complete the bot configuration. If the server is already running, initialization leaves it running.
 
-### Start
+### Start And Stop
 
 ```powershell
-agent-bot server start
 agent-bot server status
 ```
 
-`server start` requires configured Feishu credentials. When a notification recipient is available, Agent Bot sends a startup notification before reporting the service as ready; on a fresh installation, it sends the notification privately to the user who authorized the bot. Run `agent-bot init` first if the credentials are missing. For local-only use, run `agent-bot console` instead.
+`agent-bot init` starts the server automatically. If you stop it later, run `agent-bot server start` to start it again. For local-only use, initialize with `--skip-feishu` and run `agent-bot console` instead.
 
 Open Feishu, find the bot, and send a message. Agent Bot automatically creates a task for a chat that does not have one yet.
 

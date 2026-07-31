@@ -45,7 +45,7 @@ agent-bot --help
 agent-bot init
 ```
 
-打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据和授权用户，并检查所需权限。
+打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据和授权用户、检查所需权限，并自动启动 Agent Bot。
 
 只有 App ID 和 App Secret 都已保存到本地才视为机器人创建成功。如果初始化在完整凭据保存前中断，再次运行 `agent-bot init` 会创建新机器人；如果凭据已经保存，则会继续检查该机器人的远端权限和订阅。
 
@@ -53,22 +53,21 @@ agent-bot init
 
 | 参数                   | 作用                      |
 | ---------------------- | ------------------------- |
-| `--skip-feishu`        | 仅初始化 Console 使用环境 |
+| `--skip-feishu`        | 仅初始化 Console 使用环境，不启动 Server |
 | `--reconfigure-feishu` | 替换已有飞书凭据          |
 | `--json`               | 输出便于程序读取的结果    |
 | `--profile <目录>`     | 使用指定目录中的独立 Profile |
 | `--config <路径>`      | 使用指定配置文件          |
 
-之后可以重新运行 `agent-bot init` 检查或补齐机器人配置。
+之后可以重新运行 `agent-bot init` 检查或补齐机器人配置。如果 Server 已在运行，初始化会保留当前服务。
 
-### 启动
+### 启动与停止
 
 ```powershell
-agent-bot server start
 agent-bot server status
 ```
 
-`server start` 要求已经配置飞书机器人。存在可用接收目标时，Agent Bot 会先发送启动通知，成功后才报告服务就绪；首次安装尚无历史会话时，通知默认私聊发送给授权机器人创建的用户。缺少凭据时请先运行 `agent-bot init`；仅在本地使用时请改用 `agent-bot console`。
+`agent-bot init` 会自动启动 Server。之后如果手动停止了服务，可执行 `agent-bot server start` 再次启动。仅在本地使用时，请通过 `--skip-feishu` 初始化并运行 `agent-bot console`。
 
 打开飞书，找到机器人并发送消息。当前会话没有任务时，Agent Bot 会自动创建。
 

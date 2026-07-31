@@ -78,6 +78,8 @@ CLI 还支持显式指定目录的 Profile。不使用 `--profile` 时，命令�
 
 生成的授权链接不包含 App Secret。
 
+飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agent-bot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
+
 ## 飞书应用要求
 
 基础消息能力依赖以下核心配置：

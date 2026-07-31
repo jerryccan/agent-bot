@@ -78,6 +78,8 @@ Missing app configuration is handled in two stages:
 
 The generated authorization links do not contain the app secret.
 
+After Feishu initialization succeeds, the CLI releases the initialization lock and starts the detached supervisor through the same readiness path as `agent-bot server start`. It waits up to 45 seconds for the worker to connect to Feishu and become ready. If the selected profile is already running, no second supervisor is created. `--skip-feishu` skips automatic server startup, and `--json` includes the resulting `server.status` without adding non-JSON output.
+
 ## Feishu App Requirements
 
 Core configuration required for basic messaging:

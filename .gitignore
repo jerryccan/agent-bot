@@ -10,3 +10,4 @@ logs/*.log
 .env
 config.yaml
 .agent-bot/
+/.agents/

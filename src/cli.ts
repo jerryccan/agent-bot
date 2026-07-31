@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import qrcode from "qrcode-terminal";
 import { loadConfig } from "./config/loadConfig.js";
-import { sendControlRequest, isServerReachable, isServerRunning } from "./cli/LocalControlClient.js";
+import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.js";
 import {
   controlEndpoint,
   type ControlResponse,
@@ -30,10 +30,15 @@ import {
   type FeishuConfigurationChallenge,
 } from "./cli/FeishuAppConfiguration.js";
 import { renderCliHelp } from "./cli/help.js";
-import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
 import { applyExplicitProfile, parseGlobalOptions } from "./cli/profile.js";
+import {
+  startInitializedServer,
+  startServer,
+  type InitializationServerResult,
+  type ServerStartResult,
+} from "./cli/ServerStarter.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
 
@@ -88,6 +93,7 @@ interface InitCommandResult extends InitializationResult {
     appId?: string;
     configuration?: EnsureFeishuAppConfigurationResult;
   };
+  server: InitializationServerResult;
 }
 
 async function initCommand(input: string[], configPath?: string): Promise<void> {
@@ -105,18 +111,24 @@ async function initCommand(input: string[], configPath?: string): Promise<void> 
   if (!json) printInitializationPaths(paths);
   const initializationLock = acquireInitializationLock(paths.home.path);
 
+  let initialized: Omit<InitCommandResult, "server">;
   try {
     cleanupFeishuCredentialTemporaryFiles(paths.env.path);
     const feishu = await initializeFeishu(
       paths,
       { json, skipFeishu, reconfigureFeishu },
     );
-    const result: InitCommandResult = { ...paths, feishu };
-    if (json) printJson(result);
-    else printInitializationResult(result);
+    initialized = { ...paths, feishu };
   } finally {
     initializationLock.release();
   }
+
+  if (!json) printInitializationResult(initialized);
+  if (!json && !skipFeishu) process.stdout.write("\n正在启动 Agent Bot server...\n");
+  const server = await startInitializedServer({ skipFeishu, configPath });
+  const result: InitCommandResult = { ...initialized, server };
+  if (json) printJson(result);
+  else printInitializationServerResult(server);
 }
 
 async function initializeFeishu(
@@ -250,29 +262,7 @@ async function serverCommand(input: string[]): Promise<void> {
     return;
   }
   if (action === "start") {
-    requireServerFeishuTransport(config.feishu);
-    if (await isServerRunning(endpoint)) {
-      process.stdout.write("agent-bot server 已在运行。\n");
-      return;
-    }
-    if (await isServerReachable(endpoint)) {
-      const running = await waitForServer(endpoint, 45_000);
-      if (!running) throw new Error("agent-bot server 已启动，但未能连接飞书机器人。请检查日志。");
-      process.stdout.write("agent-bot server 已启动。\n");
-      return;
-    }
-    const entry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
-    const child = spawn(process.execPath, [entry], {
-      cwd: process.cwd(),
-      detached: true,
-      windowsHide: true,
-      stdio: "ignore",
-      env: { ...process.env, AGENT_BOT_RESTART_REASON: "通过 agent-bot CLI 启动" },
-    });
-    child.unref();
-    const running = await waitForServer(endpoint, 45_000);
-    if (!running) throw new Error("已启动 Supervisor，但 server 未在 45 秒内连接飞书机器人。请检查日志。");
-    process.stdout.write("agent-bot server 已启动。\n");
+    printServerStartResult(await startServer(config));
     return;
   }
   if (action === "stop") {
@@ -474,7 +464,7 @@ function printInitializationPaths(result: InitializationResult): void {
   process.stdout.write(`日志目录：${result.logs.path}（${initializationStatusLabel(result.logs.status)}）\n`);
 }
 
-function printInitializationResult(result: InitCommandResult): void {
+function printInitializationResult(result: Omit<InitCommandResult, "server">): void {
   process.stdout.write("\nAgent Bot 初始化完成。\n");
   if (result.feishu.status === "created") {
     process.stdout.write(`飞书应用：已创建并保存凭证（${result.feishu.appId}）\n`);
@@ -504,7 +494,22 @@ function printInitializationResult(result: InitCommandResult): void {
     process.stdout.write("飞书配置：权限、事件和回调均已就绪\n");
   }
   process.stdout.write(`配置文件：${result.config.path}\n`);
-  process.stdout.write("下一步：运行 agent-bot server start。\n");
+}
+
+function printInitializationServerResult(result: InitCommandResult["server"]): void {
+  if (result.status === "skipped") {
+    process.stdout.write("Agent Bot server：已跳过（未配置飞书，可使用 Console 模式）\n");
+    return;
+  }
+  printServerStartResult(result);
+}
+
+function printServerStartResult(result: ServerStartResult): void {
+  process.stdout.write(
+    result.status === "already-running"
+      ? "agent-bot server 已在运行。\n"
+      : "agent-bot server 已启动。\n",
+  );
 }
 
 function printFeishuVerification(challenge: FeishuAppRegistrationChallenge, json: boolean): void {
@@ -608,15 +613,6 @@ function ensureOk(response: ControlResponse): void {
 function optionValue(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
-}
-
-async function waitForServer(endpoint: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await isServerRunning(endpoint)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  return false;
 }
 
 function printJson(value: unknown): void {

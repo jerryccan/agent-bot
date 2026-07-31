@@ -90,6 +90,9 @@ try {
       throw new Error(`Packaged CLI did not initialize ${key}.`);
     }
   }
+  if (initialized.server?.status !== "skipped") {
+    throw new Error("Console-only initialization unexpectedly started the server.");
+  }
 
   const installedResources = [
     ".env.example",

@@ -19,6 +19,7 @@ describe("CLI help", () => {
     expect(help).toContain("用法：");
     expect(help).toContain("常用命令：");
     expect(help).toContain("agent-bot [选项] <命令>");
+    expect(help).toContain("初始化配置和飞书应用，并启动服务");
     expect(help).toContain("server restart");
     expect(help).toContain("task prompt <task> <prompt>");
     expect(help).toContain("-v, --version");
@@ -32,6 +33,7 @@ describe("CLI help", () => {
     expect(help).toContain("Usage:");
     expect(help).toContain("Common commands:");
     expect(help).toContain("agent-bot [options] <command>");
+    expect(help).toContain("Initialize the Lark app and start the service");
     expect(help).toContain("server restart");
     expect(help).toContain("task prompt <task> <prompt>");
     expect(help).toContain("-h, --help");
