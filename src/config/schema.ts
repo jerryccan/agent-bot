@@ -22,6 +22,7 @@ export const appConfigSchema = z.object({
     appId: z.string().optional(),
     appSecret: z.string().optional(),
     userOpenId: z.string().optional(),
+    respondToAllGroupMessages: z.boolean().default(true),
     useConsoleWhenMissingCredentials: z.boolean().default(false),
   }),
   agents: z.record(z.string().min(1), agentConfigSchema).refine(

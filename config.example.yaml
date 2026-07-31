@@ -2,6 +2,8 @@ feishu:
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
   userOpenId: "${FEISHU_USER_OPEN_ID}"
+  # Set to false to require an @ mention before processing group messages.
+  respondToAllGroupMessages: true
 
 console:
   enabled: true

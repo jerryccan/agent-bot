@@ -93,7 +93,8 @@ CLI 界面文本不受系统语言影响，统一使用英文。系统生成的�
 - 机器人能力
 - 长连接事件接收
 - `im.message.receive_v1`
-- 接收群聊 @ 消息和私聊消息所需的租户权限
+- `im:message.group_msg:readonly`，用于接收机器人所在群内的全部用户消息
+- 接收私聊消息所需的租户权限
 - `im:message:send_as_bot` 或覆盖它的更大权限
 - `application:application:self_manage`，供初始化检查已发布版本
 
@@ -120,6 +121,7 @@ feishu:
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
   userOpenId: "${FEISHU_USER_OPEN_ID}"
+  respondToAllGroupMessages: true
 
 console:
   enabled: true
@@ -143,6 +145,8 @@ logging:
   level: "info"
   path: "./logs/agent-bot.log"
 ```
+
+`feishu.respondToAllGroupMessages` 默认为 `true`。设为 `false` 后，未 @ 当前机器人的群消息会被忽略；Worker 启动时会解析机器人的 Open ID，因此 @ 其他成员不会误触发。私聊始终正常处理。无论该运行时配置如何，初始化都会申请接收全部群消息的权限，之后切换配置无需再次授权。
 
 `agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
 

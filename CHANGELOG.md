@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fix fresh Lark apps receiving only private and @-mention messages by always requesting all-user group-message delivery during initialization, with `feishu.respondToAllGroupMessages` controlling whether ordinary group messages receive a response.
+
 ## [0.1.7] - 2026-07-31
 
 - Automatically wait up to five minutes for optional Lark configuration during `init`, with `Y` as the sole option to skip and continue.

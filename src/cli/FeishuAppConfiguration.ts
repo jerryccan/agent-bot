@@ -28,11 +28,8 @@ const REQUIRED_SCOPE_REQUIREMENTS: ScopeRequirement[] = [
     accepted: ["im:chat:read", "im:chat:readonly", "im:chat"],
   },
   {
-    requested: "im:message.group_at_msg:readonly",
+    requested: "im:message.group_msg:readonly",
     accepted: [
-      "im:message.group_at_msg:readonly",
-      "im:message.group_at_msg.include_bot:readonly",
-      "im:message.group_at_msg",
       "im:message.group_msg:readonly",
       "im:message.group_msg",
     ],
@@ -69,7 +66,7 @@ export const REQUIRED_FEISHU_CALLBACKS = ["card.action.trigger"] as const;
 
 const CORE_FEISHU_SCOPES = new Set([
   "application:application:self_manage",
-  "im:message.group_at_msg:readonly",
+  "im:message.group_msg:readonly",
   "im:message.p2p_msg:readonly",
   "im:message:send_as_bot",
 ]);

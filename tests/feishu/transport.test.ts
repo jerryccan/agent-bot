@@ -416,6 +416,92 @@ test("dispatches group-main mentions without creating a thread reply", async () 
   });
 });
 
+test("requires a mention of the current bot when all group messages are disabled", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToAllGroupMessages: false,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const resolveBotOpenId = vi.fn(async () => "ou_current_bot");
+  const connector = new FeishuConnector(config, handler, logger, resolveBotOpenId);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_without_mention",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "ordinary message" }),
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_other_mention",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "@_user_1 hello" }),
+      mentions: [{ key: "@_user_1", id: "ou_other_user", id_type: "open_id" }],
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_bot_mention",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "@_user_2 run this" }),
+      mentions: [{ key: "@_user_2", id: "ou_current_bot", id_type: "open_id" }],
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledOnce());
+  expect(resolveBotOpenId).toHaveBeenCalledWith("cli_app", "secret");
+  expect(handler.onMessage).toHaveBeenCalledWith(expect.objectContaining({
+    messageId: "om_bot_mention",
+    text: "run this",
+  }));
+});
+
+test("keeps private messages enabled when group messages require a mention", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToAllGroupMessages: false,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger, async () => "ou_current_bot");
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_private",
+      chat_id: "oc_private",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "hello privately" }),
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledOnce());
+});
+
 test("dispatches private-chat thread messages with an isolated task context", async () => {
   const config = {
     feishu: {

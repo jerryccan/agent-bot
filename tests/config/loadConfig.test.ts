@@ -28,8 +28,16 @@ describe("loadConfig", () => {
       expect(fs.existsSync(path.join(directory, "config.yaml"))).toBe(true);
       expect(config.feishu.transport).toBe("auto");
       expect(Object.keys(config.feishu).sort()).toEqual(
-        ["appId", "appSecret", "transport", "userOpenId", "useConsoleWhenMissingCredentials"].sort(),
+        [
+          "appId",
+          "appSecret",
+          "respondToAllGroupMessages",
+          "transport",
+          "userOpenId",
+          "useConsoleWhenMissingCredentials",
+        ].sort(),
       );
+      expect(config.feishu.respondToAllGroupMessages).toBe(true);
       expect(config.storage.sqlitePath).toBe(path.join(directory, "data", "agent-bot.sqlite"));
       expect(config.logging.path).toBe(path.join(directory, "logs", "agent-bot.log"));
     } finally {
@@ -44,8 +52,29 @@ describe("loadConfig", () => {
 
     expect(config.defaults.agent).toBe("codex");
     expect(config.agents.codex?.kind).toBe("codex");
+    expect(config.feishu.respondToAllGroupMessages).toBe(true);
     expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
     expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
+  });
+
+  test("can require bot mentions for group messages", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-group-mentions-"));
+    const configPath = path.join(directory, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "feishu:",
+      "  respondToAllGroupMessages: false",
+      "agents:",
+      "  codex:",
+      "    kind: codex",
+      "    title: Codex",
+      "    command: codex",
+    ].join("\n"));
+
+    try {
+      expect(loadConfig(configPath).feishu.respondToAllGroupMessages).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("resolves configured storage and log paths relative to the config file", () => {

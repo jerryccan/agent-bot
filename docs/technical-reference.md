@@ -93,7 +93,8 @@ Core configuration required for basic messaging:
 - Bot capability
 - Persistent-connection event delivery
 - `im.message.receive_v1`
-- Tenant permissions for group @ messages and private messages
+- `im:message.group_msg:readonly` for all user messages in groups containing the bot
+- Tenant permission for private messages
 - `im:message:send_as_bot` or a broader equivalent
 - `application:application:self_manage` so initialization can inspect the published version
 
@@ -120,6 +121,7 @@ feishu:
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
   userOpenId: "${FEISHU_USER_OPEN_ID}"
+  respondToAllGroupMessages: true
 
 console:
   enabled: true
@@ -143,6 +145,8 @@ logging:
   level: "info"
   path: "./logs/agent-bot.log"
 ```
+
+`feishu.respondToAllGroupMessages` defaults to `true`. Set it to `false` to ignore group messages unless they mention the current bot. The worker resolves the bot's Open ID at startup so mentioning another member does not trigger it. Private messages are always accepted. Initialization requests all-user group-message delivery regardless of this runtime option, allowing it to be changed later without another authorization.
 
 `agent-bot server start` requires both Feishu credentials. The worker starts the SDK's persistent connection without inspecting SDK logs or private connection state, then sends startup status cards as an outbound readiness check. Each startup card includes the Agent Bot version read from the installed package metadata. It normally targets known private chats and recently active groups. If the database has no known chat yet, it sends the card to `feishu.userOpenId` using an `open_id` private message. When notification targets exist, at least one card must be delivered before the server reports ready; individual target failures remain isolated. If neither a known chat nor `feishu.userOpenId` is available, startup continues without the outbound check. Missing credentials still fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
 

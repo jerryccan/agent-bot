@@ -1,13 +1,17 @@
 import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
 import { threadContextKey } from "./contextKey.js";
+import { resolveFeishuBotOpenId } from "./FeishuBotIdentity.js";
 import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
+
+type BotOpenIdResolver = (appId: string, appSecret: string) => Promise<string>;
 
 export class FeishuConnector {
   constructor(
     private readonly config: AppConfig,
     private readonly handler: FeishuEventHandler,
     private readonly logger: Logger,
+    private readonly botOpenIdResolver: BotOpenIdResolver = resolveFeishuBotOpenId,
   ) {}
 
   async start(): Promise<void> {
@@ -16,18 +20,22 @@ export class FeishuConnector {
       throw new Error("Feishu appId/appSecret are required.");
     }
 
-    await this.startFeishuWs(appId, appSecret);
+    const respondToAllGroupMessages = this.config.feishu.respondToAllGroupMessages !== false;
+    const botOpenId = respondToAllGroupMessages
+      ? undefined
+      : await this.botOpenIdResolver(appId, appSecret);
+    await this.startFeishuWs(appId, appSecret, botOpenId);
   }
 
   stop(): void {
     // SDK connector currently relies on process lifetime.
   }
 
-  private async startFeishuWs(appId: string, appSecret: string): Promise<void> {
+  private async startFeishuWs(appId: string, appSecret: string, requiredMentionOpenId?: string): Promise<void> {
     const lark = (await import("@larksuiteoapi/node-sdk")) as Record<string, any>;
     const eventDispatcher = new lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data: unknown) => {
-        const message = toIncomingMessage(data);
+        const message = toIncomingMessage(data, requiredMentionOpenId);
         if (!message) {
           this.logger.debug({ data }, "Ignored unsupported Feishu message event.");
           return;
@@ -98,7 +106,7 @@ function toChatUpdatedEvent(data: unknown): ChatUpdatedEvent | undefined {
   };
 }
 
-function toIncomingMessage(data: unknown): IncomingMessage | undefined {
+function toIncomingMessage(data: unknown, requiredMentionOpenId?: string): IncomingMessage | undefined {
   const event = getFeishuEvent(data);
   const message = event?.message;
   if (!message) {
@@ -111,6 +119,13 @@ function toIncomingMessage(data: unknown): IncomingMessage | undefined {
   if (!parsed) return undefined;
   const chatId = message.chat_id;
   const chatType = message.chat_type === "group" ? "group" : "p2p";
+  if (
+    chatType === "group" &&
+    requiredMentionOpenId &&
+    !mentionsOpenId(message.mentions, requiredMentionOpenId)
+  ) {
+    return undefined;
+  }
   const threadId = typeof message.thread_id === "string" && message.thread_id ? message.thread_id : undefined;
   const rootMessageId = typeof message.root_id === "string" && message.root_id ? message.root_id : undefined;
   const parentMessageId = typeof message.parent_id === "string" && message.parent_id ? message.parent_id : undefined;
@@ -140,6 +155,11 @@ function toIncomingMessage(data: unknown): IncomingMessage | undefined {
     text: parsed.text,
     ...(parsed.images.length > 0 ? { images: parsed.images.map((imageKey) => ({ imageKey })) } : {}),
   };
+}
+
+function mentionsOpenId(value: unknown, openId: string): boolean {
+  return Array.isArray(value) && value.some((mention) =>
+    isRecord(mention) && mention.id === openId);
 }
 
 function parseMessageContent(

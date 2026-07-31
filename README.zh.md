@@ -190,6 +190,8 @@ Agent Bot 将用户相关文件保存在仓库之外：
 
 可通过 `AGENT_BOT_HOME` 修改用户数据目录。配置示例见 [config.example.yaml](config.example.yaml)。
 
+默认情况下，Agent Bot 会响应机器人所在群内的普通消息。将 `feishu.respondToAllGroupMessages` 设为 `false` 后，群消息必须 @ 当前机器人才会响应，私聊不受影响。初始化仍会申请完整的群消息权限，因此以后切换该配置无需重新授权。
+
 ### 多 Profile
 
 不指定 `--profile` 时使用位于 `~/.agent-bot` 的主 Profile。运行其他相互隔离的机器人时，需要在每次命令中显式指定其目录：

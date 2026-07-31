@@ -190,6 +190,8 @@ Agent Bot keeps user-owned files outside the repository:
 
 Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yaml](config.example.yaml) for configuration examples.
 
+By default, Agent Bot responds to ordinary messages in groups containing the bot. Set `feishu.respondToAllGroupMessages` to `false` to require users to @ the bot in groups; private chats are unchanged. Initialization still requests the complete group-message permission set so changing this option later does not require another authorization.
+
 ### Multiple Profiles
 
 Commands without `--profile` use the main profile at `~/.agent-bot`. To run another bot with isolated credentials, configuration, data, logs, and local control endpoint, pass its directory explicitly on every command:
