@@ -3264,7 +3264,10 @@ function truncateTail(value: string, maxLength: number): string {
 function parseAgentGroupName(value: string): { agentName: string; title: string } | undefined {
   const match = /^\[([^[\]]+)\]\s+(.+)$/.exec(value.trim());
   const agentName = match?.[1]?.trim();
-  const title = match?.[2]?.trim();
+  const remainder = match?.[2]?.trim();
+  if (!agentName || !remainder) return undefined;
+  const projectPrefix = /^\[([^[\]]+)\](?:\s+(.+))?$/.exec(remainder);
+  const title = projectPrefix ? projectPrefix[2]?.trim() : remainder;
   return agentName && title ? { agentName, title } : undefined;
 }
 

@@ -177,6 +177,8 @@ Inside a thread, `/forkgroup` forks from the thread's original turn until the th
 
 When `/newgroup` omits the title, the task title is `新任务` and the default group name is `[agent] [project dir] 新任务 (mm-dd)`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
 
+Renaming a bound group to `[agent] [project dir] title` synchronizes only `title` to the current task. The Agent and project-directory prefixes remain group metadata and are never included in the Codex task title. The older `[agent] title` format remains supported.
+
 ## Configuration And Data
 
 Agent Bot keeps user-owned files outside the repository:

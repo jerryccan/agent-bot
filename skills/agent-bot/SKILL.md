@@ -155,7 +155,7 @@ Keep action labels placed to the right of card content or at the bottom of a car
 
 Messages whose trimmed text starts with `/` are always parsed as Agent Bot commands. Unknown slash commands are reported to the user with a `/help` hint and must never fall through to the model, including slash-prefixed messages that also contain images.
 
-When a group body has a current task, renaming the Feishu group to `[agent-name] new title` also renames that current task if the prefix matches the task's configured agent. Malformed names, agent mismatches, empty groups, and thread-specific tasks are ignored.
+When a group body has a current task, renaming the Feishu group to `[agent-name] [project directory] new title` also renames that current task if the Agent prefix matches the task's configured agent. Only `new title` is written to the task; the Agent and project-directory prefixes remain group metadata. The older `[agent-name] new title` shape remains supported. Malformed names, agent mismatches, empty groups, and thread-specific tasks are ignored.
 
 Use `--context <key>` or `--status <status>` to narrow `task list`. Use `--profile <directory>` before the command when controlling an isolated Agent Bot instance, or `--config <path>` for only a non-default configuration.
 

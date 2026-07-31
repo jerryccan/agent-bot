@@ -1809,14 +1809,44 @@ describe("ProxySessionController", () => {
 
     await controller.onChatUpdated({
       chatId: "rename_group",
-      beforeName: "[codex] old title",
-      afterName: "[Codex] abc",
+      beforeName: "[codex] [dev\\agent-bot] old title",
+      afterName: "[Codex] [dev\\agent-bot] abc",
     });
 
     expect(runtime.setTitle).toHaveBeenCalledWith(sessionId, "abc");
     expect(store.getSession(sessionId)?.title).toBe("abc");
     expect(presenter.updateSessionTitle).toHaveBeenCalledWith(sessionId, "abc");
     expect(outbound.sendText).toHaveBeenCalledTimes(sentMessageCount);
+  });
+
+  test("keeps supporting group names without a project prefix when renaming a task", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(groupMessage("rename_legacy_group", "old title"));
+    const sessionId = store.getUserContext("chat_id:rename_legacy_group")!.currentSessionId!;
+
+    await controller.onChatUpdated({
+      chatId: "rename_legacy_group",
+      beforeName: "[codex] old title",
+      afterName: "[Codex] legacy title",
+    });
+
+    expect(runtime.setTitle).toHaveBeenCalledWith(sessionId, "legacy title");
+    expect(store.getSession(sessionId)?.title).toBe("legacy title");
+  });
+
+  test("ignores a group name containing only agent and project prefixes", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(groupMessage("rename_prefix_only", "current title"));
+    const sessionId = store.getUserContext("chat_id:rename_prefix_only")!.currentSessionId!;
+
+    await controller.onChatUpdated({
+      chatId: "rename_prefix_only",
+      beforeName: "[codex] [dev\\agent-bot] current title",
+      afterName: "[codex] [dev\\agent-bot]",
+    });
+
+    expect(runtime.setTitle).not.toHaveBeenCalled();
+    expect(store.getSession(sessionId)?.title).toBe("current title");
   });
 
   test("ignores group names that do not match the current task agent or have no bound task", async () => {

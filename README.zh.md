@@ -177,6 +177,8 @@ agent-bot task stop <任务>
 
 `/newgroup` 省略标题时，任务标题为 `新任务`，默认群名为 `[agent] [project dir] 新任务 (mm-dd)`。`/forkgroup` 省略标题时，任务标题和群名都与 `/fork` 一样使用持久递增的 `源标题（分支 N）`，不追加日期。`/newgroup` 和 `/forkgroup` 创建的飞书群名最多显示 60 个字符。生成后的群名过长时，Agent Bot 只截断群名中的标题部分，任务标题本身保持不变。
 
+把已绑定任务的群改名为 `[agent] [project dir] title` 时，只会把 `title` 同步到当前任务；Agent 和工程目录前缀仅作为群元数据，不会写入 Codex 任务标题。旧的 `[agent] title` 格式仍然兼容。
+
 ## 配置与数据
 
 Agent Bot 将用户相关文件保存在仓库之外：
