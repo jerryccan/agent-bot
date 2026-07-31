@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-31
+
 - Show the incoming-message reaction before chat persistence, image downloads, queue waits, commands, or runtime work begins.
 - Verify Feishu startup through notification delivery before reporting the server as ready.
 - Support isolated Agent Bot profiles through explicit profile directories.
