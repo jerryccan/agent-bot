@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-31
+
 - Prevent `init --reset` from reusing credentials loaded from the Profile before its `.env` was backed up.
 
 ## [0.1.5] - 2026-07-31
