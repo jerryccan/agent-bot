@@ -76,7 +76,9 @@ When complete credentials are absent, initialization uses Feishu one-click regis
 Missing app configuration is handled in two stages:
 
 1. Core configuration is requested and polled until it becomes available.
-2. Remaining optional configuration is requested without blocking initialization.
+2. Remaining optional configuration is requested. The CLI prints its QR code followed by the authorization URL, then immediately polls for up to five minutes. An interactive terminal offers only `Y` to skip optional authorization and continue; otherwise the user completes authorization in the browser while polling continues.
+
+Optional polling failures and timeouts return a partial configuration result instead of failing initialization. When stdin is not an interactive terminal, no skip input is available and polling continues until configuration becomes active or times out. Verification URLs and prompts use stderr, so `--json` keeps its final stdout machine-readable.
 
 The generated authorization links do not contain the app secret.
 

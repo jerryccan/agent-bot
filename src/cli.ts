@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import qrcode from "qrcode-terminal";
 import { loadConfig, loadConfigWithoutEnvironmentMutation } from "./config/loadConfig.js";
 import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.js";
 import {
@@ -22,6 +21,10 @@ import {
 } from "./cli/Initializer.js";
 import { parseInitCommandOptions, type InitCommandOptions } from "./cli/initOptions.js";
 import {
+  listenForOptionalAuthorizationSkip,
+  type OptionalAuthorizationSkipListener,
+} from "./cli/OptionalAuthorizationSkip.js";
+import {
   registerFeishuApp,
   type FeishuAppCredentials,
   type FeishuAppRegistrationChallenge,
@@ -36,6 +39,7 @@ import { formatServerStatus, withConfiguredFeishuAppId } from "./cli/serverStatu
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
 import { applyExplicitProfile, parseGlobalOptions } from "./cli/profile.js";
+import { printVerificationQrAndLink } from "./cli/VerificationOutput.js";
 import {
   startInitializedServer,
   startServer,
@@ -178,10 +182,18 @@ async function initializeFeishu(
     }
 
     if (!options.json) process.stdout.write("\nChecking Lark app permissions, events, and callbacks...\n");
+    const optionalSkip = new AbortController();
+    let skipListener: OptionalAuthorizationSkipListener | undefined;
     const configuration = await ensureFeishuAppConfiguration(credentials, {
       signal: controller.signal,
-      onVerification: (challenge) => printFeishuConfigurationVerification(challenge, options.json),
-    });
+      optionalSkipSignal: optionalSkip.signal,
+      onVerification: (challenge) => {
+        printFeishuConfigurationVerification(challenge, options.json);
+        if (!challenge.blocking) {
+          skipListener = listenForOptionalAuthorizationSkip(() => optionalSkip.abort());
+        }
+      },
+    }).finally(() => skipListener?.close());
     return {
       status,
       appId: credentials.appId,
@@ -544,13 +556,13 @@ function printServerStartResult(result: ServerStartResult): void {
 }
 
 function printFeishuVerification(challenge: FeishuAppRegistrationChallenge, json: boolean): void {
-  process.stderr.write("\nScan with Lark or open the link below in a browser to create the bot app:\n\n");
-  process.stderr.write(`${challenge.verificationUrl}\n\n`);
-  if (!json) {
-    qrcode.generate(challenge.verificationUrl, { small: true }, (output) => {
-      process.stderr.write(`${output}\n`);
-    });
-  }
+  printVerificationQrAndLink(
+    {
+      verificationUrl: challenge.verificationUrl,
+      json,
+      qrInstruction: "Scan this QR code with Lark to create the bot app:",
+    },
+  );
   process.stderr.write(`The link expires in about ${Math.ceil(challenge.expiresIn / 60)} minutes. Waiting for confirmation...\n`);
 }
 
@@ -568,17 +580,17 @@ function printFeishuConfigurationVerification(
   if (challenge.missing.callbacks.length > 0) {
     process.stderr.write(`Callbacks: ${challenge.missing.callbacks.join(", ")}\n`);
   }
-  process.stderr.write("\nScan with Lark or open the link below in a browser to complete the configuration:\n\n");
-  process.stderr.write(`${challenge.verificationUrl}\n\n`);
-  if (!json) {
-    qrcode.generate(challenge.verificationUrl, { small: true }, (output) => {
-      process.stderr.write(`${output}\n`);
-    });
-  }
+  printVerificationQrAndLink(
+    {
+      verificationUrl: challenge.verificationUrl,
+      json,
+      qrInstruction: "Scan this QR code with Lark to complete the configuration:",
+    },
+  );
   if (challenge.blocking) {
     process.stderr.write("Waiting for the core scopes and message event to become active...\n");
   } else {
-    process.stderr.write("These optional items do not block basic messaging. Initialization will continue; grant them later using the link.\n");
+    process.stderr.write("Waiting up to 5 minutes for these optional items to become active...\n");
   }
 }
 

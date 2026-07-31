@@ -49,7 +49,7 @@ Follow the displayed link or scan the QR code to create and authorize the Feishu
 
 Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agent-bot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
 
-Missing optional permissions do not block initialization. Agent Bot reports which features may be unavailable.
+When optional permissions or subscriptions are missing, Agent Bot first shows their QR code and authorization link, then immediately waits up to five minutes for them to become active. The terminal offers only one choice: enter `Y` to skip optional authorization and continue. Otherwise, complete authorization in the browser while Agent Bot waits. Optional authorization failures or timeouts do not block startup, and Agent Bot reports which features may be unavailable.
 
 | Option                 | Purpose                             |
 | ---------------------- | ----------------------------------- |

@@ -6,6 +6,7 @@ const TENANT_TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal";
 const APPLICATION_PATH_PREFIX = "/open-apis/application/v6/applications";
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_OPTIONAL_COMPLETION_TIMEOUT_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 interface ScopeRequirement {
@@ -96,8 +97,10 @@ export interface EnsureFeishuAppConfigurationOptions {
   fetch?: typeof globalThis.fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   signal?: AbortSignal;
+  optionalSkipSignal?: AbortSignal;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  optionalTimeoutMs?: number;
   onVerification?: (challenge: FeishuConfigurationChallenge) => void | Promise<void>;
 }
 
@@ -118,6 +121,8 @@ export async function ensureFeishuAppConfiguration(
   const sleep = options.sleep ?? delay;
   const pollIntervalMs = positiveInteger(options.pollIntervalMs) ?? DEFAULT_POLL_INTERVAL_MS;
   const timeoutMs = positiveInteger(options.timeoutMs) ?? DEFAULT_COMPLETION_TIMEOUT_MS;
+  const optionalTimeoutMs = positiveInteger(options.optionalTimeoutMs)
+    ?? DEFAULT_OPTIONAL_COMPLETION_TIMEOUT_MS;
 
   let configuration: FeishuAppConfiguration;
   try {
@@ -139,13 +144,16 @@ export async function ensureFeishuAppConfiguration(
 
   const coreMissing = coreMissingFeishuAppConfiguration(missing);
   if (!hasMissingConfiguration(coreMissing)) {
-    await requestMissingFeishuConfiguration(credentials.appId, missing, false, options.onVerification);
-    return {
-      status: "partial",
+    return completeOptionalFeishuConfiguration(
+      credentials,
       configuration,
-      added: emptyConfiguration(),
-      remaining: missing,
-    };
+      missing,
+      fetchImpl,
+      sleep,
+      pollIntervalMs,
+      optionalTimeoutMs,
+      options,
+    );
   }
 
   await requestMissingFeishuConfiguration(credentials.appId, coreMissing, true, options.onVerification);
@@ -161,15 +169,16 @@ export async function ensureFeishuAppConfiguration(
       configuration = await readFeishuAppConfiguration(credentials, fetchImpl, options.signal);
       const remaining = missingFeishuAppConfiguration(configuration);
       if (!hasMissingConfiguration(coreMissingFeishuAppConfiguration(remaining))) {
-        if (hasMissingConfiguration(remaining)) {
-          await requestMissingFeishuConfiguration(credentials.appId, remaining, false, options.onVerification);
-        }
-        return {
-          status: hasMissingConfiguration(remaining) ? "partial" : "updated",
+        return completeOptionalFeishuConfiguration(
+          credentials,
           configuration,
-          added: resolvedMissingConfiguration(missing, remaining),
-          remaining,
-        };
+          missing,
+          fetchImpl,
+          sleep,
+          pollIntervalMs,
+          optionalTimeoutMs,
+          options,
+        );
       }
       lastError = undefined;
     } catch (error) {
@@ -190,6 +199,112 @@ async function requestMissingFeishuConfiguration(
 ): Promise<void> {
   const verificationUrl = buildFeishuConfigurationUrl(appId, missing);
   await onVerification?.({ verificationUrl, missing, blocking });
+}
+
+async function completeOptionalFeishuConfiguration(
+  credentials: FeishuAppCredentials,
+  initialConfiguration: FeishuAppConfiguration,
+  initialMissing: MissingFeishuAppConfiguration,
+  fetchImpl: typeof globalThis.fetch,
+  sleep: (milliseconds: number) => Promise<void>,
+  pollIntervalMs: number,
+  timeoutMs: number,
+  options: EnsureFeishuAppConfigurationOptions,
+): Promise<EnsureFeishuAppConfigurationResult> {
+  let configuration = initialConfiguration;
+  let remaining = missingFeishuAppConfiguration(configuration);
+  if (hasMissingConfiguration(remaining)) {
+    await requestMissingFeishuConfiguration(
+      credentials.appId,
+      remaining,
+      false,
+      options.onVerification,
+    );
+    if (!options.optionalSkipSignal?.aborted) {
+      const completed = await waitForOptionalFeishuConfiguration(
+        credentials,
+        configuration,
+        fetchImpl,
+        sleep,
+        pollIntervalMs,
+        timeoutMs,
+        options.signal,
+        options.optionalSkipSignal,
+      );
+      configuration = completed.configuration;
+      remaining = completed.remaining;
+    }
+  }
+  return {
+    status: hasMissingConfiguration(remaining) ? "partial" : "updated",
+    configuration,
+    added: resolvedMissingConfiguration(initialMissing, remaining),
+    remaining,
+  };
+}
+
+async function waitForOptionalFeishuConfiguration(
+  credentials: FeishuAppCredentials,
+  initialConfiguration: FeishuAppConfiguration,
+  fetchImpl: typeof globalThis.fetch,
+  sleep: (milliseconds: number) => Promise<void>,
+  pollIntervalMs: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  optionalSkipSignal?: AbortSignal,
+): Promise<{
+  configuration: FeishuAppConfiguration;
+  remaining: MissingFeishuAppConfiguration;
+}> {
+  let configuration = initialConfiguration;
+  let remaining = missingFeishuAppConfiguration(configuration);
+  let remainingMs = timeoutMs;
+  while (remainingMs > 0 && hasMissingConfiguration(remaining)) {
+    if (optionalSkipSignal?.aborted) break;
+    const waitMs = Math.min(pollIntervalMs, remainingMs);
+    const waitResult = await sleepWithOptionalSkip(
+      sleep,
+      waitMs,
+      signal,
+      optionalSkipSignal,
+    );
+    if (waitResult === "skipped") break;
+    remainingMs -= waitMs;
+    try {
+      configuration = await readFeishuAppConfiguration(credentials, fetchImpl, signal);
+      remaining = missingFeishuAppConfiguration(configuration);
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+    }
+  }
+  return { configuration, remaining };
+}
+
+async function sleepWithOptionalSkip(
+  sleep: (milliseconds: number) => Promise<void>,
+  milliseconds: number,
+  signal?: AbortSignal,
+  optionalSkipSignal?: AbortSignal,
+): Promise<"elapsed" | "skipped"> {
+  if (!optionalSkipSignal) {
+    await sleepWithAbort(sleep, milliseconds, signal);
+    return "elapsed";
+  }
+  if (optionalSkipSignal.aborted) return "skipped";
+
+  let onSkip: (() => void) | undefined;
+  const skipped = new Promise<"skipped">((resolve) => {
+    onSkip = () => resolve("skipped");
+    optionalSkipSignal.addEventListener("abort", onSkip, { once: true });
+  });
+  try {
+    return await Promise.race([
+      sleepWithAbort(sleep, milliseconds, signal).then(() => "elapsed" as const),
+      skipped,
+    ]);
+  } finally {
+    if (onSkip) optionalSkipSignal.removeEventListener("abort", onSkip);
+  }
 }
 
 export function missingFeishuAppConfiguration(configuration: FeishuAppConfiguration): MissingFeishuAppConfiguration {

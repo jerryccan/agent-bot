@@ -45,7 +45,7 @@ describe("ensureFeishuAppConfiguration", () => {
     expect(onVerification).not.toHaveBeenCalled();
   });
 
-  test("builds an incremental launcher link without waiting for optional configuration", async () => {
+  test("builds an incremental launcher link and continues when optional configuration is skipped", async () => {
     const fetchMock = configurationFetch(() => ({
       scopes: REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:chat:create"),
       events: ["im.message.receive_v1"],
@@ -53,13 +53,16 @@ describe("ensureFeishuAppConfiguration", () => {
     }));
     let challenge: FeishuConfigurationChallenge | undefined;
     const sleep = vi.fn(async () => undefined);
+    const optionalSkip = new AbortController();
 
     const result = await ensureFeishuAppConfiguration(credentials, {
       fetch: fetchMock,
       pollIntervalMs: 1,
       sleep,
+      optionalSkipSignal: optionalSkip.signal,
       onVerification: (value) => {
         challenge = value;
+        optionalSkip.abort();
       },
     });
 
@@ -100,6 +103,79 @@ describe("ensureFeishuAppConfiguration", () => {
     });
   });
 
+  test("waits for optional configuration when authorization is accepted", async () => {
+    let configured = false;
+    const fetchMock = configurationFetch(
+      () => configured ? completeConfiguration() : configurationWithoutOptionalCapabilities(),
+    );
+    const sleep = vi.fn(async () => {
+      configured = true;
+    });
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      pollIntervalMs: 1,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(result.status).toBe("updated");
+    expect(result.added).toEqual({
+      scopes: ["im:chat:create"],
+      events: ["im.chat.updated_v1"],
+      callbacks: ["card.action.trigger"],
+    });
+    expect(result.remaining).toEqual({
+      scopes: [],
+      events: [],
+      callbacks: [],
+    });
+  });
+
+  test("continues when accepted optional configuration does not become active before timeout", async () => {
+    const fetchMock = configurationFetch(() => configurationWithoutOptionalCapabilities());
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      pollIntervalMs: 1,
+      optionalTimeoutMs: 2,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("partial");
+    expect(result.remaining).toEqual({
+      scopes: ["im:chat:create"],
+      events: ["im.chat.updated_v1"],
+      callbacks: ["card.action.trigger"],
+    });
+  });
+
+  test("stops an active optional wait when the user skips authorization", async () => {
+    const optionalSkip = new AbortController();
+    const fetchMock = configurationFetch(() => configurationWithoutOptionalCapabilities());
+    const sleep = vi.fn(async () => {
+      optionalSkip.abort();
+    });
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      pollIntervalMs: 1,
+      optionalTimeoutMs: 10,
+      sleep,
+      optionalSkipSignal: optionalSkip.signal,
+    });
+
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(result.status).toBe("partial");
+    expect(result.remaining).toEqual({
+      scopes: ["im:chat:create"],
+      events: ["im.chat.updated_v1"],
+      callbacks: ["card.action.trigger"],
+    });
+  });
+
   test("waits for core configuration but returns when optional items remain", async () => {
     let coreConfigured = false;
     const fetchMock = configurationFetch(() => ({
@@ -110,6 +186,7 @@ describe("ensureFeishuAppConfiguration", () => {
       callbacks: [],
     }));
     const challenges: FeishuConfigurationChallenge[] = [];
+    const optionalSkip = new AbortController();
 
     const result = await ensureFeishuAppConfiguration(credentials, {
       fetch: fetchMock,
@@ -117,8 +194,10 @@ describe("ensureFeishuAppConfiguration", () => {
       sleep: async () => {
         coreConfigured = true;
       },
+      optionalSkipSignal: optionalSkip.signal,
       onVerification: (value) => {
         challenges.push(value);
+        if (!value.blocking) optionalSkip.abort();
       },
     });
 
@@ -297,6 +376,14 @@ function completeConfiguration(): ConfigurationFixture {
     scopes: REQUIRED_FEISHU_SCOPES,
     events: REQUIRED_FEISHU_EVENTS,
     callbacks: REQUIRED_FEISHU_CALLBACKS,
+  };
+}
+
+function configurationWithoutOptionalCapabilities(): ConfigurationFixture {
+  return {
+    scopes: REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:chat:create"),
+    events: ["im.message.receive_v1"],
+    callbacks: [],
   };
 }
 
