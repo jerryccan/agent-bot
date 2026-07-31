@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-31
+
 - Show the running Agent Bot version on startup status cards.
 - Add `agent-bot --profile <directory> init --reset` to back up and fully reconfigure an explicitly selected Profile while retaining all reset backups.
 
