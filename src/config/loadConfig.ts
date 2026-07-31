@@ -114,6 +114,20 @@ export function loadConfig(
   };
 }
 
+export function loadConfigWithoutEnvironmentMutation(configPath?: string): AppConfig {
+  const environment = new Map(Object.entries(process.env));
+  try {
+    return loadConfig(configPath);
+  } finally {
+    for (const name of Object.keys(process.env)) {
+      if (!environment.has(name)) delete process.env[name];
+    }
+    for (const [name, value] of environment) {
+      process.env[name] = value;
+    }
+  }
+}
+
 function expandEnv(raw: string): string {
   return raw.replace(ENV_PATTERN, (_match, name: string) => process.env[name] ?? "");
 }

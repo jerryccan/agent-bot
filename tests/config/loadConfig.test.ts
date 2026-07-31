@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { applyExplicitProfile } from "../../src/cli/profile.js";
-import { loadConfig } from "../../src/config/loadConfig.js";
+import {
+  loadConfig,
+  loadConfigWithoutEnvironmentMutation,
+} from "../../src/config/loadConfig.js";
 import {
   AGENT_BOT_EXPLICIT_PROFILE_ENV,
   defaultConfigPath,
@@ -117,6 +120,55 @@ describe("loadConfig", () => {
       expect(config.feishu.appSecret).toBe("rescue-secret");
       expect(config.feishu.userOpenId).toBe("rescue-user");
       expect(config.storage.sqlitePath).toBe(path.join(directory, "data", "agent-bot.sqlite"));
+    } finally {
+      for (const [name, value] of preserved) restoreEnv(name, value);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("inspects an explicit profile without retaining values loaded from its environment file", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-profile-inspection-"));
+    const preserved = new Map([
+      ["AGENT_BOT_HOME", process.env.AGENT_BOT_HOME],
+      ["AGENT_BOT_CONFIG", process.env.AGENT_BOT_CONFIG],
+      [AGENT_BOT_EXPLICIT_PROFILE_ENV, process.env[AGENT_BOT_EXPLICIT_PROFILE_ENV]],
+      ["FEISHU_APP_ID", process.env.FEISHU_APP_ID],
+      ["FEISHU_APP_SECRET", process.env.FEISHU_APP_SECRET],
+      ["RESET_ONLY_VALUE", process.env.RESET_ONLY_VALUE],
+    ]);
+    fs.writeFileSync(path.join(directory, "config.yaml"), [
+      "feishu:",
+      "  appId: ${FEISHU_APP_ID}",
+      "  appSecret: ${FEISHU_APP_SECRET}",
+      "agents:",
+      "  codex:",
+      "    kind: codex",
+      "    title: Codex",
+      "    command: codex",
+      "defaults:",
+      "  agent: codex",
+      "storage:",
+      "  sqlitePath: ./data/agent-bot.sqlite",
+      "logging:",
+      "  path: ./logs/agent-bot.log",
+    ].join("\n"));
+    fs.writeFileSync(path.join(directory, ".env"), [
+      "FEISHU_APP_ID=rescue-app",
+      "FEISHU_APP_SECRET=rescue-secret",
+      "RESET_ONLY_VALUE=old-profile-value",
+    ].join("\n"));
+
+    try {
+      applyExplicitProfile(directory);
+      delete process.env.RESET_ONLY_VALUE;
+
+      const config = loadConfigWithoutEnvironmentMutation();
+
+      expect(config.feishu.appId).toBe("rescue-app");
+      expect(config.feishu.appSecret).toBe("rescue-secret");
+      expect(process.env.FEISHU_APP_ID).toBeUndefined();
+      expect(process.env.FEISHU_APP_SECRET).toBeUndefined();
+      expect(process.env.RESET_ONLY_VALUE).toBeUndefined();
     } finally {
       for (const [name, value] of preserved) restoreEnv(name, value);
       fs.rmSync(directory, { recursive: true, force: true });

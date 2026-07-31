@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import qrcode from "qrcode-terminal";
-import { loadConfig } from "./config/loadConfig.js";
+import { loadConfig, loadConfigWithoutEnvironmentMutation } from "./config/loadConfig.js";
 import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.js";
 import {
   controlEndpoint,
@@ -198,7 +198,9 @@ async function assertResetProfileServerStopped(configPath?: string): Promise<voi
   const selectedConfigPath = configPath ?? process.env.AGENT_BOT_CONFIG;
   if (selectedConfigPath && fs.existsSync(selectedConfigPath)) {
     try {
-      endpoints.add(controlEndpoint(loadConfig(selectedConfigPath).storage.sqlitePath));
+      endpoints.add(controlEndpoint(
+        loadConfigWithoutEnvironmentMutation(selectedConfigPath).storage.sqlitePath,
+      ));
     } catch {
       // Reset must remain available when the existing configuration is invalid.
     }

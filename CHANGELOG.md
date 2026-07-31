@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Prevent `init --reset` from reusing credentials loaded from the Profile before its `.env` was backed up.
+
 ## [0.1.5] - 2026-07-31
 
 - Show the running Agent Bot version on startup status cards.
