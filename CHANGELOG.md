@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-31
+
 - Automatically wait up to five minutes for optional Lark configuration during `init`, with `Y` as the sole option to skip and continue.
 
 ## [0.1.6] - 2026-07-31
