@@ -7,6 +7,7 @@ Usage:
 
 Common commands:
   init                              Initialize the Lark app and start the service
+  init --reset                      Reset and reconfigure an explicit profile
   console                           Open the local console
   server start                      Start Agent Bot in the background
   server status                     Show the server, Lark App ID, and safe-restart status
@@ -28,8 +29,14 @@ Options:
   -h, --help                        Show help
   -v, --version                     Show version
 
+Init options:
+  --reset                           Back up and reset the selected explicit profile
+  --skip-feishu                     Initialize for Console only
+  --reconfigure-feishu              Replace only the existing Lark credentials
+
 Examples:
   agent-bot init
+  agent-bot --profile ~/.agent-bot init --reset
   agent-bot --profile ~/.agent-bot-rescue init
   agent-bot server start
   agent-bot server status

@@ -5,6 +5,7 @@ import type { FeishuOutbound } from "../feishu/types.js";
 import type { SessionRecord, StateStore, UserContextRecord } from "../state/StateStore.js";
 
 export interface StartupNotificationOptions {
+  agentBotVersion: string;
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
@@ -74,6 +75,7 @@ export class StartupNotifier {
       const card = this.renderer.renderStartupStatus({
         startedAt,
         restartReason,
+        agentBotVersion: this.options.agentBotVersion,
         defaultAgentName: this.options.defaultAgentName,
         defaultAgentTitle: this.options.defaultAgentTitle,
         cwd,

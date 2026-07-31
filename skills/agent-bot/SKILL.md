@@ -54,6 +54,8 @@ When running `init` on the user's behalf, relay every exact authorization or inc
 
 Existing complete Feishu credentials are preserved but still audited and repaired when needed. Missing or incomplete credentials mean app creation did not complete, so a later `init` starts a new registration instead of resuming the previous device code. Once both credentials are durably saved, an interrupted permission audit resumes against the same remote app. `init` also holds a local lock to prevent concurrent registrations. Use `agent-bot init --skip-feishu` only for console-only initialization because it skips both registration and configuration auditing. Use `agent-bot init --reconfigure-feishu` only when the user explicitly wants to replace existing complete credentials. The command respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Use `agent-bot init --json` when structured final output helps.
 
+Use `agent-bot --profile <directory> init --reset` only when the user explicitly requests a full Profile reset. `--profile` is mandatory even for the primary Profile, and its server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new timestamped `.reset-backups` directory, retains all older backups and unrelated files, then initializes a clean Profile. Relay the reported backup path. Do not delete `.reset-backups`; it may contain old credentials and task data. `--reset --skip-feishu` is valid for a clean Console-only Profile, but `--reset` cannot be combined with `--reconfigure-feishu`.
+
 For an isolated secondary bot, pass its profile directory explicitly on every command:
 
 ```powershell

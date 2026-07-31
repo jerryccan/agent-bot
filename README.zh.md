@@ -53,6 +53,7 @@ agent-bot init
 
 | 参数                   | 作用                      |
 | ---------------------- | ------------------------- |
+| `--reset`              | 备份并完整重置显式指定的 Profile |
 | `--skip-feishu`        | 仅初始化 Console 使用环境，不启动 Server |
 | `--reconfigure-feishu` | 替换已有飞书凭据          |
 | `--json`               | 输出便于程序读取的结果    |
@@ -61,6 +62,14 @@ agent-bot init
 
 之后可以重新运行 `agent-bot init` 检查或补齐机器人配置。如果 Server 已在运行，初始化会保留当前服务。
 
+如需完整重新配置一个 Profile，请先停止它的 Server，并显式指定 Profile：
+
+```powershell
+agent-bot --profile ~/.agent-bot init --reset
+```
+
+重置会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `.reset-backups` 下新的时间戳目录，再创建干净的新文件和目录。已有备份会永久保留，不会被后续重置覆盖或清理。远端旧飞书应用不会被删除。
+
 ### 启动与停止
 
 ```powershell
@@ -68,6 +77,8 @@ agent-bot server status
 ```
 
 `agent-bot init` 会自动启动 Server。之后如果手动停止了服务，可执行 `agent-bot server start` 再次启动。仅在本地使用时，请通过 `--skip-feishu` 初始化并运行 `agent-bot console`。
+
+`Agent Bot 已启动` 启动卡片会显示当前正在运行的 Agent Bot 版本。
 
 打开飞书，找到机器人并发送消息。当前会话没有任务时，Agent Bot 会自动创建。
 

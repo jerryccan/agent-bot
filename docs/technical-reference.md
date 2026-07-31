@@ -80,6 +80,8 @@ Missing app configuration is handled in two stages:
 
 The generated authorization links do not contain the app secret.
 
+`agent-bot --profile <directory> init --reset` fully resets an explicitly selected Profile. The Profile server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a unique timestamped directory under `<profile>/.reset-backups/`, creates clean replacements from the packaged templates, and proceeds through normal initialization. Existing reset backups and unrelated files are retained. Because backups can contain old app secrets and conversation data, protect the Profile directory accordingly. The remote Feishu app is not deleted. `--reset --skip-feishu` creates a clean Console-only Profile, while `--reset` and `--reconfigure-feishu` cannot be combined.
+
 After Feishu initialization succeeds, the CLI releases the initialization lock and starts the detached supervisor through the same readiness path as `agent-bot server start`. It waits up to 45 seconds for the worker to connect to Feishu and become ready. If the selected profile is already running, no second supervisor is created. `--skip-feishu` skips automatic server startup, and `--json` includes the resulting `server.status` without adding non-JSON output.
 
 ## Feishu App Requirements
@@ -140,7 +142,7 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-`agent-bot server start` requires both Feishu credentials. The worker starts the SDK's persistent connection without inspecting SDK logs or private connection state, then sends startup status cards as an outbound readiness check. It normally targets known private chats and recently active groups. If the database has no known chat yet, it sends the card to `feishu.userOpenId` using an `open_id` private message. When notification targets exist, at least one card must be delivered before the server reports ready; individual target failures remain isolated. If neither a known chat nor `feishu.userOpenId` is available, startup continues without the outbound check. Missing credentials still fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
+`agent-bot server start` requires both Feishu credentials. The worker starts the SDK's persistent connection without inspecting SDK logs or private connection state, then sends startup status cards as an outbound readiness check. Each startup card includes the Agent Bot version read from the installed package metadata. It normally targets known private chats and recently active groups. If the database has no known chat yet, it sends the card to `feishu.userOpenId` using an `open_id` private message. When notification targets exist, at least one card must be delivered before the server reports ready; individual target failures remain isolated. If neither a known chat nor `feishu.userOpenId` is available, startup continues without the outbound check. Missing credentials still fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
 
 At least one agent must be configured. `defaults.agent` must name a configured agent.
 

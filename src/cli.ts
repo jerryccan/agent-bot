@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import qrcode from "qrcode-terminal";
@@ -19,6 +20,7 @@ import {
   type InitializationResult,
   type InitializationStatus,
 } from "./cli/Initializer.js";
+import { parseInitCommandOptions, type InitCommandOptions } from "./cli/initOptions.js";
 import {
   registerFeishuApp,
   type FeishuAppCredentials,
@@ -47,6 +49,7 @@ import {
   prepareCrashReportDirectory,
   resolveSupervisorDiagnosticsPaths,
 } from "./supervision/SupervisorDiagnostics.js";
+import { agentBotHome, defaultSqlitePath } from "./config/paths.js";
 
 const args = process.argv.slice(2);
 
@@ -69,7 +72,7 @@ async function main(input: string[]): Promise<void> {
     return;
   }
   if (command === "init") {
-    await initCommand(rest, parsed.configPath);
+    await initCommand(rest, parsed.configPath, Boolean(parsed.profilePath));
     return;
   }
   if (command === "console") {
@@ -102,44 +105,43 @@ interface InitCommandResult extends InitializationResult {
   server: InitializationServerResult;
 }
 
-async function initCommand(input: string[], configPath?: string): Promise<void> {
-  const supported = new Set(["--json", "--skip-feishu", "--reconfigure-feishu"]);
-  const unsupported = input.filter((value) => !supported.has(value));
-  if (unsupported.length > 0) throw new Error(`Unsupported init options: ${unsupported.join(" ")}`);
-  const json = input.includes("--json");
-  const skipFeishu = input.includes("--skip-feishu");
-  const reconfigureFeishu = input.includes("--reconfigure-feishu");
-  if (skipFeishu && reconfigureFeishu) {
-    throw new Error("--skip-feishu and --reconfigure-feishu cannot be used together.");
-  }
-
-  const paths = initializeAgentBot({ configPath });
-  if (!json) printInitializationPaths(paths);
-  const initializationLock = acquireInitializationLock(paths.home.path);
-
+async function initCommand(
+  input: string[],
+  configPath: string | undefined,
+  explicitProfile: boolean,
+): Promise<void> {
+  const options = parseInitCommandOptions(input, explicitProfile);
+  let initializationLock = options.reset
+    ? acquireInitializationLock(agentBotHome())
+    : undefined;
+  let paths: InitializationResult;
   let initialized: Omit<InitCommandResult, "server">;
   try {
+    if (options.reset) await assertResetProfileServerStopped(configPath);
+    paths = initializeAgentBot({ configPath, reset: options.reset });
+    if (!options.json) printInitializationPaths(paths);
+    initializationLock ??= acquireInitializationLock(paths.home.path);
     cleanupFeishuCredentialTemporaryFiles(paths.env.path);
     const feishu = await initializeFeishu(
       paths,
-      { json, skipFeishu, reconfigureFeishu },
+      options,
     );
     initialized = { ...paths, feishu };
   } finally {
-    initializationLock.release();
+    initializationLock?.release();
   }
 
-  if (!json) printInitializationResult(initialized);
-  if (!json && !skipFeishu) process.stdout.write("\nStarting Agent Bot server...\n");
-  const server = await startInitializedServer({ skipFeishu, configPath });
+  if (!options.json) printInitializationResult(initialized);
+  if (!options.json && !options.skipFeishu) process.stdout.write("\nStarting Agent Bot server...\n");
+  const server = await startInitializedServer({ skipFeishu: options.skipFeishu, configPath });
   const result: InitCommandResult = { ...initialized, server };
-  if (json) printJson(result);
+  if (options.json) printJson(result);
   else printInitializationServerResult(server);
 }
 
 async function initializeFeishu(
   paths: InitializationResult,
-  options: { json: boolean; skipFeishu: boolean; reconfigureFeishu: boolean },
+  options: InitCommandOptions,
 ): Promise<InitCommandResult["feishu"]> {
   const existing = readFeishuCredentials(paths.env.path);
   if (options.skipFeishu) {
@@ -188,6 +190,25 @@ async function initializeFeishu(
   } finally {
     process.removeListener("SIGINT", onInterrupt);
     process.removeListener("SIGTERM", onInterrupt);
+  }
+}
+
+async function assertResetProfileServerStopped(configPath?: string): Promise<void> {
+  const endpoints = new Set<string>([controlEndpoint(defaultSqlitePath())]);
+  const selectedConfigPath = configPath ?? process.env.AGENT_BOT_CONFIG;
+  if (selectedConfigPath && fs.existsSync(selectedConfigPath)) {
+    try {
+      endpoints.add(controlEndpoint(loadConfig(selectedConfigPath).storage.sqlitePath));
+    } catch {
+      // Reset must remain available when the existing configuration is invalid.
+    }
+  }
+  for (const endpoint of endpoints) {
+    if (await isServerReachable(endpoint)) {
+      throw new Error(
+        "Cannot reset a running profile. Stop it with agent-bot --profile <directory> server stop, then try again.",
+      );
+    }
   }
 }
 
@@ -462,6 +483,9 @@ function printSkillStatus(status: SkillRegistrationStatus): void {
 
 function printInitializationPaths(result: InitializationResult): void {
   process.stdout.write("Preparing the Agent Bot user environment...\n");
+  if (result.reset) {
+    process.stdout.write(`Reset backup: ${result.reset.backupPath}\n`);
+  }
   process.stdout.write(`Home directory: ${result.home.path} (${initializationStatusLabel(result.home.status)})\n`);
   process.stdout.write(`Config file: ${result.config.path} (${initializationStatusLabel(result.config.status)})\n`);
   process.stdout.write(`Environment file: ${result.env.path} (${initializationStatusLabel(result.env.status)})\n`);
@@ -603,6 +627,7 @@ function optionalFeishuFeatureWarnings(missing: FeishuConfigurationChallenge["mi
 
 function initializationStatusLabel(status: InitializationStatus): string {
   if (status === "created") return "created";
+  if (status === "reset") return "reset from template";
   return "already exists; unchanged";
 }
 

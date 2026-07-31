@@ -10,6 +10,9 @@ describe("CLI help", () => {
     expect(help).toContain("Common commands:");
     expect(help).toContain("agent-bot [options] <command>");
     expect(help).toContain("Initialize the Lark app and start the service");
+    expect(help).toContain("init --reset");
+    expect(help).toContain("Back up and reset the selected explicit profile");
+    expect(help).toContain("agent-bot --profile ~/.agent-bot init --reset");
     expect(help).toContain("Show the server, Lark App ID, and safe-restart status");
     expect(help).toContain("task prompt <task> <prompt>");
     expect(help).toContain("-h, --help");

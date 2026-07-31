@@ -7,6 +7,7 @@ import { CodexProcessManager } from "./codex/CodexProcessManager.js";
 import { CodexRuntime } from "./codex/CodexRuntime.js";
 import { LocalControlServer } from "./cli/LocalControlServer.js";
 import { controlEndpoint, type ControlRequest, type ControlResponse } from "./cli/controlProtocol.js";
+import { readPackageVersion } from "./cli/packageVersion.js";
 import { loadConfig } from "./config/loadConfig.js";
 import { ConsoleConnector } from "./console/ConsoleConnector.js";
 import { ConsoleTurnPresenter } from "./console/ConsoleTurnPresenter.js";
@@ -36,6 +37,7 @@ import {
 } from "./supervision/SupervisorDiagnostics.js";
 
 const processStartedAt = new Date();
+const agentBotVersion = readPackageVersion();
 const supervised = process.env.AGENT_BOT_SUPERVISED === "1";
 const startupReason = process.env.AGENT_BOT_RESTART_REASON?.trim()
   || (supervised ? "Supervisor 启动" : "直接启动");
@@ -79,6 +81,7 @@ if (feishuOutbound) {
   const defaultAgent = config.agents[defaultAgentName];
   const metadataHydrator = new SessionMetadataHydrator(store, runtimes);
   startupNotifier = new StartupNotifier(store, feishuOutbound, renderer, logger, {
+    agentBotVersion,
     defaultAgentName,
     defaultAgentTitle: defaultAgent?.title ?? defaultAgentName,
     cwd: path.resolve(config.defaults.cwd),

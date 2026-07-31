@@ -80,6 +80,8 @@ CLI 界面文本不受系统语言影响，统一使用英文。系统生成的�
 
 生成的授权链接不包含 App Secret。
 
+`agent-bot --profile <目录> init --reset` 会完整重置显式指定的 Profile。执行前必须先停止该 Profile 的 Server。命令会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `<profile>/.reset-backups/` 下唯一的时间戳目录，从随包模板创建干净的新文件和目录，再继续正常初始化。已有重置备份及其他无关文件会保留。备份中可能含有旧 App Secret 和会话数据，应妥善保护 Profile 目录。远端旧飞书应用不会被删除。`--reset --skip-feishu` 可创建干净的 Console-only Profile，`--reset` 不能与 `--reconfigure-feishu` 同时使用。
+
 飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agent-bot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
 
 ## 飞书应用要求
@@ -140,7 +142,7 @@ logging:
   path: "./logs/agent-bot.log"
 ```
 
-`agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
+`agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
 
 必须至少配置一个 Agent，`defaults.agent` 必须指向已配置的 Agent。
 

@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Show the running Agent Bot version on startup status cards.
+- Add `agent-bot --profile <directory> init --reset` to back up and fully reconfigure an explicitly selected Profile while retaining all reset backups.
+
 ## [0.1.4] - 2026-07-31
 
 - Show the active Lark App ID in `agent-bot server status` and its JSON output.

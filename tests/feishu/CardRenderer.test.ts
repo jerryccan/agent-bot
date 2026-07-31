@@ -125,6 +125,7 @@ describe("CardRenderer", () => {
     const card = new CardRenderer().renderStartupStatus({
       startedAt: new Date("2026-07-15T05:45:00.000Z"),
       restartReason: "用户执行 /restart 命令",
+      agentBotVersion: "1.2.3",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
       cwd: "D:\\dev\\agent-bot",
@@ -150,6 +151,8 @@ describe("CardRenderer", () => {
     });
     expect(card).not.toHaveProperty("elements");
     expect(serialized).toContain("Agent Bot 已启动");
+    expect(serialized).toContain("Agent Bot 版本");
+    expect(serialized).toContain("1.2.3");
     expect(serialized).toContain("在线");
     expect(serialized).toContain("重启原因");
     expect(serialized).toContain("用户执行 /restart 命令");
@@ -171,13 +174,15 @@ describe("CardRenderer", () => {
     const content = String(objects.find((item) => item.tag === "markdown")?.content);
     expect(content.indexOf("当前任务")).toBeLessThan(content.indexOf("工作目录"));
     expect(content.indexOf("工作目录")).toBeLessThan(content.indexOf("模型 / 思考强度 / 权限"));
-    expect(content.indexOf("模型 / 思考强度 / 权限")).toBeLessThan(content.indexOf("服务状态 / 启动时间"));
+    expect(content.indexOf("模型 / 思考强度 / 权限")).toBeLessThan(content.indexOf("Agent Bot 版本"));
+    expect(content.indexOf("Agent Bot 版本")).toBeLessThan(content.indexOf("服务状态 / 启动时间"));
   });
 
   test("renders default model and automatic effort when there is no current task", () => {
     const card = new CardRenderer().renderStartupStatus({
       startedAt: new Date("2026-07-15T05:45:00.000Z"),
       restartReason: "Supervisor 启动",
+      agentBotVersion: "1.2.3",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
       cwd: "D:\\dev\\agent-bot",

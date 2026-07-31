@@ -62,6 +62,53 @@ describe("initializeAgentBot", () => {
     expect(result.logs.path).toBe(path.join(path.dirname(configPath), "logs"));
   });
 
+  test("backs up and resets all active profile contents while preserving unrelated files", () => {
+    const fixture = createFixture();
+    const initial = initializeAgentBot(fixture.options);
+    fs.writeFileSync(initial.config.path, "user config\n", "utf8");
+    fs.writeFileSync(initial.env.path, "FEISHU_APP_ID=old\nFEISHU_APP_SECRET=old-secret\n", "utf8");
+    fs.writeFileSync(path.join(initial.data.path, "state.sqlite"), "old state", "utf8");
+    fs.writeFileSync(path.join(initial.logs.path, "agent-bot.log"), "old log", "utf8");
+    fs.writeFileSync(path.join(fixture.home, "notes.txt"), "keep", "utf8");
+
+    const reset = initializeAgentBot({ ...fixture.options, reset: true });
+
+    expect(reset.config.status).toBe("reset");
+    expect(reset.env.status).toBe("reset");
+    expect(reset.data.status).toBe("reset");
+    expect(reset.logs.status).toBe("reset");
+    expect(reset.reset?.backupPath).toMatch(
+      new RegExp(`^${escapeRegExp(path.join(fixture.home, ".reset-backups"))}`),
+    );
+    expect(fs.readFileSync(reset.config.path, "utf8")).toBe("agents: {}\n");
+    expect(fs.readFileSync(reset.env.path, "utf8")).toBe("FEISHU_APP_ID=\n");
+    expect(fs.readdirSync(reset.data.path)).toEqual([]);
+    expect(fs.readdirSync(reset.logs.path)).toEqual([]);
+    expect(fs.readFileSync(path.join(fixture.home, "notes.txt"), "utf8")).toBe("keep");
+
+    const backupPath = reset.reset!.backupPath;
+    expect(fs.readFileSync(path.join(backupPath, "config.yaml"), "utf8")).toBe("user config\n");
+    expect(fs.readFileSync(path.join(backupPath, ".env"), "utf8")).toContain("old-secret");
+    expect(fs.readFileSync(path.join(backupPath, "data", "state.sqlite"), "utf8")).toBe("old state");
+    expect(fs.readFileSync(path.join(backupPath, "logs", "agent-bot.log"), "utf8")).toBe("old log");
+
+    const secondReset = initializeAgentBot({ ...fixture.options, reset: true });
+    expect(secondReset.reset?.backupPath).not.toBe(backupPath);
+    expect(fs.existsSync(backupPath)).toBe(true);
+    expect(fs.existsSync(secondReset.reset!.backupPath)).toBe(true);
+  });
+
+  test("rejects reset when config is outside the selected profile", () => {
+    const fixture = createFixture();
+    const configPath = path.join(fixture.root, "custom", "agent-bot.yaml");
+
+    expect(() => initializeAgentBot({
+      ...fixture.options,
+      configPath,
+      reset: true,
+    })).toThrow("--reset only supports a profile-owned config.yaml and .env");
+  });
+
   test("writes Feishu credentials without changing other environment settings", () => {
     const fixture = createFixture();
     const result = initializeAgentBot(fixture.options);
@@ -200,4 +247,8 @@ function createFixture(): {
       envTemplatePath,
     },
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

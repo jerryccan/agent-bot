@@ -43,6 +43,7 @@ function markActive(
 }
 
 const options = {
+  agentBotVersion: "1.2.3",
   defaultAgentName: "codex",
   defaultAgentTitle: "Codex",
   cwd: "D:\\dev\\agent-bot",
@@ -98,6 +99,7 @@ describe("StartupNotifier", () => {
     expect(JSON.stringify(privateCard)).toContain("thread_1");
     expect(JSON.stringify(privateCard)).not.toContain("sess_1");
     expect(JSON.stringify(privateCard)).toContain("Current task title");
+    expect(JSON.stringify(privateCard)).toContain("1.2.3");
     expect(JSON.stringify(privateCard)).toContain("gpt-test");
     expect(JSON.stringify(privateCard)).toContain("high");
     expect(JSON.stringify(privateCard)).toContain("执行前确认");
@@ -249,6 +251,7 @@ describe("StartupNotifier", () => {
       new CardRenderer(),
       { warn: vi.fn() },
       {
+        agentBotVersion: options.agentBotVersion,
         defaultAgentName: options.defaultAgentName,
         defaultAgentTitle: options.defaultAgentTitle,
         cwd: options.cwd,

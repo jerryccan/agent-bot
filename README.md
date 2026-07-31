@@ -53,6 +53,7 @@ Missing optional permissions do not block initialization. Agent Bot reports whic
 
 | Option                 | Purpose                             |
 | ---------------------- | ----------------------------------- |
+| `--reset`              | Back up and fully reset an explicitly selected Profile |
 | `--skip-feishu`        | Initialize for Console only; do not start the server |
 | `--reconfigure-feishu` | Replace existing Feishu credentials |
 | `--json`               | Print a machine-readable result     |
@@ -61,6 +62,14 @@ Missing optional permissions do not block initialization. Agent Bot reports whic
 
 You can rerun `agent-bot init` later to check or complete the bot configuration. If the server is already running, initialization leaves it running.
 
+To fully reconfigure a Profile, stop its server and select the Profile explicitly:
+
+```powershell
+agent-bot --profile ~/.agent-bot init --reset
+```
+
+Reset moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new timestamped directory under `.reset-backups`, then initializes clean replacements. Existing backup directories are retained. The old remote Feishu app is not deleted.
+
 ### Start And Stop
 
 ```powershell
@@ -68,6 +77,8 @@ agent-bot server status
 ```
 
 `agent-bot init` starts the server automatically. If you stop it later, run `agent-bot server start` to start it again. For local-only use, initialize with `--skip-feishu` and run `agent-bot console` instead.
+
+The `Agent Bot 已启动` startup card shows the version of Agent Bot currently running.
 
 Open Feishu, find the bot, and send a message. Agent Bot automatically creates a task for a chat that does not have one yet.
 

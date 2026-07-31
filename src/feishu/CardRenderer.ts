@@ -16,6 +16,7 @@ import { localCardImage } from "./LocalCardImage.js";
 export interface StartupStatusView {
   startedAt: Date;
   restartReason: string;
+  agentBotVersion: string;
   defaultAgentName: string;
   defaultAgentTitle: string;
   cwd: string;
@@ -340,6 +341,7 @@ export class CardRenderer {
         `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
       ];
     lines.push(
+      `**Agent Bot 版本**：${inlineCode(view.agentBotVersion)}`,
       `**服务状态 / 启动时间**：🟢 在线 / ${formatStartupTime(view.startedAt)}`,
       `**重启原因**：${inlineCode(view.restartReason)}`,
       "> 发送消息即可开始对话；发送 `/new` 创建新任务；发送 `/help` 查看帮助。",

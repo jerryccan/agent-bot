@@ -11,7 +11,7 @@ import {
   resolveUserPath,
 } from "../config/paths.js";
 
-export type InitializationStatus = "created" | "existing";
+export type InitializationStatus = "created" | "existing" | "reset";
 
 export interface InitializedPath {
   path: string;
@@ -24,6 +24,9 @@ export interface InitializationResult {
   env: InitializedPath;
   data: InitializedPath;
   logs: InitializedPath;
+  reset?: {
+    backupPath: string;
+  };
 }
 
 export interface InitializationOptions {
@@ -31,6 +34,7 @@ export interface InitializationOptions {
   configPath?: string;
   configTemplatePath?: string;
   envTemplatePath?: string;
+  reset?: boolean;
 }
 
 export type FeishuCredentialStatus = "configured" | "missing" | "incomplete";
@@ -73,6 +77,9 @@ export function initializeAgentBot(options: InitializationOptions = {}): Initial
 
   const home = ensureDirectory(homePath);
   fs.mkdirSync(configDirectory, { recursive: true });
+  const reset = options.reset
+    ? resetProfileContents(homePath, configPath, envPath, configDirectory)
+    : undefined;
 
   const config = copyIfMissing(configTemplatePath, configPath);
   const envFile = copyIfMissing(envTemplatePath, envPath);
@@ -80,7 +87,14 @@ export function initializeAgentBot(options: InitializationOptions = {}): Initial
   const data = ensureDirectory(path.join(configDirectory, "data"));
   const logs = ensureDirectory(path.join(configDirectory, "logs"));
 
-  return { home, config, env: envFile, data, logs };
+  return {
+    home,
+    config: withResetStatus(config, reset?.movedNames.has("config.yaml") ?? false),
+    env: withResetStatus(envFile, reset?.movedNames.has(".env") ?? false),
+    data: withResetStatus(data, reset?.movedNames.has("data") ?? false),
+    logs: withResetStatus(logs, reset?.movedNames.has("logs") ?? false),
+    ...(reset ? { reset: { backupPath: reset.backupPath } } : {}),
+  };
 }
 
 export function readFeishuCredentials(envPath: string, env: NodeJS.ProcessEnv = process.env): FeishuCredentialState {
@@ -215,6 +229,62 @@ function copyIfMissing(sourcePath: string, targetPath: string): InitializedPath 
     if (isFileExistsError(error)) return { path: targetPath, status: "existing" };
     throw error;
   }
+}
+
+function resetProfileContents(
+  homePath: string,
+  configPath: string,
+  envPath: string,
+  configDirectory: string,
+): { backupPath: string; movedNames: Set<string> } | undefined {
+  const resolvedHome = path.resolve(homePath);
+  if (
+    path.resolve(configDirectory) !== resolvedHome
+    || path.dirname(path.resolve(configPath)) !== resolvedHome
+    || path.dirname(path.resolve(envPath)) !== resolvedHome
+  ) {
+    throw new Error("--reset only supports a profile-owned config.yaml and .env.");
+  }
+  const targets = [
+    { name: "config.yaml", sourcePath: configPath },
+    { name: ".env", sourcePath: envPath },
+    { name: "data", sourcePath: path.join(configDirectory, "data") },
+    { name: "logs", sourcePath: path.join(configDirectory, "logs") },
+  ].filter((target) => fs.existsSync(target.sourcePath));
+  if (targets.length === 0) return undefined;
+
+  const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+  const backupPath = path.join(homePath, ".reset-backups", `${timestamp}-${randomUUID()}`);
+  fs.mkdirSync(backupPath, { recursive: true, mode: 0o700 });
+  const moved: Array<{ sourcePath: string; backupPath: string }> = [];
+  try {
+    for (const target of targets) {
+      const targetBackupPath = path.join(backupPath, target.name);
+      fs.renameSync(target.sourcePath, targetBackupPath);
+      moved.push({ sourcePath: target.sourcePath, backupPath: targetBackupPath });
+    }
+  } catch (error) {
+    for (const entry of moved.reverse()) {
+      if (!fs.existsSync(entry.sourcePath) && fs.existsSync(entry.backupPath)) {
+        fs.renameSync(entry.backupPath, entry.sourcePath);
+      }
+    }
+    try {
+      fs.rmdirSync(backupPath);
+      fs.rmdirSync(path.dirname(backupPath));
+    } catch {
+      // Keep a non-empty backup directory when rollback itself cannot fully restore it.
+    }
+    throw error;
+  }
+  return {
+    backupPath,
+    movedNames: new Set(targets.map((target) => target.name)),
+  };
+}
+
+function withResetStatus(value: InitializedPath, reset: boolean): InitializedPath {
+  return reset ? { ...value, status: "reset" } : value;
 }
 
 function upsertDotEnvValue(contents: string, key: string, value: string): string {
