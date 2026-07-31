@@ -65,7 +65,7 @@ export class SkillRegistry {
     this.assertValidSource();
     const existing = fs.existsSync(this.targetPath);
     if (existing && this.readMarker()?.managedBy !== "agent-bot") {
-      throw new Error(`目标目录已存在且不由 Agent Bot 管理：${this.targetPath}`);
+      throw new Error(`The target directory exists and is not managed by Agent Bot: ${this.targetPath}`);
     }
 
     const before = existing ? this.status() : undefined;
@@ -93,7 +93,7 @@ export class SkillRegistry {
   uninstall(): boolean {
     if (!fs.existsSync(this.targetPath)) return false;
     if (this.readMarker()?.managedBy !== "agent-bot") {
-      throw new Error(`拒绝删除不由 Agent Bot 管理的目录：${this.targetPath}`);
+      throw new Error(`Refusing to remove a directory that is not managed by Agent Bot: ${this.targetPath}`);
     }
     this.removeManagedTarget();
     return true;
@@ -101,13 +101,13 @@ export class SkillRegistry {
 
   private assertValidSource(): void {
     if (!fs.existsSync(path.join(this.sourcePath, "SKILL.md"))) {
-      throw new Error(`找不到内置 Agent Bot Skill：${this.sourcePath}`);
+      throw new Error(`The built-in Agent Bot Skill was not found: ${this.sourcePath}`);
     }
   }
 
   private assertSafeTarget(): void {
     if (path.dirname(this.targetPath) !== this.skillsRoot || path.basename(this.targetPath) !== SKILL_NAME) {
-      throw new Error(`不安全的 Skill 目标路径：${this.targetPath}`);
+      throw new Error(`Unsafe Skill target path: ${this.targetPath}`);
     }
   }
 

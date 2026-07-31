@@ -106,7 +106,7 @@ describe("registerFeishuApp", () => {
       registerFeishuApp({
         fetch: fetchMock as typeof fetch,
       }),
-    ).rejects.toThrow("你已取消飞书应用创建");
+    ).rejects.toThrow("Lark app creation was cancelled");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -118,7 +118,7 @@ describe("registerFeishuApp", () => {
         fetch: vi.fn(async () => jsonResponse({ user_code: "ABCD-EFGH" })) as typeof fetch,
         onVerification,
       }),
-    ).rejects.toThrow("缺少 device_code 或 user_code");
+    ).rejects.toThrow("missing device_code or user_code");
     expect(onVerification).not.toHaveBeenCalled();
   });
 
@@ -139,9 +139,9 @@ describe("registerFeishuApp", () => {
       sleep: () => neverFinishes,
     });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    controller.abort(new Error("已取消初始化。"));
+    controller.abort(new Error("Initialization was cancelled."));
 
-    await expect(registration).rejects.toThrow("已取消初始化");
+    await expect(registration).rejects.toThrow("Initialization was cancelled");
   });
 });
 

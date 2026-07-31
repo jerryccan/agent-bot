@@ -54,8 +54,8 @@ describe("SkillRegistry", () => {
     const registry = new SkillRegistry(source, skillsRoot);
 
     expect(registry.status()).toMatchObject({ registered: true, managed: false, upToDate: false });
-    expect(() => registry.install()).toThrow("不由 Agent Bot 管理");
-    expect(() => registry.uninstall()).toThrow("拒绝删除");
+    expect(() => registry.install()).toThrow("not managed by Agent Bot");
+    expect(() => registry.uninstall()).toThrow("Refusing to remove");
     expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("user content");
   });
 });

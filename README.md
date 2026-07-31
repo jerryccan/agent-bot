@@ -37,7 +37,7 @@ agent-bot --version
 agent-bot --help
 ```
 
-This installs the `agent-bot` command globally. Help is displayed in Chinese when the system locale is Chinese and in English otherwise. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
+This installs the `agent-bot` command globally. Command-line help, status, progress, and errors are always displayed in English. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
 ### Initialize
 
@@ -108,6 +108,8 @@ agent-bot server restart
 ```
 
 `server restart` waits for current work to finish by default. Its status card includes a `Cancel` button while the restart is still waiting. Use `--immediate` only when interruption is acceptable.
+
+`server status` shows the Lark App ID used by the running server. Add `--json` to read it from `feishuAppId`.
 
 ### Console
 

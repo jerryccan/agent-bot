@@ -62,7 +62,7 @@ describe("startServer", () => {
     });
 
     await expect(startServer(config, dependencies)).rejects.toThrow(
-      "server 未在 45 秒内连接飞书机器人",
+      "server did not connect to Lark within 45 seconds",
     );
   });
 
@@ -76,7 +76,7 @@ describe("startServer", () => {
         appId: undefined,
         appSecret: undefined,
       },
-    }, dependencies)).rejects.toThrow("飞书机器人尚未配置");
+    }, dependencies)).rejects.toThrow("Lark bot is not configured");
     expect(dependencies.isRunning).not.toHaveBeenCalled();
   });
 });

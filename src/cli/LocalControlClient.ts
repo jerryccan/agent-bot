@@ -17,7 +17,7 @@ export async function sendControlRequest(
       socket.destroy();
       operation();
     };
-    const timer = setTimeout(() => finish(() => reject(new Error("连接 Agent Bot 控制端点超时。"))), timeoutMs);
+    const timer = setTimeout(() => finish(() => reject(new Error("Timed out connecting to the Agent Bot control endpoint."))), timeoutMs);
     socket.setEncoding("utf8");
     socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on("data", (chunk: string) => {
@@ -33,7 +33,7 @@ export async function sendControlRequest(
     });
     socket.once("error", (error) => finish(() => reject(error)));
     socket.once("end", () => {
-      if (!settled) finish(() => reject(new Error("Agent Bot 控制端点未返回结果。")));
+      if (!settled) finish(() => reject(new Error("The Agent Bot control endpoint returned no response.")));
     });
   });
 }

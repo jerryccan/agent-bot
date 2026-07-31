@@ -56,7 +56,7 @@ export async function startServer(
   if (await dependencies.isReachable(endpoint)) {
     const running = await dependencies.waitUntilRunning(endpoint, SERVER_START_TIMEOUT_MS);
     if (!running) {
-      throw new Error("agent-bot server 已启动，但未能连接飞书机器人。请检查日志。");
+      throw new Error("The Agent Bot server started but could not connect to Lark. Check the logs.");
     }
     return { status: "started" };
   }
@@ -64,7 +64,7 @@ export async function startServer(
   dependencies.spawnSupervisor(config);
   const running = await dependencies.waitUntilRunning(endpoint, SERVER_START_TIMEOUT_MS);
   if (!running) {
-    throw new Error("已启动 Supervisor，但 server 未在 45 秒内连接飞书机器人。请检查日志。");
+    throw new Error("The Supervisor started, but the server did not connect to Lark within 45 seconds. Check the logs.");
   }
   return { status: "started" };
 }
@@ -85,7 +85,7 @@ const defaultDependencies: ServerStarterDependencies = {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
-      env: { ...process.env, AGENT_BOT_RESTART_REASON: "通过 agent-bot CLI 启动" },
+      env: { ...process.env, AGENT_BOT_RESTART_REASON: "通过 Agent Bot CLI 启动" },
     });
     child.unref();
   },

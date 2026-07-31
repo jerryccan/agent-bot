@@ -30,6 +30,6 @@ describe("readPackageVersion", () => {
     fs.writeFileSync(packagePath, "{}");
 
     expect(() => readPackageVersion(pathToFileURL(packagePath)))
-      .toThrow("package.json 中缺少有效的 version");
+      .toThrow("package.json does not contain a valid version");
   });
 });

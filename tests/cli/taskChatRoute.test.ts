@@ -21,7 +21,7 @@ describe("taskChatRoute", () => {
   });
 
   test("rejects a task without a Feishu chat route", () => {
-    expect(() => taskChatRoute(session("console:default"))).toThrow("任务没有绑定飞书会话");
+    expect(() => taskChatRoute(session("console:default"))).toThrow("task is not bound to a Lark chat");
   });
 });
 

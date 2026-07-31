@@ -61,7 +61,7 @@ export class LocalControlServer {
 function parseRequest(line: string): ControlRequest {
   const value = JSON.parse(line) as unknown;
   if (!value || typeof value !== "object" || !("action" in value) || typeof value.action !== "string") {
-    throw new Error("无效的本地控制请求。");
+    throw new Error("Invalid local control request.");
   }
   return value as ControlRequest;
 }

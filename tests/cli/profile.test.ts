@@ -30,14 +30,14 @@ describe("CLI profiles", () => {
       "./custom.yaml",
       "server",
       "status",
-    ])).toThrow("--profile 和 --config 不能同时使用");
+    ])).toThrow("--profile and --config cannot be used together");
   });
 
   test("rejects duplicate or missing profile paths", () => {
     expect(() => parseGlobalOptions(["--profile", "one", "--profile", "two", "server"]))
-      .toThrow("--profile 只能指定一次");
+      .toThrow("--profile can only be specified once");
     expect(() => parseGlobalOptions(["server", "--profile", "--json"]))
-      .toThrow("--profile 需要目录或文件路径");
+      .toThrow("--profile requires a directory or file path");
   });
 
   test("pins home and config to the selected profile directory", () => {

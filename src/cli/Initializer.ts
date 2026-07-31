@@ -122,7 +122,7 @@ export function writeFeishuCredentials(envPath: string, credentials: FeishuCrede
       || persisted.appSecret !== credentials.appSecret
       || persisted.userOpenId !== credentials.userOpenId
     ) {
-      throw new Error("飞书凭据写入后校验失败。");
+      throw new Error("Lark credential verification failed after writing the environment file.");
     }
   } finally {
     if (temporaryFile !== undefined) fs.closeSync(temporaryFile);
@@ -169,13 +169,13 @@ export function acquireInitializationLock(lockDirectory: string): Initialization
       if (created) fs.rmSync(lockPath, { force: true });
       if (!isFileExistsError(error)) throw error;
       if (!isStaleInitializationLock(lockPath)) {
-        throw new Error(`另一个 agent-bot init 正在运行（锁文件：${lockPath}）。`);
+        throw new Error(`Another agent-bot init process is running (lock file: ${lockPath}).`);
       }
       fs.rmSync(lockPath, { force: true });
     }
   }
 
-  throw new Error(`无法获取初始化锁：${lockPath}`);
+  throw new Error(`Could not acquire the initialization lock: ${lockPath}`);
 }
 
 export function cleanupFeishuCredentialTemporaryFiles(envPath: string): number {
@@ -234,7 +234,7 @@ function upsertDotEnvValue(contents: string, key: string, value: string): string
 
 function assertDotEnvValue(key: string, value: string): void {
   if (!value.trim() || /[\r\n]/.test(value)) {
-    throw new Error(`${key} 不是有效的单行环境变量值。`);
+    throw new Error(`${key} is not a valid single-line environment variable value.`);
   }
 }
 

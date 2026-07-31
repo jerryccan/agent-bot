@@ -35,6 +35,8 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 CLI 还支持显式指定目录的 Profile。不使用 `--profile` 时，命令使用主 Profile 以及原有的环境变量路径规则。`--profile <目录>` 会为当前命令及其启动的 Supervisor、Worker 固定 `AGENT_BOT_HOME` 和 `AGENT_BOT_CONFIG`，配置文件固定为 `<目录>/config.yaml`。它还会先清除继承的飞书凭据环境变量，再加载所选 Profile 的 `.env`，避免从主 Agent Bot 进程树中启动辅助实例时误用主机器人的凭据。`--profile` 不能和 `--config` 同时使用。其他 Profile 必须在每次命令中显式选择；Agent Bot 不维护按名称注册的 Profile。
 
+CLI 界面文本不受系统语言影响，统一使用英文。系统生成的重启原因仍使用中文，因为它会显示在中文 Lark 状态卡中；显式传入的 `--reason` 保持原样。`agent-bot server status` 会报告运行中 Worker 的 Lark App ID，JSON 字段名为 `feishuAppId`；服务停止或旧版健康协议尚未提供该字段时，CLI 会回退到当前 Profile 配置的 App ID。
+
 | 默认路径                             | 内容                 |
 | ------------------------------------ | -------------------- |
 | `~/.agent-bot/config.yaml`           | YAML 主配置          |

@@ -3424,7 +3424,7 @@ describe("ProxySessionController", () => {
     store.setCurrentSession("chat_id:latest", "other_current_task");
 
     await expect(controller.controlSendTaskPrompt(localSessionId, "continue from CLI"))
-      .resolves.toContain("已通过机器人向原会话发送 Prompt");
+      .resolves.toContain("Prompt was posted to the original chat");
 
     expect(outbound.sendText).toHaveBeenLastCalledWith("chat_id:latest", "continue from CLI");
     expect(runtime.startTurn).toHaveBeenLastCalledWith(localSessionId, "continue from CLI");

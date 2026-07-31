@@ -8,7 +8,7 @@ export function readPackageVersion(
     fs.readFileSync(fileURLToPath(packageJsonUrl), "utf8"),
   ) as { version?: unknown };
   if (typeof metadata.version !== "string" || !metadata.version.trim()) {
-    throw new Error("package.json 中缺少有效的 version。");
+    throw new Error("package.json does not contain a valid version.");
   }
   return metadata.version;
 }

@@ -415,9 +415,9 @@ export class ProxySessionController {
 
   async controlStopTask(localSessionId: string): Promise<string> {
     const record = this.store.getSession(localSessionId);
-    if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
+    if (!record || record.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
     await this.cancelSession(record);
-    return `已请求停止任务：${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+    return `Task stop requested: ${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
   }
 
   async controlGetTaskStatus(localSessionId: string): Promise<{
@@ -426,7 +426,7 @@ export class ProxySessionController {
     remote?: RemoteSessionSummary;
   }> {
     const record = this.store.getSession(localSessionId);
-    if (!record) throw new Error(`找不到任务：${localSessionId}`);
+    if (!record) throw new Error(`Task not found: ${localSessionId}`);
     let remote: RemoteSessionSummary | undefined;
     if (record.remoteSessionId) {
       const runtime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
@@ -447,9 +447,9 @@ export class ProxySessionController {
 
   async controlSetTaskTitle(localSessionId: string, title: string): Promise<string> {
     const normalizedTitle = normalizeTaskTitle(title);
-    if (!normalizedTitle) throw new Error("任务标题不能为空。");
+    if (!normalizedTitle) throw new Error("The task title cannot be empty.");
     const record = this.store.getSession(localSessionId);
-    if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
+    if (!record || record.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
     const loaded = await this.loadSession(record);
     if (loaded.runtime.setTitle) await loaded.runtime.setTitle(record.localSessionId, normalizedTitle);
     else loaded.session.title = normalizedTitle;
@@ -460,14 +460,14 @@ export class ProxySessionController {
       title: normalizedTitle,
       source: "cli",
     });
-    return `任务标题已修改为：${normalizedTitle}`;
+    return `Task title changed to: ${normalizedTitle}`;
   }
 
   async controlSendTaskPrompt(localSessionId: string, text: string): Promise<string> {
     const promptText = text.trim();
-    if (!promptText) throw new Error("Prompt 不能为空。");
+    if (!promptText) throw new Error("The Prompt cannot be empty.");
     const record = this.store.getSession(localSessionId);
-    if (!record || record.status === "closed") throw new Error(`找不到任务：${localSessionId}`);
+    if (!record || record.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
     const runtime = this.runtimes.forAgent(this.ensureAgent(record.agentName));
     const activeTurnId = runtime.getSession(localSessionId)?.activeTurnId;
     const routedContextKey = this.outbound.getSessionContextKey(localSessionId);
@@ -487,7 +487,7 @@ export class ProxySessionController {
       ?? lastSnapshot?.replyTarget
       ?? routedReplyTarget;
     if (isThreadContextKey(responseContextKey) && !existingReplyTarget) {
-      throw new Error("无法确定目标任务的话题回复位置，未发送 Prompt。");
+      throw new Error("Could not resolve the target task's thread reply location. The Prompt was not sent.");
     }
     const scopedRecord = this.store.getSessionForContext(localSessionId, responseContextKey)
       ?? { ...record, contextKey: responseContextKey };
@@ -521,7 +521,7 @@ export class ProxySessionController {
     } finally {
       if (this.messageQueues.get(responseContextKey) === next) this.messageQueues.delete(responseContextKey);
     }
-    return `已通过机器人向原会话发送 Prompt，并提交给任务：${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+    return `The Prompt was posted to the original chat and submitted to the task: ${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
   }
 
   private cardActionContextKey(action: CardAction): string {

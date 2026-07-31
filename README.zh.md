@@ -37,7 +37,7 @@ agent-bot --version
 agent-bot --help
 ```
 
-该命令会全局安装 `agent-bot`。系统语言为中文时显示中文帮助，否则显示英文帮助。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
+该命令会全局安装 `agent-bot`。命令行帮助、状态、进度和错误统一使用英文。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
 
 ### 初始化
 
@@ -108,6 +108,8 @@ agent-bot server restart
 ```
 
 `server restart` 默认等待当前工作完成后再重启；等待期间可通过状态卡片下方的 `Cancel` 按钮取消。只有可接受中断时才使用 `--immediate`。
+
+`server status` 会显示当前运行服务使用的 Lark App ID；添加 `--json` 后可从 `feishuAppId` 字段读取。
 
 ### Console
 

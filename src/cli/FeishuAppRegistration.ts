@@ -41,12 +41,12 @@ export async function registerFeishuApp(options: FeishuAppRegistrationOptions = 
     },
     options.signal,
   );
-  throwRegistrationError(begin, "无法发起飞书应用创建");
+  throwRegistrationError(begin, "Could not start Lark app creation");
 
   const deviceCode = readString(begin, "device_code");
   const userCode = readString(begin, "user_code");
   if (!deviceCode || !userCode) {
-    throw new Error("飞书应用创建响应缺少 device_code 或 user_code。");
+    throw new Error("The Lark app creation response is missing device_code or user_code.");
   }
 
   const expiresIn =
@@ -113,16 +113,16 @@ export async function registerFeishuApp(options: FeishuAppRegistrationOptions = 
         intervalSeconds = Math.min(intervalSeconds + 5, MAX_POLL_INTERVAL_SECONDS);
         continue;
       case "access_denied":
-        throw new Error("你已取消飞书应用创建。");
+        throw new Error("Lark app creation was cancelled.");
       case "expired_token":
       case "invalid_grant":
-        throw new Error("飞书应用创建链接已过期，请重新运行 agent-bot init。");
+        throw new Error("The Lark app creation link expired. Run agent-bot init again.");
       default:
-        throwRegistrationError(payload, "飞书应用创建失败");
+        throwRegistrationError(payload, "Lark app creation failed");
     }
   }
 
-  throw new Error("等待飞书应用创建超时，请重新运行 agent-bot init。");
+  throw new Error("Timed out waiting for Lark app creation. Run agent-bot init again.");
 }
 
 function buildVerificationUrl(userCode: string): string {
@@ -152,7 +152,7 @@ async function postRegistration(
     });
     const payload = (await response.json().catch(() => undefined)) as unknown;
     if (!isRecord(payload)) {
-      throw new Error(`飞书应用注册接口返回了无法解析的响应（HTTP ${response.status}）。`);
+      throw new Error(`The Lark app registration endpoint returned an invalid response (HTTP ${response.status}).`);
     }
     return payload;
   } finally {
@@ -165,7 +165,7 @@ function throwRegistrationError(payload: RegistrationPayload, prefix: string): v
   const code = readString(payload, "error");
   if (!code) return;
   const description = readString(payload, "error_description") || code;
-  throw new Error(`${prefix}：${description}`);
+  throw new Error(`${prefix}: ${description}`);
 }
 
 function readString(value: RegistrationPayload, key: string): string {
@@ -189,7 +189,7 @@ function isRecord(value: unknown): value is RegistrationPayload {
 }
 
 function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error("飞书应用创建已取消。");
+  return signal.reason instanceof Error ? signal.reason : new Error("Lark app creation was cancelled.");
 }
 
 function delay(milliseconds: number): Promise<void> {

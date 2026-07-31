@@ -22,7 +22,7 @@ export function parseGlobalOptions(input: string[]): ParsedGlobalOptions {
   const configPath = removeOption(args, "--config");
   const profilePath = removeOption(args, "--profile");
   if (configPath && profilePath) {
-    throw new Error("--profile 和 --config 不能同时使用。Profile 固定使用其目录下的 config.yaml。");
+    throw new Error("--profile and --config cannot be used together. A profile always uses config.yaml in its directory.");
   }
   return {
     args,
@@ -49,11 +49,11 @@ export function applyExplicitProfile(
 
 function removeOption(args: string[], option: string): string | undefined {
   const indexes = args.flatMap((value, index) => value === option ? [index] : []);
-  if (indexes.length > 1) throw new Error(`${option} 只能指定一次。`);
+  if (indexes.length > 1) throw new Error(`${option} can only be specified once.`);
   const index = indexes[0];
   if (index === undefined) return undefined;
   const value = args[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${option} 需要目录或文件路径。`);
+  if (!value || value.startsWith("--")) throw new Error(`${option} requires a directory or file path.`);
   args.splice(index, 2);
   return value;
 }

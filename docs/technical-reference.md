@@ -35,6 +35,8 @@ The default user-data root is `~/.agent-bot`. `AGENT_BOT_HOME` replaces that roo
 
 The CLI also supports explicit directory-based profiles. Without `--profile`, commands use the main profile and the normal environment-based path rules. `--profile <directory>` pins both `AGENT_BOT_HOME` and `AGENT_BOT_CONFIG` for the command and every spawned supervisor or worker, with the configuration fixed at `<directory>/config.yaml`. It also clears inherited Feishu credential variables before loading the selected profile's `.env`, which prevents a secondary service launched from inside the primary Agent Bot process tree from accidentally reusing the primary bot. It cannot be combined with `--config`. Alternative profiles must be selected explicitly on every command; Agent Bot does not maintain a named-profile registry.
 
+All CLI interface text is English regardless of system locale. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agent-bot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID.
+
 | Default path                         | Contents                           |
 | ------------------------------------ | ---------------------------------- |
 | `~/.agent-bot/config.yaml`           | Main YAML configuration            |

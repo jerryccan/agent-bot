@@ -15,10 +15,10 @@ export function taskChatRoute(session: SessionRecord): TaskChatRoute {
   const contextKey = session.contextKey;
   const baseContextKey = baseChatContextKey(contextKey);
   if (!baseContextKey.startsWith(CHAT_CONTEXT_PREFIX)) {
-    throw new Error(`任务没有绑定飞书会话：${session.remoteSessionId ?? session.acpSessionId ?? session.localSessionId}`);
+    throw new Error(`The task is not bound to a Lark chat: ${session.remoteSessionId ?? session.acpSessionId ?? session.localSessionId}`);
   }
   const chatId = baseContextKey.slice(CHAT_CONTEXT_PREFIX.length);
-  if (!chatId) throw new Error(`任务的飞书会话 ID 无效：${contextKey}`);
+  if (!chatId) throw new Error(`The task has an invalid Lark chat ID: ${contextKey}`);
   const threadId = isThreadContextKey(contextKey)
     ? contextKey.slice(contextKey.indexOf(THREAD_CONTEXT_MARKER) + THREAD_CONTEXT_MARKER.length)
     : undefined;

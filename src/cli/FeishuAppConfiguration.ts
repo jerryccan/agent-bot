@@ -178,8 +178,8 @@ export async function ensureFeishuAppConfiguration(
     }
   }
 
-  const detail = lastError instanceof Error ? ` 最后一次检查失败：${lastError.message}` : "";
-  throw new Error(`等待飞书核心权限和消息事件配置生效超时，请重新运行 agent-bot init。${detail}`);
+  const detail = lastError instanceof Error ? ` Last check failed: ${lastError.message}` : "";
+  throw new Error(`Timed out waiting for the core Lark scopes and message event. Run agent-bot init again.${detail}`);
 }
 
 async function requestMissingFeishuConfiguration(
@@ -248,14 +248,14 @@ async function readFeishuAppConfiguration(
       `${FEISHU_OPEN_BASE_URL}${APPLICATION_PATH_PREFIX}/${appId}?lang=zh_cn`,
       { headers },
       signal,
-      "查询飞书应用配置",
+      "Read Lark app configuration",
     ),
     fetchJson(
       fetchImpl,
       `${FEISHU_OPEN_BASE_URL}${APPLICATION_PATH_PREFIX}/${appId}/app_versions?lang=zh_cn&page_size=2`,
       { headers },
       signal,
-      "查询飞书应用版本",
+      "Read Lark app versions",
     ),
   ]);
 
@@ -303,10 +303,10 @@ async function getTenantAccessToken(
       }),
     },
     signal,
-    "获取飞书 tenant_access_token",
+    "Get the Lark tenant_access_token",
   );
   const token = readString(payload, "tenant_access_token");
-  if (!token) throw new Error("飞书 tenant_access_token 响应缺少访问凭证。");
+  if (!token) throw new Error("The Lark tenant_access_token response is missing the access token.");
   return token;
 }
 
@@ -327,12 +327,12 @@ async function fetchJson(
     const response = await fetchImpl(url, { ...init, signal: controller.signal });
     const payload = (await response.json().catch(() => undefined)) as unknown;
     if (!isJsonObject(payload)) {
-      throw new Error(`${operation}返回了无法解析的响应（HTTP ${response.status}）。`);
+      throw new Error(`${operation} returned an invalid response (HTTP ${response.status}).`);
     }
     const code = readNumber(payload, "code");
     if (!response.ok || code !== 0) {
       throw new FeishuConfigurationApiError(
-        `${operation}失败：${readString(payload, "msg") || response.statusText || `HTTP ${response.status}`}`,
+        `${operation} failed: ${readString(payload, "msg") || response.statusText || `HTTP ${response.status}`}`,
         code,
         response.status,
       );
@@ -340,7 +340,7 @@ async function fetchJson(
     return payload;
   } catch (error) {
     if (parentSignal?.aborted) throw abortError(parentSignal);
-    if (controller.signal.aborted) throw new Error(`${operation}请求超时。`);
+    if (controller.signal.aborted) throw new Error(`${operation} timed out.`);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -442,7 +442,7 @@ function positiveInteger(value: number | undefined): number | undefined {
 }
 
 function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error("飞书应用配置已取消。");
+  return signal.reason instanceof Error ? signal.reason : new Error("Lark app configuration was cancelled.");
 }
 
 function delay(milliseconds: number): Promise<void> {

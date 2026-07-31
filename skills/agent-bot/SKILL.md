@@ -74,7 +74,7 @@ agent-bot server status
 agent-bot task list
 ```
 
-`agent-bot --help` uses Chinese when the system locale is Chinese and English otherwise.
+All Agent Bot CLI interface text is English regardless of system locale. `agent-bot server status` also reports the running profile's Lark App ID; with `--json`, read it from `feishuAppId`.
 
 Add `--json` to status and list commands when machine-readable output helps. If `agent-bot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
 

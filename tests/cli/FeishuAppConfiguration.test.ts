@@ -257,9 +257,9 @@ describe("ensureFeishuAppConfiguration", () => {
       sleep: () => neverFinishes,
     });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    controller.abort(new Error("已取消初始化。"));
+    controller.abort(new Error("Initialization was cancelled."));
 
-    await expect(completion).rejects.toThrow("已取消初始化");
+    await expect(completion).rejects.toThrow("Initialization was cancelled");
   });
 });
 

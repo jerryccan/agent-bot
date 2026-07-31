@@ -177,6 +177,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
           pid: process.pid,
           startedAt: processStartedAt.toISOString(),
           supervised,
+          feishuAppId: config.feishu.appId ?? null,
           safeRestartScheduled: safeRestart.scheduled,
           safeRestartReason: safeRestart.pendingReason,
           activity: store.getServerActivityState(),
@@ -188,16 +189,16 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
         return {
           ok: true,
           message: newlyScheduled
-            ? "已安排安全重启；将在全部任务完成并持续空闲 15 秒后执行。"
-            : "安全重启已在等待中，已更新重启原因。",
+            ? "Safe restart scheduled. It will run after all tasks finish and the server stays idle for 15 seconds."
+            : "A safe restart is already pending. Its reason has been updated.",
         };
       }
       setTimeout(() => void initiateRestart(request.reason), 25);
-      return { ok: true, message: "已请求立即重启。" };
+      return { ok: true, message: "Immediate restart requested." };
     case "server_stop":
       safeRestart.cancel();
       setTimeout(() => void shutdown(STOP_EXIT_CODE), 25);
-      return { ok: true, message: "已请求停止 Agent Bot server。" };
+      return { ok: true, message: "Agent Bot server stop requested." };
     case "task_status":
       return { ok: true, data: await controller.controlGetTaskStatus(request.localSessionId) };
     case "task_stop":
