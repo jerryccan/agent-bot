@@ -123,6 +123,7 @@ interface CreatedFeishuGroupContext {
 export interface ProxyLifecycle {
   supervised?: boolean;
   restart(contextKey: string): Promise<void>;
+  cancelSafeRestart?(scheduleId: number): Promise<boolean>;
 }
 
 export type ShellCommandExecutor = (command: string, cwd: string) => Promise<ShellCommandResult>;
@@ -325,6 +326,18 @@ export class ProxySessionController {
           await this.cancelSession(this.requireSession(contextKey, sessionId));
         } else if (kind === "queued_prompt_cancel") {
           await this.cancelQueuedPrompt(scopedAction);
+        } else if (kind === "safe_restart_cancel") {
+          const scheduleId = Number(scopedAction.value.scheduleId);
+          if (!Number.isSafeInteger(scheduleId) || scheduleId <= 0) {
+            throw new Error("安全重启卡片无效，请使用最新的状态卡片。");
+          }
+          if (!this.lifecycle?.cancelSafeRestart) {
+            throw new Error("当前运行方式不支持取消安全重启。");
+          }
+          const cancelled = await this.lifecycle.cancelSafeRestart(scheduleId);
+          if (!cancelled) {
+            await this.outbound.sendText(contextKey, "该安全重启计划已失效，请查看最新状态卡片。");
+          }
         } else if (kind === "session_more") {
           await this.refreshSessionsCardFromAction(scopedAction, undefined, true);
         } else if (kind === "session_switch") {

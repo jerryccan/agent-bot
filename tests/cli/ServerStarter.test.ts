@@ -37,7 +37,7 @@ describe("startServer", () => {
     await expect(startServer(config, dependencies)).resolves.toEqual({
       status: "started",
     });
-    expect(dependencies.spawnSupervisor).toHaveBeenCalledOnce();
+    expect(dependencies.spawnSupervisor).toHaveBeenCalledWith(config);
     expect(dependencies.waitUntilRunning).toHaveBeenCalledWith(expect.any(String), 45_000);
   });
 

@@ -3,6 +3,11 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/loadConfig.js";
 import type { AppConfig } from "../config/schema.js";
 import { requireServerFeishuTransport } from "../feishu/transport.js";
+import {
+  nodeDiagnosticReportArguments,
+  prepareCrashReportDirectory,
+  resolveSupervisorDiagnosticsPaths,
+} from "../supervision/SupervisorDiagnostics.js";
 import { controlEndpoint } from "./controlProtocol.js";
 import { isServerReachable, isServerRunning } from "./LocalControlClient.js";
 
@@ -18,7 +23,7 @@ export interface ServerStarterDependencies {
   isRunning(endpoint: string): Promise<boolean>;
   isReachable(endpoint: string): Promise<boolean>;
   waitUntilRunning(endpoint: string, timeoutMs: number): Promise<boolean>;
-  spawnSupervisor(): void;
+  spawnSupervisor(config: AppConfig): void;
 }
 
 const SERVER_START_TIMEOUT_MS = 45_000;
@@ -56,7 +61,7 @@ export async function startServer(
     return { status: "started" };
   }
 
-  dependencies.spawnSupervisor();
+  dependencies.spawnSupervisor(config);
   const running = await dependencies.waitUntilRunning(endpoint, SERVER_START_TIMEOUT_MS);
   if (!running) {
     throw new Error("已启动 Supervisor，但 server 未在 45 秒内连接飞书机器人。请检查日志。");
@@ -68,9 +73,14 @@ const defaultDependencies: ServerStarterDependencies = {
   isRunning: isServerRunning,
   isReachable: isServerReachable,
   waitUntilRunning: waitForServer,
-  spawnSupervisor: () => {
+  spawnSupervisor: (config) => {
     const entry = fileURLToPath(new URL("../supervisor.js", import.meta.url));
-    const child = spawn(process.execPath, [entry], {
+    const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
+    prepareCrashReportDirectory(reportDirectory);
+    const child = spawn(process.execPath, [
+      ...nodeDiagnosticReportArguments(reportDirectory),
+      entry,
+    ], {
       cwd: process.cwd(),
       detached: true,
       windowsHide: true,

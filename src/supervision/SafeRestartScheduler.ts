@@ -4,7 +4,12 @@ export interface ServerActivityState {
   latestInboundAt?: string;
 }
 
-export type SafeRestartPhase = "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting";
+export type SafeRestartPhase =
+  | "waiting_tasks"
+  | "waiting_delivery"
+  | "countdown"
+  | "restarting"
+  | "cancelled";
 
 export interface SafeRestartStatus {
   scheduleId: number;
@@ -56,6 +61,24 @@ export class SafeRestartScheduler {
   }
 
   cancel(): void {
+    this.clear();
+  }
+
+  async cancelScheduled(expectedScheduleId: number): Promise<boolean> {
+    const reason = this.reason;
+    if (!reason || this.scheduleId !== expectedScheduleId) return false;
+    const activity = this.options.readActivity();
+    this.clear();
+    await this.emitStatus({
+      scheduleId: expectedScheduleId,
+      reason,
+      phase: "cancelled",
+      activity,
+    });
+    return true;
+  }
+
+  private clear(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.reason = undefined;
@@ -117,8 +140,9 @@ export class SafeRestartScheduler {
       }
       return;
     }
-    await this.emitStatus({ scheduleId: this.scheduleId, reason, phase: "restarting", activity: confirmed, remainingMs: 0 });
-    this.cancel();
+    const scheduleId = this.scheduleId;
+    this.clear();
+    await this.emitStatus({ scheduleId, reason, phase: "restarting", activity: confirmed, remainingMs: 0 });
     await this.options.onReady(reason);
   }
 

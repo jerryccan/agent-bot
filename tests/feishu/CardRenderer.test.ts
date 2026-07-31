@@ -198,12 +198,14 @@ describe("CardRenderer", () => {
   test("renders safe restart blockers and countdown", () => {
     const renderer = new CardRenderer();
     const waiting = renderer.renderSafeRestartStatus({
+      scheduleId: 7,
       reason: "更新卡片分页",
       phase: "waiting_tasks",
       pendingFinalDeliveries: 1,
       waitingTasks: [{ id: "thread_1", title: "Long build" }],
     });
     const countdown = renderer.renderSafeRestartStatus({
+      scheduleId: 7,
       reason: "更新卡片分页",
       phase: "countdown",
       remainingMs: 12_350,
@@ -215,8 +217,31 @@ describe("CardRenderer", () => {
     expect(JSON.stringify(waiting)).toContain("Long build");
     expect(JSON.stringify(waiting)).toContain("thread_1");
     expect(JSON.stringify(waiting)).toContain("等待阻塞项清空后开始");
+    expect(JSON.stringify(waiting)).toContain("<font color='blue'>Cancel</font>");
+    expect(JSON.stringify(waiting)).toContain('"action":"safe_restart_cancel","scheduleId":"7"');
     expect(JSON.stringify(countdown)).toContain("13s");
     expect(countdown).toMatchObject({ header: { template: "orange" } });
+
+    const cancelled = renderer.renderSafeRestartStatus({
+      scheduleId: 7,
+      reason: "更新卡片分页",
+      phase: "cancelled",
+      pendingFinalDeliveries: 0,
+      waitingTasks: [],
+    });
+    expect(JSON.stringify(cancelled)).toContain("已取消");
+    expect(JSON.stringify(cancelled)).not.toContain(">Cancel</font>");
+    expect(cancelled).toMatchObject({ header: { template: "grey" } });
+
+    const restarting = renderer.renderSafeRestartStatus({
+      scheduleId: 7,
+      reason: "更新卡片分页",
+      phase: "restarting",
+      remainingMs: 0,
+      pendingFinalDeliveries: 0,
+      waitingTasks: [],
+    });
+    expect(JSON.stringify(restarting)).not.toContain(">Cancel</font>");
   });
 
   test("renders visible reasoning and one collapsed panel per tool in chronological order", () => {

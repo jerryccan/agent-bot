@@ -7,6 +7,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - Show the incoming-message reaction before chat persistence, image downloads, queue waits, commands, or runtime work begins.
+- Verify Feishu startup through notification delivery before reporting the server as ready.
+- Support isolated Agent Bot profiles through explicit profile directories.
+- Start the selected profile's server automatically after successful initialization.
+- Persist Supervisor crash context and enable privacy-reduced Node diagnostic reports by default.
+- Add a `Cancel` action to pending safe-restart status cards.
 
 ## [0.1.2] - 2026-07-29
 

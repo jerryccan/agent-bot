@@ -243,4 +243,56 @@ describe("SafeRestartNotifier", () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(sendInteractiveCard).toHaveBeenCalledOnce();
   });
+
+  test("updates the existing card after cancellation and ignores late status updates", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-cancel-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.recordChatContext("chat_id:private", "p2p");
+    const updateInteractiveCard = vi.fn(async (
+      _messageId: string,
+      _card: Record<string, unknown>,
+    ) => undefined);
+    const outbound: FeishuOutbound = {
+      sendText: vi.fn(async () => "text"),
+      sendMarkdown: vi.fn(async () => "markdown"),
+      sendInteractiveCard: vi.fn(async () => "om_restart"),
+      updateInteractiveCard,
+    };
+    const notifier = new SafeRestartNotifier(
+      store,
+      outbound,
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "cancel this",
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+    await notifier.update({
+      scheduleId: 1,
+      reason: "cancel this",
+      phase: "cancelled",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    expect(updateInteractiveCard).toHaveBeenCalledOnce();
+    const cancelledCard = updateInteractiveCard.mock.calls[0]?.[1];
+    expect(JSON.stringify(cancelledCard)).toContain("已取消");
+    expect(JSON.stringify(cancelledCard)).not.toContain(">Cancel</font>");
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "cancel this",
+      phase: "countdown",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 5_000,
+    });
+    expect(updateInteractiveCard).toHaveBeenCalledOnce();
+  });
 });

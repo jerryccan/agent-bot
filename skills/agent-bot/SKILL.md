@@ -91,11 +91,20 @@ agent-bot server restart --reason "reason for restart"
 agent-bot server stop
 ```
 
-Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window. The first safe-restart status card is delayed by three seconds so the active task's final response can usually be delivered first; this presentation delay does not postpone scheduler polling.
+Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window. The first safe-restart status card is delayed by three seconds so the active task's final response can usually be delivered first; this presentation delay does not postpone scheduler polling. While the restart is pending, its status card has a bottom `Cancel` button that conditionally cancels that exact schedule and updates the card in place.
 
 Use `agent-bot server restart --immediate` only when the user explicitly requests an immediate restart or accepts interruption. Never use `taskkill`, `Stop-Process`, or equivalent commands for routine Agent Bot restart management.
 
 `agent-bot console` opens the console UI only when the service is stopped. Do not use `--force` while the service is live unless the user explicitly accepts concurrent state access.
+
+When a startup card says the Worker exited and the supervisor restarted it, inspect the selected profile's persisted crash evidence before guessing at a cause:
+
+- `data/last-crash.json` for PID, exit code, uptime, restart delay, and linked report paths
+- `logs/supervisor.log` for the restart timeline
+- `logs/worker.stderr.log` for Node/V8 fatal output
+- `data/crash-reports/report.*.json` for Node diagnostic reports
+
+Normal safe restarts and explicit stops do not overwrite the latest crash record. Every explicit profile keeps its own diagnostic files; use the same `--profile <directory>` selection when correlating service status with those paths.
 
 ## Manage tasks
 

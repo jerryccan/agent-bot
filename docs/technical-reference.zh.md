@@ -221,6 +221,15 @@ SQLite 保存：
 
 `agent-bot server start` 启动后台 supervisor。Worker 意外退出后会自动拉起；连续崩溃时使用 1 到 30 秒的指数退避。
 
+Supervisor 的崩溃诊断文件按当前 Profile 隔离：
+
+- `logs/supervisor.log` 持久记录 Worker PID、退出码、运行时长、重启延迟和诊断文件路径
+- `logs/worker.stderr.log` 保存后台进程原本会丢失的 Node/V8 fatal 输出；两类诊断日志达到 10 MiB 时轮转，保留三个备份
+- `data/last-crash.json` 指向最近一次 Worker 异常退出，带时间戳的 `data/crash-reports/crash-*.json` 保留历史记录
+- Node 能生成报告时，写入 `data/crash-reports/report.*.json`
+
+Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fatal error 与未捕获异常报告。Node 版本支持时还会排除环境变量和网络接口，避免凭据进入报告。主动重启退出码 `75` 和停止退出码 `76` 不会创建崩溃清单。
+
 安全重启会等待：
 
 1. 活动任务完成
@@ -230,6 +239,8 @@ SQLite 保存：
 新消息会重置静默计时。`--immediate` 和 `--force` 跳过这些检查。退出码 `75` 表示主动 worker 重启。
 
 首次安全重启状态卡会延迟 3 秒发送，让任务最终回答尽可能先到达；延迟期间的状态变化会合并到首张卡片。该延迟不阻塞调度器轮询，真正关闭前会立即 flush 尚未发送的卡片。
+
+等待中的安全重启状态卡底部带有 `Cancel` 操作。回调会携带调度器单调递增的计划 ID，因此旧卡片不会取消较新的重启。取消成功后，所有已发送的状态卡都会原地更新并移除按钮；调度器进入不可逆的正在重启阶段后也不再显示该按钮。
 
 本地控制服务负责修改任务和请求服务重启；只读任务查询直接访问 SQLite。
 

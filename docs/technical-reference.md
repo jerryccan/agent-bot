@@ -221,6 +221,15 @@ The final-delivery ledger prevents duplicate successful replies. App Server requ
 
 `agent-bot server start` starts a detached supervisor. The supervisor restarts the worker after unexpected exits and applies exponential backoff from one to 30 seconds after repeated crashes.
 
+Supervisor crash diagnostics are isolated to the selected profile:
+
+- `logs/supervisor.log` permanently records worker PIDs, exit codes, uptime, restart delays, and diagnostic artifact paths.
+- `logs/worker.stderr.log` captures Node/V8 fatal output that would otherwise be lost by the detached process. Both diagnostic logs rotate at 10 MiB with three backups.
+- `data/last-crash.json` points to the latest unexpected worker exit, while timestamped `data/crash-reports/crash-*.json` files preserve the history.
+- `data/crash-reports/report.*.json` contains Node diagnostic reports when Node can generate one.
+
+The supervisor, worker, replacement supervisor, and Console worker enable Node reports for fatal runtime errors and uncaught exceptions by default. Supported Node versions also exclude environment variables and network interfaces so credentials are not copied into reports. Intentional restart exit code `75` and stop exit code `76` do not create crash manifests.
+
 A safe restart waits for:
 
 1. Active tasks to finish
@@ -230,6 +239,8 @@ A safe restart waits for:
 New messages reset the quiet timer. `--immediate` and `--force` skip these checks. Exit code `75` identifies an intentional worker restart.
 
 The first safe-restart status card is delayed by three seconds so a task's final response can usually arrive first. Status changes during that window are coalesced into the initial card. The delay does not block scheduler polling, and shutdown flushes any pending card immediately.
+
+Pending safe-restart cards include a bottom `Cancel` action. The action carries the scheduler's monotonic schedule ID, so an old card cannot cancel a newer restart. A successful cancellation updates every existing status card in place and removes the action; the action is also absent once the scheduler enters the irreversible restarting phase.
 
 The local control server implements task mutations and service restart requests. Read-only task queries access SQLite directly.
 

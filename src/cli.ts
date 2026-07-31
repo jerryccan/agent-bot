@@ -41,6 +41,11 @@ import {
 } from "./cli/ServerStarter.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
+import {
+  nodeDiagnosticReportArguments,
+  prepareCrashReportDirectory,
+  resolveSupervisorDiagnosticsPaths,
+} from "./supervision/SupervisorDiagnostics.js";
 
 const args = process.argv.slice(2);
 
@@ -235,7 +240,12 @@ async function consoleCommand(input: string[]): Promise<void> {
     throw new Error("agent-bot server 正在运行。为避免争用同一任务状态，请先停止 server，或明确使用 --force。");
   }
   const entry = fileURLToPath(new URL("./index.js", import.meta.url));
-  const result = spawnSync(process.execPath, [entry], {
+  const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
+  prepareCrashReportDirectory(reportDirectory);
+  const result = spawnSync(process.execPath, [
+    ...nodeDiagnosticReportArguments(reportDirectory),
+    entry,
+  ], {
     cwd: process.cwd(),
     stdio: "inherit",
     env: { ...process.env, AGENT_BOT_CONSOLE_ONLY: "1" },

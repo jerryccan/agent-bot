@@ -14,6 +14,7 @@ export class SafeRestartNotifier {
   private readonly messageIds = new Map<string, string>();
   private readonly cardHashes = new Map<string, string>();
   private activeScheduleId?: number;
+  private terminalScheduleId?: number;
   private pendingInitialStatus?: SafeRestartStatus;
   private initialCardTimer?: NodeJS.Timeout;
   private queue = Promise.resolve();
@@ -27,13 +28,24 @@ export class SafeRestartNotifier {
   ) {}
 
   update(status: SafeRestartStatus): Promise<void> {
+    if (this.terminalScheduleId !== undefined && status.scheduleId <= this.terminalScheduleId) {
+      if (status.phase !== "cancelled") return Promise.resolve();
+    }
+    if (this.activeScheduleId !== undefined && status.scheduleId < this.activeScheduleId) {
+      return Promise.resolve();
+    }
+    if (status.phase === "cancelled") {
+      this.terminalScheduleId = Math.max(this.terminalScheduleId ?? 0, status.scheduleId);
+    }
     if (this.activeScheduleId !== status.scheduleId) {
       this.activeScheduleId = status.scheduleId;
       this.messageIds.clear();
       this.cardHashes.clear();
       this.clearInitialCardTimer();
       this.pendingInitialStatus = status;
-      const delayMs = this.options.initialCardDelayMs ?? DEFAULT_INITIAL_CARD_DELAY_MS;
+      const delayMs = status.phase === "cancelled"
+        ? 0
+        : this.options.initialCardDelayMs ?? DEFAULT_INITIAL_CARD_DELAY_MS;
       if (delayMs <= 0) return this.publishPendingInitialStatus();
       this.initialCardTimer = setTimeout(() => {
         this.initialCardTimer = undefined;
@@ -79,13 +91,16 @@ export class SafeRestartNotifier {
   private async publish(status: SafeRestartStatus): Promise<void> {
     const targets = this.store.listChatContexts("p2p");
     if (targets.length === 0) return;
-    const waitingTasks = this.store.listAllSessions()
-      .filter((session) => session.status === "running" || this.store.countQueuedPrompts(session.localSessionId) > 0)
-      .map((session) => ({
-        id: session.remoteSessionId ?? session.localSessionId,
-        title: session.title,
-      }));
+    const waitingTasks = status.phase === "cancelled"
+      ? []
+      : this.store.listAllSessions()
+        .filter((session) => session.status === "running" || this.store.countQueuedPrompts(session.localSessionId) > 0)
+        .map((session) => ({
+          id: session.remoteSessionId ?? session.localSessionId,
+          title: session.title,
+        }));
     const card = this.renderer.renderSafeRestartStatus({
+      scheduleId: status.scheduleId,
       reason: status.reason,
       phase: status.phase,
       remainingMs: status.remainingMs,

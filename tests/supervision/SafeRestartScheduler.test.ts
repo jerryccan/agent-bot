@@ -116,4 +116,40 @@ describe("SafeRestartScheduler", () => {
     releases.shift()?.();
     await vi.advanceTimersByTimeAsync(0);
   });
+
+  test("cancels only the matching scheduled restart and publishes its terminal state", async () => {
+    vi.useFakeTimers();
+    const onReady = vi.fn();
+    const onStatus = vi.fn();
+    const scheduler = new SafeRestartScheduler({
+      readActivity: () => ({ runningSessions: 1, pendingFinalDeliveries: 0 }),
+      onReady,
+      onStatus,
+      quietPeriodMs: 1_000,
+      pollIntervalMs: 100,
+    });
+
+    scheduler.schedule("cancel from card");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(await scheduler.cancelScheduled(2)).toBe(false);
+    expect(scheduler.scheduled).toBe(true);
+    expect(await scheduler.cancelScheduled(1)).toBe(true);
+    expect(scheduler.scheduled).toBe(false);
+    expect(onStatus).toHaveBeenLastCalledWith({
+      scheduleId: 1,
+      reason: "cancel from card",
+      phase: "cancelled",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onReady).not.toHaveBeenCalled();
+
+    scheduler.schedule("newer restart");
+    expect(await scheduler.cancelScheduled(1)).toBe(false);
+    expect(scheduler.scheduled).toBe(true);
+    expect(await scheduler.cancelScheduled(2)).toBe(true);
+    expect(scheduler.scheduled).toBe(false);
+  });
 });

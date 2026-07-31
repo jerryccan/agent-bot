@@ -259,6 +259,7 @@ function fixture() {
   } as unknown as AppConfig;
   const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } as unknown as Logger;
   const restart = vi.fn(async () => undefined);
+  const cancelSafeRestart = vi.fn(async () => true);
   const shellCommandExecutor = vi.fn(async () => ({
     stdout: "README.md\nsrc\ntests\n",
     stderr: "",
@@ -272,7 +273,7 @@ function fixture() {
     new AgentRuntimeRegistry({ acp, codex: runtime }),
     outboundRouter,
     logger,
-    { restart, supervised: true },
+    { restart, supervised: true, cancelSafeRestart },
     shellCommandExecutor,
   );
   cleanups.push(() => {
@@ -291,11 +292,53 @@ function fixture() {
     store,
     listeners,
     restart,
+    cancelSafeRestart,
     shellCommandExecutor,
   };
 }
 
 describe("ProxySessionController", () => {
+  test("cancels a safe restart from its card action once", async () => {
+    const { controller, cancelSafeRestart, outbound } = fixture();
+    const action = {
+      actionId: "cancel-safe-restart",
+      contextKey: "chat_id:c1",
+      messageId: "om_restart",
+      value: {
+        action: "safe_restart_cancel",
+        scheduleId: "7",
+      },
+    };
+
+    await controller.onCardAction(action);
+    await controller.onCardAction(action);
+
+    expect(cancelSafeRestart).toHaveBeenCalledOnce();
+    expect(cancelSafeRestart).toHaveBeenCalledWith(7);
+    expect(outbound.sendText).not.toHaveBeenCalled();
+  });
+
+  test("reports a stale safe restart card without affecting another schedule", async () => {
+    const { controller, cancelSafeRestart, outbound } = fixture();
+    cancelSafeRestart.mockResolvedValueOnce(false);
+
+    await controller.onCardAction({
+      actionId: "cancel-stale-safe-restart",
+      contextKey: "chat_id:c1",
+      messageId: "om_restart_old",
+      value: {
+        action: "safe_restart_cancel",
+        scheduleId: "3",
+      },
+    });
+
+    expect(cancelSafeRestart).toHaveBeenCalledWith(3);
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "该安全重启计划已失效，请查看最新状态卡片。",
+    );
+  });
+
   test("creates, displays, edits, pauses, resumes, and clears a Codex goal", async () => {
     const { controller, runtime, outbound, store, listeners, presenter } = fixture();
 

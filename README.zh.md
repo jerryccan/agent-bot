@@ -107,7 +107,7 @@ agent-bot server stop
 agent-bot server restart
 ```
 
-`server restart` 默认等待当前工作完成后再重启。只有可接受中断时才使用 `--immediate`。
+`server restart` 默认等待当前工作完成后再重启；等待期间可通过状态卡片下方的 `Cancel` 按钮取消。只有可接受中断时才使用 `--immediate`。
 
 ### Console
 
@@ -192,6 +192,7 @@ agent-bot --profile ~/.agent-bot-rescue server status
 ## 常见问题
 
 - **机器人没有响应：** 运行 `agent-bot server status`，并查看 `~/.agent-bot/logs/agent-bot.log`
+- **Node 崩溃后 Worker 被自动重启：** 查看 `~/.agent-bot/data/last-crash.json`、`~/.agent-bot/logs/worker.stderr.log` 和 `~/.agent-bot/data/crash-reports/`
 - **飞书权限不完整：** 重新运行 `agent-bot init`，完成显示的授权步骤
 - **Codex 无法启动：** 使用运行 Agent Bot 的同一操作系统用户执行 `codex login status`
 - **只需要本地测试：** 运行 `agent-bot init --skip-feishu`，然后执行 `agent-bot console`

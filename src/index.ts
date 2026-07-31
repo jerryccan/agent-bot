@@ -29,6 +29,11 @@ import { STOP_EXIT_CODE } from "./supervision/restartPolicy.js";
 import { replacementSupervisorEnvironment } from "./supervision/replacementSupervisor.js";
 import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
+import {
+  nodeDiagnosticReportArguments,
+  prepareCrashReportDirectory,
+  resolveSupervisorDiagnosticsPaths,
+} from "./supervision/SupervisorDiagnostics.js";
 
 const processStartedAt = new Date();
 const supervised = process.env.AGENT_BOT_SUPERVISED === "1";
@@ -97,15 +102,16 @@ if (routes.length === 0) throw new Error("Neither Feishu nor console input is en
 const outbound = new OutboundRouter(routes);
 let shuttingDown = false;
 let restartRequested = false;
-const controller = new ProxySessionController(config, store, runtimes, outbound, logger, {
-  supervised,
-  restart: requestRestart,
-});
 const safeRestart = new SafeRestartScheduler({
   readActivity: () => store.getServerActivityState(),
   onReady: (reason) => initiateRestart(reason),
   onStatus: (status) => safeRestartNotifier?.update(status),
   onStatusError: (error) => logger.warn({ error }, "Failed to publish safe restart status."),
+});
+const controller = new ProxySessionController(config, store, runtimes, outbound, logger, {
+  supervised,
+  restart: requestRestart,
+  cancelSafeRestart: (scheduleId) => safeRestart.cancelScheduled(scheduleId),
 });
 
 if (feishuOutbound) feishuConnector = new FeishuConnector(config, controller, logger);
@@ -225,7 +231,12 @@ async function shutdown(exitCode: number, restartReason?: string): Promise<void>
 
 function startReplacementSupervisor(restartReason: string): void {
   const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
-  const supervisor = spawn(process.execPath, [supervisorEntry], {
+  const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
+  prepareCrashReportDirectory(reportDirectory);
+  const supervisor = spawn(process.execPath, [
+    ...nodeDiagnosticReportArguments(reportDirectory),
+    supervisorEntry,
+  ], {
     cwd: process.cwd(),
     detached: true,
     windowsHide: true,

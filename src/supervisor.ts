@@ -12,12 +12,15 @@ import {
   STABLE_UPTIME_MS,
   STOP_EXIT_CODE,
 } from "./supervision/restartPolicy.js";
+import { SupervisorDiagnostics, nodeDiagnosticReportArguments } from "./supervision/SupervisorDiagnostics.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const config = loadConfig();
 requireServerFeishuTransport(config.feishu);
 const sqlitePath = config.storage.sqlitePath;
 const serverEndpoint = controlEndpoint(sqlitePath);
+const diagnostics = new SupervisorDiagnostics(config);
+diagnostics.initialize();
 let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
 let stopping = false;
@@ -34,19 +37,33 @@ async function startChild(): Promise<void> {
   const startedAt = Date.now();
   const restartReason = nextStartReason;
   nextStartReason = "Supervisor 重新拉起进程";
-  child = spawn(process.execPath, [childEntry], {
-    cwd: process.cwd(),
-    env: { ...process.env, AGENT_BOT_SUPERVISED: "1", AGENT_BOT_RESTART_REASON: restartReason },
-    stdio: "inherit",
-    windowsHide: true,
+  const workerStderr = diagnostics.openWorkerStderr();
+  try {
+    child = spawn(process.execPath, [
+      ...nodeDiagnosticReportArguments(diagnostics.paths.crashReportDirectory),
+      childEntry,
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, AGENT_BOT_SUPERVISED: "1", AGENT_BOT_RESTART_REASON: restartReason },
+      stdio: ["ignore", "ignore", workerStderr],
+      windowsHide: true,
+    });
+  } finally {
+    diagnostics.closeWorkerStderr(workerStderr);
+  }
+  const workerPid = child.pid;
+  writeSupervisorLog("started", {
+    pid: child.pid,
+    restartReason,
+    workerStderrPath: diagnostics.paths.workerStderrPath,
+    crashReportDirectory: diagnostics.paths.crashReportDirectory,
   });
-  writeSupervisorLog("started", { pid: child.pid, restartReason });
 
   child.once("error", (error) => {
-    writeSupervisorLog("spawn_error", { error: error.message });
+    writeSupervisorLog("spawn_error", { pid: workerPid, error: error.message });
   });
   child.once("exit", (code, signal) => {
-    void handleChildExit(code, signal, startedAt);
+    void handleChildExit(code, signal, startedAt, workerPid);
   });
 }
 
@@ -54,10 +71,11 @@ async function handleChildExit(
   code: number | null,
   signal: NodeJS.Signals | null,
   startedAt: number,
+  workerPid: number | undefined,
 ): Promise<void> {
   child = undefined;
   const uptimeMs = Date.now() - startedAt;
-  writeSupervisorLog("exited", { code, signal, uptimeMs });
+  writeSupervisorLog("exited", { pid: workerPid, code, signal, uptimeMs });
   if (stopping) {
     process.exit(0);
     return;
@@ -80,7 +98,24 @@ async function handleChildExit(
   const delayMs = intentional
     ? INTENTIONAL_RESTART_DELAY_MS
     : crashRestartDelayMs(consecutiveFailures);
-  writeSupervisorLog("restarting", { delayMs, consecutiveFailures, intentional });
+  if (!intentional) {
+    diagnostics.recordCrash({
+      workerPid,
+      exitCode: code,
+      signal,
+      startedAt: new Date(startedAt).toISOString(),
+      exitedAt: new Date().toISOString(),
+      uptimeMs,
+      consecutiveFailures,
+      restartDelayMs: delayMs,
+    });
+  }
+  writeSupervisorLog("restarting", {
+    previousPid: workerPid,
+    delayMs,
+    consecutiveFailures,
+    intentional,
+  });
   restartTimer = setTimeout(() => void startChild(), delayMs);
 }
 
@@ -96,7 +131,7 @@ function stop(signal: NodeJS.Signals): void {
 }
 
 function writeSupervisorLog(event: string, data: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify({ component: "agent-bot-supervisor", event, time: new Date().toISOString(), ...data })}\n`);
+  diagnostics.writeEvent(event, data);
 }
 
 process.on("SIGINT", () => stop("SIGINT"));

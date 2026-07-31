@@ -107,7 +107,7 @@ agent-bot server stop
 agent-bot server restart
 ```
 
-`server restart` waits for current work to finish by default. Use `--immediate` only when interruption is acceptable.
+`server restart` waits for current work to finish by default. Its status card includes a `Cancel` button while the restart is still waiting. Use `--immediate` only when interruption is acceptable.
 
 ### Console
 
@@ -192,6 +192,7 @@ Alternative profiles are directory-based and are not registered by name. Each on
 ## Troubleshooting
 
 - **The bot does not respond:** run `agent-bot server status` and check `~/.agent-bot/logs/agent-bot.log`.
+- **The Worker restarted after a Node crash:** check `~/.agent-bot/data/last-crash.json`, `~/.agent-bot/logs/worker.stderr.log`, and `~/.agent-bot/data/crash-reports/`.
 - **Feishu permissions are incomplete:** rerun `agent-bot init` and follow the displayed authorization steps.
 - **Codex cannot start:** run `codex login status` as the same operating-system user that runs Agent Bot.
 - **You only need local testing:** run `agent-bot init --skip-feishu`, then `agent-bot console`.

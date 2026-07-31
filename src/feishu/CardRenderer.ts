@@ -33,8 +33,9 @@ export interface StartupStatusView {
 }
 
 export interface SafeRestartStatusView {
+  scheduleId: number;
   reason: string;
-  phase: "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting";
+  phase: "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting" | "cancelled";
   remainingMs?: number;
   pendingFinalDeliveries: number;
   waitingTasks: Array<{
@@ -270,6 +271,8 @@ export class CardRenderer {
       ? `${Math.max(0, Math.ceil((view.remainingMs ?? 0) / 1_000))}s`
       : view.phase === "restarting"
         ? "0s"
+        : view.phase === "cancelled"
+          ? "已取消"
         : "等待阻塞项清空后开始";
     const status = view.phase === "waiting_tasks"
       ? "🟠 等待任务完成"
@@ -277,7 +280,9 @@ export class CardRenderer {
         ? "🟠 等待最终结果投递"
         : view.phase === "countdown"
           ? "🟡 空闲确认中"
-          : "🔄 正在重启";
+          : view.phase === "restarting"
+            ? "🔄 正在重启"
+            : "⚪ 已取消";
     const lines = [
       `**状态**：${status}`,
       `**重启原因**：${inlineCode(view.reason)}`,
@@ -296,7 +301,24 @@ export class CardRenderer {
     } else {
       elements.push({ tag: "hr" }, markdown("**当前等待的任务**：无"));
     }
-    return sectionCard("Agent Bot 安全重启", elements, view.phase === "restarting" ? "blue" : "orange");
+    if (view.phase !== "restarting" && view.phase !== "cancelled") {
+      elements.push(
+        { tag: "hr" },
+        taskActionRow([{
+          text: "Cancel",
+          value: {
+            action: "safe_restart_cancel",
+            scheduleId: String(view.scheduleId),
+          },
+        }]),
+      );
+    }
+    const template = view.phase === "restarting"
+      ? "blue"
+      : view.phase === "cancelled"
+        ? "grey"
+        : "orange";
+    return sectionCard("Agent Bot 安全重启", elements, template);
   }
 
   renderStartupStatus(view: StartupStatusView): Record<string, unknown> {
