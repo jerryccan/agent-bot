@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-31
+
 - Show the active Lark App ID in `agent-bot server status` and its JSON output.
 - Use English consistently for all Agent Bot CLI interface text.
 - Keep system-generated restart reasons in Chinese to match the Lark status cards.
