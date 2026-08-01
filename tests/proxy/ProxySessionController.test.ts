@@ -2403,8 +2403,12 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain('"action":"session_switch","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>New</font>");
     expect(serialized).toContain('"action":"session_new","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain("<font color='blue'>NewGroup</font>");
+    expect(serialized).toContain('"action":"session_new_group","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Fork</font>");
     expect(serialized).toContain('"action":"session_fork","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain("<font color='blue'>ForkGroup</font>");
+    expect(serialized).toContain('"action":"session_fork_group","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Status</font>");
     expect(serialized).toContain('"action":"session_status","sessionId":"external_1"');
     expect(serialized).not.toContain("Legacy ACP task");
@@ -2564,6 +2568,119 @@ describe("ProxySessionController", () => {
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
       expect.stringContaining("已创建 Codex 任务"),
+    );
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
+  });
+
+  test("creates a new group and task in the selected sessions-card project", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    const cwd = path.resolve("test-workspaces", "card-new-group-source");
+    remoteSessions.push({
+      id: "card_new_group_source",
+      title: "Card new group source",
+      cwd,
+      source: "desktop",
+      status: "idle",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+      lastTurnId: "turn_card_new_group_source",
+      lastTurnStatus: "completed",
+    });
+    await controller.onMessage(message("/sessions"));
+
+    await controller.onCardAction({
+      actionId: "new-group-card-task",
+      contextKey: "chat_id:c1",
+      userId: "ou_current_user",
+      messageId: "om_sessions",
+      value: {
+        action: "session_new_group",
+        sessionId: "card_new_group_source",
+        visibleCount: "5",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+      name: expect.stringMatching(/^\[codex\] \[[^\]]+\] 新任务 \(\d{2}-\d{2}\)$/u),
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    }));
+    const groupSessionId = store.getUserContext("chat_id:oc_new_group")?.currentSessionId;
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: groupSessionId,
+      agentName: "codex",
+      cwd,
+      title: "新任务",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    }));
+    expect(store.getSession(groupSessionId!)).toMatchObject({
+      contextKey: "chat_id:oc_new_group",
+      cwd,
+      title: "新任务",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+      status: "ready",
+    });
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
+  });
+
+  test("forks a selected sessions-card task into a new group", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    const cwd = path.resolve("test-workspaces", "card-fork-group-source");
+    remoteSessions.push({
+      id: "card_fork_group_source",
+      title: "Card fork group source",
+      cwd,
+      source: "desktop",
+      status: "idle",
+      lastTurnId: "turn_card_fork_group_source",
+      lastTurnStatus: "completed",
+    });
+    await controller.onMessage(message("/sessions"));
+
+    await controller.onCardAction({
+      actionId: "fork-group-card-task",
+      contextKey: "chat_id:c1",
+      userId: "ou_current_user",
+      messageId: "om_sessions",
+      value: {
+        action: "session_fork_group",
+        sessionId: "card_fork_group_source",
+        visibleCount: "5",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(outbound.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+      name: expect.stringContaining("Card fork group source（分支 1）"),
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    }));
+    const groupSessionId = store.getUserContext("chat_id:oc_new_group")?.currentSessionId;
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: groupSessionId,
+      remoteSessionId: "card_fork_group_source",
+      lastTurnId: "turn_card_fork_group_source",
+      cwd,
+      title: "Card fork group source（分支 1）",
+    }));
+    expect(store.getSession(groupSessionId!)).toMatchObject({
+      contextKey: "chat_id:oc_new_group",
+      remoteSessionId: "card_fork_group_source_fork",
+      lastTurnId: "turn_card_fork_group_source",
+      lastTurnStatus: "completed",
+      status: "ready",
+    });
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("已将指定任务 Fork 到飞书群"),
     );
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
   });

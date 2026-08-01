@@ -82,6 +82,14 @@ interface SessionExecutionSettings {
   permissionMode?: PermissionMode;
 }
 
+interface ProjectSessionReference {
+  source?: SessionRecord;
+  agentName: string;
+  remoteSessionId: string;
+  cwd: string;
+  executionSettings: SessionExecutionSettings;
+}
+
 interface ForkSessionPlan {
   source?: SessionRecord;
   sourceLabel: string;
@@ -349,9 +357,17 @@ export class ProxySessionController {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.forkSessionReference(contextKey, sessionId);
           await this.refreshSessionsCardFromAction(scopedAction);
+        } else if (kind === "session_fork_group") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          await this.forkSessionReferenceToFeishuGroup(contextKey, sessionId, scopedAction.userId);
+          await this.refreshSessionsCardFromAction(scopedAction);
         } else if (kind === "session_new") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.createProjectSessionFromReference(contextKey, sessionId);
+          await this.refreshSessionsCardFromAction(scopedAction);
+        } else if (kind === "session_new_group") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          await this.createFeishuGroupFromReference(contextKey, sessionId, scopedAction.userId);
           await this.refreshSessionsCardFromAction(scopedAction);
         } else if (kind === "session_stop") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
@@ -1301,6 +1317,32 @@ export class ProxySessionController {
   }
 
   private async createProjectSessionFromReference(contextKey: string, reference: string): Promise<void> {
+    const resolved = await this.resolveProjectSessionReference(contextKey, reference);
+    const created = await this.createSession(
+      contextKey,
+      resolved.agentName,
+      resolved.cwd,
+      true,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      resolved.executionSettings,
+    );
+    this.store.audit(contextKey, "project_session_created", {
+      sourceLocalSessionId: resolved.source?.localSessionId,
+      sourceRemoteSessionId: resolved.remoteSessionId,
+      createdLocalSessionId: created.localSessionId,
+      createdRemoteSessionId: created.remoteSessionId,
+      cwd: resolved.cwd,
+      ...resolved.executionSettings,
+    });
+  }
+
+  private async resolveProjectSessionReference(
+    contextKey: string,
+    reference: string,
+  ): Promise<ProjectSessionReference> {
     const taskId = this.resolveSessionReference(contextKey, reference);
     const direct = this.store.getSession(taskId);
     if (direct?.status === "closed") {
@@ -1346,25 +1388,13 @@ export class ProxySessionController {
       reasoningEffort: remote?.reasoningEffort ?? source?.reasoningEffort,
       permissionMode: remote?.permissionMode ?? source?.permissionMode ?? "auto",
     };
-    const created = await this.createSession(
-      contextKey,
+    return {
+      source,
       agentName,
+      remoteSessionId,
       cwd,
-      true,
-      false,
-      undefined,
-      undefined,
-      undefined,
       executionSettings,
-    );
-    this.store.audit(contextKey, "project_session_created", {
-      sourceLocalSessionId: source?.localSessionId,
-      sourceRemoteSessionId: remoteSessionId,
-      createdLocalSessionId: created.localSessionId,
-      createdRemoteSessionId: created.remoteSessionId,
-      cwd,
-      ...executionSettings,
-    });
+    };
   }
 
   private async startTurn(
@@ -1473,8 +1503,6 @@ export class ProxySessionController {
   ): Promise<void> {
     const source = this.currentSession(sourceContextKey);
     const boundProjectCwd = this.currentProjectCwd(sourceContextKey);
-    const explicitTitle = normalizeTaskTitle(requestedTitle);
-    const taskTitle = explicitTitle ?? "新任务";
     const executionSettings: SessionExecutionSettings = source?.agentName === agentName
       ? {
           model: source.model,
@@ -1482,6 +1510,43 @@ export class ProxySessionController {
           permissionMode: source.permissionMode,
         }
       : {};
+    await this.createFeishuGroupWithTask(
+      sourceContextKey,
+      agentName,
+      requestedTitle,
+      userId,
+      boundProjectCwd,
+      executionSettings,
+    );
+  }
+
+  private async createFeishuGroupFromReference(
+    sourceContextKey: string,
+    reference: string,
+    userId: string | undefined,
+  ): Promise<void> {
+    const resolved = await this.resolveProjectSessionReference(sourceContextKey, reference);
+    const boundProjectCwd = detectProjectlessWorkspace(resolved.cwd) ? undefined : resolved.cwd;
+    await this.createFeishuGroupWithTask(
+      sourceContextKey,
+      resolved.agentName,
+      undefined,
+      userId,
+      boundProjectCwd,
+      resolved.executionSettings,
+    );
+  }
+
+  private async createFeishuGroupWithTask(
+    sourceContextKey: string,
+    agentName: string,
+    requestedTitle: string | undefined,
+    userId: string | undefined,
+    boundProjectCwd: string | undefined,
+    executionSettings: SessionExecutionSettings,
+  ): Promise<void> {
+    const explicitTitle = normalizeTaskTitle(requestedTitle);
+    const taskTitle = explicitTitle ?? "新任务";
     const group = await this.createFeishuGroupContext(
       sourceContextKey,
       agentName,
@@ -1542,6 +1607,42 @@ export class ProxySessionController {
       throw new Error("/forkgroup 只能由具有 open_id 的飞书用户消息触发。");
     }
     const prepared = await this.prepareForkGroupSession(sourceContextKey, requestedTitle, incomingMessage);
+    await this.forkPreparedSessionToFeishuGroup(
+      sourceContextKey,
+      prepared,
+      userId,
+      incomingMessage?.threadContext ? prepared.sourceDescription : "当前任务",
+    );
+  }
+
+  private async forkSessionReferenceToFeishuGroup(
+    sourceContextKey: string,
+    reference: string,
+    userId: string | undefined,
+  ): Promise<void> {
+    if (!userId?.startsWith("ou_")) {
+      throw new Error("ForkGroup 只能由具有 open_id 的飞书用户触发。");
+    }
+    const plan = await this.prepareForkSession(sourceContextKey, reference);
+    await this.forkPreparedSessionToFeishuGroup(
+      sourceContextKey,
+      {
+        plan,
+        sourceDescription: plan.forkedFromHistoricalTurn
+          ? "指定任务最近已完成轮次"
+          : "指定任务最新轮次",
+      },
+      userId,
+      "指定任务",
+    );
+  }
+
+  private async forkPreparedSessionToFeishuGroup(
+    sourceContextKey: string,
+    prepared: ForkGroupSessionPlan,
+    userId: string,
+    sourceSummary: string,
+  ): Promise<void> {
     const { plan } = prepared;
     const boundProjectCwd = detectProjectlessWorkspace(plan.cwd) ? undefined : plan.cwd;
     const group = await this.createFeishuGroupContext(
@@ -1578,9 +1679,7 @@ export class ProxySessionController {
     );
     await this.outbound.sendText(
       sourceContextKey,
-      `已将${
-        incomingMessage?.threadContext ? prepared.sourceDescription : "当前任务"
-      } Fork 到飞书群：${group.name}；新群当前任务为 ${taskDescription}。`,
+      `已将${sourceSummary} Fork 到飞书群：${group.name}；新群当前任务为 ${taskDescription}。`,
     );
   }
 
@@ -2278,9 +2377,29 @@ export class ProxySessionController {
         },
       });
       actions.push({
+        text: "NewGroup",
+        value: {
+          action: "session_new_group",
+          sessionId: entry.id,
+          ...(searchTerm ? { searchTerm } : {}),
+          visibleCount: String(visibleCount),
+          contextKey,
+        },
+      });
+      actions.push({
         text: "Fork",
         value: {
           action: "session_fork",
+          sessionId: entry.id,
+          ...(searchTerm ? { searchTerm } : {}),
+          visibleCount: String(visibleCount),
+          contextKey,
+        },
+      });
+      actions.push({
+        text: "ForkGroup",
+        value: {
+          action: "session_fork_group",
           sessionId: entry.id,
           ...(searchTerm ? { searchTerm } : {}),
           visibleCount: String(visibleCount),
@@ -2310,6 +2429,7 @@ export class ProxySessionController {
       [
         ...(remoteHint ? [remoteHint] : []),
         "点击 **New** 在对应任务的项目中创建新任务；点击 **Switch** 快速切换；点击 **Fork** 从任务最新已完成轮次创建分支；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
+        "点击 **NewGroup** 在对应任务的项目中创建新群和新任务；点击 **ForkGroup** 从对应任务最新已完成轮次创建分支群。",
         "也可发送 **/switch [序号或任务 ID]**；不带参数切回上一个任务。外部正在执行的回合不会被接管。",
         "发送 **/fork [序号或任务 ID]**，可从当前或指定任务创建分支；任务运行中时使用最近已完成轮次。",
         "点击 **Status**，或发送 **/status [序号或任务 ID]**，查看当前或指定任务状态。",

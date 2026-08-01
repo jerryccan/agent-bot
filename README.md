@@ -171,6 +171,8 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
 
+The `/sessions` card provides `NewGroup` and `ForkGroup` actions for each task, so you can create a project-matched group or fork a selected task directly into a new group.
+
 Inside a thread, `/forkgroup` forks from the thread's original turn until the thread task completes its own turn. After that, it forks from the thread task's latest completed turn. A currently running turn is never used as a fork point.
 
 `/newgroup` immediately creates a new task in the new group. It inherits the current task's project directory, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
