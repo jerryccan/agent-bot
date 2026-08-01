@@ -1675,6 +1675,9 @@ export class ProxySessionController {
         `已从${prepared.sourceDescription}创建分支。`,
         `当前任务：${taskDescription}`,
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
+        `当前模型：${forked.session.model ?? "默认"}`,
+        `思考强度：${forked.session.reasoningEffort ?? "自动"}`,
+        `权限类型：${forked.session.permissionMode === "confirm" ? "执行前确认" : "自动执行"}`,
       ].join("\n"),
     );
     await this.outbound.sendText(
@@ -2827,6 +2830,9 @@ export class ProxySessionController {
       {
         lines: [
           "直接发送消息即可继续当前任务；执行中发送的新消息会追加到本次任务。",
+          "> 命令前缀示例：/sess 等同于 /sessions。",
+          "> 命令缩写示例：/fg 等同于 /forkgroup。",
+          "前缀或缩写匹配多个命令时，需要输入更长的形式。",
           "**[参数]** 可选　**&#60;参数&#62;** 必填",
         ],
       },

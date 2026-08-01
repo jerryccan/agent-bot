@@ -1077,6 +1077,11 @@ describe("ProxySessionController", () => {
     sourceRemote.status = "idle";
     sourceRemote.lastTurnId = "turn_1";
     sourceRemote.lastTurnStatus = "completed";
+    store.updateRuntimeSession(sourceSessionId!, {
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
 
     await controller.onMessage({
       messageId: "fork-group",
@@ -1101,6 +1106,9 @@ describe("ProxySessionController", () => {
       lastTurnId: "turn_1",
       title: "并行修复",
       cwd: store.getSession(sourceSessionId!)?.cwd,
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
     }));
     expect(store.getSession(groupSessionId!)).toMatchObject({
       contextKey: "chat_id:oc_new_group",
@@ -1118,7 +1126,9 @@ describe("ProxySessionController", () => {
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      expect.stringMatching(/^已从当前任务最新轮次创建分支。\n当前任务：并行修复（thr_1_fork）\n当前 Project 目录：.+$/),
+      expect.stringMatching(
+        /^已从当前任务最新轮次创建分支。\n当前任务：并行修复（thr_1_fork）\n当前 Project 目录：.+\n当前模型：gpt-next\n思考强度：xhigh\n权限类型：执行前确认$/,
+      ),
     );
     expect((outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls)
       .not.toContainEqual(["chat_id:oc_new_group", expect.anything()]);
@@ -4151,7 +4161,12 @@ describe("ProxySessionController", () => {
     expect(outbound.sendMarkdown).not.toHaveBeenCalled();
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
+    const intro = String((card as { body?: { elements?: Array<{ content?: unknown }> } })
+      .body?.elements?.[0]?.content ?? "");
     expect(card).toMatchObject({ header: { title: { content: "Agent Bot 使用帮助" } } });
+    expect(intro).toContain(
+      "> 命令前缀示例：/sess 等同于 /sessions。\n> 命令缩写示例：/fg 等同于 /forkgroup。",
+    );
     expect(serialized).toContain("**任务管理**");
     expect(serialized).toContain("**执行设置**");
     expect(serialized).toContain("**Agent**");
