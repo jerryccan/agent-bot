@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-01
+
 - Add `NewGroup` and `ForkGroup` actions to every task in the Lark `/sessions` card, using the selected task's project and latest completed turn.
 - Fix Lark initialization timing out after group-message authorization by requesting the actual `im:message.group_msg` scope while retaining compatibility with the `im:message.group_msg:readonly` alias.
 
