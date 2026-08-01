@@ -1,4 +1,5 @@
 import type { AgentEvent, ToolState } from "../runtime/types.js";
+import { appendGeneratedImageMarkdown } from "../utils/generatedImageMarkdown.js";
 import type { MessageReplyTarget } from "../feishu/types.js";
 import type { FileSummary, TurnActivity, TurnViewState } from "./turnViewTypes.js";
 
@@ -107,7 +108,11 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
         approval: undefined,
         completedAt: state.startedAt + (event.durationMs ?? Date.now() - state.startedAt),
         durationMs: event.durationMs ?? Date.now() - state.startedAt,
-        finalResponse: event.finalResponse,
+        finalResponse: appendGeneratedImageMarkdown(
+          event.finalResponse,
+          state.completedTools.flatMap((tool) =>
+            tool.kind === "image_generation" && tool.imagePath ? [tool.imagePath] : []),
+        ),
       };
     case "turn_cancelled":
       return { ...state, status: "cancelled", activeTool: undefined, approval: undefined, completedAt: Date.now() };

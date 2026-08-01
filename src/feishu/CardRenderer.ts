@@ -790,8 +790,8 @@ function turnActivities(state: TurnViewState): TurnActivity[] {
 
 function toolPanel(tool: ToolState, projectCwd?: string): Record<string, unknown> {
   const elements = [markdown(renderToolDetails(tool, projectCwd))];
-  if (tool.kind === "image_view" && tool.imagePath) {
-    elements.push(localCardImage(tool.imagePath, "view_image 图片"));
+  if ((tool.kind === "image_view" || tool.kind === "image_generation") && tool.imagePath) {
+    elements.push(localCardImage(tool.imagePath, tool.kind === "image_generation" ? "生成图片" : "view_image 图片"));
   }
   return collapsiblePanel(toolPanelTitle(tool), elements, { elementId: toolPanelElementId(tool.id) });
 }

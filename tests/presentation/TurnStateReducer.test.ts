@@ -140,6 +140,22 @@ describe("TurnStateReducer", () => {
     expect(state.progressText?.length).toBeLessThanOrEqual(6_000);
   });
 
+  test("uses completed generated images when Codex finishes without text", () => {
+    let state = createTurnViewState("s1", "turn_1", 1_000);
+    state = reduceTurnEvent(state, event("tool_updated", {
+      tool: {
+        id: "generated_1",
+        title: "生成图片",
+        kind: "image_generation",
+        status: "completed",
+        imagePath: "D:\\images\\avatar.png",
+      },
+    }));
+    state = reduceTurnEvent(state, event("turn_completed", { finalResponse: "" }));
+
+    expect(state.finalResponse).toBe("![生成图片 1](<D:/images/avatar.png>)");
+  });
+
   test("accumulates current-turn token usage from cumulative notifications without double counting", () => {
     let state = createTurnViewState("s1", "turn_1", 1_000);
     state = reduceTurnEvent(state, event("token_usage_updated", { lastTokens: 123, cumulativeTokens: 1_000 }));

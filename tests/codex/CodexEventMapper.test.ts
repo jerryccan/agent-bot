@@ -157,6 +157,40 @@ describe("mapCodexNotification", () => {
     });
   });
 
+  test("maps completed image generation without retaining the base64 result", () => {
+    const mapped = mapCodexNotification("item/completed", {
+      threadId: "thr_1",
+      turnId: "turn_1",
+      completedAtMs: 1234,
+      item: {
+        type: "imageGeneration",
+        id: "generated_1",
+        status: "completed",
+        revisedPrompt: "A square profile avatar",
+        result: "base64-data-that-must-not-be-retained",
+        savedPath: "D:\\images\\avatar.png",
+      },
+    });
+
+    expect(mapped).toEqual({
+      kind: "tool",
+      phase: "updated",
+      threadId: "thr_1",
+      turnId: "turn_1",
+      tool: {
+        id: "generated_1",
+        title: "生成图片",
+        kind: "image_generation",
+        status: "completed",
+        command: "A square profile avatar",
+        imagePath: "D:\\images\\avatar.png",
+        startedAt: undefined,
+        completedAt: 1234,
+      },
+    });
+    expect(JSON.stringify(mapped)).not.toContain("base64-data");
+  });
+
   test("maps web search actions with useful titles and expandable details", () => {
     const search = mapCodexNotification("item/started", {
       threadId: "thr_1",

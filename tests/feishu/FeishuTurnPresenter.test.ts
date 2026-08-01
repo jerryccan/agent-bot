@@ -133,6 +133,30 @@ describe("FeishuTurnPresenter", () => {
     expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
   });
 
+  test("delivers generated images when Codex completes with an empty text response", async () => {
+    const { presenter, outbound } = createFixture();
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent({
+      type: "tool_updated",
+      sessionId: "s1",
+      turnId: "turn_1",
+      tool: {
+        id: "generated_1",
+        title: "生成图片",
+        kind: "image_generation",
+        status: "completed",
+        imagePath: "D:\\images\\avatar.png",
+      },
+    });
+    await presenter.onEvent(completed(""));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "![生成图片 1](<D:/images/avatar.png>)",
+      expect.stringMatching(/^codex-final-/),
+    );
+  });
+
   test("reuses the immediate starting card when the real turn id arrives", async () => {
     const { presenter, outbound, store } = createFixture();
     await presenter.startPendingTurn("s1", "chat_id:c1");

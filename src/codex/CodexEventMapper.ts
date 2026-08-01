@@ -201,6 +201,19 @@ function mapTool(
       completedAt,
     };
   }
+  if (type === "imageGeneration") {
+    const imagePath = nonEmptyString(item.savedPath);
+    return {
+      id,
+      title: "生成图片",
+      kind: "image_generation",
+      status,
+      command: nonEmptyString(item.revisedPrompt),
+      imagePath,
+      startedAt,
+      completedAt,
+    };
+  }
   return undefined;
 }
 

@@ -385,6 +385,50 @@ describe("CodexRuntime", () => {
     }));
   });
 
+  test("turns generated image items into a deliverable final response", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    const turnId = await runtime.startTurn("s1", "generate an avatar");
+    const imagePath = path.resolve("generated avatar.png");
+
+    client.emit("item/completed", {
+      threadId: "thr_1",
+      turnId,
+      completedAtMs: 1234,
+      item: {
+        type: "imageGeneration",
+        id: "generated_1",
+        status: "completed",
+        revisedPrompt: "A square profile avatar",
+        result: "large-base64-result",
+        savedPath: imagePath,
+      },
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: turnId, status: "completed" },
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_updated",
+      turnId,
+      tool: expect.objectContaining({ kind: "image_generation", imagePath }),
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      turnId,
+      finalResponse: `![生成图片 1](<${imagePath.replaceAll("\\", "/")}>)`,
+    }));
+  });
+
   test("persists a selected effort in runtime state and exposes model effort metadata", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
@@ -525,6 +569,45 @@ describe("CodexRuntime", () => {
       finalResponse: "最新执行结果",
       durationMs: 250,
     });
+  });
+
+  test("recovers generated images from a completed thread snapshot", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.startTurn("s1", "generate an avatar");
+    const imagePath = path.resolve("recovered avatar.png");
+    client.readResult = {
+      thread: {
+        id: "thr_1",
+        status: { type: "idle" },
+        turns: [{
+          id: "turn_1",
+          status: "completed",
+          startedAt: 10,
+          items: [{
+            type: "imageGeneration",
+            status: "completed",
+            savedPath: imagePath,
+          }],
+        }],
+      },
+    };
+
+    await runtime.synchronizeSession("s1");
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      turnId: "turn_1",
+      finalResponse: `![生成图片 1](<${imagePath.replaceAll("\\", "/")}>)`,
+    }));
   });
 
   test("tracks a live Codex turn that supersedes the locally active turn", async () => {

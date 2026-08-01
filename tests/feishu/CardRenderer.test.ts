@@ -480,6 +480,29 @@ describe("CardRenderer", () => {
     });
   });
 
+  test("renders a generated image preview inside its tool panel", () => {
+    const running = state();
+    const imagePath = "D:\\dev\\agent-bot\\.tmp\\generated.png";
+    const tool = {
+      id: "generated_1",
+      title: "生成图片",
+      kind: "image_generation",
+      status: "completed" as const,
+      imagePath,
+    };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => panelTitle(item).includes("生成图片"));
+    const elements = panel?.elements as Array<Record<string, unknown>> | undefined;
+
+    expect(elements?.[1]).toMatchObject({
+      tag: "img",
+      __acp_local_image_path: imagePath,
+      preview: true,
+    });
+  });
+
   test("keeps a stable identity for the trailing file panel as activities are inserted before it", () => {
     const running = state();
     const renderer = new CardRenderer();

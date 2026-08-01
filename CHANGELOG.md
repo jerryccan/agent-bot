@@ -6,6 +6,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Deliver Codex-generated images to Lark as previewable final results, including image-only turns and completion recovery after restart.
 - Fix fresh Lark apps receiving only private and @-mention messages by always requesting all-user group-message delivery during initialization, with `feishu.respondToAllGroupMessages` controlling whether ordinary group messages receive a response.
 - Keep Agent and project-directory prefixes out of Codex task titles when synchronizing a renamed Lark group.
 

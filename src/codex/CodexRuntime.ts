@@ -17,6 +17,7 @@ import type {
   RuntimeSession,
   RuntimeSessionMetadata,
 } from "../runtime/types.js";
+import { appendGeneratedImageMarkdown } from "../utils/generatedImageMarkdown.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
 import { CodexLocalActivityDetector } from "./CodexLocalActivityDetector.js";
@@ -59,6 +60,7 @@ interface CodexSession extends RuntimeSession {
   activeTurnStartedAt?: number;
   terminalTurnIds: Set<string>;
   finalText: string;
+  generatedImagePaths: string[];
   messagePhases: Map<string, "commentary" | "final_answer">;
   needsResume: boolean;
 }
@@ -548,6 +550,14 @@ export class CodexRuntime implements AgentRuntime {
     } else if (mapped.kind === "plan") {
       this.emit({ type: "plan_updated", sessionId, turnId: mapped.turnId, steps: mapped.steps });
     } else if (mapped.kind === "tool") {
+      if (
+        mapped.phase === "updated"
+        && mapped.tool.kind === "image_generation"
+        && mapped.tool.status === "completed"
+        && mapped.tool.imagePath
+      ) {
+        session.generatedImagePaths = uniqueStrings([...session.generatedImagePaths, mapped.tool.imagePath]);
+      }
       this.emit({
         type: mapped.phase === "started" ? "tool_started" : "tool_updated",
         sessionId,
@@ -572,14 +582,16 @@ export class CodexRuntime implements AgentRuntime {
       } else if (mapped.status === "failed") {
         this.emit({ type: "turn_failed", sessionId, turnId: mapped.turnId, message: mapped.error ?? "Codex turn failed." });
       } else {
+        const finalResponse = appendGeneratedImageMarkdown(session.finalText, session.generatedImagePaths);
         this.emit({
           type: "turn_completed",
           sessionId,
           turnId: mapped.turnId,
-          finalResponse: session.finalText,
+          finalResponse,
           durationMs: mapped.durationMs,
         });
       }
+      session.generatedImagePaths = [];
     }
   }
 
@@ -693,6 +705,7 @@ export class CodexRuntime implements AgentRuntime {
     session.activeTurnId = turnId;
     session.activeTurnStartedAt = startedAt;
     session.finalText = "";
+    session.generatedImagePaths = [];
     session.messagePhases.clear();
     this.emit({ type: "turn_started", sessionId: session.localSessionId, turnId, startedAt });
   }
@@ -726,8 +739,16 @@ export class CodexRuntime implements AgentRuntime {
       });
       return;
     }
-    const finalResponse = extractFinalResponse(turn) || session.finalText;
+    const generatedImagePaths = uniqueStrings([
+      ...session.generatedImagePaths,
+      ...extractGeneratedImagePaths(turn),
+    ]);
+    const finalResponse = appendGeneratedImageMarkdown(
+      extractFinalResponse(turn) || session.finalText,
+      generatedImagePaths,
+    );
     session.finalText = finalResponse;
+    session.generatedImagePaths = [];
     this.emit({
       type: "turn_completed",
       sessionId: session.localSessionId,
@@ -765,6 +786,7 @@ export class CodexRuntime implements AgentRuntime {
           : [],
       ),
       finalText: "",
+      generatedImagePaths: [],
       messagePhases: new Map(),
       needsResume: false,
     };
@@ -796,6 +818,7 @@ export class CodexRuntime implements AgentRuntime {
       if (!turnId) continue;
       session.activeTurnId = undefined;
       session.activeTurnStartedAt = undefined;
+      session.generatedImagePaths = [];
       this.emit({
         type: "turn_failed",
         sessionId: session.localSessionId,
@@ -841,7 +864,13 @@ interface CodexThreadSnapshot {
 interface CodexTurnSnapshot {
   id: string;
   status: "completed" | "interrupted" | "failed" | "inProgress";
-  items?: Array<{ type?: string; text?: string; phase?: string | null; status?: string }>;
+  items?: Array<{
+    type?: string;
+    text?: string;
+    phase?: string | null;
+    status?: string;
+    savedPath?: string;
+  }>;
   error?: { message?: string } | null;
   startedAt?: number | null;
   durationMs?: number | null;
@@ -893,6 +922,17 @@ function extractFinalResponse(turn: CodexTurnSnapshot): string {
     .join("\n\n");
 }
 
+function extractGeneratedImagePaths(turn: CodexTurnSnapshot): string[] {
+  return uniqueStrings((turn.items ?? []).flatMap((item) => {
+    const savedPath = stringValue(item.savedPath)?.trim();
+    return item.type === "imageGeneration" && item.status !== "failed" && savedPath ? [savedPath] : [];
+  }));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {
   const lastTurn = thread.turns?.at(-1);
   const lastCompletedTurn = [...(thread.turns ?? [])]
@@ -923,7 +963,9 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     lastCompletedTurnId: lastCompletedTurn?.id,
     lastTurnStatus,
     lastActivity: lastText,
-    finalResponse: lastTurn && lastTurn.status !== "inProgress" ? extractFinalResponse(lastTurn) || undefined : undefined,
+    finalResponse: lastTurn && lastTurn.status !== "inProgress"
+      ? appendGeneratedImageMarkdown(extractFinalResponse(lastTurn), extractGeneratedImagePaths(lastTurn)) || undefined
+      : undefined,
     lastError: lastTurn?.error?.message,
     lastTurnToolCount: toolCounts?.total,
     lastTurnCompletedToolCount: toolCounts?.completed,
@@ -956,7 +998,8 @@ function isToolItemType(type: string | undefined): boolean {
     || type === "mcpToolCall"
     || type === "dynamicToolCall"
     || type === "webSearch"
-    || type === "imageView";
+    || type === "imageView"
+    || type === "imageGeneration";
 }
 
 function mergeRemoteSessionSummary(
