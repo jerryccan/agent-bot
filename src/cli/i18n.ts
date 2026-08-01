@@ -1,0 +1,38 @@
+export type CliLanguage = "en" | "zh";
+
+export function detectCliLanguage(locale = systemLocale()): CliLanguage {
+  return /^zh(?:[-_]|$)/i.test(locale.trim()) ? "zh" : "en";
+}
+
+export const cliLanguage = detectCliLanguage();
+
+export function cliText(
+  english: string,
+  chinese: string,
+  language: CliLanguage = cliLanguage,
+): string {
+  return language === "zh" ? chinese : english;
+}
+
+export function localizeCliErrorMessage(
+  message: string,
+  language: CliLanguage = cliLanguage,
+): string {
+  if (language !== "zh") return message;
+
+  const missingConfig = /^Config file does not exist: (.+)$/u.exec(message);
+  if (missingConfig) return `配置文件不存在：${missingConfig[1]}`;
+
+  const missingAgent = /^Default agent "(.+)" is not configured\.$/u.exec(message);
+  if (missingAgent) return `默认 Agent“${missingAgent[1]}”尚未配置。`;
+
+  return message;
+}
+
+function systemLocale(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || "en";
+  } catch {
+    return "en";
+  }
+}

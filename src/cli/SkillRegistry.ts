@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { cliText } from "./i18n.js";
 
 const SKILL_NAME = "agent-bot";
 const MARKER_FILE = ".agent-bot-managed.json";
@@ -65,7 +66,10 @@ export class SkillRegistry {
     this.assertValidSource();
     const existing = fs.existsSync(this.targetPath);
     if (existing && this.readMarker()?.managedBy !== "agent-bot") {
-      throw new Error(`The target directory exists and is not managed by Agent Bot: ${this.targetPath}`);
+      throw new Error(cliText(
+        `The target directory exists and is not managed by Agent Bot: ${this.targetPath}`,
+        `目标目录已存在且不由 Agent Bot 管理：${this.targetPath}`,
+      ));
     }
 
     const before = existing ? this.status() : undefined;
@@ -93,7 +97,10 @@ export class SkillRegistry {
   uninstall(): boolean {
     if (!fs.existsSync(this.targetPath)) return false;
     if (this.readMarker()?.managedBy !== "agent-bot") {
-      throw new Error(`Refusing to remove a directory that is not managed by Agent Bot: ${this.targetPath}`);
+      throw new Error(cliText(
+        `Refusing to remove a directory that is not managed by Agent Bot: ${this.targetPath}`,
+        `拒绝删除不由 Agent Bot 管理的目录：${this.targetPath}`,
+      ));
     }
     this.removeManagedTarget();
     return true;
@@ -101,13 +108,19 @@ export class SkillRegistry {
 
   private assertValidSource(): void {
     if (!fs.existsSync(path.join(this.sourcePath, "SKILL.md"))) {
-      throw new Error(`The built-in Agent Bot Skill was not found: ${this.sourcePath}`);
+      throw new Error(cliText(
+        `The built-in Agent Bot Skill was not found: ${this.sourcePath}`,
+        `未找到内置 Agent Bot Skill：${this.sourcePath}`,
+      ));
     }
   }
 
   private assertSafeTarget(): void {
     if (path.dirname(this.targetPath) !== this.skillsRoot || path.basename(this.targetPath) !== SKILL_NAME) {
-      throw new Error(`Unsafe Skill target path: ${this.targetPath}`);
+      throw new Error(cliText(
+        `Unsafe Skill target path: ${this.targetPath}`,
+        `不安全的 Skill 目标路径：${this.targetPath}`,
+      ));
     }
   }
 

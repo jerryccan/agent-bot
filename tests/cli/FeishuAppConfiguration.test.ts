@@ -79,6 +79,7 @@ describe("ensureFeishuAppConfiguration", () => {
     });
     expect(challenge?.missing).toEqual(result.remaining);
     expect(challenge?.blocking).toBe(false);
+    expect(challenge?.kind).toBe("launcher");
     expect(sleep).not.toHaveBeenCalled();
 
     const url = new URL(challenge!.verificationUrl);
@@ -203,6 +204,7 @@ describe("ensureFeishuAppConfiguration", () => {
 
     expect(challenges).toHaveLength(2);
     expect(challenges[0]).toMatchObject({
+      kind: "launcher",
       blocking: true,
       missing: {
         scopes: ["im:message.p2p_msg:readonly"],
@@ -211,6 +213,7 @@ describe("ensureFeishuAppConfiguration", () => {
       },
     });
     expect(challenges[1]).toMatchObject({
+      kind: "launcher",
       blocking: false,
       missing: {
         scopes: ["im:chat:create"],
@@ -255,6 +258,7 @@ describe("ensureFeishuAppConfiguration", () => {
     });
 
     expect(challenge).toMatchObject({
+      kind: "manual_scope",
       blocking: true,
       missing: {
         scopes: ["im:message.group_msg"],
@@ -263,11 +267,78 @@ describe("ensureFeishuAppConfiguration", () => {
       },
     });
     const url = new URL(challenge!.verificationUrl);
-    expect(decodeAddons(url.searchParams.get("addons")!)).toEqual({
-      scopes: {
-        tenant: ["im:message.group_msg"],
-        user: [],
+    expect(url.origin + url.pathname).toBe("https://open.feishu.cn/app/cli_created/auth");
+    expect(url.searchParams.get("q")).toBe("im:message.group_msg");
+    expect(url.searchParams.get("op_from")).toBe("openapi");
+    expect(url.searchParams.get("token_type")).toBe("tenant");
+    expect(url.searchParams.has("addons")).toBe(false);
+  });
+
+  test("continues with a partial result when manual group-message permission waiting is skipped", async () => {
+    const manualPermissionSkip = new AbortController();
+    const scopes = REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:message.group_msg");
+    const fetchMock = configurationFetch(() => ({
+      scopes,
+      events: REQUIRED_FEISHU_EVENTS,
+      callbacks: REQUIRED_FEISHU_CALLBACKS,
+    }));
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      manualPermissionSkipSignal: manualPermissionSkip.signal,
+      pollIntervalMs: 1,
+      sleep,
+      onVerification: (challenge) => {
+        if (challenge.kind === "manual_scope") manualPermissionSkip.abort();
       },
+    });
+
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.status).toBe("partial");
+    expect(result.added).toEqual({ scopes: [], events: [], callbacks: [] });
+    expect(result.remaining).toEqual({
+      scopes: ["im:message.group_msg"],
+      events: [],
+      callbacks: [],
+    });
+  });
+
+  test("keeps waiting for other core configuration after manual permission waiting is skipped", async () => {
+    const manualPermissionSkip = new AbortController();
+    let privateMessagesReady = false;
+    const fetchMock = configurationFetch(() => ({
+      scopes: REQUIRED_FEISHU_SCOPES.filter(
+        (scope) => scope !== "im:message.group_msg"
+          && (privateMessagesReady || scope !== "im:message.p2p_msg:readonly"),
+      ),
+      events: REQUIRED_FEISHU_EVENTS,
+      callbacks: REQUIRED_FEISHU_CALLBACKS,
+    }));
+    const sleep = vi.fn(async () => {
+      privateMessagesReady = true;
+    });
+    const challenges: FeishuConfigurationChallenge[] = [];
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      manualPermissionSkipSignal: manualPermissionSkip.signal,
+      pollIntervalMs: 1,
+      sleep,
+      onVerification: (challenge) => {
+        challenges.push(challenge);
+        if (challenge.kind === "manual_scope") manualPermissionSkip.abort();
+      },
+    });
+
+    expect(challenges.map((challenge) => challenge.kind)).toEqual(["launcher", "manual_scope"]);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(result.status).toBe("partial");
+    expect(result.added.scopes).toEqual(["im:message.p2p_msg:readonly"]);
+    expect(result.remaining).toEqual({
+      scopes: ["im:message.group_msg"],
+      events: [],
+      callbacks: [],
     });
   });
 
@@ -317,7 +388,7 @@ describe("ensureFeishuAppConfiguration", () => {
         },
       });
     }) as typeof fetch;
-    let challenge: FeishuConfigurationChallenge | undefined;
+    const challenges: FeishuConfigurationChallenge[] = [];
 
     await ensureFeishuAppConfiguration(credentials, {
       fetch: fetchMock,
@@ -326,13 +397,20 @@ describe("ensureFeishuAppConfiguration", () => {
         configured = true;
       },
       onVerification: (value) => {
-        challenge = value;
+        challenges.push(value);
       },
     });
 
-    expect(challenge).toMatchObject({
+    expect(challenges).toHaveLength(2);
+    expect(challenges[0]).toMatchObject({
+      kind: "launcher",
       blocking: true,
-      missing: coreMissingConfiguration(),
+      missing: launcherCoreMissingConfiguration(),
+    });
+    expect(challenges[1]).toMatchObject({
+      kind: "manual_scope",
+      blocking: true,
+      missing: manualCoreMissingConfiguration(),
     });
   });
 
@@ -342,7 +420,7 @@ describe("ensureFeishuAppConfiguration", () => {
       () => completeConfiguration(),
       () => (configured ? undefined : jsonResponse({ code: 99991672, msg: "Access denied: scope missing" }, 400)),
     );
-    let challenge: FeishuConfigurationChallenge | undefined;
+    const challenges: FeishuConfigurationChallenge[] = [];
 
     await ensureFeishuAppConfiguration(credentials, {
       fetch: fetchMock,
@@ -351,13 +429,20 @@ describe("ensureFeishuAppConfiguration", () => {
         configured = true;
       },
       onVerification: (value) => {
-        challenge = value;
+        challenges.push(value);
       },
     });
 
-    expect(challenge).toMatchObject({
+    expect(challenges).toHaveLength(2);
+    expect(challenges[0]).toMatchObject({
+      kind: "launcher",
       blocking: true,
-      missing: coreMissingConfiguration(),
+      missing: launcherCoreMissingConfiguration(),
+    });
+    expect(challenges[1]).toMatchObject({
+      kind: "manual_scope",
+      blocking: true,
+      missing: manualCoreMissingConfiguration(),
     });
   });
 
@@ -472,6 +557,22 @@ function coreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
       "im:message:send_as_bot",
     ],
     events: ["im.message.receive_v1"],
+    callbacks: [],
+  };
+}
+
+function launcherCoreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
+  const missing = coreMissingConfiguration();
+  return {
+    ...missing,
+    scopes: missing.scopes.filter((scope) => scope !== "im:message.group_msg"),
+  };
+}
+
+function manualCoreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
+  return {
+    scopes: ["im:message.group_msg"],
+    events: [],
     callbacks: [],
   };
 }

@@ -19,7 +19,7 @@ describe("server status output", () => {
     }, "cli_configured");
 
     expect(status.feishuAppId).toBe("cli_running");
-    expect(formatServerStatus(status)).toBe([
+    expect(formatServerStatus(status, "en")).toBe([
       "Agent Bot server: running",
       "Lark App ID: cli_running",
       "PID: 42",
@@ -40,6 +40,20 @@ describe("server status output", () => {
     expect(formatServerStatus({
       running: false,
       feishuAppId: "cli_profile",
-    })).toContain("Lark App ID: cli_profile");
+    }, "en")).toContain("Lark App ID: cli_profile");
+  });
+
+  test("renders Chinese labels and states", () => {
+    const output = formatServerStatus({
+      ready: false,
+      feishuAppId: "cli_profile",
+      supervised: true,
+      safeRestartScheduled: false,
+    }, "zh");
+
+    expect(output).toContain("Agent Bot 服务：正在启动（连接飞书中）");
+    expect(output).toContain("飞书 App ID：cli_profile");
+    expect(output).toContain("Supervisor：已启用");
+    expect(output).toContain("安全重启：未计划");
   });
 });

@@ -1,9 +1,12 @@
 import qrcode from "qrcode-terminal";
+import { cliText, type CliLanguage } from "./i18n.js";
 
 export interface VerificationOutputOptions {
   verificationUrl: string;
   json: boolean;
   qrInstruction: string;
+  linkLabel?: string;
+  language?: CliLanguage;
 }
 
 export function printVerificationQrAndLink(
@@ -18,5 +21,5 @@ export function printVerificationQrAndLink(
     write(`\n${options.qrInstruction}\n\n`);
     renderQr(options.verificationUrl, (output) => write(`${output}\n`));
   }
-  write(`Authorization link:\n${options.verificationUrl}\n\n`);
+  write(`${options.linkLabel ?? cliText("Authorization link", "授权链接", options.language)}${cliText(":", "：", options.language)}\n${options.verificationUrl}\n\n`);
 }

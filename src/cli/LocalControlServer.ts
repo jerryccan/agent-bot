@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import type { ControlRequest, ControlResponse } from "./controlProtocol.js";
+import { cliText } from "./i18n.js";
 
 export type ControlRequestHandler = (request: ControlRequest) => Promise<ControlResponse>;
 
@@ -61,7 +62,7 @@ export class LocalControlServer {
 function parseRequest(line: string): ControlRequest {
   const value = JSON.parse(line) as unknown;
   if (!value || typeof value !== "object" || !("action" in value) || typeof value.action !== "string") {
-    throw new Error("Invalid local control request.");
+    throw new Error(cliText("Invalid local control request.", "无效的本地控制请求。"));
   }
   return value as ControlRequest;
 }

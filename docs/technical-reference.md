@@ -35,7 +35,7 @@ The default user-data root is `~/.agent-bot`. `AGENT_BOT_HOME` replaces that roo
 
 The CLI also supports explicit directory-based profiles. Without `--profile`, commands use the main profile and the normal environment-based path rules. `--profile <directory>` pins both `AGENT_BOT_HOME` and `AGENT_BOT_CONFIG` for the command and every spawned supervisor or worker, with the configuration fixed at `<directory>/config.yaml`. It also clears inherited Feishu credential variables before loading the selected profile's `.env`, which prevents a secondary service launched from inside the primary Agent Bot process tree from accidentally reusing the primary bot. It cannot be combined with `--config`. Alternative profiles must be selected explicitly on every command; Agent Bot does not maintain a named-profile registry.
 
-All CLI interface text is English regardless of system locale. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agent-bot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID.
+The CLI reads the system locale through Node.js internationalization support. Locales beginning with `zh` use Chinese interface text; English and every unsupported locale use English. This applies to help, status, progress, prompts, and CLI-owned errors. JSON field names and enum values are not localized. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agent-bot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID.
 
 | Default path                         | Contents                           |
 | ------------------------------------ | ---------------------------------- |
@@ -75,8 +75,16 @@ When complete credentials are absent, initialization uses Feishu one-click regis
 
 Missing app configuration is handled in two stages:
 
-1. Core configuration is requested and polled until it becomes available.
+1. Core configuration is requested and polled until it becomes available. The manually configured all-group-message scope may be explicitly skipped with `Y`.
 2. Remaining optional configuration is requested. The CLI prints its QR code followed by the authorization URL, then immediately polls for up to five minutes. An interactive terminal offers only `Y` to skip optional authorization and continue; otherwise the user completes authorization in the browser while polling continues.
+
+Configuration supported by the one-click launcher is encoded in its `addons` manifest. The core `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints a QR code and this app-specific, pre-filtered Developer Console URL:
+
+```text
+https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi&token_type=tenant
+```
+
+The user must add the permission, publish the app version, and complete tenant approval when required. Core polling then detects the permission in the published version before initialization continues. In an interactive terminal, entering `Y` skips only this manual permission wait; other missing core scopes and the message event remain blocking. Initialization returns a partial configuration result and warns that ordinary group messages which do not mention the bot are unavailable.
 
 Optional polling failures and timeouts return a partial configuration result instead of failing initialization. When stdin is not an interactive terminal, no skip input is available and polling continues until configuration becomes active or times out. Verification URLs and prompts use stderr, so `--json` keeps its final stdout machine-readable.
 
@@ -181,6 +189,8 @@ Starting a Feishu thread from a mapped user message, progress card, or final res
 
 `/forkgroup` has thread-aware source selection. An unbound thread, or a bound thread task with no completed turn of its own, forks directly from the thread's original anchor turn without creating an intermediate thread task. Once the thread task has completed a turn, `/forkgroup` uses its latest locally persisted completed turn. A newer active turn does not block the command and is excluded from the fork point.
 
+The new group's welcome message reports the persisted fork settings: model, reasoning effort, and permission type. Permission type is rendered as automatic execution or confirmation before execution.
+
 ## Turn And Message Behavior
 
 - Plain text creates a task when the route has no current task.
@@ -188,6 +198,7 @@ Starting a Feishu thread from a mapped user message, progress card, or final res
 - A steering race at turn completion becomes the next queued request.
 - `/nosteer` always creates a persistent FIFO queue item.
 - Queue card actions can cancel individual pending items.
+- Exact slash command names take priority. Otherwise, a unique command-name prefix or registered compound-command initialism is expanded before argument parsing; ambiguous matches are rejected with their candidate commands. Registered initialisms are `fg` for `forkgroup`, `ng` for `newgroup`, and `ns` for `nosteer`.
 - Unknown slash commands are rejected and never forwarded as Prompts.
 
 Each turn owns one progress card. Normal updates are throttled to one every two seconds; critical updates have a 500 ms minimum gap. On completion, Agent Bot updates the progress card to a terminal state before sending a separate final Markdown message.

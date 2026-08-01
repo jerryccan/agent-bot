@@ -37,7 +37,7 @@ agent-bot --version
 agent-bot --help
 ```
 
-This installs the `agent-bot` command globally. Command-line help, status, progress, and errors are always displayed in English. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
+This installs the `agent-bot` command globally. Command-line help, status, progress, prompts, and errors follow the system language for Chinese and English locales; all other locales fall back to English. JSON output remains language-neutral and stable. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
 ### Initialize
 
@@ -48,6 +48,8 @@ agent-bot init
 Follow the displayed link or scan the QR code to create and authorize the Feishu bot. Initialization prepares `~/.agent-bot`, saves the bot credentials and the authorizing user, checks the required permissions, and starts Agent Bot automatically.
 
 Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agent-bot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
+
+The `im:message.group_msg` permission cannot be added through Feishu's one-click configuration. When it is missing, Agent Bot prints a QR code and a direct Developer Console link already filtered to that permission. Add it manually, publish the app version, and complete tenant approval if required. While Agent Bot waits for it to become active, enter `Y` to skip this permission and continue initialization; the final result warns that ordinary group messages which do not mention the bot will be unavailable.
 
 When optional permissions or subscriptions are missing, Agent Bot first shows their QR code and authorization link, then immediately waits up to five minutes for them to become active. The terminal offers only one choice: enter `Y` to skip optional authorization and continue. Otherwise, complete authorization in the browser while Agent Bot waits. Optional authorization failures or timeouts do not block startup, and Agent Bot reports which features may be unavailable.
 
@@ -169,11 +171,15 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/restart`                               | Gracefully restart Agent Bot                |
 | `/help`                                  | Show in-chat help                           |
 
+Slash commands accept any unique prefix, and compound commands accept registered initialisms: `/sess` runs `/sessions`, `/fg` runs `/forkgroup`, `/ng` runs `/newgroup`, and `/ns` runs `/nosteer`. Exact command names take priority. An ambiguous prefix such as `/s` or `/f` is rejected and reports every matching command.
+
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
 
 The `/sessions` card provides `NewGroup` and `ForkGroup` actions for each task, so you can create a project-matched group or fork a selected task directly into a new group.
 
 Inside a thread, `/forkgroup` forks from the thread's original turn until the thread task completes its own turn. After that, it forks from the thread task's latest completed turn. A currently running turn is never used as a fork point.
+
+After `/forkgroup` creates the new group, its welcome message shows the forked task's current model, reasoning effort, and permission type.
 
 `/newgroup` immediately creates a new task in the new group. It inherits the current task's project directory, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
 

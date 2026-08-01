@@ -10,6 +10,7 @@ describe("printVerificationQrAndLink", () => {
         verificationUrl: "https://open.feishu.cn/example",
         json: false,
         qrInstruction: "Scan this QR code:",
+        language: "en",
       },
       (value) => output.push(value),
       (_value, callback) => callback("QR-CODE"),
@@ -31,6 +32,7 @@ describe("printVerificationQrAndLink", () => {
         verificationUrl: "https://open.feishu.cn/example",
         json: true,
         qrInstruction: "Scan this QR code:",
+        language: "en",
       },
       write,
       renderQr,
@@ -40,6 +42,43 @@ describe("printVerificationQrAndLink", () => {
     expect(write).toHaveBeenCalledOnce();
     expect(write).toHaveBeenCalledWith(
       "Authorization link:\nhttps://open.feishu.cn/example\n\n",
+    );
+  });
+
+  test("supports a permission-page label", () => {
+    const write = vi.fn();
+
+    printVerificationQrAndLink(
+      {
+        verificationUrl: "https://open.feishu.cn/app/cli_created/auth?q=im%3Amessage.group_msg",
+        json: true,
+        qrInstruction: "Scan this QR code:",
+        linkLabel: "Permission page",
+        language: "en",
+      },
+      write,
+    );
+
+    expect(write).toHaveBeenCalledWith(
+      "Permission page:\nhttps://open.feishu.cn/app/cli_created/auth?q=im%3Amessage.group_msg\n\n",
+    );
+  });
+
+  test("prints a Chinese default link label", () => {
+    const write = vi.fn();
+
+    printVerificationQrAndLink(
+      {
+        verificationUrl: "https://open.feishu.cn/example",
+        json: true,
+        qrInstruction: "扫描二维码：",
+        language: "zh",
+      },
+      write,
+    );
+
+    expect(write).toHaveBeenCalledWith(
+      "授权链接：\nhttps://open.feishu.cn/example\n\n",
     );
   });
 });

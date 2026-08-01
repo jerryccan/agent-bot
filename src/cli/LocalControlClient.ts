@@ -1,5 +1,6 @@
 import net from "node:net";
 import type { ControlRequest, ControlResponse } from "./controlProtocol.js";
+import { cliText } from "./i18n.js";
 
 export async function sendControlRequest(
   endpoint: string,
@@ -17,7 +18,10 @@ export async function sendControlRequest(
       socket.destroy();
       operation();
     };
-    const timer = setTimeout(() => finish(() => reject(new Error("Timed out connecting to the Agent Bot control endpoint."))), timeoutMs);
+    const timer = setTimeout(() => finish(() => reject(new Error(cliText(
+      "Timed out connecting to the Agent Bot control endpoint.",
+      "连接 Agent Bot 控制端点超时。",
+    )))), timeoutMs);
     socket.setEncoding("utf8");
     socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on("data", (chunk: string) => {
@@ -33,7 +37,10 @@ export async function sendControlRequest(
     });
     socket.once("error", (error) => finish(() => reject(error)));
     socket.once("end", () => {
-      if (!settled) finish(() => reject(new Error("The Agent Bot control endpoint returned no response.")));
+      if (!settled) finish(() => reject(new Error(cliText(
+        "The Agent Bot control endpoint returned no response.",
+        "Agent Bot 控制端点未返回响应。",
+      ))));
     });
   });
 }

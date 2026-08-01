@@ -1,5 +1,6 @@
 import { gzipSync } from "node:zlib";
 import type { FeishuAppCredentials } from "./FeishuAppRegistration.js";
+import { cliText } from "./i18n.js";
 
 const FEISHU_OPEN_BASE_URL = "https://open.feishu.cn";
 const TENANT_TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal";
@@ -71,6 +72,7 @@ const CORE_FEISHU_SCOPES = new Set([
   "im:message:send_as_bot",
 ]);
 const CORE_FEISHU_EVENTS = new Set<string>(["im.message.receive_v1"]);
+const MANUAL_FEISHU_SCOPES = new Set(["im:message.group_msg"]);
 
 export interface FeishuAppConfiguration {
   scopes: string[];
@@ -85,6 +87,7 @@ export interface MissingFeishuAppConfiguration {
 }
 
 export interface FeishuConfigurationChallenge {
+  kind: "launcher" | "manual_scope";
   verificationUrl: string;
   missing: MissingFeishuAppConfiguration;
   blocking: boolean;
@@ -94,6 +97,7 @@ export interface EnsureFeishuAppConfigurationOptions {
   fetch?: typeof globalThis.fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   signal?: AbortSignal;
+  manualPermissionSkipSignal?: AbortSignal;
   optionalSkipSignal?: AbortSignal;
   pollIntervalMs?: number;
   timeoutMs?: number;
@@ -157,15 +161,27 @@ export async function ensureFeishuAppConfiguration(
 
   let remainingMs = timeoutMs;
   let lastError: unknown;
+  let refreshImmediately = options.manualPermissionSkipSignal?.aborted === true;
   while (remainingMs > 0) {
     const waitMs = Math.min(pollIntervalMs, remainingMs);
-    await sleepWithAbort(sleep, waitMs, options.signal);
-    remainingMs -= waitMs;
+    if (!refreshImmediately) {
+      const waitResult = options.manualPermissionSkipSignal?.aborted
+        ? await sleepWithAbort(sleep, waitMs, options.signal).then(() => "elapsed" as const)
+        : await sleepWithOptionalSkip(
+            sleep,
+            waitMs,
+            options.signal,
+            options.manualPermissionSkipSignal,
+          );
+      if (waitResult === "elapsed") remainingMs -= waitMs;
+    }
+    refreshImmediately = false;
 
     try {
       configuration = await readFeishuAppConfiguration(credentials, fetchImpl, options.signal);
       const remaining = missingFeishuAppConfiguration(configuration);
-      if (!hasMissingConfiguration(coreMissingFeishuAppConfiguration(remaining))) {
+      const unresolvedCore = coreMissingFeishuAppConfiguration(remaining);
+      if (!hasBlockingCoreConfiguration(unresolvedCore, options.manualPermissionSkipSignal)) {
         return completeOptionalFeishuConfiguration(
           credentials,
           configuration,
@@ -175,17 +191,40 @@ export async function ensureFeishuAppConfiguration(
           pollIntervalMs,
           optionalTimeoutMs,
           options,
+          skippedManualScopes(coreMissing, options.manualPermissionSkipSignal),
         );
       }
       lastError = undefined;
     } catch (error) {
       if (options.signal?.aborted) throw abortError(options.signal);
+      const knownRemaining = missingFeishuAppConfiguration(configuration);
+      if (!hasBlockingCoreConfiguration(
+        coreMissingFeishuAppConfiguration(knownRemaining),
+        options.manualPermissionSkipSignal,
+      )) {
+        return completeOptionalFeishuConfiguration(
+          credentials,
+          configuration,
+          missing,
+          fetchImpl,
+          sleep,
+          pollIntervalMs,
+          optionalTimeoutMs,
+          options,
+          skippedManualScopes(coreMissing, options.manualPermissionSkipSignal),
+        );
+      }
       lastError = error;
     }
   }
 
-  const detail = lastError instanceof Error ? ` Last check failed: ${lastError.message}` : "";
-  throw new Error(`Timed out waiting for the core Lark scopes and message event. Run agent-bot init again.${detail}`);
+  const detail = lastError instanceof Error
+    ? cliText(` Last check failed: ${lastError.message}`, ` 上次检查失败：${lastError.message}`)
+    : "";
+  throw new Error(cliText(
+    `Timed out waiting for the core Lark scopes and message event. Run agent-bot init again.${detail}`,
+    `等待飞书核心权限和消息事件超时。请重新运行 agent-bot init。${detail}`,
+  ));
 }
 
 async function requestMissingFeishuConfiguration(
@@ -194,8 +233,28 @@ async function requestMissingFeishuConfiguration(
   blocking: boolean,
   onVerification: EnsureFeishuAppConfigurationOptions["onVerification"],
 ): Promise<void> {
-  const verificationUrl = buildFeishuConfigurationUrl(appId, missing);
-  await onVerification?.({ verificationUrl, missing, blocking });
+  const launcherMissing: MissingFeishuAppConfiguration = {
+    scopes: missing.scopes.filter((scope) => !MANUAL_FEISHU_SCOPES.has(scope)),
+    events: missing.events,
+    callbacks: missing.callbacks,
+  };
+  if (hasMissingConfiguration(launcherMissing)) {
+    await onVerification?.({
+      kind: "launcher",
+      verificationUrl: buildFeishuConfigurationUrl(appId, launcherMissing),
+      missing: launcherMissing,
+      blocking,
+    });
+  }
+
+  for (const scope of missing.scopes.filter((value) => MANUAL_FEISHU_SCOPES.has(value))) {
+    await onVerification?.({
+      kind: "manual_scope",
+      verificationUrl: buildFeishuPermissionManagementUrl(appId, scope),
+      missing: { scopes: [scope], events: [], callbacks: [] },
+      blocking,
+    });
+  }
 }
 
 async function completeOptionalFeishuConfiguration(
@@ -207,13 +266,15 @@ async function completeOptionalFeishuConfiguration(
   pollIntervalMs: number,
   timeoutMs: number,
   options: EnsureFeishuAppConfigurationOptions,
+  ignoredScopes: ReadonlySet<string> = new Set(),
 ): Promise<EnsureFeishuAppConfigurationResult> {
   let configuration = initialConfiguration;
   let remaining = missingFeishuAppConfiguration(configuration);
-  if (hasMissingConfiguration(remaining)) {
+  const requested = withoutIgnoredScopes(remaining, ignoredScopes);
+  if (hasMissingConfiguration(requested)) {
     await requestMissingFeishuConfiguration(
       credentials.appId,
-      remaining,
+      requested,
       false,
       options.onVerification,
     );
@@ -227,6 +288,7 @@ async function completeOptionalFeishuConfiguration(
         timeoutMs,
         options.signal,
         options.optionalSkipSignal,
+        ignoredScopes,
       );
       configuration = completed.configuration;
       remaining = completed.remaining;
@@ -249,6 +311,7 @@ async function waitForOptionalFeishuConfiguration(
   timeoutMs: number,
   signal?: AbortSignal,
   optionalSkipSignal?: AbortSignal,
+  ignoredScopes: ReadonlySet<string> = new Set(),
 ): Promise<{
   configuration: FeishuAppConfiguration;
   remaining: MissingFeishuAppConfiguration;
@@ -256,7 +319,7 @@ async function waitForOptionalFeishuConfiguration(
   let configuration = initialConfiguration;
   let remaining = missingFeishuAppConfiguration(configuration);
   let remainingMs = timeoutMs;
-  while (remainingMs > 0 && hasMissingConfiguration(remaining)) {
+  while (remainingMs > 0 && hasMissingConfiguration(withoutIgnoredScopes(remaining, ignoredScopes))) {
     if (optionalSkipSignal?.aborted) break;
     const waitMs = Math.min(pollIntervalMs, remainingMs);
     const waitResult = await sleepWithOptionalSkip(
@@ -346,6 +409,14 @@ export function buildFeishuConfigurationUrl(appId: string, missing: MissingFeish
   return url.toString();
 }
 
+export function buildFeishuPermissionManagementUrl(appId: string, scope: string): string {
+  const url = new URL(`/app/${encodeURIComponent(appId)}/auth`, FEISHU_OPEN_BASE_URL);
+  url.searchParams.set("q", scope);
+  url.searchParams.set("op_from", "openapi");
+  url.searchParams.set("token_type", "tenant");
+  return url.toString();
+}
+
 async function readFeishuAppConfiguration(
   credentials: FeishuAppCredentials,
   fetchImpl: typeof globalThis.fetch,
@@ -360,14 +431,14 @@ async function readFeishuAppConfiguration(
       `${FEISHU_OPEN_BASE_URL}${APPLICATION_PATH_PREFIX}/${appId}?lang=zh_cn`,
       { headers },
       signal,
-      "Read Lark app configuration",
+      cliText("Read Lark app configuration", "读取飞书应用配置"),
     ),
     fetchJson(
       fetchImpl,
       `${FEISHU_OPEN_BASE_URL}${APPLICATION_PATH_PREFIX}/${appId}/app_versions?lang=zh_cn&page_size=2`,
       { headers },
       signal,
-      "Read Lark app versions",
+      cliText("Read Lark app versions", "读取飞书应用版本"),
     ),
   ]);
 
@@ -415,10 +486,13 @@ async function getTenantAccessToken(
       }),
     },
     signal,
-    "Get the Lark tenant_access_token",
+    cliText("Get the Lark tenant_access_token", "获取飞书 tenant_access_token"),
   );
   const token = readString(payload, "tenant_access_token");
-  if (!token) throw new Error("The Lark tenant_access_token response is missing the access token.");
+  if (!token) throw new Error(cliText(
+    "The Lark tenant_access_token response is missing the access token.",
+    "飞书 tenant_access_token 响应中缺少访问令牌。",
+  ));
   return token;
 }
 
@@ -439,12 +513,18 @@ async function fetchJson(
     const response = await fetchImpl(url, { ...init, signal: controller.signal });
     const payload = (await response.json().catch(() => undefined)) as unknown;
     if (!isJsonObject(payload)) {
-      throw new Error(`${operation} returned an invalid response (HTTP ${response.status}).`);
+      throw new Error(cliText(
+        `${operation} returned an invalid response (HTTP ${response.status}).`,
+        `${operation}返回了无效响应（HTTP ${response.status}）。`,
+      ));
     }
     const code = readNumber(payload, "code");
     if (!response.ok || code !== 0) {
       throw new FeishuConfigurationApiError(
-        `${operation} failed: ${readString(payload, "msg") || response.statusText || `HTTP ${response.status}`}`,
+        cliText(
+          `${operation} failed: ${readString(payload, "msg") || response.statusText || `HTTP ${response.status}`}`,
+          `${operation}失败：${readString(payload, "msg") || response.statusText || `HTTP ${response.status}`}`,
+        ),
         code,
         response.status,
       );
@@ -452,7 +532,10 @@ async function fetchJson(
     return payload;
   } catch (error) {
     if (parentSignal?.aborted) throw abortError(parentSignal);
-    if (controller.signal.aborted) throw new Error(`${operation} timed out.`);
+    if (controller.signal.aborted) throw new Error(cliText(
+      `${operation} timed out.`,
+      `${operation}超时。`,
+    ));
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -482,6 +565,33 @@ function isPermissionError(error: unknown): boolean {
 
 function hasMissingConfiguration(missing: MissingFeishuAppConfiguration): boolean {
   return missing.scopes.length > 0 || missing.events.length > 0 || missing.callbacks.length > 0;
+}
+
+function hasBlockingCoreConfiguration(
+  missing: MissingFeishuAppConfiguration,
+  manualPermissionSkipSignal?: AbortSignal,
+): boolean {
+  if (!manualPermissionSkipSignal?.aborted) return hasMissingConfiguration(missing);
+  return hasMissingConfiguration(withoutIgnoredScopes(missing, MANUAL_FEISHU_SCOPES));
+}
+
+function skippedManualScopes(
+  initialCoreMissing: MissingFeishuAppConfiguration,
+  manualPermissionSkipSignal?: AbortSignal,
+): ReadonlySet<string> {
+  if (!manualPermissionSkipSignal?.aborted) return new Set();
+  return new Set(initialCoreMissing.scopes.filter((scope) => MANUAL_FEISHU_SCOPES.has(scope)));
+}
+
+function withoutIgnoredScopes(
+  missing: MissingFeishuAppConfiguration,
+  ignoredScopes: ReadonlySet<string>,
+): MissingFeishuAppConfiguration {
+  return {
+    scopes: missing.scopes.filter((scope) => !ignoredScopes.has(scope)),
+    events: missing.events,
+    callbacks: missing.callbacks,
+  };
 }
 
 function coreMissingFeishuAppConfiguration(missing: MissingFeishuAppConfiguration): MissingFeishuAppConfiguration {
@@ -554,7 +664,9 @@ function positiveInteger(value: number | undefined): number | undefined {
 }
 
 function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error("Lark app configuration was cancelled.");
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error(cliText("Lark app configuration was cancelled.", "飞书应用配置已取消。"));
 }
 
 function delay(milliseconds: number): Promise<void> {

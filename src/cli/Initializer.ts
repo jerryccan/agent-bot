@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { cliText } from "./i18n.js";
 import { fileURLToPath } from "node:url";
 import { parse as parseDotEnv } from "dotenv";
 import {
@@ -136,7 +137,10 @@ export function writeFeishuCredentials(envPath: string, credentials: FeishuCrede
       || persisted.appSecret !== credentials.appSecret
       || persisted.userOpenId !== credentials.userOpenId
     ) {
-      throw new Error("Lark credential verification failed after writing the environment file.");
+      throw new Error(cliText(
+        "Lark credential verification failed after writing the environment file.",
+        "写入环境文件后，飞书凭据校验失败。",
+      ));
     }
   } finally {
     if (temporaryFile !== undefined) fs.closeSync(temporaryFile);
@@ -183,13 +187,19 @@ export function acquireInitializationLock(lockDirectory: string): Initialization
       if (created) fs.rmSync(lockPath, { force: true });
       if (!isFileExistsError(error)) throw error;
       if (!isStaleInitializationLock(lockPath)) {
-        throw new Error(`Another agent-bot init process is running (lock file: ${lockPath}).`);
+        throw new Error(cliText(
+          `Another agent-bot init process is running (lock file: ${lockPath}).`,
+          `另一个 agent-bot init 进程正在运行（锁文件：${lockPath}）。`,
+        ));
       }
       fs.rmSync(lockPath, { force: true });
     }
   }
 
-  throw new Error(`Could not acquire the initialization lock: ${lockPath}`);
+  throw new Error(cliText(
+    `Could not acquire the initialization lock: ${lockPath}`,
+    `无法获取初始化锁：${lockPath}`,
+  ));
 }
 
 export function cleanupFeishuCredentialTemporaryFiles(envPath: string): number {
@@ -209,7 +219,10 @@ export function cleanupFeishuCredentialTemporaryFiles(envPath: string): number {
 
 function assertTemplate(templatePath: string): void {
   if (!fs.statSync(templatePath, { throwIfNoEntry: false })?.isFile()) {
-    throw new Error(`Initialization template does not exist: ${templatePath}`);
+    throw new Error(cliText(
+      `Initialization template does not exist: ${templatePath}`,
+      `初始化模板不存在：${templatePath}`,
+    ));
   }
 }
 
@@ -243,7 +256,10 @@ function resetProfileContents(
     || path.dirname(path.resolve(configPath)) !== resolvedHome
     || path.dirname(path.resolve(envPath)) !== resolvedHome
   ) {
-    throw new Error("--reset only supports a profile-owned config.yaml and .env.");
+    throw new Error(cliText(
+      "--reset only supports a profile-owned config.yaml and .env.",
+      "--reset 仅支持由 Profile 管理的 config.yaml 和 .env。",
+    ));
   }
   const targets = [
     { name: "config.yaml", sourcePath: configPath },
@@ -304,7 +320,10 @@ function upsertDotEnvValue(contents: string, key: string, value: string): string
 
 function assertDotEnvValue(key: string, value: string): void {
   if (!value.trim() || /[\r\n]/.test(value)) {
-    throw new Error(`${key} is not a valid single-line environment variable value.`);
+    throw new Error(cliText(
+      `${key} is not a valid single-line environment variable value.`,
+      `${key} 不是有效的单行环境变量值。`,
+    ));
   }
 }
 

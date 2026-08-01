@@ -9,6 +9,7 @@ import {
   resolveSupervisorDiagnosticsPaths,
 } from "../supervision/SupervisorDiagnostics.js";
 import { controlEndpoint } from "./controlProtocol.js";
+import { cliText } from "./i18n.js";
 import { isServerReachable, isServerRunning } from "./LocalControlClient.js";
 
 export interface ServerStartResult {
@@ -47,7 +48,17 @@ export async function startServer(
   config: AppConfig,
   dependencies: ServerStarterDependencies = defaultDependencies,
 ): Promise<ServerStartResult> {
-  requireServerFeishuTransport(config.feishu);
+  try {
+    requireServerFeishuTransport(config.feishu);
+  } catch (error) {
+    if (error instanceof Error && /Lark bot is not configured/.test(error.message)) {
+      throw new Error(cliText(
+        "The Lark bot is not configured. Run agent-bot init first, or use agent-bot console for local-only testing.",
+        "尚未配置飞书机器人。请先运行 agent-bot init，或使用 agent-bot console 进行纯本地测试。",
+      ));
+    }
+    throw error;
+  }
   const endpoint = controlEndpoint(config.storage.sqlitePath);
 
   if (await dependencies.isRunning(endpoint)) {
@@ -56,7 +67,10 @@ export async function startServer(
   if (await dependencies.isReachable(endpoint)) {
     const running = await dependencies.waitUntilRunning(endpoint, SERVER_START_TIMEOUT_MS);
     if (!running) {
-      throw new Error("The Agent Bot server started but could not connect to Lark. Check the logs.");
+      throw new Error(cliText(
+        "The Agent Bot server started but could not connect to Lark. Check the logs.",
+        "Agent Bot 服务已启动，但无法连接飞书。请检查日志。",
+      ));
     }
     return { status: "started" };
   }
@@ -64,7 +78,10 @@ export async function startServer(
   dependencies.spawnSupervisor(config);
   const running = await dependencies.waitUntilRunning(endpoint, SERVER_START_TIMEOUT_MS);
   if (!running) {
-    throw new Error("The Supervisor started, but the server did not connect to Lark within 45 seconds. Check the logs.");
+    throw new Error(cliText(
+      "The Supervisor started, but the server did not connect to Lark within 45 seconds. Check the logs.",
+      "Supervisor 已启动，但服务未能在 45 秒内连接飞书。请检查日志。",
+    ));
   }
   return { status: "started" };
 }
