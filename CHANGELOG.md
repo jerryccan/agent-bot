@@ -6,8 +6,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-01
+
 - Open a filtered Feishu Developer Console permission page for manual `im:message.group_msg` setup instead of incorrectly including the unsupported scope in one-click configuration; allow `Y` to skip its wait and report the resulting mention-only group behavior.
 - Localize Agent Bot CLI help, status, progress, prompts, and CLI-owned errors for Chinese and English system locales, with English fallback for every unsupported locale and stable language-neutral JSON output.
+- Support unambiguous slash-command prefixes and short aliases such as `/fg`, `/ng`, and `/ns`, with ambiguity guidance in `/help`.
 - Show the inherited model, reasoning effort, and permission type in newly created `/forkgroup` groups.
 - Accept unique slash-command prefixes and compound-command initialisms while rejecting ambiguous matches with a candidate list.
 
