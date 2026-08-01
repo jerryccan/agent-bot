@@ -175,6 +175,53 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/")).toThrow("未知命令：/");
   });
 
+  test("resolves unique command prefixes and preserves their arguments", () => {
+    expect(router.parse("/sess desktop task")).toEqual({
+      type: "sessions",
+      searchTerm: "desktop task",
+    });
+    expect(router.parse("/forkg 并行修复")).toEqual({
+      type: "forkgroup",
+      title: "并行修复",
+    });
+    expect(router.parse("/fg 并行修复")).toEqual({
+      type: "forkgroup",
+      title: "并行修复",
+    });
+    expect(router.parse("/ng 新任务群")).toEqual({
+      type: "newgroup",
+      title: "新任务群",
+    });
+    expect(router.parse("/ns 完成后运行测试")).toEqual({
+      type: "nosteer",
+      text: "完成后运行测试",
+    });
+    expect(router.parse("/thi xhigh")).toEqual({ type: "thinking", effort: "xhigh" });
+    expect(router.parse("/per confirm")).toEqual({ type: "permissions", mode: "confirm" });
+    expect(router.parse("/q 完成后运行测试")).toEqual({
+      type: "nosteer",
+      text: "完成后运行测试",
+    });
+  });
+
+  test("prefers exact commands and rejects ambiguous prefixes", () => {
+    expect(router.parse("/new title")).toEqual({ type: "new", title: "title", cwd: undefined });
+    expect(router.parse("/fork 2")).toEqual({ type: "fork", sessionId: "2" });
+    expect(router.parse("/mode plan")).toEqual({ type: "mode", value: "plan" });
+    expect(() => router.parse("/s")).toThrow(
+      "命令前缀 /s 不唯一，可匹配：/sessions、/status、/stop、/switch",
+    );
+    expect(() => router.parse("/f")).toThrow(
+      "命令前缀 /f 不唯一，可匹配：/fork、/forkgroup",
+    );
+    expect(() => router.parse("/mo")).toThrow(
+      "命令前缀 /mo 不唯一，可匹配：/mode、/model、/modes",
+    );
+    expect(() => router.parse("/ag")).toThrow(
+      "命令前缀 /ag 不唯一，可匹配：/agent、/agents",
+    );
+  });
+
   test("parses Codex task discovery and unified switching", () => {
     expect(router.parse("/sessions desktop task")).toEqual({ type: "sessions", searchTerm: "desktop task" });
     expect(router.parse("/sessions")).toEqual({ type: "sessions" });

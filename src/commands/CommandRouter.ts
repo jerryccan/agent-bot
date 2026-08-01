@@ -1,5 +1,39 @@
 import type { Command } from "./commandTypes.js";
 
+const COMMAND_NAMES = [
+  "agent",
+  "agents",
+  "ask",
+  "fork",
+  "forkgroup",
+  "goal",
+  "help",
+  "mode",
+  "model",
+  "modes",
+  "new",
+  "newgroup",
+  "nosteer",
+  "permissions",
+  "queue",
+  "restart",
+  "sessions",
+  "status",
+  "stop",
+  "switch",
+  "thinking",
+  "title",
+  "use",
+] as const;
+
+type CommandName = (typeof COMMAND_NAMES)[number];
+
+const COMMAND_INITIALISMS: Partial<Record<CommandName, string>> = {
+  forkgroup: "fg",
+  newgroup: "ng",
+  nosteer: "ns",
+};
+
 export class CommandRouter {
   parse(text: string): Command {
     const trimmed = text.trim();
@@ -13,7 +47,7 @@ export class CommandRouter {
     }
 
     const [rawCommand, ...args] = splitArgs(trimmed);
-    const command = rawCommand.slice(1).toLowerCase();
+    const command = resolveCommandName(rawCommand);
 
     switch (command) {
       case "agents":
@@ -86,10 +120,31 @@ export class CommandRouter {
       }
       case "help":
         return { type: "help" };
-      default:
-        throw new Error(`未知命令：${rawCommand}。发送 /help 查看可用命令。`);
     }
   }
+}
+
+function resolveCommandName(rawCommand: string): CommandName {
+  const input = rawCommand.slice(1).toLowerCase();
+  if (!input) throw unknownCommand(rawCommand);
+
+  const exact = COMMAND_NAMES.find((command) => command === input);
+  if (exact) return exact;
+
+  const matches = COMMAND_NAMES.filter(
+    (command) => command.startsWith(input) || COMMAND_INITIALISMS[command] === input,
+  );
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    throw new Error(
+      `命令前缀 ${rawCommand} 不唯一，可匹配：${matches.map((command) => `/${command}`).join("、")}。请输入更长的命令前缀。`,
+    );
+  }
+  throw unknownCommand(rawCommand);
+}
+
+function unknownCommand(rawCommand: string): Error {
+  return new Error(`未知命令：${rawCommand}。发送 /help 查看可用命令。`);
 }
 
 function requireArg<T>(value: string | undefined, name: string, create: (value: string) => T): T {
