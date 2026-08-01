@@ -48,7 +48,7 @@ agent-bot init
 
 Initialization creates the Agent Bot home, `config.yaml`, `.env`, `data/`, and `logs/` from the bundled examples. If Feishu credentials are absent, it starts Feishu one-click app registration, prints a QR code followed by its authorization URL, waits for the user to approve the request, and stores the returned app ID and secret in `.env`. It then audits the app's currently published tenant permissions, event subscriptions, and callbacks. Core and optional missing items produce separate incremental-configuration URLs. Core configuration is always polled until ready. For optional configuration, the CLI prints the QR code followed by the authorization URL and immediately waits up to five minutes for activation. The only terminal choice is `Y`, which skips optional authorization and continues initialization.
 
-Core messaging configuration includes `im:message.group_msg:readonly`, not merely the narrower group-mention scope. Agent Bot groups accept ordinary messages without requiring users to @ the bot, so initialization must keep waiting until all-user group-message delivery is active.
+Core messaging configuration includes `im:message.group_msg`, not merely the narrower group-mention scope. Agent Bot groups accept ordinary messages without requiring users to @ the bot, so initialization must keep waiting until all-user group-message delivery is active. Accept `im:message.group_msg:readonly` when an existing app version reports that alias, but request `im:message.group_msg` in new configuration links because that is the scope exposed by the Lark developer console.
 
 Initialization always requests all-user group-message delivery. The runtime option `feishu.respondToAllGroupMessages` controls whether Agent Bot uses it: the default `true` responds to ordinary group messages, while `false` requires a mention of the current bot. Private messages are unaffected.
 
@@ -143,7 +143,7 @@ Use `/forkgroup [title]` in Feishu to fork the current position into a newly cre
 
 Use `/new [title] --nodir` to force a new Codex Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
 
-Every task in the Feishu `/sessions` card has a `New` action. It inherits the source task's project directory, model, reasoning effort, and permission mode, creates a new task, and switches the current chat to it without stopping or forking the source task.
+Every task in the Feishu `/sessions` card has `New`, `NewGroup`, `Fork`, and `ForkGroup` actions. `New` inherits the source task's project directory, model, reasoning effort, and permission mode, creates a new task, and switches the current chat to it without stopping or forking the source task. `NewGroup` applies the same inheritance in a newly created private group. `Fork` switches the current chat to a branch, while `ForkGroup` binds the branch to a newly created private group; both fork actions use the selected task's latest available completed turn without interrupting an active turn.
 
 Use `/fork [number-or-task-id]` in Feishu to branch from the current or specified Codex task and switch to the new branch. If the source task is running, Agent Bot forks from its latest completed turn and leaves the active turn running; it rejects only when the task has no completed turn yet.
 

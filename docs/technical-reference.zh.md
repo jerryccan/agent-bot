@@ -93,7 +93,7 @@ CLI 界面文本不受系统语言影响，统一使用英文。系统生成的�
 - 机器人能力
 - 长连接事件接收
 - `im.message.receive_v1`
-- `im:message.group_msg:readonly`，用于接收机器人所在群内的全部用户消息
+- `im:message.group_msg`，用于接收机器人所在群内的全部用户消息
 - 接收私聊消息所需的租户权限
 - `im:message:send_as_bot` 或覆盖它的更大权限
 - `application:application:self_manage`，供初始化检查已发布版本
@@ -199,6 +199,8 @@ AGENT_BOT=1
 ## 任务、项目与外部 Codex 工作
 
 `/sessions` 通过 `thread/list` 读取 Codex 任务，可发现同一 `CODEX_HOME` 下由 Codex Desktop、CLI、Agent Bot 或其他 App Server 客户端创建的任务。
+
+每个任务条目都提供 `NewGroup` 和 `ForkGroup` 回调。回调数据保留所选任务 ID 与来源上下文，并使用飞书操作者的 `open_id` 邀请用户进入新群。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
 
 Agent Bot 内部保留本地路由键以关联飞书卡片和投递状态，但对用户展示 Codex 任务 ID。没有明确用户操作时，不会续写、steer、停止或分支其他客户端正在运行的 Codex 工作。
 

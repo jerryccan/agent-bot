@@ -93,7 +93,7 @@ Core configuration required for basic messaging:
 - Bot capability
 - Persistent-connection event delivery
 - `im.message.receive_v1`
-- `im:message.group_msg:readonly` for all user messages in groups containing the bot
+- `im:message.group_msg` for all user messages in groups containing the bot
 - Tenant permission for private messages
 - `im:message:send_as_bot` or a broader equivalent
 - `application:application:self_manage` so initialization can inspect the published version
@@ -199,6 +199,8 @@ Incoming rich-text images are downloaded into the inbound image cache and passed
 ## Tasks, Projects, And External Codex Work
 
 `/sessions` reads Codex tasks through `thread/list` and can discover tasks created by Codex Desktop, CLI, Agent Bot, or another App Server client under the same `CODEX_HOME`.
+
+Each task entry exposes `NewGroup` and `ForkGroup` callbacks. The callback payload keeps the selected task ID and source context, while the Lark operator `open_id` is used to invite the user to the new group. `NewGroup` resolves the selected task's project and execution settings; `ForkGroup` resolves its latest available completed turn.
 
 Agent Bot keeps a local routing key for Feishu cards and delivery state, but presents the Codex task ID to users. It does not resume, steer, stop, or fork externally running Codex work without an explicit user action.
 

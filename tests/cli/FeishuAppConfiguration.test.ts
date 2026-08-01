@@ -234,7 +234,7 @@ describe("ensureFeishuAppConfiguration", () => {
   test("requires all-user group messages when an app can only receive mentions", async () => {
     let configured = false;
     const mentionOnlyScopes = REQUIRED_FEISHU_SCOPES
-      .filter((scope) => scope !== "im:message.group_msg:readonly")
+      .filter((scope) => scope !== "im:message.group_msg")
       .concat("im:message.group_at_msg:readonly");
     const fetchMock = configurationFetch(() => ({
       scopes: configured ? REQUIRED_FEISHU_SCOPES : mentionOnlyScopes,
@@ -257,7 +257,7 @@ describe("ensureFeishuAppConfiguration", () => {
     expect(challenge).toMatchObject({
       blocking: true,
       missing: {
-        scopes: ["im:message.group_msg:readonly"],
+        scopes: ["im:message.group_msg"],
         events: [],
         callbacks: [],
       },
@@ -265,7 +265,7 @@ describe("ensureFeishuAppConfiguration", () => {
     const url = new URL(challenge!.verificationUrl);
     expect(decodeAddons(url.searchParams.get("addons")!)).toEqual({
       scopes: {
-        tenant: ["im:message.group_msg:readonly"],
+        tenant: ["im:message.group_msg"],
         user: [],
       },
     });
@@ -406,7 +406,7 @@ describe("missingFeishuAppConfiguration", () => {
 
   test("does not treat group @ message access as access to ordinary group messages", () => {
     const scopes = REQUIRED_FEISHU_SCOPES
-      .filter((scope) => scope !== "im:message.group_msg:readonly")
+      .filter((scope) => scope !== "im:message.group_msg")
       .concat("im:message.group_at_msg:readonly");
 
     expect(
@@ -416,7 +416,25 @@ describe("missingFeishuAppConfiguration", () => {
         callbacks: [...REQUIRED_FEISHU_CALLBACKS],
       }),
     ).toEqual({
-      scopes: ["im:message.group_msg:readonly"],
+      scopes: ["im:message.group_msg"],
+      events: [],
+      callbacks: [],
+    });
+  });
+
+  test("accepts the readonly group-message alias from existing app versions", () => {
+    const scopes = REQUIRED_FEISHU_SCOPES
+      .filter((scope) => scope !== "im:message.group_msg")
+      .concat("im:message.group_msg:readonly");
+
+    expect(
+      missingFeishuAppConfiguration({
+        scopes,
+        events: [...REQUIRED_FEISHU_EVENTS],
+        callbacks: [...REQUIRED_FEISHU_CALLBACKS],
+      }),
+    ).toEqual({
+      scopes: [],
       events: [],
       callbacks: [],
     });
@@ -449,7 +467,7 @@ function coreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
   return {
     scopes: [
       "application:application:self_manage",
-      "im:message.group_msg:readonly",
+      "im:message.group_msg",
       "im:message.p2p_msg:readonly",
       "im:message:send_as_bot",
     ],
