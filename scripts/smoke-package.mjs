@@ -96,6 +96,7 @@ try {
 
   const installedResources = [
     ".env.example",
+    "assets/agent-bot-logo.png",
     "config.example.yaml",
     "skills/agent-bot/SKILL.md",
   ];

@@ -25,6 +25,7 @@
   },
   "files": [
     ".env.example",
+    "assets/",
     "CHANGELOG.md",
     "config.example.yaml",
     "dist/",

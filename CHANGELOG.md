@@ -14,6 +14,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Make Feishu `/restart` schedule a safe restart by default, with `/restart --force` as the only immediate-restart form.
 - Preserve Windows separators before dot-prefixed directories in Feishu file-change summaries instead of letting Markdown consume the separator as an escape.
 - Isolate every configured Agent by standard name with its own process and runtime connection, aggregate Codex tasks across those isolated runtimes, and scope persisted remote task identities by Agent.
+- Add the Agent Bot logo to both READMEs and include the high-resolution PNG in the npm package.
 
 ## [0.1.10] - 2026-08-01
 

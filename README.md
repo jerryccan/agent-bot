@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/agent-bot-logo.png" alt="Agent Bot logo" width="180">
+</p>
+
 # Agent Bot
 
 Use local Codex and ACP agents directly from Feishu.

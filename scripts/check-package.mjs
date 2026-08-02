@@ -34,6 +34,7 @@ if (!manifest) {
 const packagedFiles = new Set(manifest.files.map((entry) => entry.path));
 const requiredFiles = [
   ".env.example",
+  "assets/agent-bot-logo.png",
   "CHANGELOG.md",
   "LICENSE",
   "README.md",

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/agent-bot-logo.png" alt="Agent Bot Logo" width="180">
+</p>
+
 # Agent Bot
 
 通过飞书使用本机上的 Codex 和 ACP Agent。
