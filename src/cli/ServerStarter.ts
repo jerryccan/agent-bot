@@ -53,8 +53,8 @@ export async function startServer(
   } catch (error) {
     if (error instanceof Error && /Lark bot is not configured/.test(error.message)) {
       throw new Error(cliText(
-        "The Lark bot is not configured. Run agent-bot init first, or use agent-bot console for local-only testing.",
-        "尚未配置飞书机器人。请先运行 agent-bot init，或使用 agent-bot console 进行纯本地测试。",
+        "The Lark bot is not configured. Run agentbot init first, or use agentbot console for local-only testing.",
+        "尚未配置飞书机器人。请先运行 agentbot init，或使用 agentbot console 进行纯本地测试。",
       ));
     }
     throw error;

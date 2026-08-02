@@ -35,7 +35,7 @@ The default user-data root is `~/.agent-bot`. `AGENT_BOT_HOME` replaces that roo
 
 The CLI also supports explicit directory-based profiles. Without `--profile`, commands use the main profile and the normal environment-based path rules. `--profile <directory>` pins both `AGENT_BOT_HOME` and `AGENT_BOT_CONFIG` for the command and every spawned supervisor or worker, with the configuration fixed at `<directory>/config.yaml`. It also clears inherited Feishu credential variables before loading the selected profile's `.env`, which prevents a secondary service launched from inside the primary Agent Bot process tree from accidentally reusing the primary bot. It cannot be combined with `--config`. Alternative profiles must be selected explicitly on every command; Agent Bot does not maintain a named-profile registry.
 
-The CLI reads the system locale through Node.js internationalization support. Locales beginning with `zh` use Chinese interface text; English and every unsupported locale use English. This applies to help, status, progress, prompts, and CLI-owned errors. JSON field names and enum values are not localized. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agent-bot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID.
+The CLI reads the system locale through Node.js internationalization support. Locales beginning with `zh` use Chinese interface text; English and every unsupported locale use English. This applies to help, status, progress, prompts, and CLI-owned errors. JSON field names and enum values are not localized. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agentbot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID.
 
 | Default path                         | Contents                           |
 | ------------------------------------ | ---------------------------------- |
@@ -58,7 +58,7 @@ Relative `storage.sqlitePath` and `logging.path` values resolve against the dire
 
 ## Initialization
 
-`agent-bot init` copies the packaged `config.example.yaml` and `.env.example` when their target files do not exist, creates the data and log directories, and restricts `.env` permissions where the platform supports POSIX modes.
+`agentbot init` copies the packaged `config.example.yaml` and `.env.example` when their target files do not exist, creates the data and log directories, and restricts `.env` permissions where the platform supports POSIX modes.
 
 Credential behavior:
 
@@ -90,9 +90,9 @@ Optional polling failures and timeouts return a partial configuration result ins
 
 The generated authorization links do not contain the app secret.
 
-`agent-bot --profile <directory> init --reset` fully resets an explicitly selected Profile. The Profile server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a unique timestamped directory under `<profile>/.reset-backups/`, creates clean replacements from the packaged templates, and proceeds through normal initialization. Existing reset backups and unrelated files are retained. Because backups can contain old app secrets and conversation data, protect the Profile directory accordingly. The remote Feishu app is not deleted. `--reset --skip-feishu` creates a clean Console-only Profile, while `--reset` and `--reconfigure-feishu` cannot be combined.
+`agentbot --profile <directory> init --reset` fully resets an explicitly selected Profile. The Profile server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a unique timestamped directory under `<profile>/.reset-backups/`, creates clean replacements from the packaged templates, and proceeds through normal initialization. Existing reset backups and unrelated files are retained. Because backups can contain old app secrets and conversation data, protect the Profile directory accordingly. The remote Feishu app is not deleted. `--reset --skip-feishu` creates a clean Console-only Profile, while `--reset` and `--reconfigure-feishu` cannot be combined.
 
-After Feishu initialization succeeds, the CLI releases the initialization lock and starts the detached supervisor through the same readiness path as `agent-bot server start`. It waits up to 45 seconds for the worker to connect to Feishu and become ready. If the selected profile is already running, no second supervisor is created. `--skip-feishu` skips automatic server startup, and `--json` includes the resulting `server.status` without adding non-JSON output.
+After Feishu initialization succeeds, the CLI releases the initialization lock and starts the detached supervisor through the same readiness path as `agentbot server start`. It waits up to 45 seconds for the worker to connect to Feishu and become ready. If the selected profile is already running, no second supervisor is created. `--skip-feishu` skips automatic server startup, and `--json` includes the resulting `server.status` without adding non-JSON output.
 
 ## Feishu App Requirements
 
@@ -118,7 +118,7 @@ Optional configuration:
 | Image and chat permissions            | Generated group avatars      |
 | `card.action.trigger`                 | Interactive card actions     |
 
-Optional authorization failures are returned in the final initialization result with the affected feature names. Rerunning `agent-bot init` repeats the audit.
+Optional authorization failures are returned in the final initialization result with the affected feature names. Rerunning `agentbot init` repeats the audit.
 
 ## Configuration Model
 
@@ -156,7 +156,7 @@ logging:
 
 `feishu.respondToAllGroupMessages` defaults to `true`. Set it to `false` to ignore group messages unless they mention the current bot. The worker resolves the bot's Open ID at startup so mentioning another member does not trigger it. Private messages are always accepted. Initialization requests all-user group-message delivery regardless of this runtime option, allowing it to be changed later without another authorization.
 
-`agent-bot server start` requires both Feishu credentials. The worker starts the SDK's persistent connection without inspecting SDK logs or private connection state, then sends startup status cards as an outbound readiness check. Each startup card includes the Agent Bot version read from the installed package metadata. It normally targets known private chats and recently active groups. If the database has no known chat yet, it sends the card to `feishu.userOpenId` using an `open_id` private message. When notification targets exist, at least one card must be delivered before the server reports ready; individual target failures remain isolated. If neither a known chat nor `feishu.userOpenId` is available, startup continues without the outbound check. Missing credentials still fail startup with an initialization hint. `agent-bot console` is the explicit local-only path and does not require Feishu credentials.
+`agentbot server start` requires both Feishu credentials. The worker starts the SDK's persistent connection without inspecting SDK logs or private connection state, then sends startup status cards as an outbound readiness check. Each startup card includes the Agent Bot version read from the installed package metadata. It normally targets known private chats and recently active groups. If the database has no known chat yet, it sends the card to `feishu.userOpenId` using an `open_id` private message. When notification targets exist, at least one card must be delivered before the server reports ready; individual target failures remain isolated. If neither a known chat nor `feishu.userOpenId` is available, startup continues without the outbound check. Missing credentials still fail startup with an initialization hint. `agentbot console` is the explicit local-only path and does not require Feishu credentials.
 
 At least one agent must be configured. `defaults.agent` must name a configured agent.
 
@@ -252,7 +252,7 @@ The final-delivery ledger prevents duplicate successful replies. App Server requ
 
 ## Supervisor And Restart
 
-`agent-bot server start` starts a detached supervisor. The supervisor restarts the worker after unexpected exits and applies exponential backoff from one to 30 seconds after repeated crashes.
+`agentbot server start` starts a detached supervisor. The supervisor restarts the worker after unexpected exits and applies exponential backoff from one to 30 seconds after repeated crashes.
 
 Supervisor crash diagnostics are isolated to the selected profile:
 
@@ -289,16 +289,16 @@ Model, reasoning effort, permission mode, and project shape are inherited where 
 The packaged Agent Bot skill can be installed into the shared agent skill directory:
 
 ```powershell
-agent-bot skills install
-agent-bot skills status
-agent-bot skills uninstall
+agentbot skills install
+agentbot skills status
+agentbot skills uninstall
 ```
 
 The default target is `~/.agents/skills`. `AGENT_BOT_SKILLS_DIR` or `--target` selects another root. Installation is a managed copy; uninstall does not remove an unrelated same-named directory.
 
 ## npm Package And Releases
 
-The public package is `@keyou007/agent-bot`; its executable remains `agent-bot`. The package uses a `files` allowlist so runtime code, templates, the managed skill, source code, and user-facing documentation are published without tests or internal design plans.
+The public package is `@keyou007/agent-bot`; its primary executable is `agentbot`. The deprecated `agent-bot` executable remains as a forwarding compatibility entry and prints a localized warning before each invocation. The package uses a `files` allowlist so runtime code, templates, the managed skill, source code, and user-facing documentation are published without tests or internal design plans.
 
 `npm-shrinkwrap.json` is published with the CLI to keep transitive runtime dependencies reproducible. Direct runtime and development dependencies are also pinned to exact versions.
 
@@ -343,4 +343,4 @@ npm run build
 npm link
 ```
 
-`npm link` registers the checkout's `agent-bot` executable globally. Without it, built CLI commands can be invoked through `npm run cli --`. `npm run dev` runs one foreground worker, while `npm start` runs the supervisor in the current terminal.
+`npm link` registers the checkout's `agentbot` executable and deprecated `agent-bot` compatibility executable globally. Without it, built CLI commands can be invoked through `npm run cli --`. `npm run dev` runs one foreground worker, while `npm start` runs the supervisor in the current terminal.

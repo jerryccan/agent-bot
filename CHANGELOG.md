@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Register `agentbot` as the primary CLI executable, retain `agent-bot` as a deprecated forwarding entry with a localized warning, and update current documentation and CLI guidance to use the new command.
+
 ## [0.1.11] - 2026-08-02
 
 - Retry Feishu messages, replies, and card updates rejected by email-address content auditing with audit-safe text; keep message reactions pending until terminal presentation succeeds while allowing session and queue state to settle after presentation failures.

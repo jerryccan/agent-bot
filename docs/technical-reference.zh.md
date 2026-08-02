@@ -35,7 +35,7 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 CLI 还支持显式指定目录的 Profile。不使用 `--profile` 时，命令使用主 Profile 以及原有的环境变量路径规则。`--profile <目录>` 会为当前命令及其启动的 Supervisor、Worker 固定 `AGENT_BOT_HOME` 和 `AGENT_BOT_CONFIG`，配置文件固定为 `<目录>/config.yaml`。它还会先清除继承的飞书凭据环境变量，再加载所选 Profile 的 `.env`，避免从主 Agent Bot 进程树中启动辅助实例时误用主机器人的凭据。`--profile` 不能和 `--config` 同时使用。其他 Profile 必须在每次命令中显式选择；Agent Bot 不维护按名称注册的 Profile。
 
-CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Locale 使用中文界面；英文及所有未支持 Locale 使用英文。帮助、状态、进度、交互提示和 CLI 自身错误都遵循此规则；JSON 字段名及枚举值不做本地化。系统生成的重启原因仍使用中文，因为它会显示在中文 Lark 状态卡中；显式传入的 `--reason` 保持原样。`agent-bot server status` 会报告运行中 Worker 的 Lark App ID，JSON 字段名为 `feishuAppId`；服务停止或旧版健康协议尚未提供该字段时，CLI 会回退到当前 Profile 配置的 App ID。
+CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Locale 使用中文界面；英文及所有未支持 Locale 使用英文。帮助、状态、进度、交互提示和 CLI 自身错误都遵循此规则；JSON 字段名及枚举值不做本地化。系统生成的重启原因仍使用中文，因为它会显示在中文 Lark 状态卡中；显式传入的 `--reason` 保持原样。`agentbot server status` 会报告运行中 Worker 的 Lark App ID，JSON 字段名为 `feishuAppId`；服务停止或旧版健康协议尚未提供该字段时，CLI 会回退到当前 Profile 配置的 App ID。
 
 | 默认路径                             | 内容                 |
 | ------------------------------------ | -------------------- |
@@ -58,7 +58,7 @@ CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Local
 
 ## 初始化
 
-目标文件不存在时，`agent-bot init` 会复制随包提供的 `config.example.yaml` 和 `.env.example`，创建数据和日志目录，并在平台支持时把 `.env` 权限限制为 POSIX `0600`。
+目标文件不存在时，`agentbot init` 会复制随包提供的 `config.example.yaml` 和 `.env.example`，创建数据和日志目录，并在平台支持时把 `.env` 权限限制为 POSIX `0600`。
 
 凭据处理规则：
 
@@ -90,9 +90,9 @@ https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi
 
 生成的授权链接不包含 App Secret。
 
-`agent-bot --profile <目录> init --reset` 会完整重置显式指定的 Profile。执行前必须先停止该 Profile 的 Server。命令会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `<profile>/.reset-backups/` 下唯一的时间戳目录，从随包模板创建干净的新文件和目录，再继续正常初始化。已有重置备份及其他无关文件会保留。备份中可能含有旧 App Secret 和会话数据，应妥善保护 Profile 目录。远端旧飞书应用不会被删除。`--reset --skip-feishu` 可创建干净的 Console-only Profile，`--reset` 不能与 `--reconfigure-feishu` 同时使用。
+`agentbot --profile <目录> init --reset` 会完整重置显式指定的 Profile。执行前必须先停止该 Profile 的 Server。命令会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `<profile>/.reset-backups/` 下唯一的时间戳目录，从随包模板创建干净的新文件和目录，再继续正常初始化。已有重置备份及其他无关文件会保留。备份中可能含有旧 App Secret 和会话数据，应妥善保护 Profile 目录。远端旧飞书应用不会被删除。`--reset --skip-feishu` 可创建干净的 Console-only Profile，`--reset` 不能与 `--reconfigure-feishu` 同时使用。
 
-飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agent-bot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
+飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agentbot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
 
 ## 飞书应用要求
 
@@ -118,7 +118,7 @@ https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi
 | 图片和群权限                      | 生成并设置群头像            |
 | `card.action.trigger`             | 交互卡片操作                |
 
-可选授权失败时，最终初始化结果会列出受影响功能。重新运行 `agent-bot init` 会再次审计。
+可选授权失败时，最终初始化结果会列出受影响功能。重新运行 `agentbot init` 会再次审计。
 
 ## 配置模型
 
@@ -156,7 +156,7 @@ logging:
 
 `feishu.respondToAllGroupMessages` 默认为 `true`。设为 `false` 后，未 @ 当前机器人的群消息会被忽略；Worker 启动时会解析机器人的 Open ID，因此 @ 其他成员不会误触发。私聊始终正常处理。无论该运行时配置如何，初始化都会申请接收全部群消息的权限，之后切换配置无需再次授权。
 
-`agent-bot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agent-bot console` 是明确的纯本地入口，不需要飞书凭据。
+`agentbot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agentbot console` 是明确的纯本地入口，不需要飞书凭据。
 
 必须至少配置一个 Agent，`defaults.agent` 必须指向已配置的 Agent。
 
@@ -252,7 +252,7 @@ SQLite 保存：
 
 ## Supervisor 与重启
 
-`agent-bot server start` 启动后台 supervisor。Worker 意外退出后会自动拉起；连续崩溃时使用 1 到 30 秒的指数退避。
+`agentbot server start` 启动后台 supervisor。Worker 意外退出后会自动拉起；连续崩溃时使用 1 到 30 秒的指数退避。
 
 Supervisor 的崩溃诊断文件按当前 Profile 隔离：
 
@@ -289,16 +289,16 @@ Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fat
 随包提供的 Agent Bot Skill 可安装到共享 Agent Skill 目录：
 
 ```powershell
-agent-bot skills install
-agent-bot skills status
-agent-bot skills uninstall
+agentbot skills install
+agentbot skills status
+agentbot skills uninstall
 ```
 
 默认目标为 `~/.agents/skills`，可通过 `AGENT_BOT_SKILLS_DIR` 或 `--target` 修改。安装使用受管复制；卸载不会删除无关的同名目录。
 
 ## npm 包与发布
 
-公开包名为 `@keyou007/agent-bot`，安装后的可执行命令仍为 `agent-bot`。包使用 `files` 白名单，只发布运行代码、模板、受管 Skill、源码和用户文档，不包含测试及内部设计计划。
+公开包名为 `@keyou007/agent-bot`，安装后的主命令为 `agentbot`。已弃用的 `agent-bot` 作为转发兼容入口暂时保留，每次调用前都会根据系统语言显示警告。包使用 `files` 白名单，只发布运行代码、模板、受管 Skill、源码和用户文档，不包含测试及内部设计计划。
 
 CLI 随包发布 `npm-shrinkwrap.json`，以固定传递运行依赖；直接运行依赖和开发依赖也使用精确版本。
 
@@ -343,4 +343,4 @@ npm run build
 npm link
 ```
 
-`npm link` 会把当前 checkout 的 `agent-bot` 命令注册到全局。未执行时，可通过 `npm run cli --` 调用构建后的 CLI。`npm run dev` 运行单个前台 worker，`npm start` 在当前终端运行 supervisor。
+`npm link` 会把当前 checkout 的 `agentbot` 主命令和已弃用的 `agent-bot` 兼容命令注册到全局。未执行时，可通过 `npm run cli --` 调用构建后的 CLI。`npm run dev` 运行单个前台 worker，`npm start` 在当前终端运行 supervisor。

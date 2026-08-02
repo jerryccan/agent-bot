@@ -50,28 +50,46 @@ try {
     "node_modules",
     ...packageJson.name.split("/"),
   );
-  const executableShim = path.join(
-    installRoot,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "agent-bot.cmd" : "agent-bot",
-  );
-  if (!fs.existsSync(executableShim)) {
-    throw new Error("npm did not install the agent-bot executable shim.");
+  const executableShims = new Map();
+  for (const executable of ["agentbot", "agent-bot"]) {
+    const executableShim = path.join(
+      installRoot,
+      "node_modules",
+      ".bin",
+      process.platform === "win32" ? `${executable}.cmd` : executable,
+    );
+    if (!fs.existsSync(executableShim)) {
+      throw new Error(`npm did not install the ${executable} executable shim.`);
+    }
+    executableShims.set(executable, executableShim);
   }
 
   const cliEntry = path.join(installedPackageRoot, "dist", "cli.js");
   const helpResult = run(process.execPath, [cliEntry, "--help"], installRoot);
-  for (const expected of [packageJson.version, "agent-bot server start", "-v, --version"]) {
+  for (const expected of [packageJson.version, "agentbot server start", "-v, --version"]) {
     if (!helpResult.stdout.includes(expected)) {
       throw new Error(`Packaged CLI help is missing: ${expected}`);
     }
   }
-  const versionResult = run(process.execPath, [cliEntry, "--version"], installRoot);
+  const versionResult = runInstalledCli(executableShims.get("agentbot"), ["--version"], installRoot);
   if (versionResult.stdout.trim() !== packageJson.version) {
     throw new Error(
       `Packaged CLI reported version ${versionResult.stdout.trim()} instead of ${packageJson.version}.`,
     );
+  }
+  const deprecatedVersionResult = runInstalledCli(
+    executableShims.get("agent-bot"),
+    ["--version"],
+    installRoot,
+  );
+  if (deprecatedVersionResult.stdout.trim() !== packageJson.version) {
+    throw new Error("Deprecated CLI entry did not forward arguments to the primary CLI.");
+  }
+  if (
+    !deprecatedVersionResult.stderr.includes("agent-bot") ||
+    !deprecatedVersionResult.stderr.includes("agentbot")
+  ) {
+    throw new Error("Deprecated CLI entry did not print its migration warning.");
   }
   const initResult = run(
     process.execPath,
@@ -118,6 +136,14 @@ function runNpm(args, cwd) {
   return npmExecutable
     ? run(process.execPath, [npmExecutable, ...args], cwd)
     : run("npm", args, cwd, process.env, process.platform === "win32");
+}
+
+function runInstalledCli(command, args, cwd) {
+  if (!command) throw new Error("Installed CLI shim was not registered.");
+  if (process.platform === "win32") {
+    return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command, ...args], cwd);
+  }
+  return run(command, args, cwd);
 }
 
 function run(command, args, cwd, env = process.env, shell = false) {

@@ -20,7 +20,8 @@
         "zod": "4.4.3"
       },
       "bin": {
-        "agent-bot": "dist/cli.js"
+        "agent-bot": "dist/deprecated-cli.js",
+        "agentbot": "dist/cli.js"
       },
       "devDependencies": {
         "@types/better-sqlite3": "7.6.13",

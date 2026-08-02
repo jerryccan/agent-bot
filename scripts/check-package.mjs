@@ -4,6 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const packageJson = JSON.parse(
+  fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"),
+);
 const npmExecutable = process.env.npm_execpath;
 const npmCommand = npmExecutable ? process.execPath : "npm";
 const npmArguments = npmExecutable
@@ -42,6 +45,7 @@ const requiredFiles = [
   "SECURITY.md",
   "config.example.yaml",
   "dist/cli.js",
+  "dist/deprecated-cli.js",
   "dist/index.js",
   "dist/supervisor.js",
   "docs/technical-reference.md",
@@ -82,12 +86,19 @@ if (unexpectedFiles.length > 0) {
   );
 }
 
-const cliContents = fs.readFileSync(
-  path.join(repositoryRoot, "dist", "cli.js"),
-  "utf8",
-);
-if (!cliContents.startsWith("#!/usr/bin/env node")) {
-  throw new Error("dist/cli.js must retain its Node.js shebang.");
+const expectedBins = {
+  agentbot: "dist/cli.js",
+  "agent-bot": "dist/deprecated-cli.js",
+};
+if (JSON.stringify(packageJson.bin) !== JSON.stringify(expectedBins)) {
+  throw new Error("Package CLI entries do not match the supported agentbot and deprecated agent-bot commands.");
+}
+
+for (const entry of Object.values(expectedBins)) {
+  const contents = fs.readFileSync(path.join(repositoryRoot, entry), "utf8");
+  if (!contents.startsWith("#!/usr/bin/env node")) {
+    throw new Error(`${entry} must retain its Node.js shebang.`);
+  }
 }
 
 process.stdout.write(

@@ -39,7 +39,7 @@ describe("requireServerFeishuTransport", () => {
 
   test("rejects a server start without complete credentials", () => {
     expect(() => requireServerFeishuTransport({ appId: "cli_app" })).toThrow(
-      "Lark bot is not configured. Run agent-bot init",
+      "Lark bot is not configured. Run agentbot init",
     );
   });
 });

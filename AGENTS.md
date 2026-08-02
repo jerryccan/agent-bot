@@ -12,7 +12,7 @@ Primary user-facing behavior is documented in `README.md`. Keep that document in
 
 - `src/index.ts` wires the application together: config, state store, runtimes, Feishu/console connectors, outbound routing, local control server, and graceful shutdown.
 - `src/supervisor.ts` keeps the worker process alive and handles restart policy behavior.
-- `src/cli.ts` implements the `agent-bot` command-line surface.
+- `src/cli.ts` implements the `agentbot` command-line surface; `src/deprecated-cli.ts` preserves the deprecated `agent-bot` compatibility entry.
 - `src/acp/` contains ACP JSON-RPC process/session handling.
 - `src/codex/` contains Codex App Server process and protocol integration.
 - `src/commands/` parses and routes Feishu slash commands.
@@ -108,7 +108,7 @@ When changing runtime behavior, run the focused Vitest file(s) first, then run `
 - If code changes need a running service to pick them up, build first, then schedule:
 
 ```powershell
-agent-bot server restart --reason "brief reason"
+agentbot server restart --reason "brief reason"
 ```
 
 ## Configuration

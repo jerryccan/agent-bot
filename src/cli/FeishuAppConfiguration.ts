@@ -222,8 +222,8 @@ export async function ensureFeishuAppConfiguration(
     ? cliText(` Last check failed: ${lastError.message}`, ` 上次检查失败：${lastError.message}`)
     : "";
   throw new Error(cliText(
-    `Timed out waiting for the core Lark scopes and message event. Run agent-bot init again.${detail}`,
-    `等待飞书核心权限和消息事件超时。请重新运行 agent-bot init。${detail}`,
+    `Timed out waiting for the core Lark scopes and message event. Run agentbot init again.${detail}`,
+    `等待飞书核心权限和消息事件超时。请重新运行 agentbot init。${detail}`,
   ));
 }
 

@@ -37,21 +37,21 @@ codex login status
 
 ```powershell
 npm install --global @keyou007/agent-bot
-agent-bot --version
-agent-bot --help
+agentbot --version
+agentbot --help
 ```
 
-该命令会全局安装 `agent-bot`。命令行帮助、状态、进度、交互提示和错误会根据系统语言显示中文或英文；其他未支持语言统一回退英文。JSON 输出不做本地化并保持字段稳定。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
+该命令会把 `agentbot` 安装为主命令。旧的 `agent-bot` 命令暂时保留，运行时会显示弃用警告，并将在后续版本中移除。命令行帮助、状态、进度、交互提示和错误会根据系统语言显示中文或英文；其他未支持语言统一回退英文。JSON 输出不做本地化并保持字段稳定。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
 
 ### 初始化
 
 ```powershell
-agent-bot init
+agentbot init
 ```
 
 打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据和授权用户、检查所需权限，并自动启动 Agent Bot。
 
-只有 App ID 和 App Secret 都已保存到本地才视为机器人创建成功。如果初始化在完整凭据保存前中断，再次运行 `agent-bot init` 会创建新机器人；如果凭据已经保存，则会继续检查该机器人的远端权限和订阅。
+只有 App ID 和 App Secret 都已保存到本地才视为机器人创建成功。如果初始化在完整凭据保存前中断，再次运行 `agentbot init` 会创建新机器人；如果凭据已经保存，则会继续检查该机器人的远端权限和订阅。
 
 `im:message.group_msg` 无法通过飞书一键配置新增。缺少该权限时，Agent Bot 会显示二维码，以及已筛选该权限的开发者后台直达链接。请手动新增权限、发布应用版本，并在需要时完成租户管理员审批。Agent Bot 等待权限生效时，可输入 `Y` 跳过该权限并继续初始化；最终结果会提示机器人无法响应未 @ 它的普通群消息。
 
@@ -66,12 +66,12 @@ agent-bot init
 | `--profile <目录>`     | 使用指定目录中的独立 Profile |
 | `--config <路径>`      | 使用指定配置文件          |
 
-之后可以重新运行 `agent-bot init` 检查或补齐机器人配置。如果 Server 已在运行，初始化会保留当前服务。
+之后可以重新运行 `agentbot init` 检查或补齐机器人配置。如果 Server 已在运行，初始化会保留当前服务。
 
 如需完整重新配置一个 Profile，请先停止它的 Server，并显式指定 Profile：
 
 ```powershell
-agent-bot --profile ~/.agent-bot init --reset
+agentbot --profile ~/.agent-bot init --reset
 ```
 
 重置会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `.reset-backups` 下新的时间戳目录，再创建干净的新文件和目录。已有备份会永久保留，不会被后续重置覆盖或清理。远端旧飞书应用不会被删除。
@@ -79,10 +79,10 @@ agent-bot --profile ~/.agent-bot init --reset
 ### 启动与停止
 
 ```powershell
-agent-bot server status
+agentbot server status
 ```
 
-`agent-bot init` 会自动启动 Server。之后如果手动停止了服务，可执行 `agent-bot server start` 再次启动。仅在本地使用时，请通过 `--skip-feishu` 初始化并运行 `agent-bot console`。
+`agentbot init` 会自动启动 Server。之后如果手动停止了服务，可执行 `agentbot server start` 再次启动。仅在本地使用时，请通过 `--skip-feishu` 初始化并运行 `agentbot console`。
 
 `Agent Bot 已启动` 启动卡片会显示当前正在运行的 Agent Bot 版本。
 
@@ -91,7 +91,7 @@ agent-bot server status
 停止服务：
 
 ```powershell
-agent-bot server stop
+agentbot server stop
 ```
 
 ### 更新或卸载
@@ -99,15 +99,15 @@ agent-bot server stop
 替换或移除全局包前，先停止正在运行的服务：
 
 ```powershell
-agent-bot server stop
+agentbot server stop
 npm install --global @keyou007/agent-bot@latest
-agent-bot server start
+agentbot server start
 ```
 
 卸载：
 
 ```powershell
-agent-bot server stop
+agentbot server stop
 npm uninstall --global @keyou007/agent-bot
 ```
 
@@ -118,10 +118,10 @@ npm uninstall --global @keyou007/agent-bot
 ### 服务管理
 
 ```powershell
-agent-bot server status
-agent-bot server start
-agent-bot server stop
-agent-bot server restart
+agentbot server status
+agentbot server start
+agentbot server stop
+agentbot server restart
 ```
 
 `server restart` 默认等待当前工作完成后再重启；等待期间可通过状态卡片下方的 `Cancel` 按钮取消。只有可接受中断时才使用 `--immediate`。
@@ -131,7 +131,7 @@ agent-bot server restart
 ### Console
 
 ```powershell
-agent-bot console
+agentbot console
 ```
 
 Console UI 不需要飞书凭据。除非传入 `--force`，否则不会与正在运行的 Server 共享任务状态。
@@ -139,14 +139,14 @@ Console UI 不需要飞书凭据。除非传入 `--force`，否则不会与正�
 ### 任务管理
 
 ```powershell
-agent-bot task list
-agent-bot task status <任务>
-agent-bot task prompt <任务> "<prompt>"
-agent-bot task title <任务> "<标题>"
-agent-bot task stop <任务>
+agentbot task list
+agentbot task status <任务>
+agentbot task prompt <任务> "<prompt>"
+agentbot task title <任务> "<标题>"
+agentbot task stop <任务>
 ```
 
-`<任务>` 可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。运行 `agent-bot --help` 可查看完整 CLI 参数。
+`<任务>` 可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。运行 `agentbot --help` 可查看完整 CLI 参数。
 
 ## 飞书命令
 
@@ -213,21 +213,21 @@ Agent Bot 将用户相关文件保存在仓库之外：
 不指定 `--profile` 时使用位于 `~/.agent-bot` 的主 Profile。运行其他相互隔离的机器人时，需要在每次命令中显式指定其目录：
 
 ```powershell
-agent-bot --profile ~/.agent-bot-rescue init
-agent-bot --profile ~/.agent-bot-rescue server start
-agent-bot --profile ~/.agent-bot-rescue server status
+agentbot --profile ~/.agent-bot-rescue init
+agentbot --profile ~/.agent-bot-rescue server start
+agentbot --profile ~/.agent-bot-rescue server status
 ```
 
 其他 Profile 不按名称注册，而是直接使用目录。每个 Profile 都在所选目录内保存自己的 `config.yaml`、`.env`、`data/` 和 `logs/`，飞书凭据与本地控制端点也相互隔离。`--profile` 不能和 `--config` 同时使用。
 
 ## 常见问题
 
-- **机器人没有响应：** 运行 `agent-bot server status`，并查看 `~/.agent-bot/logs/agent-bot.log`
+- **机器人没有响应：** 运行 `agentbot server status`，并查看 `~/.agent-bot/logs/agent-bot.log`
 - **Node 崩溃后 Worker 被自动重启：** 查看 `~/.agent-bot/data/last-crash.json`、`~/.agent-bot/logs/worker.stderr.log` 和 `~/.agent-bot/data/crash-reports/`
-- **飞书权限不完整：** 重新运行 `agent-bot init`，完成显示的授权步骤
+- **飞书权限不完整：** 重新运行 `agentbot init`，完成显示的授权步骤
 - **Codex 无法启动：** 使用运行 Agent Bot 的同一操作系统用户执行 `codex login status`
-- **只需要本地测试：** 运行 `agent-bot init --skip-feishu`，然后执行 `agent-bot console`
-- **安全重启一直等待：** 使用 `agent-bot task list --status running` 检查活动任务
+- **只需要本地测试：** 运行 `agentbot init --skip-feishu`，然后执行 `agentbot console`
+- **安全重启一直等待：** 使用 `agentbot task list --status running` 检查活动任务
 
 ## 更多文档
 

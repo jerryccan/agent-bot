@@ -120,8 +120,8 @@ export async function registerFeishuApp(options: FeishuAppRegistrationOptions = 
       case "expired_token":
       case "invalid_grant":
         throw new Error(cliText(
-          "The Lark app creation link expired. Run agent-bot init again.",
-          "飞书应用创建链接已过期，请重新运行 agent-bot init。",
+          "The Lark app creation link expired. Run agentbot init again.",
+          "飞书应用创建链接已过期，请重新运行 agentbot init。",
         ));
       default:
         throwRegistrationError(payload, cliText("Lark app creation failed", "飞书应用创建失败"));
@@ -129,8 +129,8 @@ export async function registerFeishuApp(options: FeishuAppRegistrationOptions = 
   }
 
   throw new Error(cliText(
-    "Timed out waiting for Lark app creation. Run agent-bot init again.",
-    "等待飞书应用创建超时，请重新运行 agent-bot init。",
+    "Timed out waiting for Lark app creation. Run agentbot init again.",
+    "等待飞书应用创建超时，请重新运行 agentbot init。",
   ));
 }
 

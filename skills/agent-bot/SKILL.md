@@ -1,11 +1,11 @@
 ---
 name: agent-bot
-description: Initialize Agent Bot, detect and work safely inside its runtime, and manage the local service and its Codex or ACP sessions through the agent-bot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to initialize, inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
+description: Initialize Agent Bot, detect and work safely inside its runtime, and manage the local service and its Codex or ACP sessions through the agentbot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to initialize, inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
 ---
 
 # Agent Bot
 
-Use the `agent-bot` command as the supported control surface for Agent Bot. Prefer its structured status and control operations over direct process manipulation or database edits.
+Use the `agentbot` command as the supported control surface for Agent Bot. The legacy `agent-bot` command is deprecated and should not be used in new instructions or automation. Prefer structured status and control operations over direct process manipulation or database edits.
 
 ## Detect the Agent Bot runtime
 
@@ -43,7 +43,7 @@ When `AGENT_BOT=1`:
 Run initialization once after installing or linking the CLI:
 
 ```powershell
-agent-bot init
+agentbot init
 ```
 
 Initialization creates the Agent Bot home, `config.yaml`, `.env`, `data/`, and `logs/` from the bundled examples. If Feishu credentials are absent, it starts Feishu one-click app registration, prints a QR code followed by its authorization URL, waits for the user to approve the request, and stores the returned app ID and secret in `.env`. It then audits the app's currently published tenant permissions, event subscriptions, and callbacks. Core and optional missing items produce separate configuration challenges. Core configuration is polled until ready, except that the manually configured all-group-message permission may be explicitly skipped with `Y`. For optional configuration, the CLI prints the QR code followed by the authorization URL and immediately waits up to five minutes for activation. The only terminal choice is also `Y`, which skips optional authorization and continues initialization.
@@ -56,15 +56,15 @@ After Feishu initialization succeeds, `init` releases its initialization lock an
 
 When running `init` on the user's behalf, relay every exact authorization, incremental-configuration, and manual permission-page URL and let the user complete it in their own browser. For `im:message.group_msg`, explicitly tell the user to add the filtered permission and publish the app version, or offer to enter `Y` when they intentionally accept mention-only group behavior. Optional polling starts automatically after the link is shown. Do not enter `Y` for either prompt unless the user explicitly asks to skip; there is no separate accept action. Optional capabilities such as group creation, group-title synchronization, reactions, images, and card actions never block initialization when skipped, timed out, or still unavailable; relay the final affected-feature warnings. In a non-interactive terminal, skip input is unavailable. None of the URLs contains the app secret, and the secret itself is never printed.
 
-Existing complete Feishu credentials are preserved but still audited and repaired when needed. Missing or incomplete credentials mean app creation did not complete, so a later `init` starts a new registration instead of resuming the previous device code. Once both credentials are durably saved, an interrupted permission audit resumes against the same remote app. `init` also holds a local lock to prevent concurrent registrations. Use `agent-bot init --skip-feishu` only for console-only initialization because it skips both registration and configuration auditing. Use `agent-bot init --reconfigure-feishu` only when the user explicitly wants to replace existing complete credentials. The command respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Use `agent-bot init --json` when structured final output helps.
+Existing complete Feishu credentials are preserved but still audited and repaired when needed. Missing or incomplete credentials mean app creation did not complete, so a later `init` starts a new registration instead of resuming the previous device code. Once both credentials are durably saved, an interrupted permission audit resumes against the same remote app. `init` also holds a local lock to prevent concurrent registrations. Use `agentbot init --skip-feishu` only for console-only initialization because it skips both registration and configuration auditing. Use `agentbot init --reconfigure-feishu` only when the user explicitly wants to replace existing complete credentials. The command respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Use `agentbot init --json` when structured final output helps.
 
-Use `agent-bot --profile <directory> init --reset` only when the user explicitly requests a full Profile reset. `--profile` is mandatory even for the primary Profile, and its server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new timestamped `.reset-backups` directory, retains all older backups and unrelated files, then initializes a clean Profile. Relay the reported backup path. Do not delete `.reset-backups`; it may contain old credentials and task data. `--reset --skip-feishu` is valid for a clean Console-only Profile, but `--reset` cannot be combined with `--reconfigure-feishu`.
+Use `agentbot --profile <directory> init --reset` only when the user explicitly requests a full Profile reset. `--profile` is mandatory even for the primary Profile, and its server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new timestamped `.reset-backups` directory, retains all older backups and unrelated files, then initializes a clean Profile. Relay the reported backup path. Do not delete `.reset-backups`; it may contain old credentials and task data. `--reset --skip-feishu` is valid for a clean Console-only Profile, but `--reset` cannot be combined with `--reconfigure-feishu`.
 
 For an isolated secondary bot, pass its profile directory explicitly on every command:
 
 ```powershell
-agent-bot --profile ~/.agent-bot-rescue init
-agent-bot --profile ~/.agent-bot-rescue server status
+agentbot --profile ~/.agent-bot-rescue init
+agentbot --profile ~/.agent-bot-rescue server status
 ```
 
 No `--profile` selects the main profile at `~/.agent-bot` by default. `--profile <directory>` selects that directory's `config.yaml`, `.env`, data, logs, and local control endpoint and propagates the selection to the supervisor and worker. Alternative profiles are not registered by name. Do not combine `--profile` with `--config`.
@@ -74,15 +74,15 @@ No `--profile` selects the main profile at `~/.agent-bot` by default. `--profile
 Verify the CLI and current service state before changing anything:
 
 ```powershell
-agent-bot --version
-agent-bot --help
-agent-bot server status
-agent-bot task list
+agentbot --version
+agentbot --help
+agentbot server status
+agentbot task list
 ```
 
-Agent Bot CLI interface text follows the system locale: locales beginning with `zh` use Chinese, while English and unsupported locales use English. JSON output is not localized. `agent-bot server status` also reports the running profile's Lark App ID; with `--json`, read it from `feishuAppId`.
+Agent Bot CLI interface text follows the system locale: locales beginning with `zh` use Chinese, while English and unsupported locales use English. JSON output is not localized. `agentbot server status` also reports the running profile's Lark App ID; with `--json`, read it from `feishuAppId`.
 
-Add `--json` to status and list commands when machine-readable output helps. If `agent-bot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
+Add `--json` to status and list commands when machine-readable output helps. If `agentbot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
 
 By default Agent Bot stores user-owned configuration and runtime state in `~/.agent-bot`: config at `~/.agent-bot/config.yaml`, environment variables at `~/.agent-bot/.env`, SQLite state at `~/.agent-bot/data/agent-bot.sqlite`, logs at `~/.agent-bot/logs/agent-bot.log`, and inbound image cache next to the SQLite database. `AGENT_BOT_HOME` changes this root. Prefer `--profile <directory>` when controlling a complete isolated instance; use `--config <path>` only when selecting a non-default configuration without changing the whole profile.
 
@@ -91,19 +91,19 @@ By default Agent Bot stores user-owned configuration and runtime state in `~/.ag
 Use these commands:
 
 ```powershell
-agent-bot server start
-agent-bot server status
-agent-bot server restart --reason "reason for restart"
-agent-bot server stop
+agentbot server start
+agentbot server status
+agentbot server restart --reason "reason for restart"
+agentbot server stop
 ```
 
 Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window. The first safe-restart status card is delayed by three seconds so the active task's final response can usually be delivered first; this presentation delay does not postpone scheduler polling. While the restart is pending, its status card has a bottom `Cancel` button that conditionally cancels that exact schedule and updates the card in place.
 
 In Feishu, `/restart` schedules the same safe restart. Use `/restart --force` only when the user explicitly accepts interruption; the command accepts no other arguments.
 
-Use `agent-bot server restart --immediate` only when the user explicitly requests an immediate restart or accepts interruption. Never use `taskkill`, `Stop-Process`, or equivalent commands for routine Agent Bot restart management.
+Use `agentbot server restart --immediate` only when the user explicitly requests an immediate restart or accepts interruption. Never use `taskkill`, `Stop-Process`, or equivalent commands for routine Agent Bot restart management.
 
-`agent-bot console` opens the console UI only when the service is stopped. Do not use `--force` while the service is live unless the user explicitly accepts concurrent state access.
+`agentbot console` opens the console UI only when the service is stopped. Do not use `--force` while the service is live unless the user explicitly accepts concurrent state access.
 
 When a startup card says the Worker exited and the supervisor restarted it, inspect the selected profile's persisted crash evidence before guessing at a cause:
 
@@ -119,12 +119,12 @@ Normal safe restarts and explicit stops do not overwrite the latest crash record
 List tasks before resolving a numeric reference because task numbers follow the current list order:
 
 ```powershell
-agent-bot task list
-agent-bot task chat <number-or-task-id> [--json]
-agent-bot task status <number-or-task-id>
-agent-bot task stop <number-or-task-id>
-agent-bot task title <number-or-task-id> <new-title>
-agent-bot task prompt <number-or-task-id> <prompt>
+agentbot task list
+agentbot task chat <number-or-task-id> [--json]
+agentbot task status <number-or-task-id>
+agentbot task stop <number-or-task-id>
+agentbot task title <number-or-task-id> <new-title>
+agentbot task prompt <number-or-task-id> <prompt>
 ```
 
 Task IDs may be supplied in full or as an unambiguous prefix. Use `task stop` to ask the running worker to send the Codex Interrupt signal; leave child-process lifecycle management to Codex.
@@ -174,7 +174,7 @@ Use `--context <key>` or `--status <status>` to narrow `task list`. Use `--profi
 After changing Agent Bot code, run the relevant tests, typecheck, and build. If a running service must pick up the result, schedule:
 
 ```powershell
-agent-bot server restart --reason "brief description of the completed change"
+agentbot server restart --reason "brief description of the completed change"
 ```
 
 Do not replace the worker immediately while a task is active. A later incoming task must not cancel the pending safe restart; allow the scheduler to wait until the service becomes safely idle again.

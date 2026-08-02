@@ -37,21 +37,21 @@ codex login status
 
 ```powershell
 npm install --global @keyou007/agent-bot
-agent-bot --version
-agent-bot --help
+agentbot --version
+agentbot --help
 ```
 
-This installs the `agent-bot` command globally. Command-line help, status, progress, prompts, and errors follow the system language for Chinese and English locales; all other locales fall back to English. JSON output remains language-neutral and stable. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
+This installs `agentbot` as the primary command. The legacy `agent-bot` command remains available temporarily, prints a deprecation warning, and will be removed in a future release. Command-line help, status, progress, prompts, and errors follow the system language for Chinese and English locales; all other locales fall back to English. JSON output remains language-neutral and stable. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
 ### Initialize
 
 ```powershell
-agent-bot init
+agentbot init
 ```
 
 Follow the displayed link or scan the QR code to create and authorize the Feishu bot. Initialization prepares `~/.agent-bot`, saves the bot credentials and the authorizing user, checks the required permissions, and starts Agent Bot automatically.
 
-Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agent-bot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
+Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agentbot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
 
 The `im:message.group_msg` permission cannot be added through Feishu's one-click configuration. When it is missing, Agent Bot prints a QR code and a direct Developer Console link already filtered to that permission. Add it manually, publish the app version, and complete tenant approval if required. While Agent Bot waits for it to become active, enter `Y` to skip this permission and continue initialization; the final result warns that ordinary group messages which do not mention the bot will be unavailable.
 
@@ -66,12 +66,12 @@ When optional permissions or subscriptions are missing, Agent Bot first shows th
 | `--profile <directory>`| Use an isolated profile directory   |
 | `--config <path>`      | Use a specific configuration file   |
 
-You can rerun `agent-bot init` later to check or complete the bot configuration. If the server is already running, initialization leaves it running.
+You can rerun `agentbot init` later to check or complete the bot configuration. If the server is already running, initialization leaves it running.
 
 To fully reconfigure a Profile, stop its server and select the Profile explicitly:
 
 ```powershell
-agent-bot --profile ~/.agent-bot init --reset
+agentbot --profile ~/.agent-bot init --reset
 ```
 
 Reset moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new timestamped directory under `.reset-backups`, then initializes clean replacements. Existing backup directories are retained. The old remote Feishu app is not deleted.
@@ -79,10 +79,10 @@ Reset moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new ti
 ### Start And Stop
 
 ```powershell
-agent-bot server status
+agentbot server status
 ```
 
-`agent-bot init` starts the server automatically. If you stop it later, run `agent-bot server start` to start it again. For local-only use, initialize with `--skip-feishu` and run `agent-bot console` instead.
+`agentbot init` starts the server automatically. If you stop it later, run `agentbot server start` to start it again. For local-only use, initialize with `--skip-feishu` and run `agentbot console` instead.
 
 The `Agent Bot 已启动` startup card shows the version of Agent Bot currently running.
 
@@ -91,7 +91,7 @@ Open Feishu, find the bot, and send a message. Agent Bot automatically creates a
 Stop the service with:
 
 ```powershell
-agent-bot server stop
+agentbot server stop
 ```
 
 ### Update Or Uninstall
@@ -99,15 +99,15 @@ agent-bot server stop
 Stop the running service before replacing or removing the global package:
 
 ```powershell
-agent-bot server stop
+agentbot server stop
 npm install --global @keyou007/agent-bot@latest
-agent-bot server start
+agentbot server start
 ```
 
 To uninstall:
 
 ```powershell
-agent-bot server stop
+agentbot server stop
 npm uninstall --global @keyou007/agent-bot
 ```
 
@@ -118,10 +118,10 @@ Uninstalling the npm package does not delete your data under `~/.agent-bot`.
 ### Service
 
 ```powershell
-agent-bot server status
-agent-bot server start
-agent-bot server stop
-agent-bot server restart
+agentbot server status
+agentbot server start
+agentbot server stop
+agentbot server restart
 ```
 
 `server restart` waits for current work to finish by default. Its status card includes a `Cancel` button while the restart is still waiting. Use `--immediate` only when interruption is acceptable.
@@ -131,7 +131,7 @@ agent-bot server restart
 ### Console
 
 ```powershell
-agent-bot console
+agentbot console
 ```
 
 The Console UI works without Feishu credentials. It will not share task state with a running server unless `--force` is supplied.
@@ -139,14 +139,14 @@ The Console UI works without Feishu credentials. It will not share task state wi
 ### Tasks
 
 ```powershell
-agent-bot task list
-agent-bot task status <task>
-agent-bot task prompt <task> "<prompt>"
-agent-bot task title <task> "<title>"
-agent-bot task stop <task>
+agentbot task list
+agentbot task status <task>
+agentbot task prompt <task> "<prompt>"
+agentbot task title <task> "<title>"
+agentbot task stop <task>
 ```
 
-`<task>` can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Run `agent-bot --help` for all CLI options.
+`<task>` can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Run `agentbot --help` for all CLI options.
 
 ## Feishu Commands
 
@@ -213,21 +213,21 @@ By default, Agent Bot responds to ordinary messages in groups containing the bot
 Commands without `--profile` use the main profile at `~/.agent-bot`. To run another bot with isolated credentials, configuration, data, logs, and local control endpoint, pass its directory explicitly on every command:
 
 ```powershell
-agent-bot --profile ~/.agent-bot-rescue init
-agent-bot --profile ~/.agent-bot-rescue server start
-agent-bot --profile ~/.agent-bot-rescue server status
+agentbot --profile ~/.agent-bot-rescue init
+agentbot --profile ~/.agent-bot-rescue server start
+agentbot --profile ~/.agent-bot-rescue server status
 ```
 
 Alternative profiles are directory-based and are not registered by name. Each one uses `config.yaml`, `.env`, `data/`, and `logs/` inside the selected directory. `--profile` cannot be combined with `--config`.
 
 ## Troubleshooting
 
-- **The bot does not respond:** run `agent-bot server status` and check `~/.agent-bot/logs/agent-bot.log`.
+- **The bot does not respond:** run `agentbot server status` and check `~/.agent-bot/logs/agent-bot.log`.
 - **The Worker restarted after a Node crash:** check `~/.agent-bot/data/last-crash.json`, `~/.agent-bot/logs/worker.stderr.log`, and `~/.agent-bot/data/crash-reports/`.
-- **Feishu permissions are incomplete:** rerun `agent-bot init` and follow the displayed authorization steps.
+- **Feishu permissions are incomplete:** rerun `agentbot init` and follow the displayed authorization steps.
 - **Codex cannot start:** run `codex login status` as the same operating-system user that runs Agent Bot.
-- **You only need local testing:** run `agent-bot init --skip-feishu`, then `agent-bot console`.
-- **A safe restart keeps waiting:** inspect active tasks with `agent-bot task list --status running`.
+- **You only need local testing:** run `agentbot init --skip-feishu`, then `agentbot console`.
+- **A safe restart keeps waiting:** inspect active tasks with `agentbot task list --status running`.
 
 ## More Documentation
 

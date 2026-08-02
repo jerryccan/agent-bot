@@ -188,8 +188,8 @@ export function acquireInitializationLock(lockDirectory: string): Initialization
       if (!isFileExistsError(error)) throw error;
       if (!isStaleInitializationLock(lockPath)) {
         throw new Error(cliText(
-          `Another agent-bot init process is running (lock file: ${lockPath}).`,
-          `另一个 agent-bot init 进程正在运行（锁文件：${lockPath}）。`,
+          `Another agentbot init process is running (lock file: ${lockPath}).`,
+          `另一个 agentbot init 进程正在运行（锁文件：${lockPath}）。`,
         ));
       }
       fs.rmSync(lockPath, { force: true });

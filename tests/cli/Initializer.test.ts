@@ -179,7 +179,7 @@ describe("initializeAgentBot", () => {
     const dataDirectory = path.join(fixture.home, "data");
     const first = acquireInitializationLock(dataDirectory);
 
-    expect(() => acquireInitializationLock(dataDirectory)).toThrow("Another agent-bot init process is running");
+    expect(() => acquireInitializationLock(dataDirectory)).toThrow("Another agentbot init process is running");
     expect(fs.existsSync(first.path)).toBe(true);
 
     first.release();

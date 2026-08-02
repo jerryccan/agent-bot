@@ -28,7 +28,7 @@ describe("splitMarkdown", () => {
   });
 
   test("moves a complete line to the next chunk instead of cutting its inline Markdown", () => {
-    const inline = "Use `agent-bot server status` before continuing.\n";
+    const inline = "Use `agentbot server status` before continuing.\n";
     const input = `${"x".repeat(55)}\n${inline}`;
     const chunks = splitMarkdown(input, 80);
 
@@ -37,7 +37,7 @@ describe("splitMarkdown", () => {
 
   test("does not split inline code, links, images, or emphasis markers", () => {
     const atoms = [
-      "`agent-bot task status 12`",
+      "`agentbot task status 12`",
       "[任务详情](https://example.com/tasks/123?from=agent-bot)",
       "![执行截图](D:/dev/agent-bot/data/result.png)",
       "**需要完整显示的重点**",

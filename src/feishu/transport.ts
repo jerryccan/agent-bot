@@ -8,7 +8,7 @@ type FeishuTransportConfig = Pick<
 export function requireServerFeishuTransport(config: FeishuTransportConfig): "sdk" {
   if (!config.appId || !config.appSecret) {
     throw new Error(
-      "The Lark bot is not configured. Run agent-bot init first, or use agent-bot console for local-only testing.",
+      "The Lark bot is not configured. Run agentbot init first, or use agentbot console for local-only testing.",
     );
   }
   return "sdk";

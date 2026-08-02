@@ -6,7 +6,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
 通过飞书使用本地 Codex 和 ACP Agent。
 
 用法：
-  agent-bot [选项] <命令>
+  agentbot [选项] <命令>
 
 常用命令：
   init                              初始化飞书应用并启动服务
@@ -38,13 +38,13 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   --reconfigure-feishu              仅替换现有飞书凭据
 
 示例：
-  agent-bot init
-  agent-bot --profile ~/.agent-bot init --reset
-  agent-bot --profile ~/.agent-bot-rescue init
-  agent-bot server start
-  agent-bot server status
-  agent-bot task list
-  agent-bot server restart --reason "更新 Agent Bot"
+  agentbot init
+  agentbot --profile ~/.agent-bot init --reset
+  agentbot --profile ~/.agent-bot-rescue init
+  agentbot server start
+  agentbot server status
+  agentbot task list
+  agentbot server restart --reason "更新 Agent Bot"
 `;
   }
 
@@ -52,7 +52,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
 Use local Codex and ACP agents from Lark/Feishu.
 
 Usage:
-  agent-bot [options] <command>
+  agentbot [options] <command>
 
 Common commands:
   init                              Initialize the Lark app and start the service
@@ -84,12 +84,12 @@ Init options:
   --reconfigure-feishu              Replace only the existing Lark credentials
 
 Examples:
-  agent-bot init
-  agent-bot --profile ~/.agent-bot init --reset
-  agent-bot --profile ~/.agent-bot-rescue init
-  agent-bot server start
-  agent-bot server status
-  agent-bot task list
-  agent-bot server restart --reason "Update Agent Bot"
+  agentbot init
+  agentbot --profile ~/.agent-bot init --reset
+  agentbot --profile ~/.agent-bot-rescue init
+  agentbot server start
+  agentbot server status
+  agentbot task list
+  agentbot server restart --reason "Update Agent Bot"
 `;
 }

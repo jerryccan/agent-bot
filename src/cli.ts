@@ -99,8 +99,8 @@ async function main(input: string[]): Promise<void> {
     return;
   }
   throw new Error(cliText(
-    `Unknown command: ${command}. Run agent-bot --help for usage.`,
-    `未知命令：${command}。运行 agent-bot --help 查看用法。`,
+    `Unknown command: ${command}. Run agentbot --help for usage.`,
+    `未知命令：${command}。运行 agentbot --help 查看用法。`,
   ));
 }
 
@@ -246,8 +246,8 @@ async function assertResetProfileServerStopped(configPath?: string): Promise<voi
     if (await isServerReachable(endpoint)) {
       throw new Error(
         cliText(
-          "Cannot reset a running profile. Stop it with agent-bot --profile <directory> server stop, then try again.",
-          "无法重置正在运行的 Profile。请先执行 agent-bot --profile <目录> server stop，然后重试。",
+          "Cannot reset a running profile. Stop it with agentbot --profile <directory> server stop, then try again.",
+          "无法重置正在运行的 Profile。请先执行 agentbot --profile <目录> server stop，然后重试。",
         ),
       );
     }
