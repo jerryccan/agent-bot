@@ -209,7 +209,7 @@ Each turn owns one progress card. Normal updates are throttled to one every two 
 
 After the durable message-deduplication claim, Agent Bot awaits the `OnIt` reaction before chat persistence, image downloads, queue waits, command execution, or runtime calls. It replaces that reaction with `DONE`, `ERROR`, or `CrossMark` when the turn succeeds, fails, or is canceled. Reaction failures are logged but do not block task execution.
 
-Incoming rich-text images are downloaded into the inbound image cache and passed to Codex as `localImage` inputs. An image-only message uses the default Prompt `请分析这张图片。`. An ACP runtime that cannot accept image input returns an explicit error.
+Incoming rich-text images are downloaded into the inbound image cache and passed to Codex as `localImage` inputs. An image-only message uses the default Prompt `请查看这张图片`. An ACP runtime that cannot accept image input returns an explicit error.
 
 ## Tasks, Projects, And External Codex Work
 

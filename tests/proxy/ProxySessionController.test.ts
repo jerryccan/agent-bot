@@ -607,7 +607,7 @@ describe("ProxySessionController", () => {
 
     expect(outbound.downloadImage).toHaveBeenCalledWith("om_image_input", "img_input");
     expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), {
-      text: "请分析这张图片。",
+      text: "请查看这张图片",
       localImagePaths: [expect.stringContaining("img_input.png")],
     });
   });

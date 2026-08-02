@@ -260,7 +260,7 @@ export class ProxySessionController {
     let command: Command;
     try {
       command = imageCount > 0 && !message.text.trimStart().startsWith("/")
-        ? { type: "prompt", text: message.text.trim() || "请分析这张图片。" }
+        ? { type: "prompt", text: message.text.trim() || "请查看这张图片" }
         : this.router.parse(message.text);
     } catch (error) {
       await this.finalizeStandaloneMessageReaction(message.messageId, "failed");

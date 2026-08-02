@@ -209,7 +209,7 @@ Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeT
 
 完成持久化消息去重占位后，Agent Bot 会等待 `OnIt` 表情添加成功，再进行聊天信息持久化、图片下载、队列等待、命令执行或 Runtime 调用。Turn 成功、失败或取消时分别替换为 `DONE`、`ERROR` 或 `CrossMark`。表情操作失败会记录日志，但不会阻塞任务。
 
-富文本图片会下载到输入图片缓存，并以 `localImage` 传给 Codex。纯图片消息使用默认 Prompt `请分析这张图片。`。ACP Runtime 不支持图片输入时会明确报错。
+富文本图片会下载到输入图片缓存，并以 `localImage` 传给 Codex。纯图片消息使用默认 Prompt `请查看这张图片`。ACP Runtime 不支持图片输入时会明确报错。
 
 ## 任务、项目与外部 Codex 工作
 
