@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-02
+
 - Retry Feishu messages, replies, and card updates rejected by email-address content auditing with audit-safe text; keep message reactions pending until terminal presentation succeeds while allowing session and queue state to settle after presentation failures.
 - Use a shorter image-only prompt that asks the active Agent to inspect the attached image.
 - Reduce the packaged project logo size without changing the documented asset path.
