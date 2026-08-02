@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Retry Feishu messages, replies, and card updates rejected by email-address content auditing with audit-safe text; keep message reactions pending until terminal presentation succeeds while allowing session and queue state to settle after presentation failures.
+- Use a shorter image-only prompt that asks the active Agent to inspect the attached image.
+- Reduce the packaged project logo size without changing the documented asset path.
 - Keep `/new` and `/newgroup` project options aligned: both support `--dir <cwd>` with `~`-based home-directory paths and `--nodir` for a forced Projectless Codex task, while `/newgroup` continues to inherit execution settings from the source task.
 - Send `excludeTurns: true` by default for every Codex fork, reducing response size without removing branch history, and retry once without the experimental field when an older App Server explicitly rejects it.
 - Remove obsolete `/mode`, `/modes`, `/ask`, `/agents`, and `/use` commands, consolidating Agent selection under `/agent`.
