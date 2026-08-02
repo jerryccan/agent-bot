@@ -2,19 +2,16 @@ import type { Command } from "./commandTypes.js";
 
 const COMMAND_NAMES = [
   "agent",
-  "agents",
-  "ask",
   "fork",
   "forkgroup",
   "goal",
   "help",
-  "mode",
   "model",
-  "modes",
   "new",
   "newgroup",
   "nosteer",
   "permissions",
+  "provider",
   "queue",
   "restart",
   "sessions",
@@ -23,7 +20,6 @@ const COMMAND_NAMES = [
   "switch",
   "thinking",
   "title",
-  "use",
 ] as const;
 
 type CommandName = (typeof COMMAND_NAMES)[number];
@@ -33,6 +29,8 @@ const COMMAND_INITIALISMS: Partial<Record<CommandName, string>> = {
   newgroup: "ng",
   nosteer: "ns",
 };
+
+const DISABLED_COMMAND_NAMES = new Set(["mode", "modes"]);
 
 export class CommandRouter {
   parse(text: string): Command {
@@ -50,25 +48,17 @@ export class CommandRouter {
     const command = resolveCommandName(rawCommand);
 
     switch (command) {
-      case "agents":
-        return { type: "agent" };
       case "new":
         return parseNewCommand(args);
       case "newgroup":
         return parseNewGroupCommand(args);
       case "forkgroup":
-        return {
-          type: "forkgroup",
-          title: args.join(" ").trim() || undefined,
-        };
+        return parseForkGroupCommand(args);
       case "fork":
-        if (args.length > 1) throw new Error("/fork 只接受一个可选的任务序号或任务 ID。");
-        return args[0] ? { type: "fork", sessionId: args[0] } : { type: "fork" };
+        return parseForkCommand(args);
       case "title":
         if (args.length === 0) throw new Error("请输入新标题，例如：/title 修复会话列表。");
         return { type: "title", title: args.join(" ") };
-      case "ask":
-        return { type: "ask", text: trimmed.slice(rawCommand.length).trim() };
       case "queue":
       case "nosteer": {
         const prompt = trimmed.slice(rawCommand.length).trim();
@@ -81,8 +71,6 @@ export class CommandRouter {
         return args[0] ? { type: "switch", sessionId: args[0] } : { type: "switch" };
       case "agent":
         return args[0] ? { type: "agent", agent: args[0] } : { type: "agent" };
-      case "use":
-        return requireArg(args[0], "agent name", (agent) => ({ type: "use", agent, cwd: args[1] }));
       case "stop":
         return { type: "stop" };
       case "status":
@@ -102,22 +90,17 @@ export class CommandRouter {
         return { type: "goal", action: "set", objective: args.join(" ") };
       }
       case "restart":
-        return { type: "restart" };
-      case "modes":
-        return { type: "modes" };
-      case "mode":
-        return requireArg(args[0], "mode value", (value) => ({ type: "mode", value }));
+        if (args.length === 0) return { type: "restart" };
+        if (args.length === 1 && args[0] === "--force") return { type: "restart", force: true };
+        throw new Error("/restart 只接受一个可选的 --force 参数。");
       case "model":
-        return { type: "model", model: args[0] };
+        return settingsCommand("/model", args, { type: "model" });
+      case "provider":
+        return settingsCommand("/provider", args, { type: "provider" });
       case "thinking":
-        return { type: "thinking", effort: args[0] };
-      case "permissions": {
-        const mode = args[0];
-        if (mode !== undefined && mode !== "auto" && mode !== "confirm") {
-          throw new Error("权限模式只能是 auto 或 confirm。");
-        }
-        return { type: "permissions", mode };
-      }
+        return settingsCommand("/thinking", args, { type: "thinking" });
+      case "permissions":
+        return settingsCommand("/permissions", args, { type: "permissions" });
       case "help":
         return { type: "help" };
     }
@@ -127,6 +110,7 @@ export class CommandRouter {
 function resolveCommandName(rawCommand: string): CommandName {
   const input = rawCommand.slice(1).toLowerCase();
   if (!input) throw unknownCommand(rawCommand);
+  if (DISABLED_COMMAND_NAMES.has(input)) throw unknownCommand(rawCommand);
 
   const exact = COMMAND_NAMES.find((command) => command === input);
   if (exact) return exact;
@@ -147,23 +131,47 @@ function unknownCommand(rawCommand: string): Error {
   return new Error(`未知命令：${rawCommand}。发送 /help 查看可用命令。`);
 }
 
-function requireArg<T>(value: string | undefined, name: string, create: (value: string) => T): T {
-  if (!value) {
-    throw new Error(`Missing ${name}.`);
+function settingsCommand<T extends Command>(name: string, args: string[], command: T): T {
+  if (args.length > 0) {
+    throw new Error(`${name} 不接受参数，请在设置卡片中完成选择。`);
   }
-
-  return create(value);
+  return command;
 }
 
 function parseNewCommand(args: string[]): Extract<Command, { type: "new" }> {
+  const options = parseNewTaskOptions("/new", args, "工作目录", "D:\\dev\\project");
+  return {
+    type: "new",
+    title: options.title,
+    cwd: options.cwd,
+    ...(options.projectless ? { projectless: true } : {}),
+  };
+}
+
+function parseNewGroupCommand(args: string[]): Extract<Command, { type: "newgroup" }> {
+  const options = parseNewTaskOptions("/newgroup", args, "项目目录", "~/dev/project");
+  return {
+    type: "newgroup",
+    title: options.title,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.projectless ? { projectless: true } : {}),
+  };
+}
+
+function parseNewTaskOptions(
+  commandName: "/new" | "/newgroup",
+  args: string[],
+  directoryLabel: string,
+  exampleDirectory: string,
+): { title?: string; cwd?: string; projectless: boolean } {
   const titleParts: string[] = [];
   let cwd: string | undefined;
   let projectless = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === "--nodir") {
-      if (projectless) throw new Error("/new 只能指定一次 --nodir。");
-      if (cwd !== undefined) throw new Error("/new 的 --dir 和 --nodir 不能同时使用。");
+      if (projectless) throw new Error(`${commandName} 只能指定一次 --nodir。`);
+      if (cwd !== undefined) throw new Error(`${commandName} 的 --dir 和 --nodir 不能同时使用。`);
       projectless = true;
       continue;
     }
@@ -171,31 +179,45 @@ function parseNewCommand(args: string[]): Extract<Command, { type: "new" }> {
       titleParts.push(argument);
       continue;
     }
-    if (projectless) throw new Error("/new 的 --dir 和 --nodir 不能同时使用。");
-    if (cwd !== undefined) throw new Error("/new 只能指定一次 --dir。");
+    if (projectless) throw new Error(`${commandName} 的 --dir 和 --nodir 不能同时使用。`);
+    if (cwd !== undefined) throw new Error(`${commandName} 只能指定一次 --dir。`);
     const directory = args[index + 1];
-    if (!directory || directory === "--dir") {
-      throw new Error("请在 --dir 后指定工作目录，例如：/new 修复会话列表 --dir D:\\dev\\project。");
+    if (!directory || directory === "--dir" || directory === "--nodir") {
+      throw new Error(
+        `请在 --dir 后指定${directoryLabel}，例如：${commandName} 修复会话列表 --dir ${exampleDirectory}。`,
+      );
     }
     cwd = directory;
     index += 1;
   }
   return {
-    type: "new",
     title: titleParts.join(" ").trim() || undefined,
     cwd,
-    ...(projectless ? { projectless: true } : {}),
+    projectless,
   };
 }
 
-function parseNewGroupCommand(args: string[]): Extract<Command, { type: "newgroup" }> {
-  if (args.includes("--dir")) {
-    throw new Error("/newgroup 只创建飞书群，不支持 --dir；请在新群中使用 /new --dir <cwd> 创建任务。");
-  }
+function parseForkCommand(args: string[]): Extract<Command, { type: "fork" }> {
+  rejectOptions("/fork", args);
+  if (args.length > 1) throw new Error("/fork 只接受一个可选的任务序号或任务 ID。");
   return {
-    type: "newgroup",
+    type: "fork",
+    ...(args[0] ? { sessionId: args[0] } : {}),
+  };
+}
+
+function parseForkGroupCommand(args: string[]): Extract<Command, { type: "forkgroup" }> {
+  rejectOptions("/forkgroup", args);
+  return {
+    type: "forkgroup",
     title: args.join(" ").trim() || undefined,
   };
+}
+
+function rejectOptions(command: string, args: string[]): void {
+  for (const argument of args) {
+    if (argument.startsWith("--")) throw new Error(`${command} 不支持参数：${argument}。`);
+  }
 }
 
 function splitArgs(input: string): string[] {

@@ -5,6 +5,7 @@ import type { RuntimeSession } from "../acp/AcpSessionManager.js";
 import type {
   ApprovalDecision,
   ModelOption,
+  ModelProviderOption,
   PermissionMode,
   ReasoningEffortOption,
   ToolState,
@@ -24,6 +25,7 @@ export interface StartupStatusView {
   currentTask?: {
     id: string;
     title?: string;
+    modelProvider?: string;
     model?: string;
     reasoningEffort?: string;
     permissionMode?: PermissionMode;
@@ -60,6 +62,9 @@ export interface ModelSelectorCardView {
   currentModel?: string;
   reasoningEffort?: string;
   models: ModelOption[];
+  modelProvider?: string;
+  permissionMode?: PermissionMode;
+  unifiedSettings?: boolean;
   notice?: string;
 }
 
@@ -69,6 +74,55 @@ export interface ReasoningSelectorCardView {
   model: string;
   currentEffort?: string;
   options: ReasoningEffortOption[];
+  modelProvider?: string;
+  permissionMode?: PermissionMode;
+  unifiedSettings?: boolean;
+  notice?: string;
+}
+
+export interface ProviderSelectorCardView {
+  sessionId: string;
+  contextKey: string;
+  currentProvider?: string;
+  currentModel?: string;
+  reasoningEffort?: string;
+  permissionMode: PermissionMode;
+  providers: ModelProviderOption[];
+  notice?: string;
+}
+
+export interface PermissionSelectorCardView {
+  sessionId: string;
+  contextKey: string;
+  modelProvider: string;
+  model: string;
+  reasoningEffort: string;
+  currentMode: PermissionMode;
+}
+
+export type ExecutionSettingsTab = "agent" | "provider" | "model" | "thinking" | "permission";
+
+export interface ExecutionSettingsAgentOption {
+  name: string;
+  title: string;
+}
+
+export interface ExecutionSettingsCardView {
+  sessionId?: string;
+  contextKey: string;
+  activeTab: ExecutionSettingsTab;
+  currentAgent: string;
+  taskAgent?: string;
+  agents: ExecutionSettingsAgentOption[];
+  runtimeSettingsAvailable: boolean;
+  currentProvider?: string;
+  currentModel?: string;
+  currentEffort?: string;
+  currentPermissionMode: PermissionMode;
+  providers: ModelProviderOption[];
+  providerSupported: boolean;
+  models: ModelOption[];
+  reasoningOptions: ReasoningEffortOption[];
   notice?: string;
 }
 
@@ -91,9 +145,183 @@ export interface TaskListCardEntry {
 }
 
 export class CardRenderer {
+  renderExecutionSettings(view: ExecutionSettingsCardView): Record<string, unknown> {
+    const baseAction: Record<string, string> = {
+      contextKey: view.contextKey,
+      ...(view.sessionId ? { sessionId: view.sessionId } : {}),
+    };
+    const tabRow = settingsTabRow(
+      view.activeTab,
+      baseAction,
+      view.agents.length > 1,
+      view.runtimeSettingsAvailable,
+    );
+    const elements: Record<string, unknown>[] = [
+      markdown([
+        view.taskAgent
+          ? `**默认 Agent / 当前任务 Agent**：${inlineCode(view.currentAgent)} / ${inlineCode(view.taskAgent)}`
+          : `**默认 Agent**：${inlineCode(view.currentAgent)}`,
+        ...(view.runtimeSettingsAvailable
+          ? [
+              `**Provider / 模型**：${inlineCode(view.currentProvider ?? "Codex 默认")} / ${inlineCode(view.currentModel ?? "默认")}`,
+              `**思考强度 / 权限**：${inlineCode(view.currentEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentPermissionMode))}`,
+            ]
+          : []),
+        ...(view.notice ? [view.notice] : []),
+      ].join("\n")),
+      ...(tabRow ? [tabRow] : []),
+      { tag: "hr" },
+    ];
+
+    if (view.activeTab === "agent") {
+      elements.push(...view.agents.map((agent) => settingsOptionRow({
+        label: `${inlineCode(agent.name)} · ${escapeCardHtml(agent.title)}`,
+        current: agent.name === view.currentAgent,
+        action: {
+          text: "Switch",
+          value: {
+            action: "settings_agent_select",
+            ...baseAction,
+            agent: agent.name,
+          },
+        },
+      })));
+    } else if (view.activeTab === "provider") {
+      if (!view.providerSupported) {
+        elements.push(markdown("当前运行时不支持 Provider 切换；其他设置仍可通过上方 tab 修改。"));
+      } else if (view.providers.length === 0) {
+        elements.push(markdown("Codex 配置中没有可用的 Provider。"));
+      } else {
+        elements.push(...view.providers.map((provider) => settingsOptionRow({
+          label: [
+            inlineCode(provider.id),
+            provider.displayName && provider.displayName !== provider.id
+              ? ` · ${escapeCardHtml(provider.displayName)}`
+              : "",
+            provider.isDefault ? " · 默认" : "",
+          ].join(""),
+          current: provider.id === view.currentProvider,
+          action: {
+            text: "Switch",
+            value: {
+              action: "settings_provider_select",
+              ...baseAction,
+              provider: provider.id,
+            },
+          },
+        })));
+      }
+    } else if (view.activeTab === "model") {
+      if (view.models.length === 0) {
+        elements.push(markdown("当前运行时未返回可用模型。"));
+      } else {
+        elements.push(...view.models.map((model) => settingsOptionRow({
+          label: `${inlineCode(model.id)}${model.isDefault ? " · 默认" : ""}`,
+          current: model.id === view.currentModel,
+          action: {
+            text: "Switch",
+            value: {
+              action: "settings_model_select",
+              ...baseAction,
+              model: model.id,
+            },
+          },
+        })));
+      }
+    } else if (view.activeTab === "thinking") {
+      if (!view.currentModel) {
+        elements.push(markdown("请先选择模型。"));
+      } else if (view.reasoningOptions.length === 0) {
+        elements.push(markdown("当前模型没有可配置的思考强度。"));
+      } else {
+        const currentModel = view.currentModel;
+        elements.push(...view.reasoningOptions.map((option) => settingsOptionRow({
+          label: inlineCode(option.value),
+          current: option.value === view.currentEffort,
+          action: {
+            text: "Switch",
+            value: {
+              action: "settings_thinking_select",
+              ...baseAction,
+              model: currentModel,
+              effort: option.value,
+            },
+          },
+        })));
+      }
+    } else {
+      elements.push(...(["auto", "confirm"] as PermissionMode[]).map((mode) => settingsOptionRow({
+        label: `${inlineCode(mode)} · ${permissionModeLabel(mode)}`,
+        current: mode === view.currentPermissionMode,
+        action: {
+          text: "Switch",
+          value: {
+            action: "settings_permission_select",
+            ...baseAction,
+            permissionMode: mode,
+          },
+        },
+      })));
+    }
+
+    return sectionCard("运行设置", elements, view.notice ? "green" : "blue");
+  }
+
+  renderProviderSelector(view: ProviderSelectorCardView): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [
+      markdown([
+        `**当前 Provider**：${inlineCode(view.currentProvider ?? "Codex 默认")}`,
+        `**模型 / 思考强度 / 权限**：${inlineCode(view.currentModel ?? "默认")} / ${inlineCode(view.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.permissionMode))}`,
+        ...(view.notice ? [view.notice] : []),
+      ].join("\n")),
+      { tag: "hr" },
+    ];
+    if (view.providers.length === 0) {
+      elements.push(markdown("Codex 配置中没有可用的 Provider。"));
+    } else {
+      elements.push(...view.providers.map((provider) => ({
+        tag: "column_set",
+        flex_mode: "none",
+        horizontal_spacing: "8px",
+        vertical_align: "center",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            vertical_align: "center",
+            elements: [markdown([
+              inlineCode(provider.id),
+              provider.displayName && provider.displayName !== provider.id ? ` · ${escapeCardHtml(provider.displayName)}` : "",
+              provider.isDefault ? " · 默认" : "",
+              provider.id === view.currentProvider ? " · ✅ 当前" : "",
+            ].join(""))],
+          },
+          {
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: [taskActionElement({
+              text: provider.id === view.currentProvider ? "Configure" : "Select",
+              value: {
+                action: "provider_select",
+                sessionId: view.sessionId,
+                contextKey: view.contextKey,
+                provider: provider.id,
+                permissionMode: view.permissionMode,
+              },
+            })],
+          },
+        ],
+      })));
+    }
+    return sectionCard("Provider 设置", elements, view.notice ? "green" : "blue");
+  }
+
   renderReasoningSelector(view: ReasoningSelectorCardView): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [
       markdown([
+        ...(view.modelProvider ? [`**Provider**：${inlineCode(view.modelProvider)}`] : []),
         `**模型**：${inlineCode(view.model)}`,
         `**当前思考模式**：${inlineCode(view.currentEffort ?? "默认")}`,
         ...(view.notice ? [view.notice] : []),
@@ -122,16 +350,18 @@ export class CardRenderer {
               tag: "column",
               width: "auto",
               vertical_align: "center",
-              elements: isCurrent
+              elements: isCurrent && !view.unifiedSettings
                 ? [markdown("✅ 当前")]
                 : [taskActionElement({
-                    text: "Switch",
+                    text: view.unifiedSettings ? (isCurrent ? "Continue" : "Select") : "Switch",
                     value: {
-                      action: "reasoning_select",
+                      action: view.unifiedSettings ? "provider_reasoning_select" : "reasoning_select",
                       sessionId: view.sessionId,
                       contextKey: view.contextKey,
+                      ...(view.modelProvider ? { provider: view.modelProvider } : {}),
                       model: view.model,
                       effort: option.value,
+                      ...(view.permissionMode ? { permissionMode: view.permissionMode } : {}),
                     },
                   })],
             },
@@ -144,9 +374,11 @@ export class CardRenderer {
       taskActionRow([{
         text: "Back",
         value: {
-          action: "model_open",
+          action: view.unifiedSettings ? "provider_model_open" : "model_open",
           sessionId: view.sessionId,
           contextKey: view.contextKey,
+          ...(view.modelProvider ? { provider: view.modelProvider } : {}),
+          ...(view.permissionMode ? { permissionMode: view.permissionMode } : {}),
         },
       }]),
     );
@@ -156,6 +388,7 @@ export class CardRenderer {
   renderModelSelector(view: ModelSelectorCardView): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [
       markdown([
+        ...(view.modelProvider ? [`**Provider**：${inlineCode(view.modelProvider)}`] : []),
         `**当前模型**：${inlineCode(view.currentModel ?? "默认")}`,
         `**思考强度**：${inlineCode(view.reasoningEffort ?? "默认")}`,
         ...(view.notice ? [view.notice] : []),
@@ -186,15 +419,17 @@ export class CardRenderer {
               tag: "column",
               width: "auto",
               vertical_align: "center",
-              elements: isCurrent
+              elements: isCurrent && !view.unifiedSettings
                 ? [markdown("✅ 当前")]
                 : [taskActionElement({
-                    text: "Switch",
+                    text: view.unifiedSettings ? (isCurrent ? "Continue" : "Select") : "Switch",
                     value: {
-                      action: "model_select",
+                      action: view.unifiedSettings ? "provider_model_select" : "model_select",
                       sessionId: view.sessionId,
                       contextKey: view.contextKey,
+                      ...(view.modelProvider ? { provider: view.modelProvider } : {}),
                       model: model.id,
+                      ...(view.permissionMode ? { permissionMode: view.permissionMode } : {}),
                     },
                   })],
             },
@@ -202,7 +437,77 @@ export class CardRenderer {
         };
       }));
     }
-    return sectionCard("模型", elements, view.notice ? "green" : "blue");
+    if (view.unifiedSettings) {
+      elements.push(
+        { tag: "hr" },
+        taskActionRow([{
+          text: "Back",
+          value: {
+            action: "provider_open",
+            sessionId: view.sessionId,
+            contextKey: view.contextKey,
+          },
+        }]),
+      );
+    }
+    return sectionCard(view.unifiedSettings ? "Provider 设置 · 模型" : "模型", elements, view.notice ? "green" : "blue");
+  }
+
+  renderPermissionSelector(view: PermissionSelectorCardView): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [
+      markdown([
+        `**Provider**：${inlineCode(view.modelProvider)}`,
+        `**模型**：${inlineCode(view.model)}`,
+        `**思考强度**：${inlineCode(view.reasoningEffort)}`,
+        `**当前权限**：${inlineCode(permissionModeLabel(view.currentMode))}`,
+      ].join("\n")),
+      { tag: "hr" },
+      ...(["auto", "confirm"] as PermissionMode[]).map((mode) => ({
+        tag: "column_set",
+        flex_mode: "none",
+        horizontal_spacing: "8px",
+        vertical_align: "center",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            vertical_align: "center",
+            elements: [markdown(`${inlineCode(mode)} · ${permissionModeLabel(mode)}`)],
+          },
+          {
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: [taskActionElement({
+              text: mode === view.currentMode ? "Apply" : "Select",
+              value: {
+                action: "provider_permission_select",
+                sessionId: view.sessionId,
+                contextKey: view.contextKey,
+                provider: view.modelProvider,
+                model: view.model,
+                effort: view.reasoningEffort,
+                permissionMode: mode,
+              },
+            })],
+          },
+        ],
+      })),
+      { tag: "hr" },
+      taskActionRow([{
+        text: "Back",
+        value: {
+          action: "provider_reasoning_open",
+          sessionId: view.sessionId,
+          contextKey: view.contextKey,
+          provider: view.modelProvider,
+          model: view.model,
+          permissionMode: view.currentMode,
+        },
+      }]),
+    ];
+    return sectionCard("Provider 设置 · 权限", elements);
   }
 
   renderPromptQueue(view: PromptQueueCardView): Record<string, unknown> {
@@ -330,14 +635,14 @@ export class CardRenderer {
       ? [
         `**当前任务**：${inlineCode(view.currentTask.title ?? view.currentTask.id)}`,
         workspaceLine,
-        `**模型 / 思考强度 / 权限**：${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentTask.permissionMode))}`,
+        `**Provider / 模型 / 思考强度 / 权限**：${inlineCode(view.currentTask.modelProvider ?? "Codex 默认")} / ${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentTask.permissionMode))}`,
         `**任务状态 / Agent**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)} / ${inlineCode(view.currentTask.agentName)}`,
         `**任务 ID**：${inlineCode(view.currentTask.id)}`,
       ]
       : [
         "**当前任务**：无，下一条普通消息会创建新任务",
         workspaceLine,
-        `**模型 / 思考强度 / 权限**：${inlineCode("默认")} / ${inlineCode("自动")} / ${inlineCode(permissionModeLabel())}`,
+        `**Provider / 模型 / 思考强度 / 权限**：${inlineCode("Codex 默认")} / ${inlineCode("默认")} / ${inlineCode("自动")} / ${inlineCode(permissionModeLabel())}`,
         `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
       ];
     lines.push(
@@ -646,7 +951,7 @@ function fileSummaryPanel(state: TurnViewState): Record<string, unknown> {
   return collapsiblePanel(
     `文件变更 · ${state.fileSummary.length}`,
     state.fileSummary
-      .map((file) => `- ${displayFilePath(file.path, state.projectCwd)}  +${file.additions ?? 0} -${file.deletions ?? 0}`)
+      .map((file) => `- ${escapeMarkdownFilePath(displayFilePath(file.path, state.projectCwd))}  +${file.additions ?? 0} -${file.deletions ?? 0}`)
       .join("\n"),
     { elementId: "turn_files" },
   );
@@ -859,6 +1164,10 @@ function displayFilePath(filePath: string, projectCwd?: string): string {
   return isInsideProject ? relativePath || "." : absolutePath;
 }
 
+function escapeMarkdownFilePath(filePath: string): string {
+  return filePath.replaceAll("\\.", "\\\\.");
+}
+
 function usesWindowsPaths(...values: string[]): boolean {
   return values.some((value) => /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value));
 }
@@ -1060,6 +1369,104 @@ function acpPermissionOptionLabel(option: { name: string; kind: string }): strin
     reject_always: "Always Deny",
   };
   return labels[option.kind] ?? (/^[\x20-\x7E]+$/.test(option.name) ? option.name : "Select");
+}
+
+function settingsTabRow(
+  activeTab: ExecutionSettingsTab,
+  baseAction: Record<string, string>,
+  showAgentTab: boolean,
+  showRuntimeTabs: boolean,
+): Record<string, unknown> | undefined {
+  const tabs: Array<{ id: ExecutionSettingsTab; label: string }> = [
+    ...(showAgentTab ? [{ id: "agent" as const, label: "Agent" }] : []),
+    ...(showRuntimeTabs
+      ? [
+          { id: "provider" as const, label: "Provider" },
+          { id: "model" as const, label: "Model" },
+          { id: "thinking" as const, label: "Thinking" },
+          { id: "permission" as const, label: "Permission" },
+        ]
+      : []),
+  ];
+  if (tabs.length === 0) return undefined;
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "2px",
+    margin: "8px 0 0 0",
+    columns: tabs.flatMap((tab, index) => [
+      ...(index > 0
+        ? [{
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: [{ ...markdown("·"), text_align: "center", text_size: "notation" }],
+          }]
+        : []),
+      {
+        tag: "column",
+        width: "auto",
+        vertical_align: "center",
+        elements: [settingsTabElement(tab.label, tab.id === activeTab, {
+          action: "settings_tab_open",
+          ...baseAction,
+          tab: tab.id,
+        })],
+      },
+    ]),
+  };
+}
+
+function settingsTabElement(
+  label: string,
+  active: boolean,
+  value: Record<string, string>,
+): Record<string, unknown> {
+  if (active) {
+    return {
+      ...markdown(escapeCardHtml(label)),
+      text_align: "center",
+      text_size: "notation",
+    };
+  }
+  const action = taskActionElement({ text: label, value });
+  return {
+    ...action,
+    padding: "6px 0px",
+    elements: (action.elements as Array<Record<string, unknown>>).map((element) => ({
+      ...element,
+      text_align: "center",
+      text_size: "notation",
+    })),
+  };
+}
+
+function settingsOptionRow(input: {
+  label: string;
+  current: boolean;
+  action: TaskListCardAction;
+}): Record<string, unknown> {
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "8px",
+    vertical_align: "center",
+    columns: [
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "center",
+        elements: [markdown(input.label)],
+      },
+      {
+        tag: "column",
+        width: "auto",
+        vertical_align: "center",
+        elements: input.current ? [markdown("✅ 当前")] : [taskActionElement(input.action)],
+      },
+    ],
+  };
 }
 
 function taskActionRow(actions: TaskListCardAction[]): Record<string, unknown> {

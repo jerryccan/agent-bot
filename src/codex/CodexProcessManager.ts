@@ -40,6 +40,7 @@ export class CodexProcessManager implements AppServerClientProvider {
     });
     await client.request("initialize", {
       clientInfo: { name: "agent-bot", title: "Agent Bot", version: "0.1.0" },
+      capabilities: { experimentalApi: true },
     });
     client.notify("initialized", {});
     return client;

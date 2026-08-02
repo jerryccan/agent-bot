@@ -52,6 +52,49 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("keeps auto-sized execution-setting tabs on one dot-separated row", () => {
+    const card = new CardRenderer().renderExecutionSettings({
+      sessionId: "session_1",
+      contextKey: "chat_id:c1",
+      activeTab: "permission",
+      currentAgent: "codex",
+      taskAgent: "codex",
+      agents: [
+        { name: "codex", title: "Codex" },
+        { name: "traex", title: "TraeX" },
+      ],
+      runtimeSettingsAvailable: true,
+      currentProvider: "openai",
+      currentModel: "gpt-test",
+      currentEffort: "high",
+      currentPermissionMode: "auto",
+      providers: [],
+      providerSupported: true,
+      models: [],
+      reasoningOptions: [],
+    });
+    const tabRow = collectObjects(card).find((item) => (
+      item.tag === "column_set"
+      && Array.isArray(item.columns)
+      && item.columns.length === 9
+    ));
+    const columns = tabRow?.columns as Array<Record<string, unknown>>;
+
+    expect(columns).toHaveLength(9);
+    expect(tabRow).toMatchObject({ flex_mode: "none", horizontal_spacing: "2px" });
+    expect(columns.every((column) => column.width === "auto")).toBe(true);
+    expect(columns.filter((_, index) => index % 2 === 1).map((column) => (
+      (column.elements as Array<Record<string, unknown>>)[0]?.content
+    ))).toEqual(["·", "·", "·", "·"]);
+    const tabActions = collectObjects(tabRow).filter((item) => item.tag === "interactive_container");
+    expect(tabActions).toHaveLength(4);
+    expect(tabActions.every((action) => action.padding === "6px 0px")).toBe(true);
+    expect(collectObjects(tabRow)
+      .filter((item) => item.tag === "markdown")
+      .every((label) => label.text_align === "center" && label.text_size === "notation")).toBe(true);
+    expect(JSON.stringify(tabRow)).toContain("Permission");
+  });
+
   test("renders ACP permission buttons in English regardless of supplied names", () => {
     const card = new CardRenderer().renderPermissionRequest(
       { localSessionId: "session_1" } as RuntimeSession,
@@ -545,6 +588,23 @@ describe("CardRenderer", () => {
     expect(markdownContents).toContain("D:\\dev\\shared\\config.ts  +0 -1");
     expect(markdownContents).toContain("E:\\external\\other.ts  +3 -0");
     expect(markdownContents).not.toContain("D:\\dev\\agent-bot\\src\\index.ts");
+  });
+
+  test("preserves the Windows separator before a dot directory in the file summary", () => {
+    const running = state();
+    running.projectCwd = "D:\\dev\\agent-bot";
+    running.fileSummary = [{
+      path: "C:\\Users\\Admin\\.agent-bot\\config.yaml",
+      additions: 28,
+      deletions: 4,
+    }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) => panelTitle(item).startsWith("文件变更"));
+    const content = String((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content ?? "");
+
+    expect(content).toContain("C:\\Users\\Admin\\\\.agent-bot\\config.yaml  +28 -4");
+    expect(content).not.toContain("`");
   });
 
   test("keeps a stable identity for a tool panel while command output is updated", () => {

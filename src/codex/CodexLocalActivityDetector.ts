@@ -16,12 +16,14 @@ interface ThreadPathRow {
 
 interface ThreadSettingsRow {
   id: string;
+  model_provider?: string | null;
   model: string | null;
   reasoning_effort: string | null;
   approval_mode: string | null;
 }
 
 export interface CodexLocalThreadSettings {
+  modelProvider?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode?: PermissionMode;
@@ -79,10 +81,15 @@ export class CodexLocalActivityDetector {
         fileMustExist: true,
       });
       const placeholders = ids.map(() => "?").join(", ");
+      const columns = new Set(
+        (database.pragma("table_info(threads)") as Array<{ name: string }>).map((column) => column.name),
+      );
+      const providerColumn = columns.has("model_provider") ? ", model_provider" : "";
       const rows = database.prepare(
-        `SELECT id, model, reasoning_effort, approval_mode FROM threads WHERE id IN (${placeholders})`,
+        `SELECT id${providerColumn}, model, reasoning_effort, approval_mode FROM threads WHERE id IN (${placeholders})`,
       ).all(...ids) as ThreadSettingsRow[];
       return new Map(rows.map((row) => [row.id, {
+        ...(row.model_provider?.trim() ? { modelProvider: row.model_provider.trim() } : {}),
         ...(row.model?.trim() ? { model: row.model.trim() } : {}),
         ...(row.reasoning_effort?.trim() ? { reasoningEffort: row.reasoning_effort.trim() } : {}),
         ...(row.approval_mode?.trim()

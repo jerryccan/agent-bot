@@ -1,15 +1,16 @@
-import type { AgentConfig } from "../config/schema.js";
 import type { AgentRuntime, RuntimeKind } from "./types.js";
 
 export class AgentRuntimeRegistry {
-  constructor(private readonly runtimes: Record<RuntimeKind, AgentRuntime>) {}
+  constructor(private readonly runtimes: Record<string, AgentRuntime>) {}
 
-  forAgent(agent: Pick<AgentConfig, "kind">): AgentRuntime {
-    return this.runtimes[agent.kind];
+  forAgent(agentName: string): AgentRuntime {
+    const runtime = this.runtimes[agentName];
+    if (!runtime) throw new Error(`Unknown agent runtime: ${agentName}`);
+    return runtime;
   }
 
-  get(kind: RuntimeKind): AgentRuntime {
-    return this.runtimes[kind];
+  entries(kind?: RuntimeKind): Array<[agentName: string, runtime: AgentRuntime]> {
+    return Object.entries(this.runtimes).filter(([, runtime]) => kind === undefined || runtime.kind === kind);
   }
 
   close(): void {

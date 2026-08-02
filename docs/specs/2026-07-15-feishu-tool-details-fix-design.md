@@ -15,7 +15,7 @@ Make the Feishu experience accurately represent the active runtime and show usef
 1. The main progress card is self-contained. Successful tools stay collapsed to avoid noise, but expanding the native collapsible panel shows an explicit operation/command, exit status, and bounded result summary. The redundant callback-only “查看详情” button is removed.
 2. Normal turn controls do not require card callbacks: an active card tells the user to send `/cancel`. Approval buttons remain relevant only if the user explicitly changes from the default automatic permission mode to confirmation mode.
 3. `AcpRuntimeAdapter` remembers each tool call between partial updates and extracts command, description, output, error, and exit code from the ACP payload. Completion events merge with the remembered start event instead of losing the title and command.
-4. The existing Feishu context is migrated once from its legacy ACP session to a fresh Codex session. Normal explicit `/use` and `/switch` behavior remains unchanged.
+4. The existing Feishu context is migrated once from its legacy ACP session to a fresh Codex session. Normal explicit `/agent` and `/switch` behavior remains unchanged.
 
 ## UX constraints
 

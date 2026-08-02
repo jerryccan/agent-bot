@@ -5,6 +5,7 @@ import type {
   CreateRuntimeSessionInput,
   ForkRuntimeSessionInput,
   ModelOption,
+  ModelProviderOption,
   PermissionMode,
   RemoteSessionActivity,
   RemoteSessionPage,
@@ -13,12 +14,14 @@ import type {
   RuntimeGoal,
   RuntimeGoalUpdate,
   RuntimeEvent,
+  RuntimeExecutionSettings,
   RuntimePrompt,
   RuntimeSession,
   RuntimeSessionMetadata,
 } from "../runtime/types.js";
 import { appendGeneratedImageMarkdown } from "../utils/generatedImageMarkdown.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
+import { AppServerRequestError } from "./AppServerConnection.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
 import { CodexLocalActivityDetector } from "./CodexLocalActivityDetector.js";
 import { detectProjectlessWorkspace } from "./ProjectlessWorkspace.js";
@@ -100,6 +103,7 @@ export class CodexRuntime implements AgentRuntime {
     const response = await client.request<ThreadResponse>("thread/start", {
       cwd: input.cwd,
       model: input.model,
+      ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
       threadSource: "user",
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
@@ -122,8 +126,10 @@ export class CodexRuntime implements AgentRuntime {
     const client = await this.client();
     const response = await client.request<ThreadResponse>("thread/resume", {
       threadId: input.remoteSessionId,
+      excludeTurns: true,
       cwd: input.cwd,
       model: input.model,
+      ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
     }, SESSION_REQUEST_TIMEOUT_MS);
@@ -135,15 +141,30 @@ export class CodexRuntime implements AgentRuntime {
 
   async forkSession(input: ForkRuntimeSessionInput): Promise<RuntimeSession> {
     const client = await this.client();
-    const response = await client.request<ThreadResponse>("thread/fork", {
+    const forkParams = {
       threadId: input.remoteSessionId,
       lastTurnId: input.lastTurnId,
       cwd: input.cwd,
       model: input.model,
+      ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
       threadSource: "user",
       ...threadLifecycleParams(input.cwd),
       ...permissionParams(input.permissionMode),
-    }, FORK_REQUEST_TIMEOUT_MS);
+    };
+    let response: ThreadResponse;
+    try {
+      response = await client.request<ThreadResponse>("thread/fork", {
+        ...forkParams,
+        excludeTurns: true,
+      }, FORK_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      if (!isUnsupportedExcludeTurnsError(error)) throw error;
+      this.logger.warn(
+        { error },
+        "Codex App Server does not support thread/fork excludeTurns; retrying without it.",
+      );
+      response = await client.request<ThreadResponse>("thread/fork", forkParams, FORK_REQUEST_TIMEOUT_MS);
+    }
     const requestedTitle = normalizeTaskTitle(input.title);
     if (requestedTitle) {
       await client.request("thread/name/set", {
@@ -375,6 +396,28 @@ export class CodexRuntime implements AgentRuntime {
     this.requireSession(sessionId).permissionMode = mode;
   }
 
+  async setExecutionSettings(
+    sessionId: string,
+    settings: RuntimeExecutionSettings,
+  ): Promise<RuntimeSession> {
+    const session = this.requireSession(sessionId);
+    const response = await (await this.client()).request<ThreadResponse>("thread/resume", {
+      threadId: session.remoteSessionId,
+      excludeTurns: true,
+      cwd: session.cwd,
+      modelProvider: settings.modelProvider,
+      model: settings.model,
+      ...threadLifecycleParams(session.cwd),
+      ...permissionParams(settings.permissionMode),
+    }, SESSION_REQUEST_TIMEOUT_MS);
+    session.modelProvider = response.modelProvider ?? settings.modelProvider;
+    session.model = response.model ?? settings.model;
+    session.reasoningEffort = settings.reasoningEffort;
+    session.permissionMode = settings.permissionMode;
+    session.needsResume = false;
+    return session;
+  }
+
   async respondToApproval(
     sessionId: string,
     requestId: string,
@@ -410,6 +453,33 @@ export class CodexRuntime implements AgentRuntime {
       })),
       defaultReasoningEffort: model.defaultReasoningEffort,
     }));
+  }
+
+  async listModelProviders(): Promise<ModelProviderOption[]> {
+    const response = await (await this.client()).request<{ config?: Record<string, unknown> }>(
+      "config/read",
+      {},
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
+    const config = response.config ?? {};
+    const defaultProvider = stringValue(config.model_provider)?.trim();
+    const configuredProviders = isRecord(config.model_providers) ? config.model_providers : {};
+    const providers = new Map<string, ModelProviderOption>();
+    for (const [id, value] of Object.entries(configuredProviders)) {
+      if (!id.trim()) continue;
+      const displayName = isRecord(value) ? stringValue(value.name)?.trim() : undefined;
+      providers.set(id, {
+        id,
+        ...(displayName ? { displayName } : {}),
+        ...(id === defaultProvider ? { isDefault: true } : {}),
+      });
+    }
+    if (defaultProvider && !providers.has(defaultProvider)) {
+      providers.set(defaultProvider, { id: defaultProvider, isDefault: true });
+    }
+    return [...providers.values()].sort((left, right) =>
+      Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)) || left.id.localeCompare(right.id),
+    );
   }
 
   onEvent(listener: (event: RuntimeEvent) => void): () => void {
@@ -642,8 +712,10 @@ export class CodexRuntime implements AgentRuntime {
     if (!session.needsResume) return;
     await client.request("thread/resume", {
       threadId: session.remoteSessionId,
+      excludeTurns: true,
       cwd: session.cwd,
       model: session.model,
+      ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
       ...threadLifecycleParams(session.cwd),
       ...permissionParams(session.permissionMode),
     }, SESSION_REQUEST_TIMEOUT_MS);
@@ -772,6 +844,7 @@ export class CodexRuntime implements AgentRuntime {
       title: normalizeTaskTitle(response.thread.name)
         ?? normalizeTaskTitle(response.thread.preview)
         ?? input.title,
+      modelProvider: input.modelProvider ?? response.modelProvider,
       model: input.model ?? response.model,
       reasoningEffort,
       permissionMode: input.permissionMode,
@@ -835,6 +908,7 @@ export class CodexRuntime implements AgentRuntime {
 
 interface ThreadResponse {
   thread: { id: string; name?: string | null; preview?: string };
+  modelProvider?: string;
   model?: string;
   reasoningEffort?: string | null;
 }
@@ -853,6 +927,7 @@ interface CodexThreadSnapshot {
   name?: string | null;
   preview?: string;
   cwd?: string;
+  modelProvider?: string;
   source?: unknown;
   createdAt?: number;
   updatedAt?: number;
@@ -933,6 +1008,19 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
+function isUnsupportedExcludeTurnsError(error: unknown): boolean {
+  if (!(error instanceof AppServerRequestError) || error.method !== "thread/fork") return false;
+  const data = typeof error.data === "string"
+    ? error.data
+    : error.data === undefined
+      ? ""
+      : JSON.stringify(error.data);
+  const details = `${error.serverMessage} ${data}`;
+  if (!details.toLowerCase().replaceAll(/[^a-z]/g, "").includes("excludeturns")) return false;
+  return error.code === -32602
+    || /unknown|unrecognized|unexpected|unsupported|not supported|experimental/i.test(details);
+}
+
 function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {
   const lastTurn = thread.turns?.at(-1);
   const lastCompletedTurn = [...(thread.turns ?? [])]
@@ -956,6 +1044,7 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     cwd: thread.cwd ?? "",
     source: codexSourceLabel(thread.source),
     status,
+    modelProvider: thread.modelProvider,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     recencyAt: thread.recencyAt ?? undefined,

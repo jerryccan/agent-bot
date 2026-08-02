@@ -82,7 +82,7 @@ The progress card has these visual states:
 - `/status`: show App Server state, authentication mode, current session, model, directory, permission mode, and active turn.
 - `/cancel`: interrupt the active Codex turn immediately.
 - `/close [session]`: archive the Codex thread and close the local session.
-- `/agents`, `/modes`, and `/help`: continue to support the Agent Bot's multi-agent behavior.
+- `/agent` and `/help`: continue to support the Agent Bot's multi-agent behavior.
 - Plain text: start a turn, or steer the active turn when one is already running.
 
 Control commands are not serialized behind a long-running turn. `/cancel` and `/status` are handled immediately. Plain text received during a turn uses `turn/steer`; if the turn is already completing, the text becomes the next queued turn.

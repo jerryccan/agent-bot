@@ -190,6 +190,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
   }
 
   close(): void {
+    this.acp.shutdown();
     this.sessions.clear();
     this.activeTurns.clear();
     this.toolsBySession.clear();

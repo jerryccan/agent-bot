@@ -1,10 +1,6 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { AcpProcessManager } from "./acp/AcpProcessManager.js";
-import { AcpSessionManager } from "./acp/AcpSessionManager.js";
-import { CodexProcessManager } from "./codex/CodexProcessManager.js";
-import { CodexRuntime } from "./codex/CodexRuntime.js";
 import { LocalControlServer } from "./cli/LocalControlServer.js";
 import { controlEndpoint, type ControlRequest, type ControlResponse } from "./cli/controlProtocol.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
@@ -20,8 +16,7 @@ import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { createLogger } from "./logging/logger.js";
 import { OutboundRouter, type OutboundRoute } from "./presentation/OutboundRouter.js";
 import { ProxySessionController } from "./proxy/ProxySessionController.js";
-import { AcpRuntimeAdapter } from "./runtime/AcpRuntimeAdapter.js";
-import { AgentRuntimeRegistry } from "./runtime/AgentRuntimeRegistry.js";
+import { createAgentRuntimeRegistry } from "./runtime/createAgentRuntimeRegistry.js";
 import { StateStore } from "./state/StateStore.js";
 import { StartupNotifier } from "./startup/StartupNotifier.js";
 import { SessionMetadataHydrator } from "./startup/SessionMetadataHydrator.js";
@@ -47,18 +42,7 @@ const transport = consoleOnly ? "console" : requireServerFeishuTransport(config.
 const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
 
-const acpProcessManager = new AcpProcessManager(logger);
-const acpSessionManager = new AcpSessionManager(config, acpProcessManager, logger);
-const acpRuntime = new AcpRuntimeAdapter(acpSessionManager);
-const codexAgent = Object.values(config.agents).find((agent) => agent.kind === "codex");
-const codexProcessManager = new CodexProcessManager(
-  codexAgent?.command ?? "codex",
-  codexAgent?.args ?? ["app-server", "--listen", "stdio://"],
-  codexAgent?.env ?? {},
-  logger,
-);
-const codexRuntime = new CodexRuntime(codexProcessManager, logger);
-const runtimes = new AgentRuntimeRegistry({ acp: acpRuntime, codex: codexRuntime });
+const runtimes = createAgentRuntimeRegistry(config, logger);
 
 const routes: OutboundRoute[] = [];
 let feishuConnector: FeishuConnector | undefined;
@@ -149,8 +133,24 @@ if (feishuConnector && startupNotifier) {
 }
 consoleConnector?.start();
 
-async function requestRestart(contextKey: string): Promise<void> {
-  await initiateRestart("用户执行 /restart 命令", contextKey);
+async function requestRestart(contextKey: string, force: boolean): Promise<void> {
+  if (restartRequested) {
+    await outbound.sendText(contextKey, "Agent Bot 已在重启中，请稍候。").catch(() => undefined);
+    return;
+  }
+  if (force) {
+    await initiateRestart("用户执行 /restart --force 命令", contextKey);
+    return;
+  }
+  const newlyScheduled = safeRestart.schedule("用户执行 /restart 命令");
+  await outbound.sendText(
+    contextKey,
+    newlyScheduled
+      ? "已安排安全重启。Agent Bot 会等待所有任务完成、最终结果投递完成，并保持 15 秒无新消息后重启。"
+      : "安全重启已在等待中，已更新重启原因。",
+  ).catch((error: unknown) => {
+    logger.warn({ error, contextKey }, "Failed to send safe restart acknowledgement.");
+  });
 }
 
 async function initiateRestart(reason: string, contextKey?: string): Promise<void> {
@@ -159,7 +159,7 @@ async function initiateRestart(reason: string, contextKey?: string): Promise<voi
     return;
   }
   restartRequested = true;
-  safeRestart.cancel();
+  await safeRestart.cancelCurrent();
   await safeRestartNotifier?.flush();
   if (contextKey) {
     await outbound.sendText(contextKey, "Agent Bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
@@ -226,7 +226,6 @@ async function shutdown(exitCode: number, restartReason?: string): Promise<void>
     delay(5_000),
   ]);
   runtimes.close();
-  acpProcessManager.stopAll();
   await controlServer?.close().catch((error: unknown) => logger.warn({ error }, "Failed to close local control endpoint."));
   store.close();
   if (restartReason) startReplacementSupervisor(restartReason);

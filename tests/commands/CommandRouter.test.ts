@@ -15,25 +15,22 @@ describe("CommandRouter", () => {
     expect(() => router.parse("！")).toThrow("请输入要执行的命令");
   });
 
-  test("parses Codex permission commands", () => {
-    expect(router.parse("/permissions confirm")).toEqual({ type: "permissions", mode: "confirm" });
-    expect(router.parse("/permissions auto")).toEqual({ type: "permissions", mode: "auto" });
-    expect(router.parse("/permissions")).toEqual({ type: "permissions" });
-    expect(() => router.parse("/permissions unsafe")).toThrow("auto 或 confirm");
-  });
-
-  test("parses model selection and listing", () => {
-    expect(router.parse("/model gpt-test")).toEqual({ type: "model", model: "gpt-test" });
+  test("opens execution setting cards and rejects command arguments", () => {
+    expect(router.parse("/provider")).toEqual({ type: "provider" });
     expect(router.parse("/model")).toEqual({ type: "model" });
-  });
-
-  test("parses thinking display and selection", () => {
     expect(router.parse("/thinking")).toEqual({ type: "thinking" });
-    expect(router.parse("/thinking high")).toEqual({ type: "thinking", effort: "high" });
+    expect(router.parse("/permissions")).toEqual({ type: "permissions" });
+    expect(() => router.parse("/provider azure gpt-next xhigh confirm")).toThrow("不接受参数");
+    expect(() => router.parse("/model gpt-test")).toThrow("不接受参数");
+    expect(() => router.parse("/thinking high")).toThrow("不接受参数");
+    expect(() => router.parse("/permissions confirm")).toThrow("不接受参数");
   });
 
-  test("parses the process restart command", () => {
+  test("parses safe and forced restart commands", () => {
     expect(router.parse("/restart")).toEqual({ type: "restart" });
+    expect(router.parse("/restart --force")).toEqual({ type: "restart", force: true });
+    expect(() => router.parse("/restart --immediate")).toThrow("只接受一个可选的 --force 参数");
+    expect(() => router.parse("/restart --force extra")).toThrow("只接受一个可选的 --force 参数");
   });
 
   test("parses current and specified task status", () => {
@@ -110,7 +107,7 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/new --nodir --nodir")).toThrow("只能指定一次 --nodir");
   });
 
-  test("creates a new group with an optional title and rejects task-only --dir", () => {
+  test("creates a new group with an optional title and project directory", () => {
     expect(router.parse("/newgroup")).toEqual({
       type: "newgroup",
       title: undefined,
@@ -123,7 +120,31 @@ describe("CommandRouter", () => {
       type: "newgroup",
       title: "广州 天气",
     });
-    expect(() => router.parse("/newgroup 广州天气 --dir D:\\work")).toThrow("不支持 --dir");
+    expect(router.parse('/newgroup "广州 天气" --dir "~/dev/lark bot"')).toEqual({
+      type: "newgroup",
+      title: "广州 天气",
+      cwd: "~/dev/lark bot",
+    });
+    expect(router.parse('/newgroup --dir "~\\dev\\agent-bot" 广州天气')).toEqual({
+      type: "newgroup",
+      title: "广州天气",
+      cwd: "~\\dev\\agent-bot",
+    });
+    expect(router.parse("/newgroup --nodir")).toEqual({
+      type: "newgroup",
+      title: undefined,
+      projectless: true,
+    });
+    expect(router.parse("/newgroup Projectless room --nodir")).toEqual({
+      type: "newgroup",
+      title: "Projectless room",
+      projectless: true,
+    });
+    expect(() => router.parse("/newgroup 广州天气 --dir")).toThrow("--dir 后指定项目目录");
+    expect(() => router.parse("/newgroup --dir D:\\work --dir D:\\other")).toThrow("只能指定一次");
+    expect(() => router.parse("/newgroup --nodir --dir D:\\work")).toThrow("--dir 和 --nodir 不能同时使用");
+    expect(() => router.parse("/newgroup --dir D:\\work --nodir")).toThrow("--dir 和 --nodir 不能同时使用");
+    expect(() => router.parse("/newgroup --nodir --nodir")).toThrow("只能指定一次 --nodir");
   });
 
   test("parses fork with an optional session reference", () => {
@@ -131,12 +152,16 @@ describe("CommandRouter", () => {
     expect(router.parse("/fork 2")).toEqual({ type: "fork", sessionId: "2" });
     expect(router.parse("/fork 019f-thread")).toEqual({ type: "fork", sessionId: "019f-thread" });
     expect(() => router.parse("/fork 1 extra")).toThrow("只接受一个");
+    expect(() => router.parse("/fork --exclude-turns")).toThrow("不支持参数");
+    expect(() => router.parse("/fork --unknown")).toThrow("不支持参数");
   });
 
   test("parses forkgroup with an optional title", () => {
     expect(router.parse("/forkgroup")).toEqual({ type: "forkgroup", title: undefined });
     expect(router.parse("/forkgroup 并行修复")).toEqual({ type: "forkgroup", title: "并行修复" });
     expect(router.parse('/forkgroup "Parallel fix"')).toEqual({ type: "forkgroup", title: "Parallel fix" });
+    expect(() => router.parse("/forkgroup --exclude-turns")).toThrow("不支持参数");
+    expect(() => router.parse("/forkgroup --unknown")).toThrow("不支持参数");
   });
 
   test("parses a title containing spaces", () => {
@@ -161,10 +186,15 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/nosteer")).toThrow("请输入要排队的 Prompt");
   });
 
-  test("does not retain removed task aliases", () => {
+  test("does not retain removed commands", () => {
     expect(() => router.parse("/attach 019f-thread")).toThrow("未知命令：/attach");
+    expect(() => router.parse("/agents")).toThrow("未知命令：/agents");
+    expect(() => router.parse("/ask explain this")).toThrow("未知命令：/ask");
     expect(() => router.parse("/detach")).toThrow("未知命令：/detach");
     expect(() => router.parse("/close")).toThrow("未知命令：/close");
+    expect(() => router.parse("/mode plan")).toThrow("未知命令：/mode");
+    expect(() => router.parse("/modes")).toThrow("未知命令：/modes");
+    expect(() => router.parse("/use codex D:\\dev\\project")).toThrow("未知命令：/use");
   });
 
   test("rejects unknown slash commands instead of routing them as prompts", () => {
@@ -196,8 +226,10 @@ describe("CommandRouter", () => {
       type: "nosteer",
       text: "完成后运行测试",
     });
-    expect(router.parse("/thi xhigh")).toEqual({ type: "thinking", effort: "xhigh" });
-    expect(router.parse("/per confirm")).toEqual({ type: "permissions", mode: "confirm" });
+    expect(router.parse("/thi")).toEqual({ type: "thinking" });
+    expect(router.parse("/per")).toEqual({ type: "permissions" });
+    expect(router.parse("/pro")).toEqual({ type: "provider" });
+    expect(() => router.parse("/thi xhigh")).toThrow("不接受参数");
     expect(router.parse("/q 完成后运行测试")).toEqual({
       type: "nosteer",
       text: "完成后运行测试",
@@ -207,18 +239,16 @@ describe("CommandRouter", () => {
   test("prefers exact commands and rejects ambiguous prefixes", () => {
     expect(router.parse("/new title")).toEqual({ type: "new", title: "title", cwd: undefined });
     expect(router.parse("/fork 2")).toEqual({ type: "fork", sessionId: "2" });
-    expect(router.parse("/mode plan")).toEqual({ type: "mode", value: "plan" });
+    expect(router.parse("/mo")).toEqual({ type: "model" });
     expect(() => router.parse("/s")).toThrow(
       "命令前缀 /s 不唯一，可匹配：/sessions、/status、/stop、/switch",
     );
     expect(() => router.parse("/f")).toThrow(
       "命令前缀 /f 不唯一，可匹配：/fork、/forkgroup",
     );
-    expect(() => router.parse("/mo")).toThrow(
-      "命令前缀 /mo 不唯一，可匹配：/mode、/model、/modes",
-    );
-    expect(() => router.parse("/ag")).toThrow(
-      "命令前缀 /ag 不唯一，可匹配：/agent、/agents",
+    expect(router.parse("/ag")).toEqual({ type: "agent" });
+    expect(() => router.parse("/p")).toThrow(
+      "命令前缀 /p 不唯一，可匹配：/permissions、/provider",
     );
   });
 
@@ -232,7 +262,6 @@ describe("CommandRouter", () => {
   test("uses agent for both listing and selecting the default agent", () => {
     expect(router.parse("/agent")).toEqual({ type: "agent" });
     expect(router.parse("/agent codex")).toEqual({ type: "agent", agent: "codex" });
-    expect(router.parse("/agents")).toEqual({ type: "agent" });
   });
 
 });

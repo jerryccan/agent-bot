@@ -162,9 +162,11 @@ logging:
 
 ## Agent Runtime
 
-`kind: "codex"` 使用 Codex App Server。Agent Bot 通过 App Server 协议传递项目目录、模型、思考强度、权限模式、文字输入和本地图片。
+Agent 配置的标准名是运行时隔离键。每个配置的 Agent 都拥有独立、按需启动的子进程和 Runtime 实例，即使多个 Agent 使用相同的 `kind` 也不会合并。不同 Agent 的任务不会共享命令、环境变量、协议连接、会话映射或事件流；同一 Agent 的多个任务共享该 Agent 进程，但使用独立的协议会话。
 
-`kind: "acp"` 或未填写 `kind` 的 Agent 作为 ACP 进程启动。Agent 配置中的 `env` 会加入其环境变量。
+`kind` 只用于选择连接适配器。`kind: "codex"` 的每个 Agent 使用各自的 Codex App Server 进程。Agent Bot 通过 App Server 协议传递项目目录、模型、思考强度、权限模式、文字输入和本地图片。`/sessions` 会聚合所有 Codex Agent 返回的任务，同时保留任务所属 Agent，确保 Switch、Status、Stop、New 和 Fork 操作回到正确进程。
+
+`kind: "acp"` 或未填写 `kind` 的 Agent 使用各自的 ACP 进程。同一 Agent 的多个任务会在该连接上创建独立 ACP session。Agent 配置中的 `env` 只会加入该 Agent 的环境变量。
 
 所有 Agent 子进程都会收到：
 
@@ -189,7 +191,9 @@ AGENT_BOT=1
 
 `/forkgroup` 会根据话题状态选择来源。话题尚未绑定任务，或者已绑定任务但尚未完成过自己的 turn 时，直接从话题原始锚点 turn fork，不创建中间话题任务。话题任务完成过 turn 后，使用本地持久化的最近完成 turn；更晚的执行中 turn 不会阻塞命令，也不会成为 fork 点。
 
-新群欢迎消息会显示分支任务持久化后的模型、思考强度和权限类型；权限类型显示为自动执行或执行前确认。
+Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeTurns: true`。它只阻止响应填充 `thread.turns`，不会改变复制到分支中的历史。App Server 连接已启用 `experimentalApi`，不需要用户提供命令参数。如果旧版 App Server 明确提示 `excludeTurns` 字段未知、不支持或需要实验能力，Agent Bot 会移除该字段并重试一次。超时、断连和无关的 Fork 错误绝不重试，因为第一次请求可能已经创建分支。
+
+新群欢迎消息会显示分支任务持久化后的 Provider、模型、思考强度和权限类型；权限类型显示为自动执行或执行前确认。
 
 ## Turn 与消息行为
 
@@ -212,6 +216,12 @@ AGENT_BOT=1
 `/sessions` 通过 `thread/list` 读取 Codex 任务，可发现同一 `CODEX_HOME` 下由 Codex Desktop、CLI、Agent Bot 或其他 App Server 客户端创建的任务。
 
 每个任务条目都提供 `NewGroup` 和 `ForkGroup` 回调。回调数据保留所选任务 ID 与来源上下文，并使用飞书操作者的 `open_id` 邀请用户进入新群。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
+
+## Codex Provider 设置
+
+Provider 是任务级设置，以 `model_provider` 与模型、思考强度和权限模式一起持久化。任务明确继承或选择 Provider 时，Agent Bot 通过 `thread/start`、`thread/resume` 和 `thread/fork` 传递 `modelProvider`。全新任务没有可继承 Provider 时，Agent Bot 省略该参数，由 Codex App Server 使用 Codex 配置中生效的 `model_provider`，再从 thread 响应中读取实际 Provider 并保存。
+
+`/provider`、`/model`、`/thinking` 和 `/permissions` 打开同一张 Card 2.0 运行设置卡片，并激活对应的 tab。四个命令都拒绝参数，tab 切换和设置修改只通过卡片回调完成。Provider 选项来自 App Server 的 `config/read`；切换 Provider 时使用当前兼容的模型、思考强度和权限模式恢复 thread。模型、思考强度和权限选择会立即更新对应设置、就地刷新同一张卡片，并从下一次请求生效。
 
 Agent Bot 内部保留本地路由键以关联飞书卡片和投递状态，但对用户展示 Codex 任务 ID。没有明确用户操作时，不会续写、steer、停止或分支其他客户端正在运行的 Codex 工作。
 
@@ -259,7 +269,7 @@ Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fat
 2. 最终回答完成投递
 3. 连续 15 秒没有新消息
 
-新消息会重置静默计时。`--immediate` 和 `--force` 跳过这些检查。退出码 `75` 表示主动 worker 重启。
+飞书 `/restart` 命令默认使用这条安全重启路径；`/restart --force` 会立即重启，并可能中断正在执行的任务。该命令拒绝其他所有参数。新消息会重置静默计时，CLI 的 `--immediate` 和 `--force` 也会跳过这些检查。退出码 `75` 表示主动 worker 重启。
 
 首次安全重启状态卡会延迟 3 秒发送，让任务最终回答尽可能先到达；延迟期间的状态变化会合并到首张卡片。该延迟不阻塞调度器轮询，真正关闭前会立即 flush 尚未发送的卡片。
 

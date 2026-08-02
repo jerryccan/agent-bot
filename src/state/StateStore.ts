@@ -32,6 +32,7 @@ export interface SessionRecord {
   runtimeKind?: "acp" | "codex";
   remoteSessionId?: string;
   title?: string;
+  modelProvider?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode?: "auto" | "confirm";
@@ -100,6 +101,7 @@ interface SessionRow {
   runtime_kind: "acp" | "codex" | null;
   remote_session_id: string | null;
   title: string | null;
+  model_provider: string | null;
   model: string | null;
   reasoning_effort: string | null;
   permission_mode: "auto" | "confirm" | null;
@@ -149,10 +151,11 @@ export class StateStore {
     this.ensureTurnSnapshotColumns();
     this.ensureChatContextColumns();
     this.initializeContextSessionMappings();
+    this.db.exec("DROP INDEX IF EXISTS idx_sessions_remote_session_id_unique");
     this.reconcileDuplicateRemoteSessions();
     this.db.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_remote_session_id_unique
-      ON sessions(remote_session_id)
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_agent_remote_session_unique
+      ON sessions(agent_name, remote_session_id)
       WHERE remote_session_id IS NOT NULL
     `);
     this.db.exec(`
@@ -520,7 +523,7 @@ export class StateStore {
     patch: Partial<
       Pick<
         SessionRecord,
-        "runtimeKind" | "remoteSessionId" | "title" | "model" | "reasoningEffort" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
+        "runtimeKind" | "remoteSessionId" | "title" | "modelProvider" | "model" | "reasoningEffort" | "permissionMode" | "lastTurnId" | "lastTurnStatus"
       >
     >,
   ): void {
@@ -533,7 +536,7 @@ export class StateStore {
       .prepare(
         `
         UPDATE sessions
-        SET runtime_kind = ?, remote_session_id = ?, title = ?, model = ?, reasoning_effort = ?, permission_mode = ?,
+        SET runtime_kind = ?, remote_session_id = ?, title = ?, model_provider = ?, model = ?, reasoning_effort = ?, permission_mode = ?,
             last_turn_id = ?, last_turn_status = ?, updated_at = ?
         WHERE local_session_id = ?
         `,
@@ -542,6 +545,7 @@ export class StateStore {
         patch.runtimeKind ?? existing.runtimeKind ?? null,
         patch.remoteSessionId ?? existing.remoteSessionId ?? existing.acpSessionId ?? null,
         patch.title ?? existing.title ?? null,
+        patch.modelProvider ?? existing.modelProvider ?? null,
         patch.model ?? existing.model ?? null,
         patch.reasoningEffort ?? existing.reasoningEffort ?? null,
         patch.permissionMode ?? existing.permissionMode ?? null,
@@ -814,7 +818,11 @@ export class StateStore {
     };
   }
 
-  findSessionByRemoteSessionId(remoteSessionId: string, contextKey?: string): SessionRecord | undefined {
+  findSessionByRemoteSessionId(
+    remoteSessionId: string,
+    contextKey?: string,
+    agentName?: string,
+  ): SessionRecord | undefined {
     const row = contextKey
       ? this.db
           .prepare(`
@@ -823,17 +831,20 @@ export class StateStore {
             JOIN context_sessions ON context_sessions.local_session_id = sessions.local_session_id
             WHERE sessions.remote_session_id = ?
               AND context_sessions.context_key = ?
+              AND (? IS NULL OR sessions.agent_name = ?)
               AND sessions.status != 'closed'
             LIMIT 1
           `)
-          .get(remoteSessionId, contextKey) as SessionRow | undefined
+          .get(remoteSessionId, contextKey, agentName ?? null, agentName ?? null) as SessionRow | undefined
       : this.db
           .prepare(`
             SELECT * FROM sessions
-            WHERE remote_session_id = ? AND status != 'closed'
+            WHERE remote_session_id = ?
+              AND (? IS NULL OR agent_name = ?)
+              AND status != 'closed'
             ORDER BY created_at ASC LIMIT 1
           `)
-          .get(remoteSessionId) as SessionRow | undefined;
+          .get(remoteSessionId, agentName ?? null, agentName ?? null) as SessionRow | undefined;
     return row ? { ...mapSession(row), ...(contextKey ? { contextKey } : {}) } : undefined;
   }
 
@@ -1034,21 +1045,21 @@ export class StateStore {
 
   private reconcileDuplicateRemoteSessions(): void {
     const duplicateIds = this.db.prepare(`
-      SELECT remote_session_id
+      SELECT agent_name, remote_session_id
       FROM sessions
       WHERE remote_session_id IS NOT NULL
-      GROUP BY remote_session_id
+      GROUP BY agent_name, remote_session_id
       HAVING count(*) > 1
-    `).all() as Array<{ remote_session_id: string }>;
+    `).all() as Array<{ agent_name: string; remote_session_id: string }>;
     if (duplicateIds.length === 0) return;
 
     const reconcile = this.db.transaction(() => {
-      for (const { remote_session_id: remoteSessionId } of duplicateIds) {
+      for (const { agent_name: agentName, remote_session_id: remoteSessionId } of duplicateIds) {
         const rows = this.db.prepare(`
           SELECT * FROM sessions
-          WHERE remote_session_id = ?
+          WHERE agent_name = ? AND remote_session_id = ?
           ORDER BY created_at ASC
-        `).all(remoteSessionId) as SessionRow[];
+        `).all(agentName, remoteSessionId) as SessionRow[];
         const canonical = rows[0];
         if (!canonical) continue;
         const latest = [...rows].sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0] ?? canonical;
@@ -1086,7 +1097,7 @@ export class StateStore {
 
         this.db.prepare(`
           UPDATE sessions
-          SET agent_name = ?, cwd = ?, acp_session_id = ?, runtime_kind = ?, title = ?, model = ?,
+          SET agent_name = ?, cwd = ?, acp_session_id = ?, runtime_kind = ?, title = ?, model_provider = ?, model = ?,
               reasoning_effort = ?, permission_mode = ?, last_turn_id = ?, last_turn_status = ?,
               status = ?, updated_at = ?
           WHERE local_session_id = ?
@@ -1096,6 +1107,7 @@ export class StateStore {
           latest.acp_session_id,
           latest.runtime_kind,
           latest.title,
+          latest.model_provider,
           latest.model,
           latest.reasoning_effort,
           latest.permission_mode,
@@ -1124,6 +1136,7 @@ export class StateStore {
       ["runtime_kind", "TEXT"],
       ["remote_session_id", "TEXT"],
       ["title", "TEXT"],
+      ["model_provider", "TEXT"],
       ["model", "TEXT"],
       ["reasoning_effort", "TEXT"],
       ["permission_mode", "TEXT"],
@@ -1206,6 +1219,7 @@ function mapSession(row: SessionRow): SessionRecord {
     runtimeKind: row.runtime_kind ?? (row.acp_session_id ? "acp" : undefined),
     remoteSessionId: row.remote_session_id ?? row.acp_session_id ?? undefined,
     title: row.title ?? undefined,
+    modelProvider: row.model_provider ?? undefined,
     model: row.model ?? undefined,
     reasoningEffort: row.reasoning_effort ?? undefined,
     permissionMode: row.permission_mode ?? undefined,

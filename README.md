@@ -160,18 +160,20 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/queue <prompt>`                        | Queue a separate follow-up Prompt           |
 | `/nosteer <prompt>`                      | Same as `/queue`                            |
 | `/goal [objective]`                      | View or manage a persistent Goal            |
-| `/model [name]`                          | View or change the model                    |
-| `/thinking [level]`                      | View or change reasoning effort             |
-| `/permissions auto\|confirm`             | Change tool approval behavior               |
-| `/newgroup [title]`                      | Create a private group for a new task       |
+| `/provider`                              | Open execution settings on the Provider tab |
+| `/model`                                 | Open execution settings on the Model tab    |
+| `/thinking`                              | Open execution settings on the Thinking tab |
+| `/permissions`                           | Open execution settings on the Permission tab |
+| `/newgroup [title] [--dir <cwd> \| --nodir]` | Create a private group for a new task       |
 | `/forkgroup [title]`                     | Fork the current position into a private group |
-| `/agent [name]`                          | View or change the default agent            |
-| `/use <agent> [cwd]`                     | Select an agent and create a task           |
+| `/agent [name]`                          | Open Agent settings or select the default Agent |
 | `! <command>`                            | Run a local command in the task directory   |
-| `/restart`                               | Gracefully restart Agent Bot                |
+| `/restart [--force]`                     | Restart safely, or immediately with `--force` |
 | `/help`                                  | Show in-chat help                           |
 
 Slash commands accept any unique prefix, and compound commands accept registered initialisms: `/sess` runs `/sessions`, `/fg` runs `/forkgroup`, `/ng` runs `/newgroup`, and `/ns` runs `/nosteer`. Exact command names take priority. An ambiguous prefix such as `/s` or `/f` is rejected and reports every matching command.
+
+`/agent`, `/provider`, `/model`, `/thinking`, and `/permissions` use the same execution-settings card when there is something to select. When more than one Agent is configured, the card adds an Agent tab for selecting the default Agent used by future tasks; `/agent` opens that tab, including when the chat has no current task. With only one configured Agent, `/agent` reports the current Agent directly instead. Existing tasks keep their original Agent, and tasks using different Agents run independently. `/agent <name>` remains available for direct selection. `/provider` likewise reports the current Provider directly when no alternative Provider is configured. The other four commands activate their matching tabs and do not accept arguments. A task created without inherited settings uses the default Provider from your Codex configuration.
 
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
 
@@ -179,11 +181,11 @@ The `/sessions` card provides `NewGroup` and `ForkGroup` actions for each task, 
 
 Inside a thread, `/forkgroup` forks from the thread's original turn until the thread task completes its own turn. After that, it forks from the thread task's latest completed turn. A currently running turn is never used as a fork point.
 
-After `/forkgroup` creates the new group, its welcome message shows the forked task's current model, reasoning effort, and permission type.
+After `/forkgroup` creates the new group, its welcome message shows the forked task's current Provider, model, reasoning effort, and permission type.
 
-`/newgroup` immediately creates a new task in the new group. It inherits the current task's project directory, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
+`/new` and `/newgroup` accept the same project options. Pass `--dir <cwd>` to override the inherited project directory, or `--nodir` to force a Projectless Codex task; the two options are mutually exclusive. `~`, `~/...`, and `~\...` resolve from the current user's home directory for both commands. `/newgroup` immediately creates and binds the task in the new group while continuing to inherit the current task's Provider, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
 
-When `/newgroup` omits the title, the task title is `新任务` and the default group name is `[agent] [project dir] 新任务 (mm-dd)`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
+When `/newgroup` omits the title, the task title is `新任务` and the default group name is `[agent] [project dir] 新任务 (mm-dd)`. Projectless groups omit the project segment entirely, using `[agent] title`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
 
 Renaming a bound group to `[agent] [project dir] title` synchronizes only `title` to the current task. The Agent and project-directory prefixes remain group metadata and are never included in the Codex task title. The older `[agent] title` format remains supported.
 

@@ -64,7 +64,7 @@ function threadMessage(
   };
 }
 
-function fixture() {
+function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   const sessions = new Map<string, RuntimeSession>();
   const remoteSessions: RemoteSessionSummary[] = [];
   let nextRemoteSessionNumber = 1;
@@ -77,6 +77,7 @@ function fixture() {
         ...input,
         remoteSessionId: `thr_${nextRemoteSessionNumber++}`,
         runtimeKind: "codex",
+        modelProvider: input.modelProvider ?? "openai",
         model: input.model ?? "gpt-test",
         reasoningEffort: input.reasoningEffort ?? "high",
       };
@@ -97,6 +98,7 @@ function fixture() {
       const session: RuntimeSession = {
         ...input,
         runtimeKind: "codex",
+        modelProvider: input.modelProvider ?? "openai",
         model: input.model ?? "gpt-test",
         reasoningEffort: input.reasoningEffort ?? "high",
       };
@@ -109,6 +111,7 @@ function fixture() {
         ...input,
         remoteSessionId,
         runtimeKind: "codex",
+        modelProvider: input.modelProvider ?? "openai",
         model: input.model ?? "gpt-test",
         reasoningEffort: input.reasoningEffort ?? "high",
       };
@@ -191,6 +194,11 @@ function fixture() {
       sessions.get(sessionId)!.reasoningEffort = effort;
     }),
     setPermissionMode: vi.fn(async () => undefined),
+    setExecutionSettings: vi.fn(async (sessionId, settings) => {
+      const session = sessions.get(sessionId)!;
+      Object.assign(session, settings);
+      return session;
+    }),
     respondToApproval: vi.fn(async () => undefined),
     listModels: vi.fn(async () => [
       {
@@ -212,6 +220,10 @@ function fixture() {
         ],
         defaultReasoningEffort: "medium",
       },
+    ]),
+    listModelProviders: vi.fn(async () => [
+      { id: "openai", displayName: "OpenAI", isDefault: true },
+      { id: "azure", displayName: "Azure OpenAI" },
     ]),
     onEvent: vi.fn((listener) => {
       listeners.add(listener);
@@ -254,6 +266,10 @@ function fixture() {
     agents: {
       codex: { kind: "codex", title: "Codex", command: "codex", args: [], env: {} },
       acp: { kind: "acp", title: "ACP", command: "acp", args: [], env: {} },
+      ...Object.fromEntries(Object.keys(extraRuntimes).map((agentName) => [
+        agentName,
+        { kind: extraRuntimes[agentName]!.kind, title: agentName, command: agentName, args: [], env: {} },
+      ])),
     },
     defaults: { agent: "codex", cwd: process.cwd() },
   } as unknown as AppConfig;
@@ -270,7 +286,7 @@ function fixture() {
   const controller = new ProxySessionController(
     config,
     store,
-    new AgentRuntimeRegistry({ acp, codex: runtime }),
+    new AgentRuntimeRegistry({ acp, codex: runtime, ...extraRuntimes }),
     outboundRouter,
     logger,
     { restart, supervised: true, cancelSafeRestart },
@@ -294,6 +310,7 @@ function fixture() {
     restart,
     cancelSafeRestart,
     shellCommandExecutor,
+    config,
   };
 }
 
@@ -858,7 +875,13 @@ describe("ProxySessionController", () => {
     (runtime.forkSession as ReturnType<typeof vi.fn>).mockClear();
 
     await controller.onMessage({
-      ...threadMessage("c1", "p2p", "omt_forkgroup_unbound", "om_forkgroup_source", "/forkgroup"),
+      ...threadMessage(
+        "c1",
+        "p2p",
+        "omt_forkgroup_unbound",
+        "om_forkgroup_source",
+        "/forkgroup",
+      ),
       userId: "ou_current_user",
     });
 
@@ -1093,7 +1116,7 @@ describe("ProxySessionController", () => {
     });
 
     expect(outbound.createGroup).toHaveBeenCalledWith({
-      name: expect.stringMatching(/^\[codex\] \[(?:.{1,15})\] 并行修复$/u),
+      name: "[codex] 并行修复",
       userOpenId: "ou_current_user",
       avatarPng: expect.any(Uint8Array),
     });
@@ -1127,7 +1150,7 @@ describe("ProxySessionController", () => {
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
       expect.stringMatching(
-        /^已从当前任务最新轮次创建分支。\n当前任务：并行修复（thr_1_fork）\n当前 Project 目录：.+\n当前模型：gpt-next\n思考强度：xhigh\n权限类型：执行前确认$/,
+        /^已从当前任务最新轮次创建分支。\n当前任务：并行修复（thr_1_fork）\n当前 Project 目录：.+\n当前 Provider：openai\n当前模型：gpt-next\n思考强度：xhigh\n权限类型：执行前确认$/,
       ),
     );
     expect((outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls)
@@ -1168,7 +1191,7 @@ describe("ProxySessionController", () => {
     });
 
     expect(outbound.createGroup).toHaveBeenCalledWith({
-      name: expect.stringMatching(/^\[codex\] \[(?:.{1,15})\] build the source task（分支 1）$/u),
+      name: "[codex] build the source task（分支 1）",
       userOpenId: "ou_current_user",
       avatarPng: expect.any(Uint8Array),
     });
@@ -1179,7 +1202,7 @@ describe("ProxySessionController", () => {
 
   test("truncates a long generated forkgroup name without changing the fork task title", async () => {
     const { controller, runtime, sessions, remoteSessions, store, listeners, outbound } = fixture();
-    const longSourceTitle = "修复一个特别长的源任务标题用于验证 forkgroup 群名不会超过飞书限制";
+    const longSourceTitle = "修复一个特别长的源任务标题用于验证 forkgroup 群名不会超过飞书限制".repeat(2);
     await controller.onMessage(message(longSourceTitle));
     const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
     expect(sourceSessionId).toBeDefined();
@@ -1348,6 +1371,26 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("expands the user home shorthand for new task directories", async () => {
+    const { controller, runtime, store } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-new-home-"));
+    const selectedProject = path.join(home, "work", "demo");
+    fs.mkdirSync(selectedProject, { recursive: true });
+    tempDirs.push(home);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+
+    await controller.onMessage(message("/new Home project --dir ~/work/demo"));
+
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: selectedProject,
+      title: "Home project",
+    }));
+    expect(store.listSessions("chat_id:c1").at(-1)).toMatchObject({
+      cwd: selectedProject,
+      title: "Home project",
+    });
+  });
+
   test("creates a task with an explicit title and synchronizes it with the runtime", async () => {
     const { controller, runtime, store, presenter, outbound } = fixture();
     const cwd = path.resolve("test-workspaces", "work");
@@ -1388,7 +1431,7 @@ describe("ProxySessionController", () => {
     });
 
     expect(outbound.createGroup).toHaveBeenCalledWith({
-      name: "[codex] [Projectless] 广州天气",
+      name: "[codex] 广州天气",
       userOpenId: "ou_current_user",
       avatarPng: expect.any(Uint8Array),
     });
@@ -1414,13 +1457,13 @@ describe("ProxySessionController", () => {
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      "群和新任务已创建。\n当前任务：广州天气（thr_1）\n当前 Project 目录：未绑定（Projectless）\n当前模型：gpt-test\n思考强度：high",
+      "群和新任务已创建。\n当前任务：广州天气（thr_1）\n当前 Project 目录：未绑定（Projectless）\n当前 Provider：openai\n当前模型：gpt-test\n思考强度：high\n权限类型：自动执行",
     );
     expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
       expect.stringMatching(
-        /^已创建飞书群：\[codex\] \[Projectless\] 广州天气，并创建新任务 广州天气（thr_1）。$/,
+        /^已创建飞书群：\[codex\] 广州天气，并创建新任务 广州天气（thr_1）。$/,
       ),
     );
     expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
@@ -1457,7 +1500,7 @@ describe("ProxySessionController", () => {
     }));
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
-      `群和新任务已创建。\n当前任务：Project room（thr_2）\n当前 Project 目录：${project}\n当前模型：gpt-test\n思考强度：high`,
+      `群和新任务已创建。\n当前任务：Project room（thr_2）\n当前 Project 目录：${project}\n当前 Provider：openai\n当前模型：gpt-test\n思考强度：high\n权限类型：自动执行`,
     );
 
     const createCount = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -1470,7 +1513,100 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("inherits model, reasoning effort, and permission mode from the source task", async () => {
+  test("lets newgroup select a project directory and expands the user home shorthand", async () => {
+    const { controller, runtime, store, outbound } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-newgroup-home-"));
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
+    const selectedProject = path.join(home, "work", "demo");
+    fs.mkdirSync(selectedProject, { recursive: true });
+    tempDirs.push(home, sourceProject);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    await controller.onMessage(message(`/new --dir "${sourceProject}"`));
+
+    await controller.onMessage({
+      messageId: "new-group-explicit-home-project",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Home project --dir ~/work/demo",
+    });
+
+    expect(store.getUserContext("chat_id:oc_new_group")).toMatchObject({
+      boundProjectCwd: selectedProject,
+      currentSessionId: expect.any(String),
+    });
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: selectedProject,
+      title: "Home project",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    }));
+    expect(outbound.createGroup).toHaveBeenLastCalledWith({
+      name: `[codex] [~${path.sep}work${path.sep}demo] Home project`,
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+  });
+
+  test("lets newgroup force a Projectless task without inheriting the source project", async () => {
+    const { controller, runtime, store, outbound } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-newgroup-home-"));
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
+    tempDirs.push(home, sourceProject);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    await controller.onMessage(message(`/new Source --dir "${sourceProject}"`));
+
+    await controller.onMessage({
+      messageId: "new-projectless-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Projectless room --nodir",
+    });
+
+    const groupContext = store.getUserContext("chat_id:oc_new_group");
+    const groupSession = store.getSession(groupContext!.currentSessionId!)!;
+    expect(groupContext?.boundProjectCwd).toBeUndefined();
+    expect(groupSession.cwd.startsWith(path.join(home, "Documents", "Codex"))).toBe(true);
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: groupSession.cwd,
+      title: "Projectless room",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    }));
+    expect(outbound.createGroup).toHaveBeenLastCalledWith({
+      name: "[codex] Projectless room",
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+  });
+
+  test("rejects newgroup --nodir when the current default agent is not Codex", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/agent acp"));
+
+    await controller.onMessage({
+      messageId: "new-projectless-acp-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup --nodir",
+    });
+
+    expect(outbound.createGroup).not.toHaveBeenCalled();
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "/newgroup --nodir 仅支持 Codex Agent。",
+    );
+  });
+
+  test("inherits Provider, model, reasoning effort, and permission mode from the source task", async () => {
     const { controller, runtime, store } = fixture();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-source-project-"));
     tempDirs.push(project);
@@ -1478,6 +1614,7 @@ describe("ProxySessionController", () => {
     const sourceSessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
     const source = store.getSession(sourceSessionId)!;
     store.updateRuntimeSession(source.localSessionId, {
+      modelProvider: "azure",
       model: "gpt-next",
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
@@ -1495,6 +1632,7 @@ describe("ProxySessionController", () => {
     expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
       cwd: project,
       title: "Inherited settings",
+      modelProvider: "azure",
       model: "gpt-next",
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
@@ -1503,10 +1641,33 @@ describe("ProxySessionController", () => {
     expect(store.getSession(groupSessionId)).toMatchObject({
       cwd: project,
       title: "Inherited settings",
+      modelProvider: "azure",
       model: "gpt-next",
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
     });
+  });
+
+  test("inherits the complete execution settings group for /new", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(message("/new Source"));
+    const sourceSessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    store.updateRuntimeSession(sourceSessionId, {
+      modelProvider: "azure",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
+
+    await controller.onMessage(message("/new Inherited"));
+
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: "Inherited",
+      modelProvider: "azure",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    }));
   });
 
   test("lets an explicit directory override a new group's bound project", async () => {
@@ -1548,7 +1709,7 @@ describe("ProxySessionController", () => {
 
     const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(groupInput.name).toMatch(
-      /^\[codex\] \[Projectless\] 新任务 \(\d{2}-\d{2}\)$/,
+      /^\[codex\] 新任务 \(\d{2}-\d{2}\)$/,
     );
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
       title: "新任务",
@@ -1692,15 +1853,42 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("lists every agent through agent and marks the current default", async () => {
-    const { controller, outbound } = fixture();
-    await controller.onMessage(message("/agent acp"));
+  test("opens the unified Agent tab without a current task and switches the default in place", async () => {
+    const { controller, outbound, store } = fixture();
+
     await controller.onMessage({ messageId: "list-agents", contextKey: "chat_id:c1", text: "/agent" });
 
-    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
-      "chat_id:c1",
-      expect.stringMatching(/当前 Agent：`acp`[\s\S]*`codex`：Codex[\s\S]*✅ `acp`：ACP（当前）/),
-    );
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith("chat_id:c1", expect.any(Object));
+    let card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    let serialized = JSON.stringify(card);
+    expect(serialized).toContain("运行设置");
+    expect(serialized).toContain('"tag":"markdown","content":"Agent"');
+    expect(serialized).toContain('"tag":"markdown","content":"`codex` · Codex"');
+    expect(serialized).toContain('"tag":"markdown","content":"`acp` · ACP"');
+    expect(serialized).not.toContain("`codex` · Codex · Codex");
+    expect(serialized).not.toContain("`acp` · ACP · ACP");
+    expect(serialized).toContain('"action":"settings_agent_select"');
+    expect(serialized).not.toContain('"tab":"model"');
+    expect(serialized).not.toContain('"sessionId"');
+
+    await controller.onCardAction({
+      actionId: "select-agent-acp",
+      contextKey: "chat_id:c1",
+      messageId: "om_agent",
+      value: {
+        action: "settings_agent_select",
+        contextKey: "chat_id:c1",
+        agent: "acp",
+      },
+    });
+
+    expect(store.getUserContext("chat_id:c1")?.defaultAgent).toBe("acp");
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_agent", expect.any(Object));
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    serialized = JSON.stringify(card);
+    expect(serialized).toContain("默认 Agent 已切换为 `acp`，从下一次新建任务生效");
+    expect(serialized).toContain("**默认 Agent**：`acp`");
+    expect(serialized).toContain("✅ 当前");
   });
 
   test("creates a Desktop-compatible projectless workspace when a new Codex task omits cwd", async () => {
@@ -2156,7 +2344,7 @@ describe("ProxySessionController", () => {
     await blockedPrompt;
   });
 
-  test("restart bypasses a blocked prompt queue", async () => {
+  test("safe restart bypasses a blocked prompt queue", async () => {
     const { controller, runtime, restart } = fixture();
     await controller.onMessage(message("build it"));
     let releaseSteer!: () => void;
@@ -2168,9 +2356,17 @@ describe("ProxySessionController", () => {
     await vi.waitFor(() => expect(runtime.steerTurn).toHaveBeenCalled());
     await controller.onMessage(message("/restart"));
 
-    expect(restart).toHaveBeenCalledWith("chat_id:c1");
+    expect(restart).toHaveBeenCalledWith("chat_id:c1", false);
     releaseSteer();
     await blockedPrompt;
+  });
+
+  test("passes --force to the restart lifecycle", async () => {
+    const { controller, restart } = fixture();
+
+    await controller.onMessage(message("/restart --force"));
+
+    expect(restart).toHaveBeenCalledWith("chat_id:c1", true);
   });
 
   test("lazily resumes a persisted session before starting the next turn", async () => {
@@ -2410,22 +2606,68 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("2000");
     expect(serialized).not.toContain("最后更新：");
     expect(serialized).toContain("<font color='blue'>Switch</font>");
-    expect(serialized).toContain('"action":"session_switch","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>New</font>");
-    expect(serialized).toContain('"action":"session_new","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_new","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>NewGroup</font>");
-    expect(serialized).toContain('"action":"session_new_group","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_new_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Fork</font>");
-    expect(serialized).toContain('"action":"session_fork","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_fork","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>ForkGroup</font>");
-    expect(serialized).toContain('"action":"session_fork_group","sessionId":"external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_fork_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
     expect(serialized).toContain("<font color='blue'>Status</font>");
-    expect(serialized).toContain('"action":"session_status","sessionId":"external_1"');
+    expect(serialized).toContain('"action":"session_status","sessionId":"agent-runtime:codex:external_1"');
     expect(serialized).not.toContain("Legacy ACP task");
     expect(serialized).not.toContain("remote_acp");
     expect(serialized).toContain("/switch [序号或任务 ID]");
     expect(serialized).not.toContain("已接入");
     expect(serialized).not.toContain("其他 Codex 任务");
+  });
+
+  test("keeps same-id Codex tasks isolated by Agent and routes card actions to their owning runtime", async () => {
+    const traexRemote: RemoteSessionSummary = {
+      id: "shared_task",
+      title: "TraeX task",
+      cwd: "D:\\work\\traex",
+      source: "traex",
+      status: "idle",
+    };
+    const traexRead = vi.fn(async () => traexRemote);
+    const traexRuntime = {
+      kind: "codex",
+      listRemoteSessions: vi.fn(async () => ({ sessions: [traexRemote] })),
+      readRemoteSession: traexRead,
+      onEvent: vi.fn(() => () => undefined),
+      close: vi.fn(),
+    } as unknown as AgentRuntime;
+    const { controller, remoteSessions, outbound, store, runtime } = fixture({ traex: traexRuntime });
+    remoteSessions.push({
+      id: "shared_task",
+      title: "Codex task",
+      cwd: "D:\\work\\codex",
+      source: "codex",
+      status: "idle",
+    });
+
+    await controller.onMessage(message("/sessions"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('"sessionId":"agent-runtime:codex:shared_task"');
+    expect(serialized).toContain('"sessionId":"agent-runtime:traex:shared_task"');
+    expect(serialized).toContain("Codex task");
+    expect(serialized).toContain("TraeX task");
+
+    await controller.onCardAction({
+      actionId: "switch-shared-traex-task",
+      contextKey: "chat_id:c1",
+      value: { action: "session_switch", sessionId: "agent-runtime:traex:shared_task" },
+    });
+
+    expect(traexRead).toHaveBeenCalledWith("shared_task");
+    expect(runtime.readRemoteSession).not.toHaveBeenCalled();
+    const currentId = store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId;
+    expect(store.getSession(currentId!)?.agentName).toBe("traex");
   });
 
   test("marks active external Codex sessions and sorts them first", async () => {
@@ -2450,7 +2692,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("🟢 **活跃**");
     expect(serialized).toContain("外部执行中");
     expect(serialized).toContain("<font color='red'>Stop</font>");
-    expect(serialized).toContain('"action":"session_stop","sessionId":"active_1","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:active_1","visibleCount":"5"');
     expect(serialized.indexOf("active_1")).toBeLessThan(serialized.indexOf("idle_1"));
   });
 
@@ -2482,8 +2724,8 @@ describe("ProxySessionController", () => {
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(updatedCard);
     expect(serialized).toContain("<font color='blue'>Switch</font>");
-    expect(serialized).toContain('"action":"session_switch","sessionId":"active_external","visibleCount":"5"');
-    expect(serialized).not.toContain('"action":"session_stop","sessionId":"active_external","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:active_external","visibleCount":"5"');
+    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:active_external","visibleCount":"5"');
   });
 
   test("forks a completed task from the sessions card and refreshes the current task", async () => {
@@ -2908,11 +3150,11 @@ describe("ProxySessionController", () => {
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
     expect(serialized.indexOf("thr_1")).toBeLessThan(serialized.indexOf("active_external"));
-    expect(serialized).not.toContain('"action":"session_switch","sessionId":"thr_1"');
-    expect(serialized).not.toContain('"action":"session_stop","sessionId":"thr_1"');
-    expect(serialized).toContain('"action":"session_fork","sessionId":"thr_1"');
-    expect(serialized).toContain('"action":"session_status","sessionId":"thr_1"');
-    expect(serialized).toContain('"action":"session_status","sessionId":"active_external"');
+    expect(serialized).not.toContain('"action":"session_switch","sessionId":"agent-runtime:codex:thr_1"');
+    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:thr_1"');
+    expect(serialized).toContain('"action":"session_fork","sessionId":"agent-runtime:codex:thr_1"');
+    expect(serialized).toContain('"action":"session_status","sessionId":"agent-runtime:codex:thr_1"');
+    expect(serialized).toContain('"action":"session_status","sessionId":"agent-runtime:codex:active_external"');
   });
 
   test("switches by the one-based order from the last sessions list", async () => {
@@ -2998,9 +3240,9 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain('"expanded":false');
     expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
     expect(serialized).toContain("<font color='blue'>Refresh</font>");
-    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"status_target","cardView":"status"');
+    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"agent-runtime:codex:status_target","cardView":"status"');
     expect(serialized).toContain("<font color='blue'>Switch</font>");
-    expect(serialized).toContain('"action":"session_switch","sessionId":"status_target","cardView":"status"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:status_target","cardView":"status"');
   });
 
   test("refreshes a status card in place with the latest task state", async () => {
@@ -3048,8 +3290,8 @@ describe("ProxySessionController", () => {
     const serialized = JSON.stringify(refreshedCard);
     expect(serialized).toContain("turn_after_refresh");
     expect(serialized).toContain("Running after refresh");
-    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"refresh_status_target"');
-    expect(serialized).toContain('"action":"session_stop","sessionId":"refresh_status_target"');
+    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"agent-runtime:codex:refresh_status_target"');
+    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:refresh_status_target"');
     expect(serialized).not.toContain("Result before refresh");
   });
 
@@ -3073,7 +3315,7 @@ describe("ProxySessionController", () => {
     });
     const statusCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     expect(JSON.stringify(statusCard)).toContain(
-      '"action":"session_stop","sessionId":"active_status_target","cardView":"status"',
+      '"action":"session_stop","sessionId":"agent-runtime:codex:active_status_target","cardView":"status"',
     );
 
     await controller.onCardAction({
@@ -3089,10 +3331,10 @@ describe("ProxySessionController", () => {
     const serialized = JSON.stringify(updatedCard);
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain(
-      '"action":"session_switch","sessionId":"active_status_target","cardView":"status"',
+      '"action":"session_switch","sessionId":"agent-runtime:codex:active_status_target","cardView":"status"',
     );
     expect(serialized).not.toContain(
-      '"action":"session_stop","sessionId":"active_status_target","cardView":"status"',
+      '"action":"session_stop","sessionId":"agent-runtime:codex:active_status_target","cardView":"status"',
     );
   });
 
@@ -3104,14 +3346,14 @@ describe("ProxySessionController", () => {
     const statusCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(statusCard);
     expect(serialized).toContain("<font color='red'>Stop</font>");
-    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"thr_1","cardView":"status"');
+    expect(serialized).toContain('"action":"session_status_refresh","sessionId":"agent-runtime:codex:thr_1","cardView":"status"');
     expect(serialized).toContain('"element_id":"status_execution_details"');
     expect(serialized).toContain('"expanded":false');
     expect(serialized.indexOf("最终结果")).toBeLessThan(serialized.indexOf('"element_id":"status_execution_details"'));
     expect(serialized).toContain(
-      '"action":"session_stop","sessionId":"thr_1","cardView":"status"',
+      '"action":"session_stop","sessionId":"agent-runtime:codex:thr_1","cardView":"status"',
     );
-    expect(serialized).not.toContain('"action":"session_switch","sessionId":"thr_1","cardView":"status"');
+    expect(serialized).not.toContain('"action":"session_switch","sessionId":"agent-runtime:codex:thr_1","cardView":"status"');
   });
 
   test("switches back to a bot-owned task while its turn is still running", async () => {
@@ -3144,8 +3386,8 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain('"action":"session_switch","sessionId":"thr_1","visibleCount":"5"');
-    expect(serialized).not.toContain('"action":"session_stop","sessionId":"thr_1","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:thr_1","visibleCount":"5"');
+    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:thr_1","visibleCount":"5"');
 
     await controller.onCardAction({
       actionId: "switch-back-running-bot-task",
@@ -3192,8 +3434,8 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain('"action":"session_stop","sessionId":"external_origin","visibleCount":"5"');
-    expect(serialized).not.toContain('"action":"session_switch","sessionId":"external_origin","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:external_origin","visibleCount":"5"');
+    expect(serialized).not.toContain('"action":"session_switch","sessionId":"agent-runtime:codex:external_origin","visibleCount":"5"');
 
     await controller.onMessage(message("/switch external_origin"));
 
@@ -3467,8 +3709,18 @@ describe("ProxySessionController", () => {
     const { controller, runtime, presenter } = fixture();
     await controller.onMessage(message("start"));
     const sessionId = (runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    await controller.onMessage(message("/model gpt-test"));
-    await controller.onMessage(message("/permissions confirm"));
+    await controller.onCardAction({
+      actionId: "model-setting",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: { action: "settings_model_select", sessionId, contextKey: "chat_id:c1", model: "gpt-test" },
+    });
+    await controller.onCardAction({
+      actionId: "permission-setting",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: { action: "settings_permission_select", sessionId, contextKey: "chat_id:c1", permissionMode: "confirm" },
+    });
     await controller.onCardAction({ actionId: "a1", contextKey: "chat_id:c1", value: { action: "turn_details", turnId: "turn_1" } });
     await controller.onCardAction({
       actionId: "a2",
@@ -3685,7 +3937,7 @@ describe("ProxySessionController", () => {
     expect(runtime.steerTurn).not.toHaveBeenCalled();
   });
 
-  test("shows every supported model with link-style switch actions and marks the current model", async () => {
+  test("opens the unified settings card on the Model tab", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
 
@@ -3696,7 +3948,12 @@ describe("ProxySessionController", () => {
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
-    expect(serialized).toContain("当前模型");
+    expect(serialized).toContain("运行设置");
+    expect(serialized).toContain('"tag":"markdown","content":"Model"');
+    expect(serialized).toContain('"tab":"agent"');
+    expect(serialized).toContain('"tab":"provider"');
+    expect(serialized).toContain('"tab":"thinking"');
+    expect(serialized).toContain('"tab":"permission"');
     expect(serialized).toContain("思考强度");
     expect(serialized).toContain("gpt-test");
     expect(serialized).toContain("gpt-next");
@@ -3706,10 +3963,36 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("<font color='blue'>Switch</font>");
     expect(serialized).toContain('"tag":"interactive_container"');
     expect(serialized).not.toContain('"tag":"button"');
-    expect(serialized).toContain(`"action":"model_select","sessionId":"${sessionId}"`);
+    expect(serialized).toContain('"action":"settings_model_select"');
+    expect(serialized).toContain(`"sessionId":"${sessionId}"`);
     expect(serialized).toContain('"model":"gpt-next"');
-    const modelRows = ((card as { body?: { elements?: Array<Record<string, unknown>> } })?.body?.elements ?? [])
-      .filter((element) => element.tag === "column_set");
+    const bodyElements = (card as { body?: { elements?: Array<Record<string, unknown>> } })?.body?.elements ?? [];
+    const tabRow = bodyElements[1]!;
+    expect(tabRow).toMatchObject({ tag: "column_set", flex_mode: "none", horizontal_spacing: "2px" });
+    const tabColumns = tabRow.columns as Array<{ width: string; elements: Array<Record<string, unknown>> }>;
+    expect(tabColumns).toHaveLength(9);
+    expect(tabColumns.every((column) => column.width === "auto")).toBe(true);
+    expect(tabColumns.filter((_, index) => index % 2 === 1)
+      .map((column) => column.elements[0]?.content)).toEqual(["·", "·", "·", "·"]);
+    const tabButtons = tabColumns.filter((_, index) => index % 2 === 0)
+      .map((column) => column.elements[0]!);
+    expect(tabButtons).toHaveLength(5);
+    expect(tabButtons.filter((_, index) => index !== 2)
+      .every((button) => JSON.stringify(button).includes("<font color='blue'>"))).toBe(true);
+    expect(tabButtons[2]).toEqual({
+      tag: "markdown",
+      content: "Model",
+      text_align: "center",
+      text_size: "notation",
+    });
+    expect(tabButtons[2]).not.toHaveProperty("behaviors");
+    expect(tabButtons[0]).toMatchObject({
+      tag: "interactive_container",
+      has_border: false,
+      behaviors: expect.any(Array),
+    });
+    const modelRows = bodyElements
+      .filter((element) => element.tag === "column_set" && element.horizontal_spacing === "8px");
     expect(modelRows).toHaveLength(2);
     for (const row of modelRows) {
       expect(row).toMatchObject({ flex_mode: "none" });
@@ -3720,7 +4003,176 @@ describe("ProxySessionController", () => {
     }
   });
 
-  test("switches the model from a card callback and advances the card to reasoning selection", async () => {
+  test("hides the Agent tab when only one agent is configured", async () => {
+    const { controller, outbound, config } = fixture();
+    delete config.agents.acp;
+
+    await controller.onMessage(message("/agent"));
+
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "当前 Agent：codex\n当前没有其他 Agent 可以切换。",
+    );
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/model"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).not.toContain('"tab":"agent"');
+    expect(serialized).not.toContain("<font color='blue'>Agent</font>");
+    expect(serialized).toContain('"tab":"provider"');
+    expect(serialized).toContain('"tag":"markdown","content":"Model"');
+  });
+
+  test("reports the current Provider without a card when no alternative is configured", async () => {
+    const { controller, runtime, outbound } = fixture();
+    (runtime.listModelProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    await controller.onMessage(message("/new"));
+    (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    await controller.onMessage(message("/provider"));
+
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      "当前 Provider：openai\n当前没有其他 Provider 可以切换。",
+    );
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
+  });
+
+  test("switches Provider, Model, Thinking, and Permission through one tabbed card", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+
+    await controller.onMessage(message("/provider"));
+    let card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    let serialized = JSON.stringify(card);
+    expect(serialized).toContain('"tag":"markdown","content":"Provider"');
+    expect(serialized).toContain('"action":"settings_provider_select"');
+    expect(serialized).toContain("azure");
+
+    await controller.onCardAction({
+      actionId: "provider-azure",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_provider_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        provider: "azure",
+      },
+    });
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    serialized = JSON.stringify(card);
+    expect(runtime.setExecutionSettings).toHaveBeenLastCalledWith(sessionId, {
+      modelProvider: "azure",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    });
+    expect(serialized).toContain("Provider 已切换为 `azure`");
+
+    await controller.onCardAction({
+      actionId: "open-model-tab",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_tab_open",
+        sessionId,
+        contextKey: "chat_id:c1",
+        tab: "model",
+      },
+    });
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    serialized = JSON.stringify(card);
+    expect(serialized).toContain('"tag":"markdown","content":"Model"');
+    expect(serialized).toContain('"action":"settings_model_select"');
+
+    await controller.onCardAction({
+      actionId: "model-next",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_model_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-next",
+      },
+    });
+    expect(runtime.setModel).toHaveBeenLastCalledWith(sessionId, "gpt-next");
+    expect(runtime.setReasoningEffort).toHaveBeenLastCalledWith(sessionId, "medium");
+
+    await controller.onCardAction({
+      actionId: "open-thinking-tab",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_tab_open",
+        sessionId,
+        contextKey: "chat_id:c1",
+        tab: "thinking",
+      },
+    });
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    serialized = JSON.stringify(card);
+    expect(serialized).toContain('"tag":"markdown","content":"Thinking"');
+    expect(serialized).toContain('"action":"settings_thinking_select"');
+
+    await controller.onCardAction({
+      actionId: "thinking-xhigh",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_thinking_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-next",
+        effort: "xhigh",
+      },
+    });
+    expect(runtime.setReasoningEffort).toHaveBeenLastCalledWith(sessionId, "xhigh");
+
+    await controller.onCardAction({
+      actionId: "open-permission-tab",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_tab_open",
+        sessionId,
+        contextKey: "chat_id:c1",
+        tab: "permission",
+      },
+    });
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    serialized = JSON.stringify(card);
+    expect(serialized).toContain('"tag":"markdown","content":"Permission"');
+    expect(serialized).toContain('"action":"settings_permission_select"');
+
+    await controller.onCardAction({
+      actionId: "permission-confirm",
+      contextKey: "chat_id:c1",
+      messageId: "om_provider",
+      value: {
+        action: "settings_permission_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        permissionMode: "confirm",
+      },
+    });
+    expect(runtime.setPermissionMode).toHaveBeenLastCalledWith(sessionId, "confirm");
+    expect(store.getSession(sessionId)).toMatchObject({
+      modelProvider: "azure",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("已切换为执行前确认模式");
+  });
+
+  test("switches the model from the unified card and keeps the Model tab active", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
@@ -3730,7 +4182,7 @@ describe("ProxySessionController", () => {
       contextKey: "chat_id:c1",
       messageId: "om_model",
       value: {
-        action: "model_select",
+        action: "settings_model_select",
         sessionId,
         contextKey: "chat_id:c1",
         model: "gpt-next",
@@ -3746,28 +4198,35 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
     const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(updated);
-    expect(serialized).toContain("思考模式");
-    expect(serialized).toContain("模型已切换为 `gpt-next`，请选择思考模式");
+    expect(serialized).toContain("运行设置");
+    expect(serialized).toContain('"tag":"markdown","content":"Model"');
+    expect(serialized).toContain("模型已切换为 `gpt-next`");
     expect(serialized).toContain("gpt-next");
     expect(serialized).toContain("medium");
-    expect(serialized).toContain("xhigh");
     expect(serialized).toContain("✅ 当前");
     expect(serialized).toContain("<font color='blue'>Switch</font>");
-    expect(serialized).toContain("<font color='blue'>Back</font>");
-    expect(serialized).toContain('"action":"model_open"');
-    expect(serialized).toContain('"action":"reasoning_select"');
-    expect(serialized).toContain('"model":"gpt-next","effort":"xhigh"');
-    expect(serialized).not.toContain('"action":"model_select"');
+    expect(serialized).toContain('"action":"settings_tab_open"');
+    expect(serialized).toContain('"action":"settings_model_select"');
+    expect(serialized).not.toContain('"action":"settings_thinking_select"');
     const bodyElements = (updated as { body?: { elements?: Array<Record<string, unknown>> } })?.body?.elements ?? [];
-    expect(bodyElements.at(-2)).toMatchObject({ tag: "hr" });
-    expect(JSON.stringify(bodyElements.at(-1))).toContain('"action":"model_open"');
+    expect(bodyElements[1]).toMatchObject({ tag: "column_set", flex_mode: "none" });
   });
 
-  test("switches reasoning from the follow-up card and updates it in place", async () => {
+  test("switches reasoning from the Thinking tab and updates it in place", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
-    await controller.onMessage(message("/model gpt-next"));
+    await controller.onCardAction({
+      actionId: "select-model-next-first",
+      contextKey: "chat_id:c1",
+      messageId: "om_model",
+      value: {
+        action: "settings_model_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-next",
+      },
+    });
     (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
 
     await controller.onCardAction({
@@ -3775,7 +4234,7 @@ describe("ProxySessionController", () => {
       contextKey: "chat_id:c1",
       messageId: "om_model",
       value: {
-        action: "reasoning_select",
+        action: "settings_thinking_select",
         sessionId,
         contextKey: "chat_id:c1",
         model: "gpt-next",
@@ -3788,12 +4247,13 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
     const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(updated);
-    expect(serialized).toContain("思考模式已切换为 `xhigh`，从下一次请求生效");
+    expect(serialized).toContain("思考强度已切换为 `xhigh`，从下一次请求生效");
+    expect(serialized).toContain('"tag":"markdown","content":"Thinking"');
     expect(serialized).toContain("✅ 当前");
     expect(serialized).toContain('"effort":"medium"');
   });
 
-  test("returns from reasoning selection to the model selector in place", async () => {
+  test("switches tabs in place without changing execution settings", async () => {
     const { controller, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
@@ -3803,48 +4263,83 @@ describe("ProxySessionController", () => {
       contextKey: "chat_id:c1",
       messageId: "om_model",
       value: {
-        action: "model_open",
+        action: "settings_tab_open",
         sessionId,
         contextKey: "chat_id:c1",
+        tab: "model",
       },
     });
 
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
     const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(updated);
-    expect(serialized).toContain('"content":"模型"');
-    expect(serialized).toContain("当前模型");
-    expect(serialized).toContain('"action":"model_select"');
-    expect(serialized).not.toContain('"action":"model_open"');
-    expect(serialized).not.toContain('"action":"reasoning_select"');
+    expect(serialized).toContain('"tag":"markdown","content":"Model"');
+    expect(serialized).toContain('"action":"settings_model_select"');
+    expect(serialized).not.toContain('"action":"settings_thinking_select"');
   });
 
-  test("shows supported reasoning efforts as an interactive card and keeps direct changes compatible", async () => {
+  test("opens the unified settings card on Thinking and changes effort through its callback", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
 
     await controller.onMessage(message("/thinking"));
     expect(outbound.sendInteractiveCard).toHaveBeenCalled();
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("当前思考模式");
+    expect(serialized).toContain('"tag":"markdown","content":"Thinking"');
     expect(serialized).toContain("high");
     expect(serialized).toContain("low");
     expect(serialized).not.toContain("Fast");
     expect(serialized).not.toContain("Deep");
-    expect(serialized).toContain("<font color='blue'>Back</font>");
-    expect(serialized).toContain('"action":"reasoning_select"');
+    expect(serialized).toContain('"action":"settings_thinking_select"');
 
-    await controller.onMessage(message("/thinking low"));
-    expect(runtime.setReasoningEffort).toHaveBeenCalledWith(expect.any(String), "low");
+    await controller.onCardAction({
+      actionId: "thinking-low",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: {
+        action: "settings_thinking_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-test",
+        effort: "low",
+      },
+    });
+    expect(runtime.setReasoningEffort).toHaveBeenCalledWith(sessionId, "low");
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ reasoningEffort: "low" });
+  });
+
+  test("opens the unified settings card on the Permission tab", async () => {
+    const { controller, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+
+    await controller.onMessage(message("/permissions"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('"tag":"markdown","content":"Permission"');
+    expect(serialized).toContain('"action":"settings_permission_select"');
+    expect(serialized).toContain("执行前确认");
   });
 
   test("rejects unsupported reasoning efforts without changing state", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
 
-    await controller.onMessage(message("/thinking extreme"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    await controller.onCardAction({
+      actionId: "thinking-extreme",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: {
+        action: "settings_thinking_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-test",
+        effort: "extreme",
+      },
+    });
 
     expect(runtime.setReasoningEffort).not.toHaveBeenCalled();
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ reasoningEffort: "high" });
@@ -3857,28 +4352,58 @@ describe("ProxySessionController", () => {
   test("retains compatible effort and falls back for an incompatible model", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
 
-    await controller.onMessage(message("/model gpt-test"));
+    await controller.onCardAction({
+      actionId: "model-current",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: {
+        action: "settings_model_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-test",
+      },
+    });
     expect(runtime.setReasoningEffort).not.toHaveBeenCalled();
 
-    await controller.onMessage(message("/model gpt-next"));
+    await controller.onCardAction({
+      actionId: "model-next",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: {
+        action: "settings_model_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "gpt-next",
+      },
+    });
     expect(runtime.setModel).toHaveBeenCalledWith(expect.any(String), "gpt-next");
     expect(runtime.setReasoningEffort).toHaveBeenCalledWith(expect.any(String), "medium");
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({
       model: "gpt-next",
       reasoningEffort: "medium",
     });
-    expect(outbound.sendText).toHaveBeenCalledWith(
-      "chat_id:c1",
-      expect.stringContaining("思考强度已自动调整为 medium"),
-    );
+    const card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("思考强度已自动调整为 medium");
   });
 
   test("rejects an unknown model without changing runtime state", async () => {
-    const { controller, runtime, outbound } = fixture();
+    const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
 
-    await controller.onMessage(message("/model missing-model"));
+    await controller.onCardAction({
+      actionId: "model-missing",
+      contextKey: "chat_id:c1",
+      messageId: "om_settings",
+      value: {
+        action: "settings_model_select",
+        sessionId,
+        contextKey: "chat_id:c1",
+        model: "missing-model",
+      },
+    });
 
     expect(runtime.setModel).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
@@ -3910,7 +4435,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("当前任务");
     expect(serialized).toContain("**标题**：`inspect this repo`");
     expect(serialized).toContain("**工作目录**：");
-    expect(serialized).toContain("**模型 / 思考强度**：`gpt-test` / `high`");
+    expect(serialized).toContain("**Provider / 模型 / 思考强度**：`openai` / `gpt-test` / `high`");
     expect(serialized).toContain("**状态 / 最近结果**：执行中 / 执行中");
     expect(serialized).toContain("**权限 / 任务范围**：自动执行 / 未指定项目");
     expect(serialized).toContain("**Agent**：`Codex`");
@@ -4171,9 +4696,17 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("**执行设置**");
     expect(serialized).toContain("**Agent**");
     expect(serialized).toContain("**系统**");
-    expect(serialized.match(/\/model \[name\]/g)).toHaveLength(1);
-    expect(serialized.match(/\/thinking \[level\]/g)).toHaveLength(1);
-    expect(serialized.match(/\/restart/g)).toHaveLength(1);
+    expect(serialized.match(/\/provider\*\*/g)).toHaveLength(1);
+    expect(serialized.match(/\/model\*\*/g)).toHaveLength(1);
+    expect(serialized.match(/\/thinking\*\*/g)).toHaveLength(1);
+    expect(serialized.match(/\/permissions\*\*/g)).toHaveLength(1);
+    expect(serialized).toContain("选择 AI 服务提供商");
+    expect(serialized).toContain("选择当前任务使用的模型");
+    expect(serialized).toContain("设置模型的思考强度");
+    expect(serialized).toContain("设置执行工具前是否需要确认");
+    expect(serialized).not.toContain("/model [name]");
+    expect(serialized).not.toContain("/permissions [auto|confirm]");
+    expect(serialized.match(/\/restart \[--force\]/g)).toHaveLength(1);
     expect(serialized.match(/\/status \[序号或任务 ID\]/g)).toHaveLength(1);
     expect(serialized.match(/\/fork \[序号或任务 ID\]/g)).toHaveLength(1);
     expect(serialized.match(/\/newgroup/g)).toHaveLength(1);
@@ -4187,6 +4720,8 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("/close");
     expect(serialized).toContain("/switch [序号或任务 ID]");
     expect(serialized).not.toContain("/agents");
+    expect(serialized).not.toContain("/ask");
+    expect(serialized).not.toContain("/use");
     expect(serialized).not.toContain("<id>");
     expect(serialized).not.toContain("<name>");
     expect(serialized).not.toContain("###");

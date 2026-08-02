@@ -60,6 +60,7 @@ describe("AcpRuntimeAdapter tool updates", () => {
       prompt: vi.fn(() => promptFinished),
       cancel: vi.fn(),
       close: vi.fn(async () => undefined),
+      shutdown: vi.fn(),
     } as unknown as AcpSessionManager;
     const runtime = new AcpRuntimeAdapter(acp);
     const events: RuntimeEvent[] = [];

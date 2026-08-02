@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { Logger } from "pino";
-import type { AppConfig } from "../config/schema.js";
+import type { AgentConfig } from "../config/schema.js";
 import type {
   AcpInitializeResult,
   AcpPermissionRequestParams,
@@ -13,7 +13,6 @@ import { AcpProcessManager, type ManagedAcpProcess } from "./AcpProcessManager.j
 
 export interface RuntimeSession {
   localSessionId: string;
-  processKey: string;
   agentName: string;
   cwd: string;
   acpSessionId: string;
@@ -22,6 +21,8 @@ export interface RuntimeSession {
   modes?: JsonValue;
   configOptions?: JsonValue;
   availableCommands?: JsonValue;
+  onUpdate: (session: RuntimeSession, update: Record<string, JsonValue>) => void;
+  onPermissionRequest: (session: RuntimeSession, params: AcpPermissionRequestParams) => Promise<JsonValue>;
 }
 
 export interface CreateRuntimeSessionInput {
@@ -38,9 +39,11 @@ export interface CreateRuntimeSessionInput {
 export class AcpSessionManager {
   private readonly sessions = new Map<string, RuntimeSession>();
   private readonly sessionsByAcpId = new Map<string, RuntimeSession>();
+  private processStart?: Promise<ManagedAcpProcess>;
 
   constructor(
-    private readonly config: AppConfig,
+    private readonly agentName: string,
+    private readonly agent: AgentConfig,
     private readonly processManager: AcpProcessManager,
     private readonly logger: Logger,
   ) {}
@@ -50,66 +53,19 @@ export class AcpSessionManager {
   }
 
   async create(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {
-    const agent = this.config.agents[input.agentName];
-    if (!agent) {
-      throw new Error(`Unknown agent: ${input.agentName}`);
-    }
+    if (input.agentName !== this.agentName) throw new Error(`Unexpected agent: ${input.agentName}`);
 
     const cwd = path.resolve(input.cwd);
-    const processKey = input.localSessionId;
-    const managed = this.processManager.start(processKey, input.agentName, agent);
+    const managed = await this.process();
     const connection = managed.connection;
-
-    let runtime: RuntimeSession | undefined;
-
-    connection.registerHandler("session/request_permission", async (params) => {
-      if (!runtime) {
-        throw new Error("Received permission request before session was ready.");
-      }
-
-      return input.onPermissionRequest(runtime, params as unknown as AcpPermissionRequestParams);
-    });
-
-    connection.on("notification", (_method, params) => {
-      if (_method !== "session/update") {
-        return;
-      }
-
-      const updateParams = params as unknown as AcpSessionUpdateParams;
-      const target = this.sessionsByAcpId.get(updateParams.sessionId);
-      if (!target) {
-        this.logger.debug({ updateParams }, "Ignoring update for unknown ACP session.");
-        return;
-      }
-
-      this.applySessionUpdate(target, updateParams.update);
-      input.onUpdate(target, updateParams.update);
-    });
-
-    const initializeResult = await connection.request<AcpInitializeResult>("initialize", {
-      protocolVersion: 1,
-      clientCapabilities: {},
-      clientInfo: {
-        name: "agent-bot",
-        title: "Agent Bot",
-        version: "0.1.0",
-      },
-    });
-
-    if (initializeResult.authMethods?.length) {
-      const method = initializeResult.authMethods[0];
-      this.logger.info({ methodId: method.id }, "Authenticating ACP agent with first advertised method.");
-      await connection.request("authenticate", { methodId: method.id });
-    }
 
     const newSessionResult = await connection.request<AcpSessionNewResult>("session/new", {
       cwd,
       mcpServers: [],
     });
 
-    runtime = {
+    const runtime: RuntimeSession = {
       localSessionId: input.localSessionId,
-      processKey,
       agentName: input.agentName,
       cwd,
       acpSessionId: newSessionResult.sessionId,
@@ -117,6 +73,8 @@ export class AcpSessionManager {
       running: false,
       modes: newSessionResult.modes,
       configOptions: newSessionResult.configOptions,
+      onUpdate: input.onUpdate,
+      onPermissionRequest: input.onPermissionRequest,
     };
 
     this.sessions.set(input.localSessionId, runtime);
@@ -169,7 +127,13 @@ export class AcpSessionManager {
 
     this.sessions.delete(localSessionId);
     this.sessionsByAcpId.delete(session.acpSessionId);
-    this.processManager.stop(session.processKey);
+  }
+
+  shutdown(): void {
+    this.sessions.clear();
+    this.sessionsByAcpId.clear();
+    this.processStart = undefined;
+    this.processManager.stopAll();
   }
 
   async setMode(localSessionId: string, modeId: string): Promise<void> {
@@ -201,6 +165,61 @@ export class AcpSessionManager {
       throw new Error(`Unknown runtime session: ${localSessionId}`);
     }
     return session;
+  }
+
+  private async process(): Promise<ManagedAcpProcess> {
+    const existing = this.processManager.get(this.agentName);
+    if (existing) return existing;
+    if (this.processStart) return this.processStart;
+    const start = this.startProcess();
+    this.processStart = start;
+    try {
+      return await start;
+    } finally {
+      if (this.processStart === start) this.processStart = undefined;
+    }
+  }
+
+  private async startProcess(): Promise<ManagedAcpProcess> {
+    const managed = this.processManager.start(this.agentName, this.agentName, this.agent);
+    try {
+      const connection = managed.connection;
+      connection.registerHandler("session/request_permission", async (params) => {
+        const permission = params as unknown as AcpPermissionRequestParams;
+        const target = this.sessionsByAcpId.get(permission.sessionId);
+        if (!target) throw new Error(`Unknown ACP session requesting permission: ${permission.sessionId}`);
+        return target.onPermissionRequest(target, permission);
+      });
+      connection.on("notification", (method, params) => {
+        if (method !== "session/update") return;
+        const updateParams = params as unknown as AcpSessionUpdateParams;
+        const target = this.sessionsByAcpId.get(updateParams.sessionId);
+        if (!target) {
+          this.logger.debug({ updateParams }, "Ignoring update for unknown ACP session.");
+          return;
+        }
+        this.applySessionUpdate(target, updateParams.update);
+        target.onUpdate(target, updateParams.update);
+      });
+      const initializeResult = await connection.request<AcpInitializeResult>("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {},
+        clientInfo: {
+          name: "agent-bot",
+          title: "Agent Bot",
+          version: "0.1.0",
+        },
+      });
+      if (initializeResult.authMethods?.length) {
+        const method = initializeResult.authMethods[0];
+        this.logger.info({ methodId: method.id }, "Authenticating ACP agent with first advertised method.");
+        await connection.request("authenticate", { methodId: method.id });
+      }
+      return managed;
+    } catch (error) {
+      this.processManager.stop(this.agentName);
+      throw error;
+    }
   }
 
   private applySessionUpdate(session: RuntimeSession, update: Record<string, JsonValue>): void {

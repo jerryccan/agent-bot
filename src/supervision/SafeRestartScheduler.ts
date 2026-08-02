@@ -64,6 +64,11 @@ export class SafeRestartScheduler {
     this.clear();
   }
 
+  async cancelCurrent(): Promise<boolean> {
+    if (!this.reason) return false;
+    return this.cancelScheduled(this.scheduleId);
+  }
+
   async cancelScheduled(expectedScheduleId: number): Promise<boolean> {
     const reason = this.reason;
     if (!reason || this.scheduleId !== expectedScheduleId) return false;

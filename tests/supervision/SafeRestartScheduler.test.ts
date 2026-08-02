@@ -149,7 +149,8 @@ describe("SafeRestartScheduler", () => {
     scheduler.schedule("newer restart");
     expect(await scheduler.cancelScheduled(1)).toBe(false);
     expect(scheduler.scheduled).toBe(true);
-    expect(await scheduler.cancelScheduled(2)).toBe(true);
+    expect(await scheduler.cancelCurrent()).toBe(true);
     expect(scheduler.scheduled).toBe(false);
+    expect(await scheduler.cancelCurrent()).toBe(false);
   });
 });

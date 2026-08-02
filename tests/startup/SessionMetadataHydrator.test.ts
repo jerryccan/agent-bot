@@ -34,7 +34,7 @@ function fixture(title?: string, hasTurn = true) {
   });
   const readSessionMetadata = vi.fn(async () => ({ title: "Hydrated title" }));
   const runtimes = {
-    get: vi.fn(() => ({ readSessionMetadata })),
+    forAgent: vi.fn(() => ({ readSessionMetadata })),
   } as unknown as AgentRuntimeRegistry;
   return {
     store,
@@ -80,7 +80,7 @@ describe("SessionMetadataHydrator", () => {
       synchronizeSession: vi.fn(async () => resumed),
       readSessionMetadata: vi.fn(async () => ({})),
     };
-    const runtimes = { get: vi.fn(() => runtime) } as unknown as AgentRuntimeRegistry;
+    const runtimes = { forAgent: vi.fn(() => runtime) } as unknown as AgentRuntimeRegistry;
     const hydrator = new SessionMetadataHydrator(store, runtimes);
 
     await hydrator.hydrate(store.getSession("running")!);

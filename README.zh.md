@@ -160,18 +160,20 @@ agent-bot task stop <任务>
 | `/queue <prompt>`                       | 排队一个独立的后续 Prompt  |
 | `/nosteer <prompt>`                     | 与 `/queue` 相同           |
 | `/goal [目标]`                          | 查看或管理持久 Goal        |
-| `/model [名称]`                         | 查看或切换模型             |
-| `/thinking [级别]`                      | 查看或切换思考强度         |
-| `/permissions auto\|confirm`            | 修改工具授权方式           |
-| `/newgroup [标题]`                      | 为新任务创建私有群         |
+| `/provider`                            | 打开运行设置的 Provider tab   |
+| `/model`                               | 打开运行设置的 Model tab      |
+| `/thinking`                            | 打开运行设置的 Thinking tab   |
+| `/permissions`                         | 打开运行设置的 Permission tab |
+| `/newgroup [标题] [--dir <cwd> \| --nodir]` | 为新任务创建私有群         |
 | `/forkgroup [标题]`                     | 将当前位置分支到私有群     |
-| `/agent [名称]`                         | 查看或切换默认 Agent       |
-| `/use <agent> [cwd]`                    | 选择 Agent 并创建任务      |
+| `/agent [名称]`                         | 打开 Agent 设置或切换默认 Agent |
 | `! <命令>`                              | 在任务目录执行本地命令     |
-| `/restart`                              | 优雅重启 Agent Bot         |
+| `/restart [--force]`                    | 默认安全重启；`--force` 立即重启 |
 | `/help`                                 | 显示聊天内帮助             |
 
 斜杠命令支持任意唯一前缀，复合命令还支持首字母缩写：`/sess` 等同于 `/sessions`，`/fg` 等同于 `/forkgroup`，`/ng` 等同于 `/newgroup`，`/ns` 等同于 `/nosteer`。完整命令名优先；`/s`、`/f` 等匹配多个命令的前缀会被拒绝，并列出全部候选命令。
+
+`/agent`、`/provider`、`/model`、`/thinking` 和 `/permissions` 在存在可选项时使用同一张运行设置卡片。配置了多个 Agent 时，卡片会增加 Agent tab，用于选择后续新任务使用的默认 Agent；即使当前聊天还没有任务，`/agent` 也能打开该 tab。只配置一个 Agent 时，`/agent` 直接显示当前 Agent，不打开卡片。现有任务仍保持原来的 Agent，使用不同 Agent 的任务可以相互独立地运行。`/agent <名称>` 继续支持直接选择。没有可切换的 Provider 时，`/provider` 同样只显示当前 Provider。其余四个命令激活各自对应的 tab，且不接受参数。没有可继承设置的新任务使用 Codex 配置中的默认 Provider。
 
 私聊、群正文和话题分别维护当前任务。可以单独发送图片，也可以同时发送文字和图片。任务运行中发送普通文字会追加指令；需要确保形成后续 turn 时使用 `/queue`（或 `/nosteer`）。
 
@@ -179,11 +181,11 @@ agent-bot task stop <任务>
 
 在话题中使用 `/forkgroup` 时，如果话题任务还没有完成过自己的 turn，则从话题原始 turn fork；完成过后则从话题任务最近完成的 turn fork。正在执行的 turn 不会作为 fork 点。
 
-`/forkgroup` 创建新群后，群内欢迎消息会显示分支任务当前使用的模型、思考强度和权限类型。
+`/forkgroup` 创建新群后，群内欢迎消息会显示分支任务当前使用的 Provider、模型、思考强度和权限类型。
 
-`/newgroup` 会立即在新群中创建并绑定一个新任务。新任务继承当前任务的项目目录、模型、思考强度和权限模式，不影响来源任务；来源聊天没有当前任务时，则使用选定 Agent 及其运行时默认设置。显式标题会同时作为群名后缀和任务标题。
+`/new` 和 `/newgroup` 支持相同的项目参数：使用 `--dir <cwd>` 覆盖继承的项目目录，或使用 `--nodir` 强制创建 Projectless Codex 任务，二者不能同时使用。两条命令中的 `~`、`~/...` 和 `~\...` 均表示当前用户目录。`/newgroup` 会立即在新群中创建并绑定任务，同时继续继承当前任务的 Provider、模型、思考强度和权限模式，不影响来源任务。来源聊天没有当前任务时，则使用选定 Agent 及其运行时默认设置。显式标题会同时作为群名后缀和任务标题。
 
-`/newgroup` 省略标题时，任务标题为 `新任务`，默认群名为 `[agent] [project dir] 新任务 (mm-dd)`。`/forkgroup` 省略标题时，任务标题和群名都与 `/fork` 一样使用持久递增的 `源标题（分支 N）`，不追加日期。`/newgroup` 和 `/forkgroup` 创建的飞书群名最多显示 60 个字符。生成后的群名过长时，Agent Bot 只截断群名中的标题部分，任务标题本身保持不变。
+`/newgroup` 省略标题时，任务标题为 `新任务`，默认群名为 `[agent] [project dir] 新任务 (mm-dd)`。Projectless 群会完全省略项目段，群名格式为 `[agent] title`。`/forkgroup` 省略标题时，任务标题和群名都与 `/fork` 一样使用持久递增的 `源标题（分支 N）`，不追加日期。`/newgroup` 和 `/forkgroup` 创建的飞书群名最多显示 60 个字符。生成后的群名过长时，Agent Bot 只截断群名中的标题部分，任务标题本身保持不变。
 
 把已绑定任务的群改名为 `[agent] [project dir] title` 时，只会把 `title` 同步到当前任务；Agent 和工程目录前缀仅作为群元数据，不会写入 Codex 任务标题。旧的 `[agent] title` 格式仍然兼容。
 

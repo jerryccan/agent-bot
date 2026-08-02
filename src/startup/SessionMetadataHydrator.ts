@@ -16,7 +16,7 @@ export class SessionMetadataHydrator {
       && session.status === "running"
       && session.lastTurnStatus === "running"
     ) {
-      const runtime = this.runtimes.get("codex");
+      const runtime = this.runtimes.forAgent(session.agentName);
       const loaded = runtime.getSession(session.localSessionId) ?? await runtime.resumeSession({
         localSessionId: session.localSessionId,
         remoteSessionId: session.remoteSessionId,
@@ -38,7 +38,7 @@ export class SessionMetadataHydrator {
     }
     if (session.title || !session.runtimeKind || !session.remoteSessionId) return session;
     if (session.runtimeKind === "codex" && !session.lastTurnId) return session;
-    const metadata = await this.runtimes.get(session.runtimeKind).readSessionMetadata(session.remoteSessionId);
+    const metadata = await this.runtimes.forAgent(session.agentName).readSessionMetadata(session.remoteSessionId);
     const title = normalizeTaskTitle(metadata.title);
     if (title) this.store.updateRuntimeSession(session.localSessionId, { title });
     return this.store.getSession(session.localSessionId) ?? session;

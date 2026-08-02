@@ -223,6 +223,7 @@ describe("StateStore runtime metadata", () => {
       runtimeKind: "codex",
       remoteSessionId: "thr_1",
       title: "Show startup metadata",
+      modelProvider: "azure",
       model: "gpt-test",
       reasoningEffort: "high",
       permissionMode: "auto",
@@ -232,12 +233,40 @@ describe("StateStore runtime metadata", () => {
       runtimeKind: "codex",
       remoteSessionId: "thr_1",
       title: "Show startup metadata",
+      modelProvider: "azure",
       model: "gpt-test",
       reasoningEffort: "high",
       permissionMode: "auto",
     });
     expect(store.findSessionByRemoteSessionId("thr_1", "chat_id:c1")?.localSessionId).toBe("s1");
     expect(store.findSessionByRemoteSessionId("thr_1", "chat_id:other")).toBeUndefined();
+  });
+
+  test("allows different Agents to persist the same remote task id without merging", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    for (const [localSessionId, agentName] of [["codex_task", "codex"], ["traex_task", "traex"]] as const) {
+      store.createSession({
+        localSessionId,
+        contextKey: "chat_id:c1",
+        agentName,
+        cwd: process.cwd(),
+        status: "ready",
+      });
+      store.updateRuntimeSession(localSessionId, {
+        runtimeKind: "codex",
+        remoteSessionId: "shared_remote",
+      });
+    }
+
+    expect(store.findSessionByRemoteSessionId("shared_remote", undefined, "codex")?.localSessionId)
+      .toBe("codex_task");
+    expect(store.findSessionByRemoteSessionId("shared_remote", undefined, "traex")?.localSessionId)
+      .toBe("traex_task");
+    expect(store.listAllSessions().filter((session) => session.remoteSessionId === "shared_remote"))
+      .toHaveLength(2);
   });
 
   test("migrates duplicate remote tasks into one canonical task with multiple context links", () => {

@@ -84,6 +84,7 @@ export class StartupNotifier {
           ? {
               id: session.remoteSessionId ?? session.localSessionId,
               title: session.title,
+              modelProvider: session.modelProvider,
               model: session.model,
               reasoningEffort: session.reasoningEffort,
               permissionMode: session.permissionMode,

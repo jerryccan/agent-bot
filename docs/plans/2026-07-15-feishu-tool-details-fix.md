@@ -13,7 +13,7 @@
 - Completed tools remain collapsed by default; active and failed tools remain expanded.
 - Command and result summaries are bounded before card delivery.
 - Do not replay already delivered final messages on resume.
-- Do not change explicit `/use` or `/switch` semantics.
+- Do not change explicit `/agent` or `/switch` semantics.
 
 ---
 

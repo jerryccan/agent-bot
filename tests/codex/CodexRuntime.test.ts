@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { RuntimeEvent, RuntimeGoal } from "../../src/runtime/types.js";
+import { AppServerRequestError } from "../../src/codex/AppServerConnection.js";
 import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/CodexRuntime.js";
 import { CodexLocalActivityDetector } from "../../src/codex/CodexLocalActivityDetector.js";
 
@@ -129,6 +130,7 @@ describe("CodexRuntime", () => {
       agentName: "codex",
       cwd: process.cwd(),
       title: "Forked task（分支 1）",
+      modelProvider: "azure",
       model: "gpt-test",
       reasoningEffort: "high",
       permissionMode: "auto",
@@ -144,7 +146,9 @@ describe("CodexRuntime", () => {
       params: expect.objectContaining({
         threadId: "thr_source",
         lastTurnId: "turn_anchor",
+        excludeTurns: true,
         cwd: process.cwd(),
+        modelProvider: "azure",
         model: "gpt-test",
         threadSource: "user",
         approvalPolicy: "never",
@@ -159,6 +163,53 @@ describe("CodexRuntime", () => {
       method: "thread/name/set",
       params: { threadId: "thr_forked", name: "Forked task（分支 1）" },
     });
+  });
+
+  test("retries a fork without excludeTurns when an older App Server rejects the field", async () => {
+    const client = new FakeAppServerClient();
+    client.forkErrors.push(new AppServerRequestError(
+      "thread/fork",
+      -32602,
+      "Invalid params",
+      { detail: "unknown field `excludeTurns`" },
+    ));
+    const testLogger = logger();
+    const runtime = new CodexRuntime(provider(client), testLogger);
+
+    await runtime.forkSession({
+      localSessionId: "fallback_local",
+      remoteSessionId: "thr_source",
+      lastTurnId: "turn_anchor",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    const requests = client.requests.filter((request) => request.method === "thread/fork");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.params).toEqual(expect.objectContaining({ excludeTurns: true }));
+    expect(requests[1]?.params).not.toHaveProperty("excludeTurns");
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      { error: expect.any(AppServerRequestError) },
+      "Codex App Server does not support thread/fork excludeTurns; retrying without it.",
+    );
+  });
+
+  test("does not retry a fork after an ambiguous failure", async () => {
+    const client = new FakeAppServerClient();
+    client.forkErrors.push(new Error("App Server connection closed."));
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.forkSession({
+      localSessionId: "failed_local",
+      remoteSessionId: "thr_source",
+      lastTurnId: "turn_anchor",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    })).rejects.toThrow("App Server connection closed");
+
+    expect(client.requests.filter((request) => request.method === "thread/fork")).toHaveLength(1);
   });
 
   test("sets an explicit title immediately after creating a thread", async () => {
@@ -467,6 +518,88 @@ describe("CodexRuntime", () => {
     });
 
     expect(session.reasoningEffort).toBe("medium");
+  });
+
+  test("uses the Codex-configured default Provider when starting without an override", async () => {
+    const client = new FakeAppServerClient();
+    client.startResult = {
+      thread: { id: "thr_default_provider" },
+      modelProvider: "codex-default",
+      model: "gpt-test",
+      reasoningEffort: "medium",
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    const session = await runtime.createSession({
+      localSessionId: "default-provider",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    const request = client.requests.find((item) => item.method === "thread/start");
+    expect(request?.params).not.toHaveProperty("modelProvider");
+    expect(session.modelProvider).toBe("codex-default");
+  });
+
+  test("lists configured Providers and applies unified execution settings", async () => {
+    const client = new FakeAppServerClient();
+    client.configResult = {
+      config: {
+        model_provider: "openai",
+        model_providers: {
+          openai: { name: "OpenAI" },
+          azure: { name: "Azure OpenAI", env_key: "SECRET_MUST_NOT_BE_EXPOSED" },
+        },
+      },
+    };
+    client.startResult = {
+      thread: { id: "thr_settings" },
+      modelProvider: "openai",
+      model: "gpt-test",
+      reasoningEffort: "medium",
+    };
+    client.resumeResult = {
+      thread: { id: "thr_settings" },
+      modelProvider: "azure",
+      model: "gpt-test",
+      reasoningEffort: "medium",
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "settings",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    await expect(runtime.listModelProviders()).resolves.toEqual([
+      { id: "openai", displayName: "OpenAI", isDefault: true },
+      { id: "azure", displayName: "Azure OpenAI" },
+    ]);
+    const session = await runtime.setExecutionSettings("settings", {
+      modelProvider: "azure",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "confirm",
+    });
+
+    expect(client.requests).toContainEqual({
+      method: "thread/resume",
+      params: expect.objectContaining({
+        threadId: "thr_settings",
+        modelProvider: "azure",
+        model: "gpt-test",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+      }),
+    });
+    expect(session).toMatchObject({
+      modelProvider: "azure",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "confirm",
+    });
   });
 
   test("resume ignores history and historical notifications", async () => {
@@ -1080,8 +1213,10 @@ class FakeAppServerClient {
   startResult: unknown = { thread: { id: "thr_1" }, model: "gpt-test", reasoningEffort: "medium" };
   resumeResult: unknown = { thread: { id: "thr_1", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
   forkResult: unknown = { thread: { id: "thr_forked", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
+  forkErrors: Error[] = [];
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
   listResult: unknown = { data: [], nextCursor: null };
+  configResult: unknown = { config: { model_provider: "openai", model_providers: {} } };
   goalResult: RuntimeGoal | null = null;
   private notificationListener?: (method: string, params: unknown) => void;
   private readonly requestHandlers = new Map<
@@ -1094,9 +1229,14 @@ class FakeAppServerClient {
     this.timeouts.push({ method, timeoutMs });
     if (method === "thread/start") return this.startResult as T;
     if (method === "thread/resume") return this.resumeResult as T;
-    if (method === "thread/fork") return this.forkResult as T;
+    if (method === "thread/fork") {
+      const error = this.forkErrors.shift();
+      if (error) throw error;
+      return this.forkResult as T;
+    }
     if (method === "thread/read") return this.readResult as T;
     if (method === "thread/list") return this.listResult as T;
+    if (method === "config/read") return this.configResult as T;
     if (method === "thread/goal/get") return { goal: this.goalResult } as T;
     if (method === "thread/goal/set") {
       const update = params as Partial<RuntimeGoal>;

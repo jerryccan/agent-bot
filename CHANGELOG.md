@@ -6,6 +6,15 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Keep `/new` and `/newgroup` project options aligned: both support `--dir <cwd>` with `~`-based home-directory paths and `--nodir` for a forced Projectless Codex task, while `/newgroup` continues to inherit execution settings from the source task.
+- Send `excludeTurns: true` by default for every Codex fork, reducing response size without removing branch history, and retry once without the experimental field when an older App Server explicitly rejects it.
+- Remove obsolete `/mode`, `/modes`, `/ask`, `/agents`, and `/use` commands, consolidating Agent selection under `/agent`.
+- Omit the `[Projectless]` segment from `/newgroup` and `/forkgroup` group names while preserving Projectless task behavior.
+- Add a unified execution-settings card with Provider, Model, Thinking, and Permission tabs plus an Agent tab when multiple agents are configured; route multi-option Agent and Provider selection through the same card, report their current value directly when no alternative exists, persist and inherit Provider across task lifecycle operations, and leave new tasks on the Codex-configured default Provider.
+- Make Feishu `/restart` schedule a safe restart by default, with `/restart --force` as the only immediate-restart form.
+- Preserve Windows separators before dot-prefixed directories in Feishu file-change summaries instead of letting Markdown consume the separator as an escape.
+- Isolate every configured Agent by standard name with its own process and runtime connection, aggregate Codex tasks across those isolated runtimes, and scope persisted remote task identities by Agent.
+
 ## [0.1.10] - 2026-08-01
 
 - Open a filtered Feishu Developer Console permission page for manual `im:message.group_msg` setup instead of incorrectly including the unsupported scope in one-click configuration; allow `Y` to skip its wait and report the resulting mention-only group behavior.

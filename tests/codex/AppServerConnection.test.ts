@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { AppServerConnection } from "../../src/codex/AppServerConnection.js";
+import { AppServerConnection, AppServerRequestError } from "../../src/codex/AppServerConnection.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -23,6 +23,30 @@ describe("AppServerConnection", () => {
     ]);
     process.pushStdout({ id: 1, result: { userAgent: "codex" } });
     await expect(pending).resolves.toEqual({ userAgent: "codex" });
+  });
+
+  test("preserves JSON-RPC error metadata", async () => {
+    const process = fakeChildProcess();
+    const connection = new AppServerConnection(process.child, logger());
+    const pending = connection.request("thread/fork", { threadId: "thr_1", excludeTurns: true });
+
+    process.pushStdout({
+      id: 1,
+      error: {
+        code: -32602,
+        message: "Invalid params",
+        data: { detail: "unknown field `excludeTurns`" },
+      },
+    });
+
+    const error = await pending.then(() => undefined, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(AppServerRequestError);
+    expect(error).toMatchObject({
+      method: "thread/fork",
+      code: -32602,
+      serverMessage: "Invalid params",
+      data: { detail: "unknown field `excludeTurns`" },
+    });
   });
 
   test("emits notifications", async () => {

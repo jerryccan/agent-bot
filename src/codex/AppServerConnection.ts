@@ -26,6 +26,21 @@ interface PendingRequest {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+export class AppServerRequestError extends Error {
+  readonly data: unknown;
+
+  constructor(
+    readonly method: string,
+    readonly code: number,
+    readonly serverMessage: string,
+    data?: unknown,
+  ) {
+    super(`${method} failed: ${serverMessage}`);
+    this.name = "AppServerRequestError";
+    this.data = data;
+  }
+}
+
 export class AppServerConnection {
   private nextId = 1;
   private closed = false;
@@ -131,7 +146,12 @@ export class AppServerConnection {
     this.pending.delete(message.id);
     if (pending.timeout) clearTimeout(pending.timeout);
     if ("error" in message) {
-      pending.reject(new Error(`${pending.method} failed: ${message.error.message}`));
+      pending.reject(new AppServerRequestError(
+        pending.method,
+        message.error.code,
+        message.error.message,
+        message.error.data,
+      ));
     } else {
       pending.resolve(message.result);
     }

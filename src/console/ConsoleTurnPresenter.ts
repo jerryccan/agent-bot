@@ -39,7 +39,7 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     } else if (event.type === "tool_started") {
       await this.outbound.sendText(contextKey, `> ${event.tool.title}`);
     } else if (event.type === "approval_requested") {
-      await this.outbound.sendText(contextKey, `Approval required: ${event.request.title}. Use Feishu or /permissions auto.`);
+      await this.outbound.sendText(contextKey, `Approval required: ${event.request.title}. Use Feishu's Permission settings card.`);
     } else if (event.type === "turn_completed" && !this.delivered.has(event.turnId)) {
       this.delivered.add(event.turnId);
       await this.outbound.sendMarkdown(contextKey, event.finalResponse || "(completed without text)");

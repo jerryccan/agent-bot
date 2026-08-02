@@ -162,9 +162,11 @@ At least one agent must be configured. `defaults.agent` must name a configured a
 
 ## Agent Runtimes
 
-An agent with `kind: "codex"` uses Codex App Server. Agent Bot passes project directory, model, reasoning effort, permission mode, text input, and local images through the App Server protocol.
+The configured Agent standard name is the runtime isolation key. Every configured Agent owns a separate, lazily started child process and runtime instance, even when multiple Agents use the same `kind`. Tasks using different Agents never share a command, environment, protocol connection, session map, or event stream. Tasks using the same Agent share that Agent process while keeping separate protocol sessions.
 
-An agent with `kind: "acp"`, or without a `kind`, is started as an ACP process. Agent-specific `env` values are added to its environment.
+`kind` selects only the connection adapter. An agent with `kind: "codex"` uses its own Codex App Server process. Agent Bot passes project directory, model, reasoning effort, permission mode, text input, and local images through the App Server protocol. `/sessions` aggregates tasks reported by every configured Codex Agent while preserving the owning Agent for Switch, Status, Stop, New, and Fork actions.
+
+An agent with `kind: "acp"`, or without a `kind`, uses its own ACP process. Multiple tasks create separate ACP sessions on that connection. Agent-specific `env` values are added only to that Agent's environment.
 
 Every agent process receives:
 
@@ -189,7 +191,9 @@ Starting a Feishu thread from a mapped user message, progress card, or final res
 
 `/forkgroup` has thread-aware source selection. An unbound thread, or a bound thread task with no completed turn of its own, forks directly from the thread's original anchor turn without creating an intermediate thread task. Once the thread task has completed a turn, `/forkgroup` uses its latest locally persisted completed turn. A newer active turn does not block the command and is excluded from the fork point.
 
-The new group's welcome message reports the persisted fork settings: model, reasoning effort, and permission type. Permission type is rendered as automatic execution or confirmation before execution.
+Agent Bot sends the experimental `excludeTurns: true` field on every `thread/fork` request. This suppresses populated `thread.turns` in the response without changing the history copied into the fork. The App Server connection enables `experimentalApi`; no user-facing command option is required. If an older App Server explicitly rejects `excludeTurns` as unknown, unsupported, or unavailable without experimental support, Agent Bot retries once without that field. Timeouts, disconnects, and unrelated fork errors are never retried because the first request may already have created a branch.
+
+The new group's welcome message reports the persisted fork settings: Provider, model, reasoning effort, and permission type. Permission type is rendered as automatic execution or confirmation before execution.
 
 ## Turn And Message Behavior
 
@@ -212,6 +216,12 @@ Incoming rich-text images are downloaded into the inbound image cache and passed
 `/sessions` reads Codex tasks through `thread/list` and can discover tasks created by Codex Desktop, CLI, Agent Bot, or another App Server client under the same `CODEX_HOME`.
 
 Each task entry exposes `NewGroup` and `ForkGroup` callbacks. The callback payload keeps the selected task ID and source context, while the Lark operator `open_id` is used to invite the user to the new group. `NewGroup` resolves the selected task's project and execution settings; `ForkGroup` resolves its latest available completed turn.
+
+## Codex Provider Settings
+
+Provider is a task-level setting stored as `model_provider` alongside model, reasoning effort, and permission mode. Agent Bot passes `modelProvider` through `thread/start`, `thread/resume`, and `thread/fork` whenever a task explicitly inherits or selects one. For a brand-new task with no inherited Provider, Agent Bot omits `modelProvider`; the Codex App Server therefore uses the effective `model_provider` from Codex configuration and returns the selected Provider in its thread response for persistence.
+
+`/provider`, `/model`, `/thinking`, and `/permissions` open one Card 2.0 execution-settings surface with the matching tab active. All four commands reject arguments; tab navigation and setting changes use card callbacks only. Provider choices come from App Server `config/read`. A Provider change resumes the thread with the selected Provider and the current compatible model, reasoning effort, and permission mode. Model, reasoning, and permission choices update their focused setting immediately, refresh the same card in place, and apply from the next request.
 
 Agent Bot keeps a local routing key for Feishu cards and delivery state, but presents the Codex task ID to users. It does not resume, steer, stop, or fork externally running Codex work without an explicit user action.
 
@@ -259,7 +269,7 @@ A safe restart waits for:
 2. Final responses to be delivered
 3. A 15-second quiet inbound-message window
 
-New messages reset the quiet timer. `--immediate` and `--force` skip these checks. Exit code `75` identifies an intentional worker restart.
+The Feishu `/restart` command uses this safe path by default; `/restart --force` restarts immediately and may interrupt active work. The command rejects every other argument. New messages reset the quiet timer. CLI `--immediate` and `--force` also skip these checks. Exit code `75` identifies an intentional worker restart.
 
 The first safe-restart status card is delayed by three seconds so a task's final response can usually arrive first. Status changes during that window are coalesced into the initial card. The delay does not block scheduler polling, and shutdown flushes any pending card immediately.
 

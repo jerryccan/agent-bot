@@ -109,6 +109,7 @@ export interface RemoteSessionSummary {
   cwd: string;
   source: string;
   status: RemoteSessionStatus;
+  modelProvider?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode?: PermissionMode;
@@ -144,6 +145,7 @@ export interface RuntimeSession {
   agentName: string;
   cwd: string;
   title?: string;
+  modelProvider?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode: PermissionMode;
@@ -155,6 +157,7 @@ export interface CreateRuntimeSessionInput {
   agentName: string;
   cwd: string;
   title?: string;
+  modelProvider?: string;
   model?: string;
   reasoningEffort?: string;
   permissionMode: PermissionMode;
@@ -178,6 +181,19 @@ export interface ModelOption {
   isDefault?: boolean;
   supportedReasoningEfforts: ReasoningEffortOption[];
   defaultReasoningEffort?: string;
+}
+
+export interface ModelProviderOption {
+  id: string;
+  displayName?: string;
+  isDefault?: boolean;
+}
+
+export interface RuntimeExecutionSettings {
+  modelProvider: string;
+  model: string;
+  reasoningEffort: string;
+  permissionMode: PermissionMode;
 }
 
 export interface ReasoningEffortOption {
@@ -208,8 +224,10 @@ export interface AgentRuntime {
   setModel(sessionId: string, model: string): Promise<void>;
   setReasoningEffort(sessionId: string, effort: string): Promise<void>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void>;
+  setExecutionSettings?(sessionId: string, settings: RuntimeExecutionSettings): Promise<RuntimeSession>;
   respondToApproval(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
   listModels(): Promise<ModelOption[]>;
+  listModelProviders?(): Promise<ModelProviderOption[]>;
   onEvent(listener: (event: RuntimeEvent) => void): () => void;
   close(): void;
 }
