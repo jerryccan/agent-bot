@@ -233,8 +233,16 @@ export class FeishuMessageClient implements FeishuOutbound {
   }
 
   async updateInteractiveCard(messageId: string, card: Record<string, unknown>): Promise<void> {
+    const preparedCard = await this.prepareInteractiveCard(card);
+    await this.updateInteractiveCardNow(messageId, preparedCard);
+  }
+
+  private async updateInteractiveCardNow(
+    messageId: string,
+    card: Record<string, unknown>,
+    allowAuditFallback = true,
+  ): Promise<void> {
     try {
-      const preparedCard = await this.prepareInteractiveCard(card);
       const token = await this.getTenantAccessToken();
       const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}`, {
         method: "PATCH",
@@ -242,14 +250,26 @@ export class FeishuMessageClient implements FeishuOutbound {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json; charset=utf-8",
         },
-        body: JSON.stringify({ content: JSON.stringify(preparedCard) }),
+        body: JSON.stringify({ content: JSON.stringify(card) }),
       });
       const payload = (await response.json()) as SendMessageResponse;
       if (!response.ok || payload.code !== 0) {
         throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "update", response.status);
       }
     } catch (error) {
-      throw normalizeTransportError(error, "update");
+      const normalized = normalizeTransportError(error, "update");
+      const fallback = allowAuditFallback && normalized.isEmailAddressAuditFailure
+        ? sanitizeEmailAddressesInContent(card)
+        : undefined;
+      if (fallback) {
+        this.logger.warn(
+          { code: normalized.code, messageId },
+          "Feishu rejected a card update as email-sensitive; retrying with audit-safe text.",
+        );
+        await this.updateInteractiveCardNow(messageId, fallback, false);
+        return;
+      }
+      throw normalized;
     }
   }
 
@@ -278,6 +298,7 @@ export class FeishuMessageClient implements FeishuOutbound {
     msgType: string,
     content: Record<string, unknown>,
     idempotencyKey?: string,
+    allowAuditFallback = true,
   ): Promise<string | undefined> {
     let token: string;
     try {
@@ -317,6 +338,16 @@ export class FeishuMessageClient implements FeishuOutbound {
       lastError = error;
 
       if (!error.isRetryable || attempt === 2) {
+        const fallback = allowAuditFallback && error.isEmailAddressAuditFailure
+          ? sanitizeEmailAddressesInContent(content)
+          : undefined;
+        if (fallback) {
+          this.logger.warn(
+            { code: error.code, messageId: target.messageId, msgType },
+            "Feishu rejected a reply as email-sensitive; retrying with audit-safe text.",
+          );
+          return this.replyMessageNow(target, msgType, fallback, idempotencyKey, false);
+        }
         this.logger.error({ error, messageId: target.messageId, msgType }, "Failed to reply to Feishu message.");
         throw error;
       }
@@ -334,6 +365,7 @@ export class FeishuMessageClient implements FeishuOutbound {
     msgType: string,
     content: Record<string, unknown>,
     idempotencyKey?: string,
+    allowAuditFallback = true,
   ): Promise<string | undefined> {
     let token: string;
     try {
@@ -376,6 +408,16 @@ export class FeishuMessageClient implements FeishuOutbound {
       lastError = error;
 
       if (!error.isRetryable || attempt === 2) {
+        const fallback = allowAuditFallback && error.isEmailAddressAuditFailure
+          ? sanitizeEmailAddressesInContent(content)
+          : undefined;
+        if (fallback) {
+          this.logger.warn(
+            { code: error.code, contextKey, msgType },
+            "Feishu rejected a message as email-sensitive; retrying with audit-safe text.",
+          );
+          return this.sendMessageNow(contextKey, msgType, fallback, idempotencyKey, false);
+        }
         this.logger.error({ error, contextKey, msgType }, "Failed to send Feishu message.");
         throw error;
       }
@@ -573,6 +615,7 @@ export class FeishuMessageClient implements FeishuOutbound {
 export class FeishuApiError extends Error {
   readonly isRateLimit: boolean;
   readonly isRetryable: boolean;
+  readonly isEmailAddressAuditFailure: boolean;
 
   constructor(
     message: string,
@@ -591,6 +634,7 @@ export class FeishuApiError extends Error {
     this.name = "FeishuApiError";
     this.isRateLimit = code === 230020 || message.toLowerCase().includes("frequency limit");
     this.isRetryable = forceRetryable || this.isRateLimit || (httpStatus !== undefined && httpStatus >= 500);
+    this.isEmailAddressAuditFailure = code === 230028 && message.includes("EMAIL_ADDRESS");
   }
 }
 
@@ -640,6 +684,25 @@ function finalAnswerCard(elements: Array<Record<string, unknown>>): Record<strin
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeEmailAddressesInContent(content: Record<string, unknown>): Record<string, unknown> | undefined {
+  let changed = false;
+  const sanitize = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      const sanitized = value.replace(
+        /\b([a-z0-9._%+-]+)@([a-z0-9.-]+\.[a-z]{2,})\b/gi,
+        "$1 [at] $2",
+      );
+      if (sanitized !== value) changed = true;
+      return sanitized;
+    }
+    if (Array.isArray(value)) return value.map(sanitize);
+    if (!isRecord(value)) return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitize(child)]));
+  };
+  const sanitized = sanitize(content) as Record<string, unknown>;
+  return changed ? sanitized : undefined;
 }
 
 function cardImageLabel(image: Record<string, unknown>): string {

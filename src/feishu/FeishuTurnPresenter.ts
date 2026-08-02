@@ -152,6 +152,7 @@ export class FeishuTurnPresenter {
       await entry.scheduler?.flush(entry.state);
     } catch (error) {
       this.options.onError?.(error);
+      return;
     }
     await this.syncThinkingCardReaction(entry);
   }
@@ -393,16 +394,20 @@ export class FeishuTurnPresenter {
   }
 
   private async finalize(entry: TurnEntry, state: TurnViewState): Promise<void> {
+    let terminalCardError: unknown;
     if (!entry.historySnapshot) {
       try {
         await entry.scheduler?.flush(state);
       } catch (error) {
         this.options.onError?.(error);
+        terminalCardError = error;
       }
     }
+    if (state.status === "completed" && state.finalResponse) {
+      await this.deliverFinal(entry.contextKey, state);
+    }
+    if (terminalCardError) throw terminalCardError;
     await this.syncThinkingCardReaction(entry);
-    if (state.status !== "completed" || !state.finalResponse) return;
-    await this.deliverFinal(entry.contextKey, state);
   }
 
   private async syncThinkingCardReaction(entry: TurnEntry): Promise<void> {

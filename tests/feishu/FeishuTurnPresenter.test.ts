@@ -502,12 +502,13 @@ describe("FeishuTurnPresenter", () => {
     expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
   });
 
-  test("still sends the final answer when the terminal card update fails permanently", async () => {
+  test("sends the final answer but does not finalize reactions when the terminal card update fails permanently", async () => {
     const { presenter, outbound } = createFixture();
     (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("bad card"));
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() - 1_000 });
-    await presenter.onEvent(completed());
+    await expect(presenter.onEvent(completed())).rejects.toThrow("bad card");
     expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
+    expect(outbound.deleteReaction).not.toHaveBeenCalled();
   });
 
   test("checkpoints final chunks and resumes only unsent chunks", async () => {

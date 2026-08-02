@@ -153,6 +153,81 @@ describe("FeishuMessageClient", () => {
     });
   });
 
+  test("retries a rejected final message with audit-safe email text", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 230028,
+        msg: "The messages do NOT pass the audit, ext=contain sensitive data: EMAIL_ADDRESS",
+      }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_safe" } }));
+    globalThis.fetch = fetchMock;
+    const testLogger = logger();
+    const client = new FeishuMessageClient(config(), testLogger);
+
+    await expect(client.sendMarkdown(
+      "chat_id:c1",
+      "Remote: git@github.com:keyou/agent-bot.git",
+      "audit-safe-uuid",
+    )).resolves.toBe("om_safe");
+
+    const rejected = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as { content: string; uuid: string };
+    const retried = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { content: string; uuid: string };
+    expect(rejected.content).toContain("git@github.com:keyou/agent-bot.git");
+    expect(retried.content).toContain("git [at] github.com:keyou/agent-bot.git");
+    expect(retried.content).not.toContain("git@github.com");
+    expect(retried.uuid).toBe(rejected.uuid);
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 230028 }),
+      expect.stringContaining("audit-safe text"),
+    );
+  });
+
+  test("retries a rejected thread reply with audit-safe email text", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 230028,
+        msg: "The messages do NOT pass the audit, ext=contain sensitive data: EMAIL_ADDRESS",
+      }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_reply_safe" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.replyMarkdown(
+      "chat_id:c1",
+      { messageId: "om_source", replyInThread: true },
+      "Contact user@example.com",
+      "reply-audit-safe-uuid",
+    )).resolves.toBe("om_reply_safe");
+
+    const retried = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { content: string; uuid: string };
+    expect(retried.content).toContain("user [at] example.com");
+    expect(retried.content).not.toContain("user@example.com");
+    expect(retried.uuid).toBe("reply-audit-safe-uuid");
+  });
+
+  test("retries a rejected card update with audit-safe email text", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 230028,
+        msg: "The messages do NOT pass the audit, ext=contain sensitive data: EMAIL_ADDRESS",
+      }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok" }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.updateInteractiveCard("om_progress", {
+      schema: "2.0",
+      body: { elements: [{ tag: "markdown", content: "Remote: git@github.com:keyou/project.git" }] },
+    })).resolves.toBeUndefined();
+
+    const retried = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { content: string };
+    expect(retried.content).toContain("git [at] github.com:keyou/project.git");
+    expect(retried.content).not.toContain("git@github.com");
+  });
+
   test("uses the base chat id when sending for a thread-scoped task context", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

@@ -1950,38 +1950,39 @@ export class ProxySessionController {
       });
     }
 
+    let presentationError: unknown;
     try {
       await this.outbound.onEvent(event);
-      if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
-        const terminalStatus = event.type === "turn_completed"
-          ? "completed"
-          : event.type === "turn_cancelled"
-            ? "cancelled"
-            : "failed";
-        const latest = this.store.getSession(event.sessionId);
-        if (latest?.lastTurnId === event.turnId && latest.lastTurnStatus === terminalStatus) {
-          await this.finalizeTurnMessageReactions(event.turnId, terminalStatus);
-        }
-      }
-    } finally {
-      if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
-        const latest = this.store.getSession(event.sessionId);
-        const activeTurnId = latest
-          ? this.runtimes.forAgent(latest.agentName).getSession(event.sessionId)?.activeTurnId
-          : undefined;
-        if (latest?.lastTurnId === event.turnId && !activeTurnId) {
-          this.store.updateSession(event.sessionId, { status: event.type === "turn_failed" ? "failed" : "ready" });
-        }
-      }
+    } catch (error) {
+      presentationError = error;
     }
+
     if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+      const terminalStatus = event.type === "turn_completed"
+        ? "completed"
+        : event.type === "turn_cancelled"
+          ? "cancelled"
+          : "failed";
+      const reactionSession = this.store.getSession(event.sessionId);
+      if (
+        !presentationError
+        && reactionSession?.lastTurnId === event.turnId
+        && reactionSession.lastTurnStatus === terminalStatus
+      ) {
+        await this.finalizeTurnMessageReactions(event.turnId, terminalStatus);
+      }
+
       const latest = this.store.getSession(event.sessionId);
       const activeTurnId = latest
         ? this.runtimes.forAgent(latest.agentName).getSession(event.sessionId)?.activeTurnId
         : undefined;
-      if (latest?.lastTurnId !== event.turnId || activeTurnId) return;
-      await this.scheduleNextQueuedPrompt(event.sessionId);
+      if (latest?.lastTurnId === event.turnId && !activeTurnId) {
+        this.store.updateSession(event.sessionId, { status: event.type === "turn_failed" ? "failed" : "ready" });
+        await this.scheduleNextQueuedPrompt(event.sessionId);
+      }
     }
+
+    if (presentationError) throw presentationError;
   }
 
   private scheduleNextQueuedPrompt(sessionId: string): Promise<void> {

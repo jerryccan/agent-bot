@@ -2158,6 +2158,28 @@ describe("ProxySessionController", () => {
     expect(store.getServerActivityState().runningSessions).toBe(0);
   });
 
+  test("keeps the received reaction pending when terminal presentation fails", async () => {
+    const { controller, sessions, store, listeners, presenter, outbound } = fixture();
+    (outbound.addReaction as ReturnType<typeof vi.fn>).mockResolvedValueOnce("reaction_on_it");
+    (presenter.onEvent as ReturnType<typeof vi.fn>).mockImplementation(async (event: RuntimeEvent) => {
+      if (event.type === "turn_completed") throw new Error("terminal presentation failed");
+    });
+
+    await controller.onMessage(message("build it safely"));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    sessions.get(session.localSessionId)!.activeTurnId = undefined;
+    for (const listener of listeners) {
+      listener({ type: "turn_completed", sessionId: session.localSessionId, turnId: "turn_1", finalResponse: "done" });
+    }
+
+    await vi.waitFor(() => expect(store.getSession(session.localSessionId)?.status).toBe("ready"));
+    expect(store.getMessageReaction("m-build it safely")).toMatchObject({
+      emojiType: "OnIt",
+      status: "pending",
+    });
+    expect(outbound.addReaction).not.toHaveBeenCalledWith("m-build it safely", "DONE");
+  });
+
   test("uses CrossMark for the original prompt when its turn is cancelled", async () => {
     const { controller, sessions, store, outbound, listeners } = fixture();
     (outbound.addReaction as ReturnType<typeof vi.fn>)
