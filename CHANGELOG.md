@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.13-alpha.1] - 2026-08-03
+
 - Route safe-restart status cards and restarting acknowledgements to every conversation that triggers the pending restart plus every conversation active during the previous minute, retaining each enrolled route until the restart completes while preserving Feishu topic replies; add `agentbot server restart --task <task>` and reject ambiguous CLI routing when multiple conversations are active.
 - Send every startup card to all known private chats, non-topic groups active during the previous minute, and every group enrolled for the current safe restart; fold topic routes into their parent group instead of sending startup cards into topics.
 - Replace the expanding `More` action in `/sessions` with in-place five-task pagination using `Previous` and `Next`, preserving search terms, task actions, and global numbering across pages.
