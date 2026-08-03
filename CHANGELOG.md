@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-03
+
 - Add a ready-to-use TraeX App Server example to the checked-in and generated default configuration.
 - Rename the configured App Server adapter kind from `codex` to `app-server` while normalizing existing `codex` values during loading, and show the active Agent's display name in progress-card connection and waiting states.
 - Retry `thread/list` with `updated_at` and remember that capability when a compatible App Server such as TraeX rejects Codex's `recency_at` sort extension.
