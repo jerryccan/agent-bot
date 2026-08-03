@@ -6,6 +6,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add a ready-to-use TraeX App Server example to the checked-in and generated default configuration.
 - Rename the configured App Server adapter kind from `codex` to `app-server` while normalizing existing `codex` values during loading, and show the active Agent's display name in progress-card connection and waiting states.
 - Retry `thread/list` with `updated_at` and remember that capability when a compatible App Server such as TraeX rejects Codex's `recency_at` sort extension.
 - Add `agentbot task newgroup <task>` and `agentbot task forkgroup <task>` to create inherited task groups or fork a task's latest completed turn through the running Server, with optional titles, target-Agent and project overrides for NewGroup, and structured JSON output.

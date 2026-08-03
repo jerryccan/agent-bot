@@ -21,6 +21,16 @@ agents:
       - "stdio://"
     env: {}
 
+  traex:
+    kind: "app-server"
+    title: "TraeX"
+    command: "traex"
+    args:
+      - "app-server"
+      - "--listen"
+      - "stdio://"
+    env: {}
+
   coco:
     title: "Coco"
     command: "coco"

@@ -38,6 +38,12 @@ describe("loadConfig", () => {
         ].sort(),
       );
       expect(config.feishu.respondToAllGroupMessages).toBe(true);
+      expect(config.agents.traex).toMatchObject({
+        kind: "app-server",
+        title: "TraeX",
+        command: "traex",
+        args: ["app-server", "--listen", "stdio://"],
+      });
       expect(config.storage.sqlitePath).toBe(path.join(directory, "data", "agent-bot.sqlite"));
       expect(config.logging.path).toBe(path.join(directory, "logs", "agent-bot.log"));
     } finally {
@@ -52,6 +58,12 @@ describe("loadConfig", () => {
 
     expect(config.defaults.agent).toBe("codex");
     expect(config.agents.codex?.kind).toBe("app-server");
+    expect(config.agents.traex).toMatchObject({
+      kind: "app-server",
+      title: "TraeX",
+      command: "traex",
+      args: ["app-server", "--listen", "stdio://"],
+    });
     expect(config.feishu.respondToAllGroupMessages).toBe(true);
     expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
     expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
