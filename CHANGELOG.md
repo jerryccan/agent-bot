@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.13-alpha.0] - 2026-08-03
+
 - Upgrade existing Profiles during `agentbot init` by filling missing `config.yaml` and `.env` settings, detecting Codex and TraeX versions, offering explicit install or upgrade actions, and requiring an interactive default-Agent selection.
 - Keep the generated Agent list focused on Codex and TraeX while preserving existing custom Agents and user configuration during Profile upgrades.
 - Generalize runtime messages, cards, help, documentation, and package metadata from Codex-specific wording to the selected App Server Agent.
