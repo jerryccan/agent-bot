@@ -2,18 +2,20 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isAlphaVersion, resolveNextVersion } from "./release-version.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const packagePath = path.join(repositoryRoot, "package.json");
 const shrinkwrapPath = path.join(repositoryRoot, "npm-shrinkwrap.json");
 const changelogPath = path.join(repositoryRoot, "CHANGELOG.md");
-const requestedVersion = process.argv[2] ?? "patch";
+const requestedVersion = process.argv[2] ?? "alpha";
 
 ensureCleanWorktree();
 
 const packageJson = readJson(packagePath);
 const shrinkwrap = readJson(shrinkwrapPath);
 const nextVersion = resolveNextVersion(packageJson.version, requestedVersion);
+const npmTag = isAlphaVersion(nextVersion) ? "alpha" : "latest";
 const changelog = fs.readFileSync(changelogPath, "utf8");
 const nextChangelog = prepareChangelog(changelog, nextVersion);
 
@@ -31,6 +33,7 @@ fs.writeFileSync(changelogPath, nextChangelog);
 process.stdout.write(
   [
     `Prepared ${packageJson.name}@${nextVersion}.`,
+    `npm dist-tag: ${npmTag}`,
     "Review the changes, commit them, and push to master.",
     "GitHub Actions will publish the version after CI succeeds.",
     "",
@@ -61,44 +64,6 @@ function ensureCleanWorktree() {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function resolveNextVersion(currentVersion, requested) {
-  const current = parseStableVersion(currentVersion, "current package version");
-  if (["patch", "minor", "major"].includes(requested)) {
-    if (requested === "patch")
-      return `${current.major}.${current.minor}.${current.patch + 1}`;
-    if (requested === "minor") return `${current.major}.${current.minor + 1}.0`;
-    return `${current.major + 1}.0.0`;
-  }
-
-  const exact = parseStableVersion(requested, "requested version");
-  if (compareVersions(exact, current) <= 0) {
-    throw new Error(
-      `Requested version ${requested} must be newer than ${currentVersion}.`,
-    );
-  }
-  return requested;
-}
-
-function parseStableVersion(version, label) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!match) {
-    throw new Error(`${label} must be a stable semantic version: ${version}`);
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-  };
-}
-
-function compareVersions(left, right) {
-  return (
-    left.major - right.major ||
-    left.minor - right.minor ||
-    left.patch - right.patch
-  );
 }
 
 function prepareChangelog(contents, version) {

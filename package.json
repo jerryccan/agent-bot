@@ -2,7 +2,7 @@
   "name": "@keyou007/agent-bot",
   "version": "0.1.12",
   "type": "module",
-  "description": "Using Codex in Lark/Feishu feels just like using native Codex.",
+  "description": "Use Codex, TraeX, and compatible coding agents from Lark/Feishu.",
   "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
@@ -15,6 +15,8 @@
   "keywords": [
     "agent",
     "codex",
+    "traex",
+    "app-server",
     "acp",
     "feishu",
     "lark",
@@ -57,7 +59,9 @@
     "prepublishOnly": "npm run verify",
     "package:check": "npm run prepack",
     "package:smoke": "node scripts/smoke-package.mjs",
-    "release": "node scripts/prepare-release.mjs"
+    "release": "node scripts/prepare-release.mjs",
+    "release:alpha": "node scripts/prepare-release.mjs alpha",
+    "release:stable": "node scripts/prepare-release.mjs stable"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.2.1",

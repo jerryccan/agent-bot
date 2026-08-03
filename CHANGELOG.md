@@ -6,6 +6,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Upgrade existing Profiles during `agentbot init` by filling missing `config.yaml` and `.env` settings, detecting Codex and TraeX versions, offering explicit install or upgrade actions, and requiring an interactive default-Agent selection.
+- Keep the generated Agent list focused on Codex and TraeX while preserving existing custom Agents and user configuration during Profile upgrades.
+- Generalize runtime messages, cards, help, documentation, and package metadata from Codex-specific wording to the selected App Server Agent.
+- Recognize known TraeX code-mode tool-channel failures in completed responses and guide users to switch models with `/model`.
+- Make Alpha the default release channel, with tested Alpha sequencing and explicit stable promotion commands.
+- Publish Alpha packages under npm's `alpha` dist-tag and mark their GitHub releases as prereleases while preserving `latest` for stable versions.
+
 ## [0.1.12] - 2026-08-03
 
 - Add a ready-to-use TraeX App Server example to the checked-in and generated default configuration.

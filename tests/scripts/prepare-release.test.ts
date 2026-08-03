@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const temporaryRoots: string[] = [];
 const sourceScript = path.resolve("scripts/prepare-release.mjs");
+const sourceVersionModule = path.resolve("scripts/release-version.mjs");
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
@@ -14,22 +15,25 @@ afterEach(() => {
 });
 
 describe("prepare-release", () => {
-  it("increments the patch version and archives Unreleased changes", () => {
+  it("starts the next patch alpha and archives Unreleased changes", () => {
     const root = createRepository();
 
     const result = run(root);
 
     expect(result.status).toBe(0);
-    expect(readJson(root, "package.json").version).toBe("1.2.4");
+    expect(readJson(root, "package.json").version).toBe("1.2.4-alpha.0");
     expect(readJson(root, "npm-shrinkwrap.json")).toMatchObject({
-      version: "1.2.4",
-      packages: { "": { version: "1.2.4" } },
+      version: "1.2.4-alpha.0",
+      packages: { "": { version: "1.2.4-alpha.0" } },
     });
     const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
     expect(changelog).toMatch(
-      /## \[Unreleased\]\n\n## \[1\.2\.4\] - \d{4}-\d{2}-\d{2}\n\n- Pending change\.\n\n- Another pending change\./,
+      /## \[Unreleased\]\n\n## \[1\.2\.4-alpha\.0\] - \d{4}-\d{2}-\d{2}\n\n- Pending change\.\n\n- Another pending change\./,
     );
-    expect(result.stdout).toContain("Prepared @example/agent-bot@1.2.4.");
+    expect(result.stdout).toContain(
+      "Prepared @example/agent-bot@1.2.4-alpha.0.",
+    );
+    expect(result.stdout).toContain("npm dist-tag: alpha");
   });
 
   it("supports named version increments", () => {
@@ -39,6 +43,16 @@ describe("prepare-release", () => {
 
     expect(result.status).toBe(0);
     expect(readJson(root, "package.json").version).toBe("1.3.0");
+  });
+
+  it("promotes the current alpha to stable", () => {
+    const root = createRepository("1.2.4-alpha.2");
+
+    const result = run(root, "stable");
+
+    expect(result.status).toBe(0);
+    expect(readJson(root, "package.json").version).toBe("1.2.4");
+    expect(result.stdout).toContain("npm dist-tag: latest");
   });
 
   it("refuses to modify a dirty worktree", () => {
@@ -55,22 +69,28 @@ describe("prepare-release", () => {
   });
 });
 
-function createRepository(): string {
+function createRepository(currentVersion = "1.2.3"): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-release-"));
   temporaryRoots.push(root);
   fs.mkdirSync(path.join(root, "scripts"));
   fs.copyFileSync(sourceScript, path.join(root, "scripts/prepare-release.mjs"));
+  fs.copyFileSync(
+    sourceVersionModule,
+    path.join(root, "scripts/release-version.mjs"),
+  );
   fs.writeFileSync(
     path.join(root, "package.json"),
-    `${JSON.stringify({ name: "@example/agent-bot", version: "1.2.3" }, null, 2)}\n`,
+    `${JSON.stringify({ name: "@example/agent-bot", version: currentVersion }, null, 2)}\n`,
   );
   fs.writeFileSync(
     path.join(root, "npm-shrinkwrap.json"),
     `${JSON.stringify(
       {
         name: "@example/agent-bot",
-        version: "1.2.3",
-        packages: { "": { name: "@example/agent-bot", version: "1.2.3" } },
+        version: currentVersion,
+        packages: {
+          "": { name: "@example/agent-bot", version: currentVersion },
+        },
       },
       null,
       2,
@@ -87,7 +107,7 @@ function createRepository(): string {
       "",
       "- Another pending change.",
       "",
-      "## [1.2.3] - 2026-07-01",
+      `## [${currentVersion}] - 2026-07-01`,
       "",
       "- Previous release.",
       "",
