@@ -43,30 +43,6 @@ agents:
       - "stdio://"
     env: {}
 
-  coco:
-    title: "Coco"
-    command: "coco"
-    args:
-      - "acp"
-      - "serve"
-    env: {}
-
-  coco-yolo:
-    title: "Coco YOLO"
-    command: "coco"
-    args:
-      - "acp"
-      - "serve"
-      - "--yolo"
-    env: {}
-
-  example:
-    title: "Example ACP Agent"
-    command: "node"
-    args:
-      - "./examples/example-acp-agent.js"
-    env: {}
-
 defaults:
   agent: "codex"
   cwd: "."

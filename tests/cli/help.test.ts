@@ -9,7 +9,8 @@ describe("CLI help", () => {
     expect(help).toContain("Usage:");
     expect(help).toContain("Common commands:");
     expect(help).toContain("agentbot [options] <command>");
-    expect(help).toContain("Initialize the Lark app and start the service");
+    expect(help).toContain("Codex, TraeX, and compatible ACP agents");
+    expect(help).toContain("Check and select an Agent; initialize the Lark app and service");
     expect(help).toContain("init --reset");
     expect(help).toContain("Back up and reset the selected explicit profile");
     expect(help).toContain("agentbot --profile ~/.agent-bot init --reset");
@@ -29,7 +30,8 @@ describe("CLI help", () => {
     expect(help).toContain("用法：");
     expect(help).toContain("常用命令：");
     expect(help).toContain("agentbot [选项] <命令>");
-    expect(help).toContain("初始化飞书应用并启动服务");
+    expect(help).toContain("Codex、TraeX 和兼容 ACP 的 Agent");
+    expect(help).toContain("检查并选择 Agent，初始化飞书应用和服务");
     expect(help).toContain("显示服务、飞书 App ID 和安全重启状态");
     expect(help).toContain("task prompt <任务> <提示词>");
     expect(help).toContain("task newgroup <任务> [标题]");

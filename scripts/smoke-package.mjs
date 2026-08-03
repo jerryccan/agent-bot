@@ -111,6 +111,9 @@ try {
   if (initialized.server?.status !== "skipped") {
     throw new Error("Console-only initialization unexpectedly started the server.");
   }
+  if (initialized.defaultAgent?.name !== "codex" || initialized.defaultAgent?.status !== "existing") {
+    throw new Error("Packaged non-interactive initialization did not preserve the configured default Agent.");
+  }
 
   const installedResources = [
     ".env.example",

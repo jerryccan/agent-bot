@@ -3,13 +3,13 @@ import { cliLanguage, type CliLanguage } from "./i18n.js";
 export function renderCliHelp(version: string, language: CliLanguage = cliLanguage): string {
   if (language === "zh") {
     return `Agent Bot ${version}
-通过飞书使用本地 Codex 和 ACP Agent。
+通过飞书使用本地 Codex、TraeX 和兼容 ACP 的 Agent。
 
 用法：
   agentbot [选项] <命令>
 
 常用命令：
-  init                              初始化飞书应用并启动服务
+  init                              检查并选择 Agent，初始化飞书应用和服务
   init --reset                      重置并重新配置显式指定的 Profile
   console                           打开本地控制台
   server start                      在后台启动 Agent Bot
@@ -51,13 +51,13 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   }
 
   return `Agent Bot ${version}
-Use local Codex and ACP agents from Lark/Feishu.
+Use Codex, TraeX, and compatible ACP agents from Lark/Feishu.
 
 Usage:
   agentbot [options] <command>
 
 Common commands:
-  init                              Initialize the Lark app and start the service
+  init                              Check and select an Agent; initialize the Lark app and service
   init --reset                      Reset and reconfigure an explicit profile
   console                           Open the local console
   server start                      Start Agent Bot in the background

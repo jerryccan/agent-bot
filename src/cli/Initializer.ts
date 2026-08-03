@@ -5,6 +5,7 @@ import path from "node:path";
 import { cliText } from "./i18n.js";
 import { fileURLToPath } from "node:url";
 import { parse as parseDotEnv } from "dotenv";
+import { isMap, isScalar, parseDocument, type YAMLMap } from "yaml";
 import {
   agentBotHome,
   defaultConfigPath,
@@ -12,7 +13,7 @@ import {
   resolveUserPath,
 } from "../config/paths.js";
 
-export type InitializationStatus = "created" | "existing" | "reset";
+export type InitializationStatus = "created" | "existing" | "updated" | "reset";
 
 export interface InitializedPath {
   path: string;
@@ -36,6 +37,16 @@ export interface InitializationOptions {
   configTemplatePath?: string;
   envTemplatePath?: string;
   reset?: boolean;
+}
+
+export interface ConfiguredAgentOption {
+  name: string;
+  title: string;
+}
+
+export interface ConfiguredAgentSelection {
+  agents: ConfiguredAgentOption[];
+  defaultAgent?: string;
 }
 
 export type FeishuCredentialStatus = "configured" | "missing" | "incomplete";
@@ -82,8 +93,8 @@ export function initializeAgentBot(options: InitializationOptions = {}): Initial
     ? resetProfileContents(homePath, configPath, envPath, configDirectory)
     : undefined;
 
-  const config = copyIfMissing(configTemplatePath, configPath);
-  const envFile = copyIfMissing(envTemplatePath, envPath);
+  const config = initializeConfig(configTemplatePath, configPath);
+  const envFile = initializeEnv(envTemplatePath, envPath);
   restrictFilePermissions(envFile.path);
   const data = ensureDirectory(path.join(configDirectory, "data"));
   const logs = ensureDirectory(path.join(configDirectory, "logs"));
@@ -96,6 +107,68 @@ export function initializeAgentBot(options: InitializationOptions = {}): Initial
     logs: withResetStatus(logs, reset?.movedNames.has("logs") ?? false),
     ...(reset ? { reset: { backupPath: reset.backupPath } } : {}),
   };
+}
+
+export function readConfiguredAgentSelection(configPath: string): ConfiguredAgentSelection {
+  const document = parseConfigurationDocument(fs.readFileSync(configPath, "utf8"), configPath);
+  if (!isMap(document.contents)) {
+    throw new Error(cliText(
+      `Configuration file must contain a YAML mapping: ${configPath}`,
+      `配置文件必须包含 YAML 映射：${configPath}`,
+    ));
+  }
+  const configuredAgents = document.contents.get("agents", true);
+  if (!isMap(configuredAgents)) {
+    throw new Error(cliText(
+      `Configuration file must contain an agents mapping: ${configPath}`,
+      `配置文件必须包含 agents 映射：${configPath}`,
+    ));
+  }
+  const agents = configuredAgents.items.flatMap((pair) => {
+    const name = yamlMappingKey(pair.key);
+    if (!name) return [];
+    const titleNode = isMap(pair.value) ? pair.value.get("title", true) : undefined;
+    const title = isScalar(titleNode) && typeof titleNode.value === "string"
+      ? titleNode.value
+      : name;
+    return [{ name, title }];
+  });
+  const defaultAgent = document.getIn(["defaults", "agent"]);
+  return {
+    agents,
+    ...(typeof defaultAgent === "string" && defaultAgent.trim() ? { defaultAgent } : {}),
+  };
+}
+
+export function writeDefaultAgent(configPath: string, agentName: string): boolean {
+  const original = fs.readFileSync(configPath, "utf8");
+  const document = parseConfigurationDocument(original, configPath);
+  if (!isMap(document.contents)) {
+    throw new Error(cliText(
+      `Configuration file must contain a YAML mapping: ${configPath}`,
+      `配置文件必须包含 YAML 映射：${configPath}`,
+    ));
+  }
+  const configuredAgents = document.contents.get("agents", true);
+  if (!isMap(configuredAgents) || !configuredAgents.has(agentName)) {
+    throw new Error(cliText(
+      `Cannot select an Agent that is not configured: ${agentName}`,
+      `不能选择尚未配置的 Agent：${agentName}`,
+    ));
+  }
+  const defaults = document.contents.get("defaults", true);
+  if (defaults !== undefined && !isMap(defaults)) {
+    throw new Error(cliText(
+      `Configuration defaults must contain a YAML mapping: ${configPath}`,
+      `配置文件的 defaults 必须是 YAML 映射：${configPath}`,
+    ));
+  }
+  const currentAgent = document.getIn(["defaults", "agent"]);
+  if (currentAgent === agentName) return false;
+  if (isMap(defaults)) defaults.set("agent", agentName);
+  else document.setIn(["defaults"], { agent: agentName });
+  writeFileAtomically(configPath, document.toString());
+  return true;
 }
 
 export function readFeishuCredentials(envPath: string, env: NodeJS.ProcessEnv = process.env): FeishuCredentialState {
@@ -241,6 +314,134 @@ function copyIfMissing(sourcePath: string, targetPath: string): InitializedPath 
   } catch (error) {
     if (isFileExistsError(error)) return { path: targetPath, status: "existing" };
     throw error;
+  }
+}
+
+function initializeConfig(templatePath: string, configPath: string): InitializedPath {
+  if (!fs.existsSync(configPath)) {
+    const copied = copyIfMissing(templatePath, configPath);
+    if (copied.status === "created") return copied;
+  }
+
+  const original = fs.readFileSync(configPath, "utf8");
+  const template = fs.readFileSync(templatePath, "utf8");
+  const configDocument = parseConfigurationDocument(original, configPath);
+  const templateDocument = parseConfigurationDocument(template, templatePath);
+  if (!isMap(configDocument.contents) || !isMap(templateDocument.contents)) {
+    throw new Error(cliText(
+      `Configuration files must contain a YAML mapping: ${configPath}`,
+      `配置文件必须包含 YAML 映射：${configPath}`,
+    ));
+  }
+
+  const updated = mergeMissingConfiguration(
+    configDocument.contents,
+    templateDocument.contents,
+    [],
+  );
+  if (!updated) return { path: configPath, status: "existing" };
+  writeFileAtomically(configPath, configDocument.toString());
+  return { path: configPath, status: "updated" };
+}
+
+function initializeEnv(templatePath: string, envPath: string): InitializedPath {
+  if (!fs.existsSync(envPath)) {
+    const copied = copyIfMissing(templatePath, envPath);
+    if (copied.status === "created") return copied;
+  }
+
+  const original = fs.readFileSync(envPath, "utf8");
+  const template = fs.readFileSync(templatePath, "utf8");
+  const existingKeys = dotEnvKeys(original);
+  const missingLines = template
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      const key = dotEnvAssignmentKey(line);
+      if (!key || existingKeys.has(key)) return [];
+      existingKeys.add(key);
+      return [line];
+    });
+  if (missingLines.length === 0) return { path: envPath, status: "existing" };
+
+  const newline = original.includes("\r\n") ? "\r\n" : "\n";
+  const separator = original.length === 0 || /\r?\n$/u.test(original) ? "" : newline;
+  writeFileAtomically(envPath, `${original}${separator}${missingLines.join(newline)}${newline}`);
+  return { path: envPath, status: "updated" };
+}
+
+function parseConfigurationDocument(contents: string, filePath: string) {
+  const document = parseDocument(contents);
+  if (document.errors.length === 0) return document;
+  throw new Error(cliText(
+    `Could not upgrade configuration file ${filePath}: ${document.errors[0]?.message ?? "invalid YAML"}`,
+    `无法升级配置文件 ${filePath}：${document.errors[0]?.message ?? "YAML 无效"}`,
+  ));
+}
+
+function mergeMissingConfiguration(
+  config: YAMLMap,
+  template: YAMLMap,
+  parentPath: string[],
+): boolean {
+  let updated = false;
+  for (const templatePair of template.items) {
+    const key = yamlMappingKey(templatePair.key);
+    if (!key) continue;
+    if (!config.has(key)) {
+      if (shouldPreserveMissingConfiguration(parentPath, key)) continue;
+      const clonedPair = templatePair.clone();
+      if (parentPath.length === 0 && key === "defaults" && isMap(clonedPair.value)) {
+        clonedPair.value.delete("agent");
+        if (clonedPair.value.items.length === 0) continue;
+      }
+      config.add(clonedPair);
+      updated = true;
+      continue;
+    }
+
+    const configValue = config.get(key, true);
+    if (isMap(configValue) && isMap(templatePair.value)) {
+      updated = mergeMissingConfiguration(configValue, templatePair.value, [...parentPath, key]) || updated;
+    }
+  }
+  return updated;
+}
+
+function shouldPreserveMissingConfiguration(parentPath: string[], key: string): boolean {
+  if (parentPath.length === 1 && parentPath[0] === "agents") return true;
+  return parentPath.length === 1 && parentPath[0] === "defaults" && key === "agent";
+}
+
+function yamlMappingKey(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  return isScalar(value) && typeof value.value === "string" ? value.value : undefined;
+}
+
+function dotEnvKeys(contents: string): Set<string> {
+  return new Set(contents.split(/\r?\n/).flatMap((line) => {
+    const key = dotEnvAssignmentKey(line);
+    return key ? [key] : [];
+  }));
+}
+
+function dotEnvAssignmentKey(line: string): string | undefined {
+  return /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/u.exec(line)?.[1];
+}
+
+function writeFileAtomically(filePath: string, contents: string): void {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  let temporaryFile: number | undefined;
+  try {
+    temporaryFile = fs.openSync(temporaryPath, "wx", fs.statSync(filePath).mode);
+    fs.writeFileSync(temporaryFile, contents, "utf8");
+    fs.fsyncSync(temporaryFile);
+    fs.closeSync(temporaryFile);
+    temporaryFile = undefined;
+    fs.renameSync(temporaryPath, filePath);
+    syncDirectory(path.dirname(filePath));
+  } finally {
+    if (temporaryFile !== undefined) fs.closeSync(temporaryFile);
+    fs.rmSync(temporaryPath, { force: true });
   }
 }
 

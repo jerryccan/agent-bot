@@ -2,16 +2,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
   acquireInitializationLock,
   cleanupFeishuCredentialTemporaryFiles,
   initializeAgentBot,
+  readConfiguredAgentSelection,
   readFeishuCredentials,
   shouldCreateFeishuApp,
+  writeDefaultAgent,
   writeFeishuCredentials,
 } from "../../src/cli/Initializer.js";
 
 const directories: string[] = [];
+
+interface ParsedUpgradeConfig {
+  feishu: Record<string, unknown>;
+  console: Record<string, unknown>;
+  agents: Record<string, Record<string, unknown>>;
+  defaults: Record<string, unknown>;
+  storage: Record<string, unknown>;
+  logging: Record<string, unknown>;
+}
 
 afterEach(() => {
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
@@ -37,8 +49,17 @@ describe("initializeAgentBot", () => {
   test("is idempotent and preserves existing user files", () => {
     const fixture = createFixture();
     initializeAgentBot(fixture.options);
-    fs.writeFileSync(path.join(fixture.home, "config.yaml"), "user config\n", "utf8");
-    fs.writeFileSync(path.join(fixture.home, ".env"), "USER_VALUE=1\n", "utf8");
+    const userConfig = [
+      "# user config",
+      "agents:",
+      "  custom:",
+      "    title: Custom",
+      "    command: custom-agent",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(fixture.home, "config.yaml"), userConfig, "utf8");
+    const userEnv = "FEISHU_APP_ID=user-app\nUSER_VALUE=1\n";
+    fs.writeFileSync(path.join(fixture.home, ".env"), userEnv, "utf8");
 
     const result = initializeAgentBot(fixture.options);
 
@@ -46,8 +67,194 @@ describe("initializeAgentBot", () => {
     expect(result.env.status).toBe("existing");
     expect(result.data.status).toBe("existing");
     expect(result.logs.status).toBe("existing");
-    expect(fs.readFileSync(result.config.path, "utf8")).toBe("user config\n");
-    expect(fs.readFileSync(result.env.path, "utf8")).toBe("USER_VALUE=1\n");
+    expect(fs.readFileSync(result.config.path, "utf8")).toBe(userConfig);
+    expect(fs.readFileSync(result.env.path, "utf8")).toBe(userEnv);
+  });
+
+  test("upgrades an existing environment file with missing template variables", () => {
+    const fixture = createFixture();
+    fs.writeFileSync(fixture.options.envTemplatePath!, [
+      "# Lark credentials",
+      "FEISHU_APP_ID=",
+      "FEISHU_APP_SECRET=",
+      "FEISHU_USER_OPEN_ID=",
+      "# AGENT_BOT_HOME=~/.agent-bot",
+      "AGENT_BOT_FEATURE=enabled",
+      "",
+    ].join("\n"), "utf8");
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const envPath = path.join(fixture.home, ".env");
+    const original = "# keep this comment\r\nFEISHU_APP_ID=user-app\r\nFEISHU_APP_SECRET=user-secret\r\n";
+    fs.writeFileSync(envPath, original, "utf8");
+
+    const upgraded = initializeAgentBot(fixture.options);
+    const upgradedContents = fs.readFileSync(envPath, "utf8");
+
+    expect(upgraded.env.status).toBe("updated");
+    expect(upgradedContents).toBe(
+      `${original}FEISHU_USER_OPEN_ID=\r\nAGENT_BOT_FEATURE=enabled\r\n`,
+    );
+    expect(upgradedContents).not.toContain("AGENT_BOT_HOME=");
+
+    const repeated = initializeAgentBot(fixture.options);
+    expect(repeated.env.status).toBe("existing");
+    expect(fs.readFileSync(envPath, "utf8")).toBe(upgradedContents);
+  });
+
+  test("upgrades an existing config with missing template settings without replacing user choices", () => {
+    const fixture = createFixture();
+    const template = [
+      "feishu:",
+      "  appId: \"${FEISHU_APP_ID}\"",
+      "  appSecret: \"${FEISHU_APP_SECRET}\"",
+      "  respondToAllGroupMessages: true",
+      "console:",
+      "  enabled: true",
+      "agents:",
+      "  codex:",
+      "    kind: app-server",
+      "    title: Codex",
+      "    command: codex",
+      "    args: [app-server]",
+      "    env: {}",
+      "  traex:",
+      "    kind: app-server",
+      "    title: TraeX",
+      "    command: traex",
+      "    args: [app-server]",
+      "    env: {}",
+      "defaults:",
+      "  agent: codex",
+      "  cwd: .",
+      "storage:",
+      "  sqlitePath: ./data/agent-bot.sqlite",
+      "logging:",
+      "  level: info",
+      "  path: ./logs/agent-bot.log",
+      "",
+    ].join("\n");
+    fs.writeFileSync(fixture.options.configTemplatePath!, template, "utf8");
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const configPath = path.join(fixture.home, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "# keep this user comment",
+      "feishu:",
+      "  appId: custom-app",
+      "  respondToAllGroupMessages: false",
+      "agents:",
+      "  codex:",
+      "    title: Custom Codex",
+      "    command: custom-codex",
+      "    args:",
+      "      - custom-server",
+      "  custom:",
+      "    title: Custom Agent",
+      "    command: custom-agent",
+      "defaults:",
+      "  cwd: D:/work",
+      "logging:",
+      "  level: debug",
+      "",
+    ].join("\n"), "utf8");
+
+    const upgraded = initializeAgentBot(fixture.options);
+    const upgradedContents = fs.readFileSync(configPath, "utf8");
+    const parsed = parseYaml(upgradedContents) as ParsedUpgradeConfig;
+
+    expect(upgraded.config.status).toBe("updated");
+    expect(upgradedContents).toContain("# keep this user comment");
+    expect(parsed.feishu).toEqual({
+      appId: "custom-app",
+      appSecret: "${FEISHU_APP_SECRET}",
+      respondToAllGroupMessages: false,
+    });
+    expect(parsed.console).toEqual({ enabled: true });
+    expect(parsed.agents.codex).toEqual({
+      kind: "app-server",
+      title: "Custom Codex",
+      command: "custom-codex",
+      args: ["custom-server"],
+      env: {},
+    });
+    expect(parsed.agents.custom).toEqual({ title: "Custom Agent", command: "custom-agent" });
+    expect(parsed.agents.traex).toBeUndefined();
+    expect(parsed.defaults).toEqual({ cwd: "D:/work" });
+    expect(parsed.storage).toEqual({ sqlitePath: "./data/agent-bot.sqlite" });
+    expect(parsed.logging).toEqual({ level: "debug", path: "./logs/agent-bot.log" });
+
+    const repeated = initializeAgentBot(fixture.options);
+    expect(repeated.config.status).toBe("existing");
+    expect(fs.readFileSync(configPath, "utf8")).toBe(upgradedContents);
+  });
+
+  test("lists configured Agents and updates the default while preserving YAML comments", () => {
+    const fixture = createFixture();
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const configPath = path.join(fixture.home, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "# keep this header",
+      "agents:",
+      "  codex:",
+      "    title: Codex",
+      "    command: codex",
+      "  traex:",
+      "    title: Custom TraeX",
+      "    command: traex",
+      "defaults:",
+      "  # keep this selection comment",
+      "  agent: codex",
+      "  cwd: .",
+      "",
+    ].join("\n"), "utf8");
+
+    expect(readConfiguredAgentSelection(configPath)).toEqual({
+      agents: [
+        { name: "codex", title: "Codex" },
+        { name: "traex", title: "Custom TraeX" },
+      ],
+      defaultAgent: "codex",
+    });
+    expect(writeDefaultAgent(configPath, "traex")).toBe(true);
+    expect(writeDefaultAgent(configPath, "traex")).toBe(false);
+
+    const updated = fs.readFileSync(configPath, "utf8");
+    expect(updated).toContain("# keep this header");
+    expect(updated).toContain("# keep this selection comment");
+    expect((parseYaml(updated) as ParsedUpgradeConfig).defaults).toEqual({ agent: "traex", cwd: "." });
+    expect(() => writeDefaultAgent(configPath, "missing")).toThrow(
+      "Cannot select an Agent that is not configured",
+    );
+  });
+
+  test("creates defaults.agent when an upgraded config did not have a defaults mapping", () => {
+    const fixture = createFixture();
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const configPath = path.join(fixture.home, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "agents:",
+      "  custom:",
+      "    title: Custom Agent",
+      "    command: custom-agent",
+      "",
+    ].join("\n"), "utf8");
+
+    expect(writeDefaultAgent(configPath, "custom")).toBe(true);
+    expect(readConfiguredAgentSelection(configPath)).toEqual({
+      agents: [{ name: "custom", title: "Custom Agent" }],
+      defaultAgent: "custom",
+    });
+  });
+
+  test("does not overwrite an invalid existing config during upgrade", () => {
+    const fixture = createFixture();
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const configPath = path.join(fixture.home, "config.yaml");
+    const invalidConfig = "agents: [\n";
+    fs.writeFileSync(configPath, invalidConfig, "utf8");
+
+    expect(() => initializeAgentBot(fixture.options)).toThrow("Could not upgrade configuration file");
+    expect(fs.readFileSync(configPath, "utf8")).toBe(invalidConfig);
+    expect(fs.readdirSync(fixture.home).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
   test("respects an explicit config path while keeping .env under AGENT_BOT_HOME", () => {

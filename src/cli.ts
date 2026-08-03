@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 import { loadConfig, loadConfigWithoutEnvironmentMutation } from "./config/loadConfig.js";
 import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.js";
 import {
@@ -14,8 +15,10 @@ import {
   acquireInitializationLock,
   cleanupFeishuCredentialTemporaryFiles,
   initializeAgentBot,
+  readConfiguredAgentSelection,
   readFeishuCredentials,
   shouldCreateFeishuApp,
+  writeDefaultAgent,
   writeFeishuCredentials,
   type InitializationResult,
   type InitializationStatus,
@@ -38,6 +41,18 @@ import {
 } from "./cli/FeishuAppConfiguration.js";
 import { renderCliHelp } from "./cli/help.js";
 import { cliLanguage, cliText, localizeCliErrorMessage } from "./cli/i18n.js";
+import {
+  inspectSupportedAgent,
+  inspectSupportedAgents,
+  runSupportedAgentMaintenance,
+  type SupportedAgentInspection,
+} from "./cli/AgentPrerequisites.js";
+import {
+  parseMaintenanceSelection,
+  resolveDefaultAgentChoice,
+  selectableDefaultAgents,
+  type SelectableDefaultAgent,
+} from "./cli/DefaultAgentSelection.js";
 import { formatServerStatus, withConfiguredFeishuAppId } from "./cli/serverStatus.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
@@ -50,6 +65,7 @@ import {
   type ServerStartResult,
 } from "./cli/ServerStarter.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
+import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 import {
   parseTaskForkGroupOptions,
   parseTaskNewGroupOptions,
@@ -112,12 +128,24 @@ async function main(input: string[]): Promise<void> {
 type FeishuInitializationStatus = "created" | "existing" | "skipped";
 
 interface InitCommandResult extends InitializationResult {
+  agents: InitializedAgent[];
+  defaultAgent: {
+    name: string;
+    status: "selected" | "existing";
+  };
   feishu: {
     status: FeishuInitializationStatus;
     appId?: string;
     configuration?: EnsureFeishuAppConfigurationResult;
   };
   server: InitializationServerResult;
+}
+
+interface InitializedAgent extends SupportedAgentInspection {
+  assistance?: {
+    status: "completed" | "skipped" | "unavailable" | "failed";
+    error?: string;
+  };
 }
 
 async function initCommand(
@@ -135,13 +163,15 @@ async function initCommand(
     if (options.reset) await assertResetProfileServerStopped(configPath);
     paths = initializeAgentBot({ configPath, reset: options.reset });
     if (!options.json) printInitializationPaths(paths);
+    const agents = await initializeSupportedAgents(options.json);
+    const defaultAgent = await selectDefaultAgent(paths.config.path, agents, options.json);
     initializationLock ??= acquireInitializationLock(paths.home.path);
     cleanupFeishuCredentialTemporaryFiles(paths.env.path);
     const feishu = await initializeFeishu(
       paths,
       options,
     );
-    initialized = { ...paths, feishu };
+    initialized = { ...paths, agents, defaultAgent, feishu };
   } finally {
     initializationLock?.release();
   }
@@ -156,6 +186,259 @@ async function initCommand(
   else printInitializationServerResult(server);
 }
 
+async function initializeSupportedAgents(json: boolean): Promise<InitializedAgent[]> {
+  const output = json ? process.stderr : process.stdout;
+  output.write(cliText(
+    "\nAgent setup\nChecking Codex and TraeX...\n",
+    "\nAgent 设置\n正在检查 Codex 和 TraeX...\n",
+  ));
+  const inspections = await inspectSupportedAgents();
+  for (const inspection of inspections) printAgentInspection(inspection, output);
+  const actionable = inspections.filter((inspection) => inspection.action);
+  if (actionable.length === 0) return inspections;
+
+  output.write(cliText("\nAvailable actions:\n", "\n可执行的操作：\n"));
+  for (const [index, inspection] of actionable.entries()) {
+    output.write(cliText(
+      `  ${index + 1}. ${inspection.action?.kind === "install" ? "Install" : "Upgrade"} ${inspection.name}: ${inspection.action?.command}\n`,
+      `  ${index + 1}. ${inspection.action?.kind === "install" ? "安装" : "升级"} ${inspection.name}：${inspection.action?.command}\n`,
+    ));
+  }
+
+  let selected = new Set<number>();
+  if (!process.stdin.isTTY) {
+    output.write(cliText(
+      "No interactive terminal is available. Run the commands above manually if needed.\n",
+      "当前没有交互式终端，如有需要请手动执行上面的命令。\n",
+    ));
+  } else {
+    selected = new Set(await promptForAgentMaintenance(actionable.length));
+    if (selected.size === 0) {
+      output.write(cliText("No Agent changes selected.\n", "已跳过 Agent 安装和升级。\n"));
+    }
+  }
+
+  const initialized: InitializedAgent[] = [];
+  for (const inspection of inspections) {
+    if (!inspection.action) {
+      initialized.push(inspection);
+      continue;
+    }
+    const actionIndex = actionable.indexOf(inspection);
+    if (!selected.has(actionIndex)) {
+      initialized.push({
+        ...inspection,
+        assistance: { status: process.stdin.isTTY ? "skipped" : "unavailable" },
+      });
+      continue;
+    }
+
+    output.write(cliText(
+      `\nRunning ${inspection.name} ${inspection.action.kind}: ${inspection.action.command}\n`,
+      `\n正在${inspection.action.kind === "install" ? "安装" : "升级"} ${inspection.name}：${inspection.action.command}\n`,
+    ));
+    const maintenance = await runSupportedAgentMaintenance(inspection.id, inspection.action.kind);
+    if (maintenance.status !== 0 || maintenance.error) {
+      const error = maintenance.error ?? cliText(
+        `Command exited with code ${maintenance.status ?? "unknown"}.`,
+        `命令退出码为 ${maintenance.status ?? "未知"}。`,
+      );
+      output.write(cliText(
+        `${inspection.name} ${inspection.action.kind} did not complete; initialization will continue.\n`,
+        `${inspection.name}${inspection.action.kind === "install" ? "安装" : "升级"}未完成，初始化将继续。\n`,
+      ));
+      initialized.push({ ...inspection, assistance: { status: "failed", error } });
+      continue;
+    }
+
+    refreshCurrentProcessPath();
+    const refreshed = await inspectSupportedAgent(inspection.id);
+    if (refreshed.installedVersion) {
+      output.write(cliText(
+        `${inspection.name} is ready (${refreshed.installedVersion}).\n`,
+        `${inspection.name} 已就绪（${refreshed.installedVersion}）。\n`,
+      ));
+    } else {
+      output.write(cliText(
+        `${inspection.name} command completed, but the CLI is not visible in this process. Open a new terminal and run agentbot init again.\n`,
+        `${inspection.name} 命令已完成，但当前进程仍无法找到该 CLI。请打开新终端后重新运行 agentbot init。\n`,
+      ));
+    }
+    initialized.push({ ...refreshed, assistance: { status: "completed" } });
+  }
+  return initialized;
+}
+
+async function selectDefaultAgent(
+  configPath: string,
+  inspections: InitializedAgent[],
+  json: boolean,
+): Promise<InitCommandResult["defaultAgent"]> {
+  const output = json ? process.stderr : process.stdout;
+  const configured = readConfiguredAgentSelection(configPath);
+  const choices = selectableDefaultAgents(configured.agents, inspections);
+  if (!process.stdin.isTTY) {
+    if (!configured.defaultAgent || !configured.agents.some((agent) => agent.name === configured.defaultAgent)) {
+      throw new Error(cliText(
+        "A default Agent is not configured. Run agentbot init in an interactive terminal and select one.",
+        "尚未配置默认 Agent。请在交互式终端中运行 agentbot init 并选择一个 Agent。",
+      ));
+    }
+    output.write(cliText(
+      `Default Agent: ${configured.defaultAgent} (kept because no interactive terminal is available)\n`,
+      `默认 Agent：${configured.defaultAgent}（当前没有交互式终端，已保留现有设置）\n`,
+    ));
+    return { name: configured.defaultAgent, status: "existing" };
+  }
+  if (choices.length === 0) {
+    throw new Error(cliText(
+      "No available configured Agent can be selected. Install Codex or TraeX, then run agentbot init again.",
+      "没有可选择的已配置 Agent。请安装 Codex 或 TraeX，然后重新运行 agentbot init。",
+    ));
+  }
+
+  output.write(cliText("\nSelect the default Agent:\n", "\n请选择默认 Agent：\n"));
+  for (const [index, choice] of choices.entries()) {
+    const version = choice.installedVersion ? ` (${choice.installedVersion})` : "";
+    const current = choice.name === configured.defaultAgent
+      ? cliText(" [current]", " [当前]")
+      : "";
+    output.write(`  ${index + 1}. ${choice.name} - ${choice.title}${version}${current}\n`);
+  }
+  const selected = choices[await promptForDefaultAgent(choices, configured.defaultAgent)];
+  if (!selected) throw new Error(cliText("Default Agent selection failed.", "默认 Agent 选择失败。"));
+  const updated = writeDefaultAgent(configPath, selected.name);
+  output.write(updated
+    ? cliText(`Saved default Agent: ${selected.name}\n`, `已保存默认 Agent：${selected.name}\n`)
+    : cliText(`Default Agent unchanged: ${selected.name}\n`, `默认 Agent 保持不变：${selected.name}\n`));
+  return { name: selected.name, status: updated ? "selected" : "existing" };
+}
+
+function promptForAgentMaintenance(choiceCount: number): Promise<number[]> {
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (selection: number[]): void => {
+      settled = true;
+      readline.close();
+      resolve(selection);
+    };
+    const ask = (): void => {
+      readline.question(cliText(
+        "Enter action numbers separated by commas, type all, or press Enter to skip: ",
+        "请输入要执行的操作编号（多个用逗号分隔），输入 all 选择全部，直接回车跳过：",
+      ), (answer) => {
+        const selection = parseMaintenanceSelection(answer, choiceCount);
+        if (selection) {
+          finish(selection);
+          return;
+        }
+        process.stderr.write(cliText(
+          `Enter numbers from 1 to ${choiceCount}, all, or press Enter to skip.\n`,
+          `请输入 1 到 ${choiceCount} 之间的编号、all，或直接回车跳过。\n`,
+        ));
+        ask();
+      });
+    };
+    listenForPromptCancellation(readline, () => {
+      settled = true;
+      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
+    }, () => settled);
+    ask();
+  });
+}
+
+function promptForDefaultAgent(
+  choices: SelectableDefaultAgent[],
+  currentAgent?: string,
+): Promise<number> {
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (index: number): void => {
+      settled = true;
+      readline.close();
+      resolve(index);
+    };
+    const ask = (): void => {
+      const currentAvailable = choices.some((choice) => choice.name === currentAgent);
+      readline.question(cliText(
+        `Enter a number or Agent name${currentAvailable ? ` [${currentAgent}]` : ""}: `,
+        `请输入编号或 Agent 标准名${currentAvailable ? ` [${currentAgent}]` : ""}：`,
+      ), (answer) => {
+        const index = resolveDefaultAgentChoice(answer, choices, currentAgent);
+        if (index !== undefined) {
+          finish(index);
+          return;
+        }
+        process.stderr.write(cliText(
+          `Enter a number from 1 to ${choices.length} or an Agent standard name.\n`,
+          `请输入 1 到 ${choices.length} 之间的编号，或 Agent 标准名。\n`,
+        ));
+        ask();
+      });
+    };
+    listenForPromptCancellation(readline, () => {
+      settled = true;
+      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
+    }, () => settled);
+    ask();
+  });
+}
+
+function listenForPromptCancellation(
+  readline: ReturnType<typeof createInterface>,
+  cancel: () => void,
+  isSettled: () => boolean,
+): void {
+  readline.once("SIGINT", () => {
+    if (!isSettled()) cancel();
+    readline.close();
+  });
+  readline.once("close", () => {
+    if (!isSettled()) cancel();
+  });
+}
+
+function printAgentInspection(
+  inspection: SupportedAgentInspection,
+  output: NodeJS.WriteStream,
+): void {
+  if (inspection.state === "missing") {
+    output.write(cliText(
+      `  ${inspection.name}: not installed\n`,
+      `  ${inspection.name}：未安装\n`,
+    ));
+    return;
+  }
+  if (inspection.state === "outdated") {
+    output.write(cliText(
+      `  ${inspection.name}: ${inspection.installedVersion}; update available (${inspection.latestVersion})\n`,
+      `  ${inspection.name}：${inspection.installedVersion}；可升级到 ${inspection.latestVersion}\n`,
+    ));
+    return;
+  }
+  if (inspection.latestCheckFailed) {
+    output.write(cliText(
+      `  ${inspection.name}: ${inspection.installedVersion}; latest-version check unavailable\n`,
+      `  ${inspection.name}：${inspection.installedVersion}；无法检查最新版本\n`,
+    ));
+    return;
+  }
+  output.write(cliText(
+    `  ${inspection.name}: ${inspection.installedVersion} (up to date)\n`,
+    `  ${inspection.name}：${inspection.installedVersion}（已是最新）\n`,
+  ));
+}
+
+function refreshCurrentProcessPath(): void {
+  const refreshed = refreshedSystemEnvironment();
+  if (!refreshed.refreshed) return;
+  const pathEntry = Object.entries(refreshed.environment)
+    .find(([name]) => name.toLowerCase() === "path");
+  if (pathEntry?.[1]) process.env.PATH = pathEntry[1];
+}
+
 async function initializeFeishu(
   paths: InitializationResult,
   options: InitCommandOptions,
@@ -166,6 +449,9 @@ async function initializeFeishu(
       status: "skipped",
       ...(existing.appId ? { appId: existing.appId } : {}),
     };
+  }
+  if (!options.json) {
+    process.stdout.write(cliText("\nLark setup\n", "\n飞书设置\n"));
   }
 
   const controller = new AbortController();
@@ -202,8 +488,8 @@ async function initializeFeishu(
 
     if (!options.json) {
       process.stdout.write(cliText(
-        "\nChecking Lark app permissions, events, and callbacks...\n",
-        "\n正在检查飞书应用权限、事件和回调...\n",
+        "Checking app permissions, events, and callbacks...\n",
+        "正在检查应用权限、事件和回调...\n",
       ));
     }
     const manualPermissionSkip = new AbortController();
@@ -624,8 +910,8 @@ function printSkillStatus(status: SkillRegistrationStatus): void {
 
 function printInitializationPaths(result: InitializationResult): void {
   process.stdout.write(cliText(
-    "Preparing the Agent Bot user environment...\n",
-    "正在准备 Agent Bot 用户环境...\n",
+    "Profile setup\n",
+    "Profile 设置\n",
   ));
   if (result.reset) {
     process.stdout.write(`${cliText("Reset backup: ", "重置备份：")}${result.reset.backupPath}\n`);
@@ -642,6 +928,7 @@ function printInitializationResult(result: Omit<InitCommandResult, "server">): v
     "\nAgent Bot initialization completed.\n",
     "\nAgent Bot 初始化完成。\n",
   ));
+  process.stdout.write(`${cliText("Default Agent: ", "默认 Agent：")}${result.defaultAgent.name}\n`);
   if (result.feishu.status === "created") {
     process.stdout.write(cliText(
       `Lark app: created and credentials saved (${result.feishu.appId})\n`,
@@ -852,6 +1139,7 @@ function feishuFeatureWarnings(missing: FeishuConfigurationChallenge["missing"])
 
 function initializationStatusLabel(status: InitializationStatus): string {
   if (status === "created") return cliText("created", "已创建");
+  if (status === "updated") return cliText("updated with missing settings", "已补全缺失配置");
   if (status === "reset") return cliText("reset from template", "已从模板重置");
   return cliText("already exists; unchanged", "已存在，未修改");
 }
