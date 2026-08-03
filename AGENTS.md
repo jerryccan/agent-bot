@@ -4,7 +4,7 @@ Guidance for agents working in this repository.
 
 ## Project Overview
 
-Agent Bot is a Feishu-first bridge to local Codex App Server and ACP agents, with a console entry point for local testing. The runtime is a Node.js 22+ TypeScript application using ESM, strict TypeScript, Vitest, SQLite persistence, and YAML configuration.
+Agent Bot is a Feishu-first bridge to local App Server agents such as Codex and TraeX, plus compatible ACP agents, with a console entry point for local testing. The runtime is a Node.js 22+ TypeScript application using ESM, strict TypeScript, Vitest, SQLite persistence, and YAML configuration.
 
 Primary user-facing behavior is documented in `README.md`. Keep that document in sync when changing commands, message routing, Feishu card behavior, task/session semantics, restart behavior, configuration, or install/start instructions.
 
@@ -14,13 +14,13 @@ Primary user-facing behavior is documented in `README.md`. Keep that document in
 - `src/supervisor.ts` keeps the worker process alive and handles restart policy behavior.
 - `src/cli.ts` implements the `agentbot` command-line surface; `src/deprecated-cli.ts` preserves the deprecated `agent-bot` compatibility entry.
 - `src/acp/` contains ACP JSON-RPC process/session handling.
-- `src/codex/` contains Codex App Server process and protocol integration.
+- `src/codex/` contains the shared App Server process and protocol integration.
 - `src/commands/` parses and routes Feishu slash commands.
 - `src/config/` loads and validates the user config, defaulting to `~/.agent-bot/config.yaml`, using Zod.
 - `src/feishu/` contains Feishu transport, message client, card rendering, and turn presentation.
 - `src/presentation/` owns turn-state reduction, Markdown splitting, and outbound routing.
 - `src/proxy/` coordinates sessions, turns, steering, queues, forks, and command execution.
-- `src/runtime/` provides the shared runtime abstraction over ACP and Codex.
+- `src/runtime/` provides the shared runtime abstraction over ACP and App Server agents.
 - `src/state/` owns SQLite persistence and migrations.
 - `src/startup/` and `src/supervision/` handle startup cards, task metadata hydration, and safe restarts.
 - `src/utils/` contains small reusable helpers.
@@ -40,6 +40,8 @@ npm test
 npm run build
 npm run package:smoke
 ```
+
+Release preparation requires a clean worktree and non-empty `Unreleased` changelog. `npm run release` prepares the next Alpha by default; use `npm run release:stable` to promote an Alpha or prepare the next stable patch.
 
 Useful runtime commands after building:
 
@@ -80,7 +82,7 @@ When changing runtime behavior, run the focused Vitest file(s) first, then run `
 - Treat `src/state/StateStore.ts` and `src/state/migrations.ts` as compatibility-sensitive. Existing users may already have local databases.
 - Add migrations for schema changes instead of assuming a fresh database.
 - Preserve final-message delivery ledgers and task routing semantics; they prevent duplicate Feishu replies after restart.
-- Be careful with task identifiers. Local session IDs, Codex task/thread IDs, Feishu chat IDs, and Feishu thread IDs are different concepts.
+- Be careful with task identifiers. Local session IDs, remote App Server task/thread IDs, Feishu chat IDs, and Feishu thread IDs are different concepts.
 
 ## Feishu And Presentation Behavior
 
@@ -90,13 +92,13 @@ When changing runtime behavior, run the focused Vitest file(s) first, then run `
 - Slash-prefixed messages are commands. Unknown slash commands must not fall through to the model.
 - Topic-bound messages should remain in the topic. Group body, topic, and private chat routes are separate contexts.
 - Markdown sent to Feishu may need splitting; use the presentation utilities instead of ad hoc chunking.
-- Image handling should keep local-image Markdown and cached inbound images compatible with the Codex `localImage` path.
+- Image handling should keep local-image Markdown and cached inbound images compatible with the App Server `localImage` path.
 
-## Codex And ACP Runtime Notes
+## App Server And ACP Runtime Notes
 
-- `kind: "codex"` agents use Codex App Server through stdio.
+- `kind: "app-server"` agents use the App Server protocol through stdio. Codex and TraeX are the bundled examples.
 - Agents without `kind` default to ACP; preserve this backward-compatible behavior.
-- Do not steer, resume, stop, or fork external Codex work unless the user explicitly requests the matching operation.
+- Do not steer, resume, stop, or fork external Agent work unless the user explicitly requests the matching operation.
 - Fork behavior should use the latest available completed turn and must not interrupt an active source turn.
 - Keep model, thinking, permission mode, project directory, and projectless-task inheritance behavior consistent across `/new`, `/sessions` actions, `/fork`, `/newgroup`, and `/forkgroup`.
 
@@ -114,6 +116,7 @@ agentbot server restart --reason "brief reason"
 ## Configuration
 
 - `~/.agent-bot/config.yaml` is the default user config. `loadConfig()` creates it from the built-in default when no explicit config path is supplied and the file is missing.
+- Interactive `agentbot init` requires the user to select a default configured Agent and persists its standard name as `defaults.agent`; non-interactive initialization preserves an existing valid selection.
 - `config.example.yaml` is the checked-in example config. Keep it aligned with the built-in default config in `src/config/loadConfig.ts`.
 - `.env` is loaded from `~/.agent-bot/.env`. Update `.env.example` when adding new required or useful environment variables.
 - Relative `storage.sqlitePath` and `logging.path` values resolve against the directory containing the loaded config file.

@@ -9,7 +9,7 @@ This document covers deployment, configuration, runtime behavior, persistence, a
 Agent Bot is a Node.js 22+ ESM TypeScript application built around these components:
 
 - The supervisor owns the long-running service and restarts the worker.
-- The worker starts the configured Codex and ACP runtimes, Feishu transport, Console transport, local control server, and SQLite store.
+- The worker starts the configured Agent runtimes, Feishu transport, Console transport, local control server, and SQLite store.
 - Feishu events and Console input are normalized into the same task controller.
 - Presentation components maintain one progress card per turn and send the final Markdown response separately.
 - App Server agents use the App Server protocol over stdio; other configured agents use ACP.
@@ -22,7 +22,7 @@ Relevant source areas:
 | `src/cli/`          | Initialization, app registration, app auditing, and service/task commands |
 | `src/feishu/`       | Feishu WebSocket events, API calls, cards, images, and context keys       |
 | `src/runtime/`      | Shared runtime abstraction                                                |
-| `src/codex/`        | Codex App Server protocol integration                                     |
+| `src/codex/`        | App Server protocol integration for Codex, TraeX, and compatible Agents   |
 | `src/acp/`          | ACP process and JSON-RPC integration                                      |
 | `src/proxy/`        | Tasks, turns, steering, queues, forks, and command execution              |
 | `src/presentation/` | Turn-state reduction and outbound routing                                 |
@@ -58,7 +58,15 @@ Relative `storage.sqlitePath` and `logging.path` values resolve against the dire
 
 ## Initialization
 
+Early in initialization, `agentbot init` checks the supported Codex and TraeX CLIs in parallel and reports each installed version. Codex is compared with the latest stable `@openai/codex` package, while TraeX is compared with its Alpha channel. Missing or outdated Agents are gathered into one numbered list containing their exact install or upgrade commands. An interactive user can enter comma- or space-separated action numbers, `all`, or an empty answer to skip maintenance. Selected commands run sequentially with inherited stdio; skipped and failed actions are recorded and initialization continues. In a non-interactive terminal, commands are printed for manual use. With `--json`, progress and prompts use stderr and the final `agents` array records detection and assistance results. Codex upgrades first use `codex update` and fall back to the current npm package command when an older updater fails.
+
+After version and maintenance checks, an interactive `init` requires a default-Agent selection by number or standard name. Configured custom Agents remain selectable without a version check; Codex or TraeX is omitted while its CLI is missing. When the current default remains selectable, an empty answer confirms it. The selected standard name is written to `defaults.agent` through the same comment-preserving atomic YAML update used for configuration upgrades. A non-interactive invocation retains an existing valid configured default because it cannot prompt, and fails when no valid default exists. The JSON result reports this as `defaultAgent.name` and `defaultAgent.status` (`selected` or `existing`).
+
 `agentbot init` copies the packaged `config.example.yaml` and `.env.example` when their target files do not exist, creates the data and log directories, and restricts `.env` permissions where the platform supports POSIX modes.
+
+When `config.yaml` already exists, `init` treats the packaged `config.example.yaml` as the configuration upgrade template. It parses both files as YAML and recursively adds missing mapping entries while preserving existing scalar values, sequences, comments, and custom entries. An existing `agents` mapping is treated as user-owned: template Agents that the user omitted are not re-added, while missing fields are filled for same-named Agents. A missing `defaults.agent` is not inferred because doing so could silently change the selected Agent. Invalid YAML is reported without replacing the existing file. Changed configuration is written through an atomic replacement, and a second run is idempotent. Use `--reset` when a complete replacement from the current template is intended.
+
+When `.env` already exists, `init` appends active assignments missing from the packaged `.env.example`. Existing values, comments, ordering, and line endings are preserved, and commented optional examples are not enabled. The update uses the same atomic replacement behavior and is idempotent.
 
 Credential behavior:
 
@@ -142,6 +150,13 @@ agents:
     args: ["app-server", "--enable", "goals", "--listen", "stdio://"]
     env: {}
 
+  traex:
+    kind: "app-server"
+    title: "TraeX"
+    command: "traex"
+    args: ["app-server", "--listen", "stdio://"]
+    env: {}
+
 defaults:
   agent: "codex"
   cwd: "."
@@ -187,7 +202,7 @@ The message route determines the current task:
 
 Commands, card callbacks, progress cards, and final responses stay on the originating route.
 
-Starting a Feishu thread from a mapped user message, progress card, or final response forks from the associated completed Codex turn. If no reliable completed source turn exists, the operation fails instead of selecting an arbitrary point.
+Starting a Feishu thread from a mapped user message, progress card, or final response forks from the associated completed App Server turn. If no reliable completed source turn exists, the operation fails instead of selecting an arbitrary point.
 
 `/forkgroup` has thread-aware source selection. An unbound thread, or a bound thread task with no completed turn of its own, forks directly from the thread's original anchor turn without creating an intermediate thread task. Once the thread task has completed a turn, `/forkgroup` uses its latest locally persisted completed turn. A newer active turn does not block the command and is excluded from the fork point.
 
@@ -198,7 +213,7 @@ The new group's welcome message reports the persisted fork settings: Provider, m
 ## Turn And Message Behavior
 
 - Plain text creates a task when the route has no current task.
-- Text received during an active Codex turn is sent through steering.
+- Text received during an active App Server turn is sent through steering.
 - A steering race at turn completion becomes the next queued request.
 - `/nosteer` always creates a persistent FIFO queue item.
 - Queue card actions can cancel individual pending items.
@@ -209,23 +224,23 @@ Each turn owns one progress card. Normal updates are throttled to one every two 
 
 After the durable message-deduplication claim, Agent Bot awaits the `OnIt` reaction before chat persistence, image downloads, queue waits, command execution, or runtime calls. It replaces that reaction with `DONE`, `ERROR`, or `CrossMark` when the turn succeeds, fails, or is canceled. Reaction failures are logged but do not block task execution.
 
-Incoming rich-text images are downloaded into the inbound image cache and passed to Codex as `localImage` inputs. An image-only message uses the default Prompt `请查看这张图片`. An ACP runtime that cannot accept image input returns an explicit error.
+Incoming rich-text images are downloaded into the inbound image cache and passed to the App Server as `localImage` inputs. An image-only message uses the default Prompt `请查看这张图片`. An ACP runtime that cannot accept image input returns an explicit error.
 
-## Tasks, Projects, And External Codex Work
+## Tasks, Projects, And External App Server Work
 
-`/sessions` reads Codex tasks through `thread/list` and can discover tasks created by Codex Desktop, CLI, Agent Bot, or another App Server client under the same `CODEX_HOME`.
+`/sessions` reads tasks through `thread/list` from every configured App Server Agent. For Codex, this includes tasks created by Codex Desktop, CLI, Agent Bot, or another App Server client under the same `CODEX_HOME`; other Agents expose their own task stores through the same protocol.
 
 Each task entry exposes `NewGroup` and `ForkGroup` callbacks. The callback payload keeps the selected task ID and source context, while the Lark operator `open_id` is used to invite the user to the new group. `NewGroup` resolves the selected task's project and execution settings; `ForkGroup` resolves its latest available completed turn.
 
 The CLI exposes the same task-targeted operations through `agentbot task newgroup <task> [title] [--agent <name>] [--dir <cwd> | --nodir]` and `agentbot task forkgroup <task> [title]`. Both commands require a running Server and send the stable local task ID over the Profile's local control endpoint. Since a CLI process has no Lark operator, the Server invites `feishu.userOpenId`, which initialization stores as `FEISHU_USER_OPEN_ID`. New-group creation inherits the selected task's Agent and execution settings by default. `--agent <standard-name>` selects another configured runtime while retaining the source project shape; execution settings are omitted so that runtime applies its own defaults. ForkGroup uses the source task's latest available completed turn and leaves an active source turn running. Both control responses include the new chat, group context, source task, and created task; `--json` prints that structure without localization.
 
-## Codex Provider Settings
+## App Server Provider Settings
 
-Provider is a task-level setting stored as `model_provider` alongside model, reasoning effort, and permission mode. Agent Bot passes `modelProvider` through `thread/start`, `thread/resume`, and `thread/fork` whenever a task explicitly inherits or selects one. For a brand-new task with no inherited Provider, Agent Bot omits `modelProvider`; the Codex App Server therefore uses the effective `model_provider` from Codex configuration and returns the selected Provider in its thread response for persistence.
+Provider is a task-level setting stored as `model_provider` alongside model, reasoning effort, and permission mode. Agent Bot passes `modelProvider` through `thread/start`, `thread/resume`, and `thread/fork` whenever a task explicitly inherits or selects one. For a brand-new task with no inherited Provider, Agent Bot omits `modelProvider`; the selected App Server Agent uses its own effective default and returns the selected Provider in its thread response for persistence.
 
 `/provider`, `/model`, `/thinking`, and `/permissions` open one Card 2.0 execution-settings surface with the matching tab active. All four commands reject arguments; tab navigation and setting changes use card callbacks only. Provider choices come from App Server `config/read`. A Provider change resumes the thread with the selected Provider and the current compatible model, reasoning effort, and permission mode. Model, reasoning, and permission choices update their focused setting immediately, refresh the same card in place, and apply from the next request.
 
-Agent Bot keeps a local routing key for Feishu cards and delivery state, but presents the Codex task ID to users. It does not resume, steer, stop, or fork externally running Codex work without an explicit user action.
+Agent Bot keeps a local routing key for Feishu cards and delivery state, but presents the owning App Server's task ID to users. It does not resume, steer, stop, or fork externally running Agent work without an explicit user action.
 
 Project behavior:
 
@@ -242,13 +257,13 @@ Forks use the latest available completed turn and do not interrupt an active sou
 SQLite stores:
 
 - Current and previous tasks for each route
-- Local and Codex task/thread identifiers
+- Local and App Server task/thread identifiers
 - Model, reasoning effort, and permission mode
 - Queued Prompts
 - Progress snapshots and message bindings
 - Final-message delivery records
 
-On startup, Agent Bot reconciles persisted active work with Codex through `thread/read`. It also reconciles when turn identifiers change, terminal notifications arrive, or control requests fail.
+On startup, Agent Bot reconciles persisted active work with its owning App Server through `thread/read`. It also reconciles when turn identifiers change, terminal notifications arrive, or control requests fail.
 
 The final-delivery ledger prevents duplicate successful replies. App Server requests use finite timeouts so a stalled request cannot permanently occupy a message route. Session lifecycle requests allow 60 seconds because compatible third-party Agents may need more than 30 seconds for `thread/start`; control requests remain shorter.
 
@@ -283,7 +298,7 @@ The local control server implements task mutations, task-targeted NewGroup and F
 
 ## Permission Modes
 
-- `auto`: Codex runs with `approvalPolicy=never` and `danger-full-access`.
+- `auto`: the App Server Agent runs with `approvalPolicy=never` and `danger-full-access`.
 - `confirm`: approval requests are presented through card actions for one-time approval, session approval, denial, or task cancellation.
 
 Model, reasoning effort, permission mode, and project shape are inherited where applicable when creating or forking tasks.
@@ -312,18 +327,18 @@ Package lifecycle:
 - `prepack` builds a clean `dist/` and validates the tarball manifest.
 - `npm run package:smoke` packs the project, installs the tarball into a temporary directory, runs the CLI, and performs Console-only initialization.
 
-Prepare the next patch release from a clean worktree:
+Prepare the next Alpha release from a clean worktree:
 
 ```powershell
 npm run release
 git add package.json npm-shrinkwrap.json CHANGELOG.md
-git commit -m "release: v0.1.1"
+git commit -m "release: v0.1.13-alpha.0"
 git push origin master
 ```
 
-`npm run release` increments the patch version by default and moves the current `Unreleased` entries into a dated version section. Use `npm run release -- minor`, `npm run release -- major`, or `npm run release -- 0.2.0` to select another stable version. The command refuses to modify a dirty worktree or publish an empty changelog.
+`npm run release` now defaults to the Alpha channel. A stable `0.1.12` becomes `0.1.13-alpha.0`; a current `0.1.13-alpha.0` becomes `0.1.13-alpha.1`. `npm run release:alpha` is the explicit equivalent. Use `npm run release:stable` to promote the current Alpha to its stable core version, or to increment the patch when the current version is already stable. `patch`, `minor`, `major`, and exact stable or `-alpha.N` versions remain available through `npm run release -- <version>`. Every release moves the current `Unreleased` entries into a dated version section. The command refuses to modify a dirty worktree or publish an empty changelog.
 
-No local publish command is required after the push. When CI succeeds for a first-party push to `master`, `publish.yml` checks the package version against npm. An existing version is skipped successfully. An unpublished stable version requires a matching `CHANGELOG.md` section, then runs verification and the package smoke test before publishing. After npm accepts the package, the workflow creates the matching `v<package version>` GitHub Release.
+No local publish command is required after the push. When CI succeeds for a first-party push to `master`, `publish.yml` checks the package version against npm. An existing version is skipped successfully. An unpublished stable or Alpha version requires a matching `CHANGELOG.md` section, then runs verification and the package smoke test before publishing. Alpha versions use npm's `alpha` dist-tag and create a GitHub prerelease; stable versions use `latest` and create a regular GitHub Release.
 
 The workflow can also be retried manually from **GitHub Actions → Publish to npm → Run workflow** on `master`. Pull requests, forked repositories, failed CI runs, and pushes to other branches cannot enter the publish job.
 

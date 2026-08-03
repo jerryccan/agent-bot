@@ -4,15 +4,15 @@
 
 # Agent Bot
 
-Use local Codex and ACP agents directly from Feishu.
+Use Codex, TraeX, and compatible ACP agents directly from Feishu.
 
 English | [简体中文](README.zh.md)
 
-Agent Bot runs on your computer and connects a Feishu bot to your local Codex environment. Send a message to start working; the bot updates a progress card while the agent runs and sends the final answer as Markdown.
+Agent Bot runs on your computer and connects a Feishu bot to your local coding agents. Send a message to start working; the bot updates a progress card while the agent runs and sends the final answer as Markdown.
 
 ## What You Can Do
 
-- Use your existing local Codex login from Feishu
+- Use your existing local Codex or TraeX login from Feishu
 - Create, continue, switch, fork, and stop tasks
 - Work with text, images, groups, and threads
 - Queue follow-up Prompts or add instructions while a task is running
@@ -24,14 +24,19 @@ Agent Bot runs on your computer and connects a Feishu bot to your local Codex en
 ### Requirements
 
 - Node.js 22 or later
-- Codex CLI installed and available as `codex`
-- A completed local Codex login
+- At least one supported App Server Agent: Codex or TraeX
+- A completed local login for the Agent you intend to use
 
-Check the login:
+Check the installed Agents and login state:
 
 ```powershell
+codex --version
 codex login status
+traex --version
+traex login status
 ```
+
+You can continue to initialization when either Codex or TraeX is ready. `agentbot init` checks both Agents and can help install or upgrade either one.
 
 ### Install
 
@@ -39,6 +44,12 @@ codex login status
 npm install --global @keyou007/agent-bot
 agentbot --version
 agentbot --help
+```
+
+To try the current Alpha channel without replacing npm's stable `latest` tag:
+
+```powershell
+npm install --global @keyou007/agent-bot@alpha
 ```
 
 This installs `agentbot` as the primary command. The legacy `agent-bot` command remains available temporarily, prints a deprecation warning, and will be removed in a future release. Command-line help, status, progress, prompts, and errors follow the system language for Chinese and English locales; all other locales fall back to English. JSON output remains language-neutral and stable. See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
@@ -49,7 +60,9 @@ This installs `agentbot` as the primary command. The legacy `agent-bot` command 
 agentbot init
 ```
 
-Follow the displayed link or scan the QR code to create and authorize the Feishu bot. Initialization prepares `~/.agent-bot`, saves the bot credentials and the authorizing user, checks the required permissions, and starts Agent Bot automatically.
+Initialization detects Codex and TraeX and reports their installed versions. Missing or outdated Agents are summarized once with their exact install or upgrade commands. Enter one or more action numbers separated by commas, enter `all`, or press Enter to skip maintenance. A failed command does not block the remaining initialization steps. After these checks, select the default Agent by number or standard name; when the current default is still available, press Enter to confirm it. Agent Bot saves the selection to `defaults.agent` in `config.yaml` for future tasks.
+
+Then follow the displayed link or scan the QR code to create and authorize the Feishu bot. Initialization prepares `~/.agent-bot`, saves the bot credentials and the authorizing user, checks the required permissions, and starts Agent Bot automatically.
 
 Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agentbot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
 
@@ -66,7 +79,7 @@ When optional permissions or subscriptions are missing, Agent Bot first shows th
 | `--profile <directory>`| Use an isolated profile directory   |
 | `--config <path>`      | Use a specific configuration file   |
 
-You can rerun `agentbot init` later to check or complete the bot configuration. If the server is already running, initialization leaves it running.
+After upgrading Agent Bot, rerun `agentbot init` to refresh the Profile. It preserves existing values in `config.yaml` and `.env`, fills settings and environment variables added by the current version, lets you confirm or change the default Agent, and rechecks the Agents and bot configuration. If the server is already running, initialization leaves it running. In a non-interactive terminal, `init` cannot ask for a selection and keeps the already configured default Agent.
 
 To fully reconfigure a Profile, stop its server and select the Profile explicitly:
 
@@ -183,7 +196,7 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 
 Slash commands accept any unique prefix, and compound commands accept registered initialisms: `/sess` runs `/sessions`, `/fg` runs `/forkgroup`, `/ng` runs `/newgroup`, and `/ns` runs `/nosteer`. Exact command names take priority. An ambiguous prefix such as `/s` or `/f` is rejected and reports every matching command.
 
-`/agent`, `/provider`, `/model`, `/thinking`, and `/permissions` use the same execution-settings card when there is something to select. When more than one Agent is configured, the card adds an Agent tab for selecting the default Agent used by future tasks; `/agent` opens that tab, including when the chat has no current task. With only one configured Agent, `/agent` reports the current Agent directly instead. Existing tasks keep their original Agent, and tasks using different Agents run independently. `/agent <name>` remains available for direct selection. `/provider` likewise reports the current Provider directly when no alternative Provider is configured. The other four commands activate their matching tabs and do not accept arguments. A task created without inherited settings uses the default Provider from your Codex configuration.
+`/agent`, `/provider`, `/model`, `/thinking`, and `/permissions` use the same execution-settings card when there is something to select. When more than one Agent is configured, the card adds an Agent tab for selecting the default Agent used by future tasks; `/agent` opens that tab, including when the chat has no current task. With only one configured Agent, `/agent` reports the current Agent directly instead. Existing tasks keep their original Agent, and tasks using different Agents run independently. `/agent <name>` remains available for direct selection. `/provider` likewise reports the current Provider directly when no alternative Provider is configured. The other four commands activate their matching tabs and do not accept arguments. A task created without inherited settings uses the selected Agent's default Provider.
 
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
 
@@ -231,7 +244,7 @@ Alternative profiles are directory-based and are not registered by name. Each on
 - **The bot does not respond:** run `agentbot server status` and check `~/.agent-bot/logs/agent-bot.log`.
 - **The Worker restarted after a Node crash:** check `~/.agent-bot/data/last-crash.json`, `~/.agent-bot/logs/worker.stderr.log`, and `~/.agent-bot/data/crash-reports/`.
 - **Feishu permissions are incomplete:** rerun `agentbot init` and follow the displayed authorization steps.
-- **Codex cannot start:** run `codex login status` as the same operating-system user that runs Agent Bot.
+- **An Agent cannot start:** run `codex login status` or `traex login status` as the same operating-system user that runs Agent Bot, then rerun `agentbot init` to check its version.
 - **You only need local testing:** run `agentbot init --skip-feishu`, then `agentbot console`.
 - **A safe restart keeps waiting:** inspect active tasks with `agentbot task list --status running`.
 

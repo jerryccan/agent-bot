@@ -4,15 +4,15 @@
 
 # Agent Bot
 
-通过飞书使用本机上的 Codex 和 ACP Agent。
+通过飞书使用本机上的 Codex、TraeX 和兼容 ACP 的 Agent。
 
 [English](README.md) | 简体中文
 
-Agent Bot 运行在你的电脑上，把飞书机器人连接到本机 Codex 环境。发送消息即可开始工作；执行过程中机器人会更新进度卡，完成后发送 Markdown 最终回答。
+Agent Bot 运行在你的电脑上，把飞书机器人连接到本机编程 Agent。发送消息即可开始工作；执行过程中机器人会更新进度卡，完成后发送 Markdown 最终回答。
 
 ## 可以做什么
 
-- 在飞书中使用本机已有的 Codex 登录
+- 在飞书中使用本机已有的 Codex 或 TraeX 登录
 - 创建、继续、切换、分支和停止任务
 - 使用文字、图片、群聊和话题协作
 - 排队后续 Prompt，或在任务运行中追加指令
@@ -24,14 +24,19 @@ Agent Bot 运行在你的电脑上，把飞书机器人连接到本机 Codex 环
 ### 使用前提
 
 - Node.js 22 或更高版本
-- 已安装 Codex CLI，并可直接执行 `codex`
-- 已完成本机 Codex 登录
+- 至少安装一个支持的 App Server Agent：Codex 或 TraeX
+- 已完成准备使用的 Agent 的本机登录
 
-确认登录状态：
+检查已安装的 Agent 和登录状态：
 
 ```powershell
+codex --version
 codex login status
+traex --version
+traex login status
 ```
+
+Codex 或 TraeX 中任意一个准备完成后即可继续初始化。`agentbot init` 会检查两者，并可帮助安装或升级。
 
 ### 安装
 
@@ -39,6 +44,12 @@ codex login status
 npm install --global @keyou007/agent-bot
 agentbot --version
 agentbot --help
+```
+
+如需试用当前 Alpha 通道，同时不影响 npm 的稳定版 `latest` 标签：
+
+```powershell
+npm install --global @keyou007/agent-bot@alpha
 ```
 
 该命令会把 `agentbot` 安装为主命令。旧的 `agent-bot` 命令暂时保留，运行时会显示弃用警告，并将在后续版本中移除。命令行帮助、状态、进度、交互提示和错误会根据系统语言显示中文或英文；其他未支持语言统一回退英文。JSON 输出不做本地化并保持字段稳定。从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
@@ -49,7 +60,9 @@ agentbot --help
 agentbot init
 ```
 
-打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据和授权用户、检查所需权限，并自动启动 Agent Bot。
+初始化会检测 Codex 和 TraeX，并显示已安装的版本。未安装或版本较旧的 Agent 会汇总显示对应的安装或升级命令；输入一个或多个操作编号（用逗号分隔）、输入 `all`，或直接回车跳过维护。命令执行失败不会阻塞后续初始化。检查完成后，可输入编号或标准名选择默认 Agent；当前默认值仍可用时，直接回车即可确认。Agent Bot 会把选择保存到 `config.yaml` 的 `defaults.agent`，供后续新任务使用。
+
+然后打开命令显示的链接或扫描二维码，完成飞书机器人创建和授权。初始化会准备 `~/.agent-bot`、保存机器人凭据和授权用户、检查所需权限，并自动启动 Agent Bot。
 
 只有 App ID 和 App Secret 都已保存到本地才视为机器人创建成功。如果初始化在完整凭据保存前中断，再次运行 `agentbot init` 会创建新机器人；如果凭据已经保存，则会继续检查该机器人的远端权限和订阅。
 
@@ -66,7 +79,7 @@ agentbot init
 | `--profile <目录>`     | 使用指定目录中的独立 Profile |
 | `--config <路径>`      | 使用指定配置文件          |
 
-之后可以重新运行 `agentbot init` 检查或补齐机器人配置。如果 Server 已在运行，初始化会保留当前服务。
+升级 Agent Bot 后，可以重新运行 `agentbot init` 刷新 Profile。它会保留现有 `config.yaml` 和 `.env` 中的值，补齐当前版本新增的配置项和环境变量，允许确认或更换默认 Agent，并重新检查 Agent 与机器人配置。如果 Server 已在运行，初始化会保留当前服务。非交互式终端无法询问选择，此时会保留配置中已有的默认 Agent。
 
 如需完整重新配置一个 Profile，请先停止它的 Server，并显式指定 Profile：
 
@@ -183,7 +196,7 @@ agentbot task stop <任务>
 
 斜杠命令支持任意唯一前缀，复合命令还支持首字母缩写：`/sess` 等同于 `/sessions`，`/fg` 等同于 `/forkgroup`，`/ng` 等同于 `/newgroup`，`/ns` 等同于 `/nosteer`。完整命令名优先；`/s`、`/f` 等匹配多个命令的前缀会被拒绝，并列出全部候选命令。
 
-`/agent`、`/provider`、`/model`、`/thinking` 和 `/permissions` 在存在可选项时使用同一张运行设置卡片。配置了多个 Agent 时，卡片会增加 Agent tab，用于选择后续新任务使用的默认 Agent；即使当前聊天还没有任务，`/agent` 也能打开该 tab。只配置一个 Agent 时，`/agent` 直接显示当前 Agent，不打开卡片。现有任务仍保持原来的 Agent，使用不同 Agent 的任务可以相互独立地运行。`/agent <名称>` 继续支持直接选择。没有可切换的 Provider 时，`/provider` 同样只显示当前 Provider。其余四个命令激活各自对应的 tab，且不接受参数。没有可继承设置的新任务使用 Codex 配置中的默认 Provider。
+`/agent`、`/provider`、`/model`、`/thinking` 和 `/permissions` 在存在可选项时使用同一张运行设置卡片。配置了多个 Agent 时，卡片会增加 Agent tab，用于选择后续新任务使用的默认 Agent；即使当前聊天还没有任务，`/agent` 也能打开该 tab。只配置一个 Agent 时，`/agent` 直接显示当前 Agent，不打开卡片。现有任务仍保持原来的 Agent，使用不同 Agent 的任务可以相互独立地运行。`/agent <名称>` 继续支持直接选择。没有可切换的 Provider 时，`/provider` 同样只显示当前 Provider。其余四个命令激活各自对应的 tab，且不接受参数。没有可继承设置的新任务使用所选 Agent 的默认 Provider。
 
 私聊、群正文和话题分别维护当前任务。可以单独发送图片，也可以同时发送文字和图片。任务运行中发送普通文字会追加指令；需要确保形成后续 turn 时使用 `/queue`（或 `/nosteer`）。
 
@@ -231,7 +244,7 @@ agentbot --profile ~/.agent-bot-rescue server status
 - **机器人没有响应：** 运行 `agentbot server status`，并查看 `~/.agent-bot/logs/agent-bot.log`
 - **Node 崩溃后 Worker 被自动重启：** 查看 `~/.agent-bot/data/last-crash.json`、`~/.agent-bot/logs/worker.stderr.log` 和 `~/.agent-bot/data/crash-reports/`
 - **飞书权限不完整：** 重新运行 `agentbot init`，完成显示的授权步骤
-- **Codex 无法启动：** 使用运行 Agent Bot 的同一操作系统用户执行 `codex login status`
+- **Agent 无法启动：** 使用运行 Agent Bot 的同一操作系统用户执行 `codex login status` 或 `traex login status`，然后重新运行 `agentbot init` 检查版本
 - **只需要本地测试：** 运行 `agentbot init --skip-feishu`，然后执行 `agentbot console`
 - **安全重启一直等待：** 使用 `agentbot task list --status running` 检查活动任务
 
