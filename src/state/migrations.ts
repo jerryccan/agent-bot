@@ -125,4 +125,25 @@ export const migrations = [
   CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_order
     ON queued_prompts(local_session_id, created_at);
   `,
+  `
+  CREATE TABLE IF NOT EXISTS turn_runtime_origins (
+    turn_id TEXT PRIMARY KEY,
+    local_session_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    remote_session_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_turn_runtime_origins_session
+    ON turn_runtime_origins(local_session_id);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS turn_parent_links (
+    turn_id TEXT PRIMARY KEY,
+    local_session_id TEXT NOT NULL,
+    parent_turn_id TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_turn_parent_links_session
+    ON turn_parent_links(local_session_id);
+  `,
 ] as const;

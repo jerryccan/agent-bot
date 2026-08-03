@@ -418,6 +418,29 @@ describe("StateStore runtime metadata", () => {
     });
   });
 
+  test("keeps the first App Server thread origin recorded for a turn", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.saveTurnRuntimeOrigin("turn_1", "session_1", "codex", "thread_original");
+    first.saveTurnRuntimeOrigin("turn_1", "session_1", "codex", "thread_rebound");
+    expect(first.getTurnRuntimeOrigin("turn_1")).toMatchObject({
+      turnId: "turn_1",
+      localSessionId: "session_1",
+      agentName: "codex",
+      remoteSessionId: "thread_original",
+    });
+
+    first.close();
+    stores.pop();
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.getTurnRuntimeOrigin("turn_1")?.remoteSessionId).toBe("thread_original");
+  });
+
   test("finds the latest completed turn owned by a session in one context", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
@@ -449,6 +472,71 @@ describe("StateStore runtime metadata", () => {
       .toBe("turn_topic_latest");
     expect(store.findLatestCompletedTurnId("source", "chat_id:c1:thread_id:t1"))
       .toBeUndefined();
+  });
+
+  test("pages completed turn snapshots by completion time within one task context", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    for (let index = 1; index <= 12; index += 1) {
+      store.saveTurnSnapshot(`turn_${index}`, "session_1", {
+        turnId: `turn_${index}`,
+        status: "completed",
+        completedAt: index * 1_000,
+      }, "chat_id:c1");
+    }
+    store.saveTurnSnapshot("turn_running", "session_1", {
+      turnId: "turn_running",
+      status: "running",
+      startedAt: 99_000,
+    }, "chat_id:c1");
+    store.saveTurnSnapshot("turn_other_context", "session_1", {
+      turnId: "turn_other_context",
+      status: "completed",
+      completedAt: 100_000,
+    }, "chat_id:c2");
+
+    expect(store.countCompletedTurnSnapshots("session_1", "chat_id:c1")).toBe(12);
+    expect(store.listCompletedTurnSnapshots("session_1", "chat_id:c1", 10).map((turn) => turn.turnId))
+      .toEqual(["turn_12", "turn_11", "turn_10", "turn_9", "turn_8", "turn_7", "turn_6", "turn_5", "turn_4", "turn_3"]);
+    expect(store.listCompletedTurnSnapshots("session_1", "chat_id:c1", 10, 10).map((turn) => turn.turnId))
+      .toEqual(["turn_2", "turn_1"]);
+  });
+
+  test("backfills Reset branches with their selected parent turn", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    const now = Date.now();
+    const saveCompleted = (turnId: string, startedAt: number) => store.saveTurnSnapshot(turnId, "session_1", {
+      turnId,
+      status: "completed",
+      startedAt,
+      completedAt: startedAt + 100,
+    }, "chat_id:c1");
+
+    saveCompleted("turn_8", now - 4_000);
+    saveCompleted("turn_7", now - 3_000);
+    saveCompleted("turn_6", now - 2_000);
+    store.audit("chat_id:c1", "session_reset_to_turn", {
+      localSessionId: "session_1",
+      resetTurnId: "turn_8",
+      forkedRemoteSessionId: "thread_reset",
+    });
+    saveCompleted("turn_5", now + 1_000);
+
+    expect(store.listCompletedTurnGraph("session_1", "chat_id:c1").map((turn) => ({
+      turnId: turn.turnId,
+      parentTurnId: turn.parentTurnId,
+    }))).toEqual([
+      { turnId: "turn_5", parentTurnId: "turn_8" },
+      { turnId: "turn_6", parentTurnId: "turn_7" },
+      { turnId: "turn_7", parentTurnId: "turn_8" },
+      { turnId: "turn_8", parentTurnId: undefined },
+    ]);
   });
 
   test("atomically promotes a pending turn snapshot and progress delivery", () => {
@@ -590,6 +678,30 @@ describe("StateStore runtime metadata", () => {
       emojiType: "DONE",
       status: "completed",
     });
+  });
+
+  test("finds the latest inbound message anchor for a task and context", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.saveMessageReaction("om_old", "chat_id:c1:thread_id:t1", "reaction_old", "OnIt");
+    store.bindMessageReaction("om_old", "session_1", "turn_1");
+    store.saveMessageReaction("om_other", "chat_id:c2:thread_id:t2", "reaction_other", "OnIt");
+    store.bindMessageReaction("om_other", "session_1", "turn_2");
+    store.saveMessageReaction("om_latest", "chat_id:c1:thread_id:t1", "reaction_latest", "OnIt");
+    store.bindMessageReaction("om_latest", "session_1", "turn_3");
+
+    expect(store.findLatestMessageIdForSession("session_1")).toBe("om_latest");
+    expect(store.findLatestMessageIdForSession("session_1", "chat_id:c1:thread_id:t1"))
+      .toBe("om_latest");
+    expect(store.findLatestMessageIdForSession("session_1", "chat_id:c2:thread_id:t2"))
+      .toBe("om_other");
+    expect(store.findLatestMessageIdForSession("unknown")).toBeUndefined();
+
+    store.audit("chat_id:c1:thread_id:t1", "incoming_message", { messageId: "om_command" });
+    expect(store.findLatestMessageIdForContext("chat_id:c1:thread_id:t1")).toBe("om_command");
+    expect(store.findLatestMessageIdForContext("chat_id:missing")).toBeUndefined();
   });
 
   test("retries a reaction replacement interrupted by process restart", () => {

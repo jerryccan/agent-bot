@@ -17,11 +17,14 @@ import {
   CardRenderer,
   type CardSection,
   type ExecutionSettingsTab,
+  type ResetHistoryCardEntry,
   type TaskListCardAction,
+  type TaskListCardEntry,
 } from "../feishu/CardRenderer.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
+import { buildTurnGraphRows } from "../presentation/turnGraph.js";
 import type { AgentRuntimeRegistry } from "../runtime/AgentRuntimeRegistry.js";
 import type {
   AgentRuntime,
@@ -61,6 +64,7 @@ const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
 const MESSAGE_CANCELLED_REACTION = "CrossMark";
 const SESSION_PAGE_SIZE = 5;
+const RESET_HISTORY_PAGE_SIZE = 10;
 const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
 
 interface AgentRemoteSession {
@@ -77,12 +81,18 @@ interface AgentRemoteSessionSummary {
 interface SessionsCardOptions {
   updateMessageId?: string;
   forceSwitchTaskId?: string;
-  visibleCount?: number;
+  page?: number;
 }
 
 interface StatusCardOptions {
   updateMessageId?: string;
   forceSwitchTaskId?: string;
+}
+
+interface ResetHistoryCardOptions {
+  expectedSessionId?: string;
+  updateMessageId?: string;
+  page?: number;
 }
 
 interface ModelCardOptions {
@@ -167,8 +177,9 @@ export interface ControlTaskGroupResult {
 
 export interface ProxyLifecycle {
   supervised?: boolean;
-  restart(contextKey: string, force: boolean): Promise<void>;
+  restart(contextKey: string, force: boolean, replyTarget?: MessageReplyTarget): Promise<void>;
   cancelSafeRestart?(scheduleId: number): Promise<boolean>;
+  rememberFeishuUserOpenId?(userOpenId: string): Promise<void> | void;
 }
 
 export type ShellCommandExecutor = (command: string, cwd: string) => Promise<ShellCommandResult>;
@@ -181,6 +192,7 @@ export class ProxySessionController {
   private readonly queuedPromptStarts = new Map<string, Promise<void>>();
   private readonly queuedPromptCards = new Map<string, Map<string, string>>();
   private readonly queuedPromptCardWrites = new Map<string, Promise<void>>();
+  private readonly sessionResets = new Map<string, Promise<void>>();
   private readonly lastSessionListings = new Map<string, string[]>();
   private readonly threadInitializations = new Map<string, Promise<void>>();
   private readonly unsubscribe: Array<() => void> = [];
@@ -240,8 +252,20 @@ export class ProxySessionController {
         "Failed to acknowledge the incoming Feishu message with a reaction.",
       );
     }
+    if (message.chatType === "p2p" && message.userId?.startsWith("ou_")) {
+      try {
+        await this.lifecycle?.rememberFeishuUserOpenId?.(message.userId);
+      } catch (error) {
+        this.logger.warn(
+          { error, messageId: message.messageId },
+          "Failed to persist the first private-chat Lark user Open ID.",
+        );
+      }
+    }
     if (message.chatId && message.chatType) {
-      this.store.recordChatContext(baseChatContextKey(message.contextKey), message.chatType);
+      const chatContextKey = baseChatContextKey(message.contextKey);
+      this.store.recordChatContext(chatContextKey, message.chatType);
+      this.store.markChatActive(chatContextKey);
     }
     const replyTarget = message.replyInThread
       ? { messageId: message.messageId, replyInThread: true as const }
@@ -252,9 +276,6 @@ export class ProxySessionController {
       text: message.text,
       ...(imageCount > 0 ? { imageCount } : {}),
     });
-    if (imageCount > 0 && message.chatId && message.chatType) {
-      this.store.markChatActive(baseChatContextKey(message.contextKey));
-    }
     let localImagePaths: string[] | undefined;
     if (imageCount > 0) {
       try {
@@ -284,17 +305,6 @@ export class ProxySessionController {
       );
       return;
     }
-    if (
-      message.chatId
-      && message.chatType
-      && (
-        command.type === "shell"
-        || (command.type === "prompt" && !message.text.trimStart().startsWith("/"))
-      )
-    ) {
-      this.store.markChatActive(baseChatContextKey(message.contextKey));
-    }
-
     // Operational and read-only commands must remain available even if a prompt operation is slow.
     if (isQueueIndependentCommand(command)) {
       await this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
@@ -369,6 +379,26 @@ export class ProxySessionController {
         } else if (kind === "turn_cancel") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.cancelSession(this.requireSession(contextKey, sessionId));
+        } else if (kind === "turn_reset") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          await this.resetCurrentSessionToTurn(
+            contextKey,
+            sessionId,
+            String(scopedAction.value.turnId ?? ""),
+          );
+          if (scopedAction.value.cardView === "reset_history") {
+            await this.openResetHistory(contextKey, {
+              expectedSessionId: sessionId,
+              updateMessageId: requiredCardMessageId(scopedAction.messageId),
+              page: resetHistoryPageValue(scopedAction.value.page),
+            });
+          }
+        } else if (kind === "turn_reset_page") {
+          await this.openResetHistory(contextKey, {
+            expectedSessionId: String(scopedAction.value.sessionId ?? ""),
+            updateMessageId: requiredCardMessageId(scopedAction.messageId),
+            page: resetHistoryPageValue(scopedAction.value.page),
+          });
         } else if (kind === "queued_prompt_cancel") {
           await this.cancelQueuedPrompt(scopedAction);
         } else if (kind === "safe_restart_cancel") {
@@ -383,17 +413,17 @@ export class ProxySessionController {
           if (!cancelled) {
             await this.outbound.sendText(contextKey, "该安全重启计划已失效，请查看最新状态卡片。");
           }
-        } else if (kind === "session_more") {
-          await this.refreshSessionsCardFromAction(scopedAction, undefined, true);
+        } else if (kind === "session_page") {
+          await this.refreshSessionsCardFromAction(scopedAction);
         } else if (kind === "session_switch") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.switchSession(contextKey, sessionId);
           if (scopedAction.value.cardView === "status") await this.refreshStatusCardFromAction(scopedAction);
-          else await this.refreshSessionsCardFromAction(scopedAction);
+          else await this.refreshSessionsCardFromAction(scopedAction, { page: 0 });
         } else if (kind === "session_fork") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.forkSessionReference(contextKey, sessionId);
-          await this.refreshSessionsCardFromAction(scopedAction);
+          await this.refreshSessionsCardFromAction(scopedAction, { page: 0 });
         } else if (kind === "session_fork_group") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.forkSessionReferenceToFeishuGroup(contextKey, sessionId, scopedAction.userId);
@@ -401,7 +431,7 @@ export class ProxySessionController {
         } else if (kind === "session_new") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.createProjectSessionFromReference(contextKey, sessionId);
-          await this.refreshSessionsCardFromAction(scopedAction);
+          await this.refreshSessionsCardFromAction(scopedAction, { page: 0 });
         } else if (kind === "session_new_group") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.createFeishuGroupFromReference(contextKey, sessionId, scopedAction.userId);
@@ -410,7 +440,7 @@ export class ProxySessionController {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.stopSessionReference(contextKey, sessionId);
           if (scopedAction.value.cardView === "status") await this.refreshStatusCardFromAction(scopedAction, sessionId);
-          else await this.refreshSessionsCardFromAction(scopedAction, sessionId);
+          else await this.refreshSessionsCardFromAction(scopedAction, { forceSwitchTaskId: sessionId });
         } else if (kind === "session_status") {
           await this.status(contextKey, String(scopedAction.value.sessionId ?? ""));
         } else if (kind === "session_status_refresh") {
@@ -541,6 +571,7 @@ export class ProxySessionController {
     this.lastSessionListings.clear();
     this.queuedPromptCards.clear();
     this.queuedPromptCardWrites.clear();
+    this.sessionResets.clear();
   }
 
   async controlStopTask(localSessionId: string): Promise<string> {
@@ -831,7 +862,10 @@ export class ProxySessionController {
         return;
       case "restart":
         if (!this.lifecycle) throw new Error("当前运行方式不支持自动重启。");
-        await this.lifecycle.restart(contextKey, command.force === true);
+        await this.lifecycle.restart(contextKey, command.force === true, replyTarget);
+        return;
+      case "turns":
+        await this.openResetHistory(contextKey);
         return;
       case "model":
         await this.openExecutionSettings(contextKey, "model");
@@ -2063,6 +2097,24 @@ export class ProxySessionController {
   }
 
   private async handleRuntimeEvent(event: RuntimeEvent): Promise<void> {
+    if ("turnId" in event) {
+      const source = this.store.getSession(event.sessionId);
+      if (source?.remoteSessionId && this.isCodexSession(source)) {
+        this.store.saveTurnRuntimeOrigin(
+          event.turnId,
+          source.localSessionId,
+          source.agentName,
+          source.remoteSessionId,
+        );
+      }
+      if (event.type === "turn_started") {
+        this.store.saveTurnParent(
+          event.turnId,
+          event.sessionId,
+          source?.lastTurnStatus === "completed" ? source.lastTurnId : undefined,
+        );
+      }
+    }
     if (event.type === "session_metadata_updated") {
       this.store.updateRuntimeSession(event.sessionId, { title: event.title });
       this.outbound.updateSessionTitle(event.sessionId, event.title);
@@ -2269,6 +2321,111 @@ export class ProxySessionController {
       return;
     }
     await loaded.runtime.cancelTurn(record.localSessionId, turnId);
+  }
+
+  private async resetCurrentSessionToTurn(
+    contextKey: string,
+    sessionId: string,
+    turnId: string,
+  ): Promise<void> {
+    if (!sessionId || !turnId) throw new Error("无效的 Reset 请求。请使用最新的思考卡片重试。");
+    const previous = this.sessionResets.get(sessionId) ?? Promise.resolve();
+    const reset = previous.catch(() => undefined).then(() =>
+      this.performCurrentSessionReset(contextKey, sessionId, turnId));
+    this.sessionResets.set(sessionId, reset);
+    try {
+      await reset;
+    } finally {
+      if (this.sessionResets.get(sessionId) === reset) this.sessionResets.delete(sessionId);
+    }
+  }
+
+  private async performCurrentSessionReset(
+    contextKey: string,
+    sessionId: string,
+    turnId: string,
+  ): Promise<void> {
+    const current = this.requireCurrentSession(contextKey);
+    if (current.localSessionId !== sessionId) {
+      throw new Error("这张思考卡片不属于当前任务。请先切换回对应任务，再点击 Reset。");
+    }
+    if (!current.remoteSessionId || !this.isCodexSession(current)) {
+      throw new Error("当前任务不是可 Reset 的 App Server 任务。");
+    }
+
+    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(turnId));
+    if (!snapshot || snapshot.sessionId !== sessionId || snapshot.status !== "completed") {
+      throw new Error("只能将当前任务 Reset 到已成功完成的轮次。");
+    }
+    if (current.lastTurnId === turnId && current.lastTurnStatus === "completed") {
+      await this.outbound.sendText(contextKey, "当前任务已经处于本轮完成后的对话状态，无需 Reset。");
+      return;
+    }
+
+    const runtime = this.runtimes.forAgent(current.agentName);
+    if (runtime.kind !== "codex" || !runtime.forkSession) {
+      throw new Error("当前 App Server Agent 不支持 Reset。");
+    }
+    const loaded = await this.loadSession(current);
+    const activity = await this.assertSessionTurnOwnership(current, runtime);
+    const active = activity?.active
+      ?? Boolean(loaded.session.activeTurnId || current.status === "running" || current.lastTurnStatus === "running");
+    if (active) {
+      throw new Error("当前任务仍在执行。请等待任务完成或先停止任务，再点击 Reset。");
+    }
+
+    const origin = this.store.getTurnRuntimeOrigin(turnId);
+    if (origin && (origin.localSessionId !== sessionId || origin.agentName !== current.agentName)) {
+      throw new Error("这张思考卡片与当前任务不匹配，已拒绝 Reset。");
+    }
+    const sourceRemoteSessionId = origin?.remoteSessionId ?? current.remoteSessionId;
+    const previousRemoteSessionId = current.remoteSessionId;
+    const forked = await runtime.forkSession({
+      localSessionId: current.localSessionId,
+      remoteSessionId: sourceRemoteSessionId,
+      lastTurnId: turnId,
+      agentName: current.agentName,
+      cwd: current.cwd,
+      title: current.title,
+      modelProvider: current.modelProvider,
+      model: current.model,
+      reasoningEffort: current.reasoningEffort,
+      permissionMode: current.permissionMode ?? "auto",
+    });
+    this.persistRuntimeSession(current, forked, "ready");
+    this.store.updateRuntimeSession(current.localSessionId, {
+      lastTurnId: turnId,
+      lastTurnStatus: "completed",
+    });
+    this.outbound.registerSession(
+      current.localSessionId,
+      contextKey,
+      forked.title ?? current.title,
+      current.cwd,
+      this.agentLabel(current.agentName),
+    );
+    this.store.audit(contextKey, "session_reset_to_turn", {
+      localSessionId: current.localSessionId,
+      previousRemoteSessionId,
+      sourceRemoteSessionId,
+      resetTurnId: turnId,
+      forkedRemoteSessionId: forked.remoteSessionId,
+    });
+    const targetSummary = truncateText(
+      (snapshot.prompt ?? snapshot.taskTitle ?? "未记录对话内容").replace(/\s+/g, " ").trim(),
+      100,
+    ) || "未记录对话内容";
+    const targetTime = snapshot.completedAt ?? snapshot.startedAt;
+    await this.outbound.sendText(
+      contextKey,
+      [
+        "已将当前任务重置到：",
+        targetSummary,
+        `完成时间：${targetTime === undefined ? "未知" : formatResetTurnTime(targetTime)}`,
+        `Turn ID：${turnId}`,
+        "后续对话将从该轮完成后的状态继续；本地文件没有回退。",
+      ].join("\n"),
+    );
   }
 
   private async resolveApproval(action: CardAction): Promise<void> {
@@ -2824,6 +2981,92 @@ export class ProxySessionController {
     await this.outbound.sendText(contextKey, mode === "auto" ? "已切换为自动执行模式。" : "已切换为执行前确认模式。");
   }
 
+  private async openResetHistory(
+    contextKey: string,
+    options: ResetHistoryCardOptions = {},
+  ): Promise<void> {
+    const current = this.requireCurrentSession(contextKey);
+    if (options.expectedSessionId && current.localSessionId !== options.expectedSessionId) {
+      throw new Error("这张历史轮次卡片不属于当前任务。请先切换回对应任务，再重新发送 /turns。");
+    }
+    if (!current.remoteSessionId || !this.isCodexSession(current)) {
+      throw new Error("当前任务不是可 Reset 的 App Server 任务。");
+    }
+    const allTurns = this.store.listCompletedTurnGraph(current.localSessionId, contextKey);
+    const graphRows = buildTurnGraphRows(allTurns.map((turn) => ({
+      turnId: turn.turnId,
+      parentTurnId: turn.parentTurnId,
+    })));
+    const total = allTurns.length;
+    const totalPages = Math.max(1, Math.ceil(total / RESET_HISTORY_PAGE_SIZE));
+    const page = Math.max(0, Math.min(Math.trunc(options.page ?? 0), totalPages - 1));
+    const offset = page * RESET_HISTORY_PAGE_SIZE;
+    const turns = allTurns.slice(offset, offset + RESET_HISTORY_PAGE_SIZE);
+    const entries: ResetHistoryCardEntry[] = turns.flatMap((turn, index) => {
+      const snapshot = turnViewSnapshot(turn.snapshot);
+      if (!snapshot) return [];
+      const graph = graphRows[offset + index]!;
+      const summary = truncateText(
+        (snapshot.prompt ?? snapshot.taskTitle ?? "未记录对话内容").replace(/\s+/g, " ").trim(),
+        100,
+      );
+      const isCurrent = current.lastTurnId === turn.turnId && current.lastTurnStatus === "completed";
+      return [{
+        sequence: graph.sequence,
+        graphNodeLine: graph.nodeLine,
+        graphConnectorLine: graph.connectorLine,
+        lines: [
+          `**${cardText(summary || "未记录对话内容")}**`,
+          `${formatResetTurnTime(snapshot.completedAt ?? snapshot.startedAt)} · ${cardCode(turn.turnId)}`,
+        ],
+        current: isCurrent,
+        actions: isCurrent ? undefined : [{
+          text: "Reset",
+          value: {
+            action: "turn_reset",
+            cardView: "reset_history",
+            sessionId: current.localSessionId,
+            turnId: turn.turnId,
+            contextKey,
+            page: String(page),
+          },
+        }],
+      }];
+    });
+    const pageActions: TaskListCardAction[] = [
+      ...(page > 0 ? [{
+        text: "Previous",
+        value: {
+          action: "turn_reset_page",
+          sessionId: current.localSessionId,
+          contextKey,
+          page: String(page - 1),
+        },
+      }] : []),
+      ...(page < totalPages - 1 ? [{
+        text: "Next",
+        value: {
+          action: "turn_reset_page",
+          sessionId: current.localSessionId,
+          contextKey,
+          page: String(page + 1),
+        },
+      }] : []),
+    ];
+    const card = this.cardRenderer.renderResetHistoryCard({
+      entries,
+      footerLines: [
+        `第 ${page + 1}/${totalPages} 页 · 共 ${total} 个已完成 turn`,
+      ],
+      pageActions,
+    });
+    if (options.updateMessageId) {
+      await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+    } else {
+      await this.outbound.sendInteractiveCard(contextKey, card);
+    }
+  }
+
   private async listSessions(
     contextKey: string,
     searchTerm?: string,
@@ -2831,7 +3074,8 @@ export class ProxySessionController {
   ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
     const normalizedSearch = searchTerm?.trim().toLowerCase();
-    const visibleCount = options.visibleCount ?? SESSION_PAGE_SIZE;
+    const requestedPage = Math.max(0, Math.trunc(options.page ?? 0));
+    const fetchLimit = (requestedPage + 1) * SESSION_PAGE_SIZE;
     const localSessions = this.store.listSessions(contextKey).filter((session) =>
       session.status !== "closed" && this.isCodexSession(session),
     );
@@ -2841,9 +3085,9 @@ export class ProxySessionController {
     await Promise.all(this.runtimes.entries("codex").map(async ([agentName, runtime]) => {
       if (!runtime.listRemoteSessions) return;
       try {
-        const page = await runtime.listRemoteSessions({ searchTerm, limit: visibleCount });
-        remoteSessions.push(...page.sessions.map((session) => ({ agentName, session })));
-        remoteHasMore ||= Boolean(page.nextCursor);
+        const result = await runtime.listRemoteSessions({ searchTerm, limit: fetchLimit });
+        remoteSessions.push(...result.sessions.map((session) => ({ agentName, session })));
+        remoteHasMore ||= Boolean(result.nextCursor);
       } catch (error) {
         this.logger.warn({ error, contextKey, agentName }, "Failed to list App Server sessions for an Agent.");
         remoteErrors.push(`${agentName}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2861,9 +3105,13 @@ export class ProxySessionController {
         || Number(right.active) - Number(left.active)
         || right.updatedAt - left.updatedAt);
     const activeCount = entries.filter((entry) => entry.active).length;
-    const visibleEntries = entries.slice(0, visibleCount);
-    const hasMore = remoteHasMore || entries.length > visibleCount;
-    this.lastSessionListings.set(contextKey, visibleEntries.map((entry) => entry.reference));
+    const lastKnownPage = Math.max(0, Math.ceil(entries.length / SESSION_PAGE_SIZE) - 1);
+    const page = remoteHasMore ? requestedPage : Math.min(requestedPage, lastKnownPage);
+    const offset = page * SESSION_PAGE_SIZE;
+    const visibleEntries = entries.slice(offset, offset + SESSION_PAGE_SIZE);
+    const hasPrevious = page > 0;
+    const hasNext = remoteHasMore || entries.length > offset + SESSION_PAGE_SIZE;
+    this.lastSessionListings.set(contextKey, entries.map((entry) => entry.reference));
     const cardEntries = visibleEntries.map((entry, index) => {
       const marker = entry.current ? "✅" : entry.active ? "🟢 **活跃**" : "•";
       const showStop = entry.status === "外部执行中"
@@ -2876,7 +3124,7 @@ export class ProxySessionController {
           action: showStop ? "session_stop" : "session_switch",
           sessionId: entry.reference,
           ...(searchTerm ? { searchTerm } : {}),
-          visibleCount: String(visibleCount),
+          page: String(page),
           contextKey,
         },
       }];
@@ -2886,7 +3134,7 @@ export class ProxySessionController {
           action: "session_new",
           sessionId: entry.reference,
           ...(searchTerm ? { searchTerm } : {}),
-          visibleCount: String(visibleCount),
+          page: String(page),
           contextKey,
         },
       });
@@ -2896,7 +3144,7 @@ export class ProxySessionController {
           action: "session_new_group",
           sessionId: entry.reference,
           ...(searchTerm ? { searchTerm } : {}),
-          visibleCount: String(visibleCount),
+          page: String(page),
           contextKey,
         },
       });
@@ -2906,7 +3154,7 @@ export class ProxySessionController {
           action: "session_fork",
           sessionId: entry.reference,
           ...(searchTerm ? { searchTerm } : {}),
-          visibleCount: String(visibleCount),
+          page: String(page),
           contextKey,
         },
       });
@@ -2916,7 +3164,7 @@ export class ProxySessionController {
           action: "session_fork_group",
           sessionId: entry.reference,
           ...(searchTerm ? { searchTerm } : {}),
-          visibleCount: String(visibleCount),
+          page: String(page),
           contextKey,
         },
       });
@@ -2930,7 +3178,7 @@ export class ProxySessionController {
       });
       return {
         lines: [
-          `**${index + 1}.**　${marker}　**${cardText(entry.title)}**　${cardText(entry.id)}`,
+          `**${offset + index + 1}.**　${marker}　**${cardText(entry.title)}**　${cardText(entry.id)}`,
           `${entry.status} · ${entry.updatedLabel} · ${cardText(entry.agentName)} · ${cardText(entry.cwd || "目录未知")}`,
         ],
         actions,
@@ -2942,22 +3190,33 @@ export class ProxySessionController {
       cardEntries,
       [
         ...(remoteHint ? [remoteHint] : []),
+        `第 ${page + 1} 页 · 每页 ${SESSION_PAGE_SIZE} 个任务${hasNext ? "" : ` · 当前共 ${entries.length} 个任务`}`,
         "点击 **New** 在对应任务的项目中创建新任务；点击 **Switch** 快速切换；点击 **Fork** 从任务最新已完成轮次创建分支；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
         "点击 **NewGroup** 在对应任务的项目中创建新群和新任务；点击 **ForkGroup** 从对应任务最新已完成轮次创建分支群。",
         "也可发送 **/switch [序号或任务 ID]**；不带参数切回上一个任务。外部正在执行的回合不会被接管。",
         "发送 **/fork [序号或任务 ID]**，可从当前或指定任务创建分支；任务运行中时使用最近已完成轮次。",
         "点击 **Status**，或发送 **/status [序号或任务 ID]**，查看当前或指定任务状态。",
       ],
-      hasMore ? {
-        text: "More",
-        type: "primary",
-        value: {
-          action: "session_more",
-          ...(searchTerm ? { searchTerm } : {}),
-          visibleCount: String(visibleCount),
-          contextKey,
-        },
-      } : undefined,
+      [
+        ...(hasPrevious ? [{
+          text: "Previous",
+          value: {
+            action: "session_page",
+            ...(searchTerm ? { searchTerm } : {}),
+            page: String(page - 1),
+            contextKey,
+          },
+        }] : []),
+        ...(hasNext ? [{
+          text: "Next",
+          value: {
+            action: "session_page",
+            ...(searchTerm ? { searchTerm } : {}),
+            page: String(page + 1),
+            contextKey,
+          },
+        }] : []),
+      ],
     );
     if (options.updateMessageId) {
       await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
@@ -2968,18 +3227,16 @@ export class ProxySessionController {
 
   private async refreshSessionsCardFromAction(
     action: CardAction,
-    forceSwitchTaskId?: string,
-    loadMore = false,
+    options: { forceSwitchTaskId?: string; page?: number } = {},
   ): Promise<void> {
     if (!action.messageId) return;
     const searchTerm = typeof action.value.searchTerm === "string" && action.value.searchTerm.trim()
       ? action.value.searchTerm
       : undefined;
-    const currentVisibleCount = parseSessionVisibleCount(action.value.visibleCount);
     await this.listSessions(action.contextKey, searchTerm, {
       updateMessageId: action.messageId,
-      forceSwitchTaskId,
-      visibleCount: currentVisibleCount + (loadMore ? SESSION_PAGE_SIZE : 0),
+      forceSwitchTaskId: options.forceSwitchTaskId,
+      page: options.page ?? parseSessionPage(action.value.page),
     });
   }
 
@@ -3418,6 +3675,7 @@ export class ProxySessionController {
           "**/newgroup [title] [--dir &#60;cwd&#62; | --nodir]**　创建飞书群和新任务；参数与 /new 相同",
           "**/forkgroup [title]**　从当前任务最新已完成轮次创建分支并绑定到新群",
           "**/fork [序号或任务 ID]**　从当前或指定任务创建分支；运行中使用最近已完成轮次",
+          "**/turns**　浏览当前任务的历史对话轮次，并可将对话上下文恢复到所选轮次",
           "**/title &#60;新标题&#62;**　修改当前任务的标题",
           "**/sessions [关键词]**　查找本机任务",
           "**/switch [序号或任务 ID]**　不填参数切回上一个任务",
@@ -3825,6 +4083,10 @@ function formatStatusTime(value: string): string {
   }).format(date);
 }
 
+function formatResetTurnTime(value?: number): string {
+  return value === undefined ? "完成时间未知" : formatStatusTime(new Date(value).toISOString());
+}
+
 function cardText(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("`", "&#96;").replaceAll("<", "&#60;").replaceAll(">", "&#62;");
 }
@@ -3843,9 +4105,15 @@ function executionSettingsTabValue(value: unknown): ExecutionSettingsTab {
   throw new Error("设置卡片的 tab 无效，请重新发送设置命令。");
 }
 
+function resetHistoryPageValue(value: unknown): number {
+  const page = Number(value);
+  if (!Number.isSafeInteger(page) || page < 0) throw new Error("历史轮次卡片页码无效，请重新发送 /turns。");
+  return page;
+}
+
 function requiredCardMessageId(value: string | undefined): string {
   if (value) return value;
-  throw new Error("无法更新设置卡片，请重新发送设置命令。");
+  throw new Error("无法更新卡片，请重新发送对应命令。");
 }
 
 function remoteSessionStatusLabel(status: RemoteSessionSummary["status"]): string {
@@ -3947,9 +4215,9 @@ function isQueueIndependentCommand(command: Command): boolean {
   return false;
 }
 
-function parseSessionVisibleCount(value: unknown): number {
+function parseSessionPage(value: unknown): number {
   const parsed = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
-  return Number.isSafeInteger(parsed) && parsed >= SESSION_PAGE_SIZE ? parsed : SESSION_PAGE_SIZE;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function isPromptCommand(command: Command): boolean {

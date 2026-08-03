@@ -33,6 +33,11 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/restart --force extra")).toThrow("只接受一个可选的 --force 参数");
   });
 
+  test("opens the turn history card without accepting arguments", () => {
+    expect(router.parse("/turns")).toEqual({ type: "turns" });
+    expect(() => router.parse("/turns turn_1")).toThrow("不接受参数");
+  });
+
   test("parses current and specified task status", () => {
     expect(router.parse("/status")).toEqual({ type: "status" });
     expect(router.parse("/status sess_1")).toEqual({ type: "status", sessionId: "sess_1" });
@@ -194,6 +199,7 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/close")).toThrow("未知命令：/close");
     expect(() => router.parse("/mode plan")).toThrow("未知命令：/mode");
     expect(() => router.parse("/modes")).toThrow("未知命令：/modes");
+    expect(() => router.parse("/reset")).toThrow("未知命令：/reset");
     expect(() => router.parse("/use codex D:\\dev\\project")).toThrow("未知命令：/use");
   });
 
@@ -229,6 +235,7 @@ describe("CommandRouter", () => {
     expect(router.parse("/thi")).toEqual({ type: "thinking" });
     expect(router.parse("/per")).toEqual({ type: "permissions" });
     expect(router.parse("/pro")).toEqual({ type: "provider" });
+    expect(router.parse("/tu")).toEqual({ type: "turns" });
     expect(() => router.parse("/thi xhigh")).toThrow("不接受参数");
     expect(router.parse("/q 完成后运行测试")).toEqual({
       type: "nosteer",
@@ -245,6 +252,10 @@ describe("CommandRouter", () => {
     );
     expect(() => router.parse("/f")).toThrow(
       "命令前缀 /f 不唯一，可匹配：/fork、/forkgroup",
+    );
+    expect(router.parse("/re")).toEqual({ type: "restart" });
+    expect(() => router.parse("/t")).toThrow(
+      "命令前缀 /t 不唯一，可匹配：/thinking、/title、/turns",
     );
     expect(router.parse("/ag")).toEqual({ type: "agent" });
     expect(() => router.parse("/p")).toThrow(

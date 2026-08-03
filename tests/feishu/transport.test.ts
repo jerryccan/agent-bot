@@ -608,7 +608,7 @@ test("acknowledges card callbacks before asynchronous card updates finish", asyn
   const response = await larkSdkMock.handlers["card.action.trigger"]({
     header: { event_id: "evt_card_async" },
     action: {
-      value: { action: "session_more", visibleCount: "5" },
+      value: { action: "session_page", page: "1" },
     },
     operator: { open_id: "ou_1" },
     context: {

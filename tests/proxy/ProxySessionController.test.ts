@@ -282,6 +282,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } as unknown as Logger;
   const restart = vi.fn(async () => undefined);
   const cancelSafeRestart = vi.fn(async () => true);
+  const rememberFeishuUserOpenId = vi.fn(async () => undefined);
   const shellCommandExecutor = vi.fn(async () => ({
     stdout: "README.md\nsrc\ntests\n",
     stderr: "",
@@ -295,7 +296,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     new AgentRuntimeRegistry({ acp, codex: runtime, ...extraRuntimes }),
     outboundRouter,
     logger,
-    { restart, supervised: true, cancelSafeRestart },
+    { restart, supervised: true, cancelSafeRestart, rememberFeishuUserOpenId },
     shellCommandExecutor,
   );
   cleanups.push(() => {
@@ -315,12 +316,48 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     listeners,
     restart,
     cancelSafeRestart,
+    rememberFeishuUserOpenId,
     shellCommandExecutor,
     config,
   };
 }
 
 describe("ProxySessionController", () => {
+  test("records an Open ID from private chat after acknowledging the message", async () => {
+    const { controller, outbound, rememberFeishuUserOpenId } = fixture();
+
+    await controller.onMessage({
+      messageId: "m-private-owner",
+      contextKey: "chat_id:p2p-owner",
+      chatId: "p2p-owner",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "/help",
+    });
+    await controller.onMessage({
+      messageId: "m-group-member",
+      contextKey: "chat_id:group",
+      chatId: "group",
+      chatType: "group",
+      userId: "ou_group_member",
+      text: "/help",
+    });
+    await controller.onMessage({
+      messageId: "m-private-union",
+      contextKey: "chat_id:p2p-union",
+      chatId: "p2p-union",
+      chatType: "p2p",
+      userId: "on_union_id",
+      text: "/help",
+    });
+
+    expect(rememberFeishuUserOpenId).toHaveBeenCalledOnce();
+    expect(rememberFeishuUserOpenId).toHaveBeenCalledWith("ou_owner");
+    expect(vi.mocked(outbound.addReaction!).mock.invocationCallOrder[0]).toBeLessThan(
+      rememberFeishuUserOpenId.mock.invocationCallOrder[0]!,
+    );
+  });
+
   test("cancels a safe restart from its card action once", async () => {
     const { controller, cancelSafeRestart, outbound } = fixture();
     const action = {
@@ -360,6 +397,181 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "该安全重启计划已失效，请查看最新状态卡片。",
     );
+  });
+
+  test("resets the current task in place and keeps historical card origins usable", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, store } = fixture();
+    await controller.onMessage(message("build reset history"));
+    const task = store.listSessions("chat_id:c1")[0]!;
+    const sourceRemoteSessionId = task.remoteSessionId!;
+    const sourceRemote = remoteSessions.find((remote) => remote.id === sourceRemoteSessionId)!;
+    sessions.get(task.localSessionId)!.activeTurnId = undefined;
+    sourceRemote.status = "idle";
+    sourceRemote.lastTurnId = "turn_2";
+    sourceRemote.lastTurnStatus = "completed";
+    store.updateSession(task.localSessionId, { status: "ready" });
+    store.updateRuntimeSession(task.localSessionId, { lastTurnId: "turn_2", lastTurnStatus: "completed" });
+    store.saveTurnSnapshot("turn_1", task.localSessionId, {
+      sessionId: task.localSessionId,
+      turnId: "turn_1",
+      prompt: "Review the reset implementation",
+      status: "completed",
+      startedAt: 1,
+      completedAt: 1_000,
+      assistantText: "",
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, "chat_id:c1");
+    store.saveTurnSnapshot("turn_2", task.localSessionId, {
+      sessionId: task.localSessionId,
+      turnId: "turn_2",
+      status: "completed",
+      startedAt: 2,
+      assistantText: "",
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, "chat_id:c1");
+    store.saveTurnRuntimeOrigin("turn_1", task.localSessionId, task.agentName, sourceRemoteSessionId);
+    store.saveTurnRuntimeOrigin("turn_2", task.localSessionId, task.agentName, sourceRemoteSessionId);
+
+    await controller.onCardAction({
+      actionId: "reset-to-turn-1",
+      contextKey: "chat_id:c1",
+      messageId: "om_turn_1",
+      value: { action: "turn_reset", sessionId: task.localSessionId, turnId: "turn_1" },
+    });
+
+    expect(runtime.forkSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      localSessionId: task.localSessionId,
+      remoteSessionId: sourceRemoteSessionId,
+      lastTurnId: "turn_1",
+      title: task.title,
+    }));
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBe(task.localSessionId);
+    expect(store.getSession(task.localSessionId)).toMatchObject({
+      remoteSessionId: `${sourceRemoteSessionId}_fork`,
+      lastTurnId: "turn_1",
+      lastTurnStatus: "completed",
+      status: "ready",
+    });
+    expect(outbound.sendText).toHaveBeenLastCalledWith("chat_id:c1", expect.any(String));
+    const resetNotice = String(vi.mocked(outbound.sendText).mock.calls.at(-1)?.[1]);
+    expect(resetNotice).toContain("已将当前任务重置到：\nReview the reset implementation\n");
+    expect(resetNotice).toContain("完成时间：");
+    expect(resetNotice).toContain("\nTurn ID：turn_1\n");
+    expect(resetNotice).toContain("后续对话将从该轮完成后的状态继续；本地文件没有回退。");
+
+    await controller.onCardAction({
+      actionId: "reset-back-to-old-turn-2",
+      contextKey: "chat_id:c1",
+      messageId: "om_turn_2",
+      value: { action: "turn_reset", sessionId: task.localSessionId, turnId: "turn_2" },
+    });
+    expect(runtime.forkSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      localSessionId: task.localSessionId,
+      remoteSessionId: sourceRemoteSessionId,
+      lastTurnId: "turn_2",
+    }));
+  });
+
+  test("shows ten completed turns per Turns card page and keeps later turns after Reset", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, store } = fixture();
+    await controller.onMessage(message("build reset card history"));
+    const task = store.listSessions("chat_id:c1")[0]!;
+    sessions.get(task.localSessionId)!.activeTurnId = undefined;
+    const remote = remoteSessions.find((candidate) => candidate.id === task.remoteSessionId)!;
+    remote.status = "idle";
+    remote.lastTurnId = "history_turn_12";
+    remote.lastTurnStatus = "completed";
+    store.updateSession(task.localSessionId, { status: "ready" });
+    store.updateRuntimeSession(task.localSessionId, {
+      lastTurnId: "history_turn_12",
+      lastTurnStatus: "completed",
+    });
+    for (let index = 1; index <= 12; index += 1) {
+      store.saveTurnSnapshot(`history_turn_${index}`, task.localSessionId, {
+        sessionId: task.localSessionId,
+        turnId: `history_turn_${index}`,
+        prompt: `Prompt ${index}`,
+        status: "completed",
+        startedAt: index * 1_000,
+        completedAt: index * 1_000,
+        assistantText: "",
+        plan: [],
+        activities: [],
+        completedTools: [],
+        failedTools: [],
+        fileSummary: [],
+      }, "chat_id:c1");
+    }
+
+    await controller.onMessage(message("/turns"));
+    const firstCard = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
+    const firstSerialized = JSON.stringify(firstCard);
+    expect(firstSerialized.match(/"action":"turn_reset"/g)).toHaveLength(9);
+    expect(firstSerialized).toContain("✅ 当前");
+    expect(firstSerialized).toContain("Prompt 12");
+    expect(firstSerialized).toContain("Prompt 3");
+    expect(firstSerialized).toContain("<font color='green'>● 1</font>");
+    expect(firstSerialized).toContain("<font color='blue'>● 2</font>");
+    expect(firstSerialized).not.toContain("**1. Prompt 12**");
+    expect(firstSerialized).not.toContain("Prompt 2");
+    expect(firstSerialized).toContain('"action":"turn_reset_page"');
+    expect(firstSerialized).toContain("<font color='blue'>Next</font>");
+    expect(firstSerialized).not.toContain("<font color='blue'>Previous</font>");
+
+    await controller.onCardAction({
+      actionId: "reset-history-page-2",
+      contextKey: "chat_id:c1",
+      messageId: "om_reset_history",
+      value: {
+        action: "turn_reset_page",
+        sessionId: task.localSessionId,
+        contextKey: "chat_id:c1",
+        page: "1",
+      },
+    });
+    expect(outbound.updateInteractiveCard).toHaveBeenLastCalledWith(
+      "om_reset_history",
+      expect.any(Object),
+    );
+    const secondCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+    const secondSerialized = JSON.stringify(secondCard);
+    expect(secondSerialized.match(/"action":"turn_reset"/g)).toHaveLength(2);
+    expect(secondSerialized).toContain("Prompt 2");
+    expect(secondSerialized).toContain("Prompt 1");
+    expect(secondSerialized).toContain("<font color='blue'>Previous</font>");
+    expect(secondSerialized).not.toContain("<font color='blue'>Next</font>");
+
+    await controller.onCardAction({
+      actionId: "reset-history-to-turn-1",
+      contextKey: "chat_id:c1",
+      messageId: "om_reset_history",
+      value: {
+        action: "turn_reset",
+        cardView: "reset_history",
+        sessionId: task.localSessionId,
+        turnId: "history_turn_1",
+        contextKey: "chat_id:c1",
+        page: "1",
+      },
+    });
+    expect(runtime.forkSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      localSessionId: task.localSessionId,
+      lastTurnId: "history_turn_1",
+    }));
+    const resetCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+    const resetSerialized = JSON.stringify(resetCard);
+    expect(resetSerialized).toContain("✅ 当前");
+    expect(resetSerialized).toContain("Prompt 2");
+    expect(resetSerialized.match(/"action":"turn_reset"/g)).toHaveLength(1);
+    expect(resetSerialized).not.toContain('"turnId":"history_turn_1","contextKey"');
   });
 
   test("creates, displays, edits, pauses, resumes, and clears a Codex goal", async () => {
@@ -579,7 +791,7 @@ describe("ProxySessionController", () => {
     expect(shellCommandExecutor).toHaveBeenCalledTimes(2);
   });
 
-  test("records base Feishu chat types for restart notification routing", async () => {
+  test("records base Feishu chats and treats every incoming message as activity", async () => {
     const { controller, store } = fixture();
 
     await controller.onMessage({
@@ -599,8 +811,11 @@ describe("ProxySessionController", () => {
       "chat_id:group",
     ]);
     const activeContexts = store.listRecentlyActiveChatContexts(new Date(0)).map((context) => context.contextKey);
-    expect(activeContexts).toEqual(expect.arrayContaining(["chat_id:group", "chat_id:private"]));
-    expect(activeContexts).not.toContain("chat_id:slash");
+    expect(activeContexts).toEqual(expect.arrayContaining([
+      "chat_id:group",
+      "chat_id:private",
+      "chat_id:slash",
+    ]));
   });
 
   test("downloads a pure image and starts Codex with a default text prompt plus localImage input", async () => {
@@ -2390,7 +2605,7 @@ describe("ProxySessionController", () => {
     await vi.waitFor(() => expect(runtime.steerTurn).toHaveBeenCalled());
     await controller.onMessage(message("/restart"));
 
-    expect(restart).toHaveBeenCalledWith("chat_id:c1", false);
+    expect(restart).toHaveBeenCalledWith("chat_id:c1", false, undefined);
     releaseSteer();
     await blockedPrompt;
   });
@@ -2400,7 +2615,34 @@ describe("ProxySessionController", () => {
 
     await controller.onMessage(message("/restart --force"));
 
-    expect(restart).toHaveBeenCalledWith("chat_id:c1", true);
+    expect(restart).toHaveBeenCalledWith("chat_id:c1", true, undefined);
+  });
+
+  test("passes the requesting topic message to the restart lifecycle", async () => {
+    const { controller, restart, store } = fixture();
+    const contextKey = "chat_id:c1:thread_id:topic_restart";
+    store.getOrCreateUserContext(contextKey, "codex");
+    store.createSession({
+      localSessionId: "session_restart_topic",
+      contextKey,
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.setCurrentSession(contextKey, "session_restart_topic");
+
+    await controller.onMessage(threadMessage(
+      "c1",
+      "group",
+      "topic_restart",
+      "om_topic_root",
+      "/restart",
+    ));
+
+    expect(restart).toHaveBeenCalledWith(contextKey, false, {
+      messageId: "m-topic_restart-/restart",
+      replyInThread: true,
+    });
   });
 
   test("lazily resumes a persisted session before starting the next turn", async () => {
@@ -2640,15 +2882,15 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("2000");
     expect(serialized).not.toContain("最后更新：");
     expect(serialized).toContain("<font color='blue'>Switch</font>");
-    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
     expect(serialized).toContain("<font color='blue'>New</font>");
-    expect(serialized).toContain('"action":"session_new","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_new","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
     expect(serialized).toContain("<font color='blue'>NewGroup</font>");
-    expect(serialized).toContain('"action":"session_new_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_new_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
     expect(serialized).toContain("<font color='blue'>Fork</font>");
-    expect(serialized).toContain('"action":"session_fork","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_fork","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
     expect(serialized).toContain("<font color='blue'>ForkGroup</font>");
-    expect(serialized).toContain('"action":"session_fork_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_fork_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
     expect(serialized).toContain("<font color='blue'>Status</font>");
     expect(serialized).toContain('"action":"session_status","sessionId":"agent-runtime:codex:external_1"');
     expect(serialized).not.toContain("Legacy ACP task");
@@ -2726,7 +2968,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("🟢 **活跃**");
     expect(serialized).toContain("外部执行中");
     expect(serialized).toContain("<font color='red'>Stop</font>");
-    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:active_1","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:active_1","page":"0"');
     expect(serialized.indexOf("active_1")).toBeLessThan(serialized.indexOf("idle_1"));
   });
 
@@ -2758,8 +3000,8 @@ describe("ProxySessionController", () => {
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(updatedCard);
     expect(serialized).toContain("<font color='blue'>Switch</font>");
-    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:active_external","visibleCount":"5"');
-    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:active_external","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:active_external","page":"0"');
+    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:active_external","page":"0"');
   });
 
   test("forks a completed task from the sessions card and refreshes the current task", async () => {
@@ -2782,7 +3024,7 @@ describe("ProxySessionController", () => {
       value: {
         action: "session_fork",
         sessionId: "card_fork_source",
-        visibleCount: "5",
+        page: "0",
         contextKey: "chat_id:c1",
       },
     });
@@ -2827,7 +3069,7 @@ describe("ProxySessionController", () => {
       value: {
         action: "session_new",
         sessionId: "card_new_source",
-        visibleCount: "5",
+        page: "0",
         contextKey: "chat_id:c1",
       },
     });
@@ -2883,7 +3125,7 @@ describe("ProxySessionController", () => {
       value: {
         action: "session_new_group",
         sessionId: "card_new_group_source",
-        visibleCount: "5",
+        page: "0",
         contextKey: "chat_id:c1",
       },
     });
@@ -2941,7 +3183,7 @@ describe("ProxySessionController", () => {
       value: {
         action: "session_fork_group",
         sessionId: "card_fork_group_source",
-        visibleCount: "5",
+        page: "0",
         contextKey: "chat_id:c1",
       },
     });
@@ -3005,7 +3247,7 @@ describe("ProxySessionController", () => {
       value: {
         action: "session_new",
         sessionId: "locally_tracked_source",
-        visibleCount: "5",
+        page: "0",
         contextKey: "chat_id:c1",
       },
     });
@@ -3040,7 +3282,7 @@ describe("ProxySessionController", () => {
       value: {
         action: "session_fork",
         sessionId: "active_card_fork_source",
-        visibleCount: "5",
+        page: "0",
         contextKey: "chat_id:c1",
       },
     });
@@ -3065,7 +3307,7 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
   });
 
-  test("loads five more tasks into the same sessions card on demand", async () => {
+  test("pages through five tasks at a time in the same sessions card", async () => {
     const { controller, remoteSessions, runtime, outbound } = fixture();
     for (let index = 1; index <= 7; index += 1) {
       remoteSessions.push({
@@ -3084,22 +3326,39 @@ describe("ProxySessionController", () => {
     const initial = JSON.stringify(initialCard);
     expect(initial).toContain("task_5");
     expect(initial).not.toContain("task_6");
-    expect(initial).toContain('"content":"More"');
-    expect(initial).toContain('"action":"session_more","visibleCount":"5"');
+    expect(initial).toContain("<font color='blue'>Next</font>");
+    expect(initial).toContain('"action":"session_page","page":"1"');
+    expect(initial).not.toContain("<font color='blue'>Previous</font>");
 
     await controller.onCardAction({
-      actionId: "sessions-more",
+      actionId: "sessions-next-page",
       contextKey: "chat_id:c1",
       messageId: "om_sessions",
-      value: { action: "session_more", visibleCount: "5" },
+      value: { action: "session_page", page: "1" },
     });
 
     expect(runtime.listRemoteSessions).toHaveBeenLastCalledWith({ searchTerm: undefined, limit: 10 });
-    const expandedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
-    const expanded = JSON.stringify(expandedCard);
-    expect(expanded).toContain("task_6");
-    expect(expanded).toContain("task_7");
-    expect(expanded).not.toContain('"content":"More"');
+    const secondPageCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const secondPage = JSON.stringify(secondPageCard);
+    expect(secondPage).not.toContain("task_5");
+    expect(secondPage).toContain("task_6");
+    expect(secondPage).toContain("task_7");
+    expect(secondPage).toContain("**6.**");
+    expect(secondPage).toContain("**7.**");
+    expect(secondPage).toContain("<font color='blue'>Previous</font>");
+    expect(secondPage).not.toContain("<font color='blue'>Next</font>");
+
+    await controller.onCardAction({
+      actionId: "sessions-previous-page",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: { action: "session_page", page: "0" },
+    });
+    const firstPageAgain = JSON.stringify(
+      (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[1]?.[1],
+    );
+    expect(firstPageAgain).toContain("task_5");
+    expect(firstPageAgain).not.toContain("task_6");
   });
 
   test("stops an external task even when another context has a local route for it", async () => {
@@ -3423,14 +3682,14 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:thr_1","visibleCount":"5"');
-    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:thr_1","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_switch","sessionId":"agent-runtime:codex:thr_1","page":"0"');
+    expect(serialized).not.toContain('"action":"session_stop","sessionId":"agent-runtime:codex:thr_1","page":"0"');
 
     await controller.onCardAction({
       actionId: "switch-back-running-bot-task",
       contextKey: "chat_id:c1",
       messageId: "om_sessions",
-      value: { action: "session_switch", sessionId: "thr_1", visibleCount: "5" },
+      value: { action: "session_switch", sessionId: "thr_1", page: "0" },
     });
 
     expect(store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId).toBe(runningTask.localSessionId);
@@ -3471,8 +3730,8 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:external_origin","visibleCount":"5"');
-    expect(serialized).not.toContain('"action":"session_switch","sessionId":"agent-runtime:codex:external_origin","visibleCount":"5"');
+    expect(serialized).toContain('"action":"session_stop","sessionId":"agent-runtime:codex:external_origin","page":"0"');
+    expect(serialized).not.toContain('"action":"session_switch","sessionId":"agent-runtime:codex:external_origin","page":"0"');
 
     await controller.onMessage(message("/switch external_origin"));
 
@@ -4952,6 +5211,9 @@ describe("ProxySessionController", () => {
     expect(serialized.match(/\/restart \[--force\]/g)).toHaveLength(1);
     expect(serialized.match(/\/status \[序号或任务 ID\]/g)).toHaveLength(1);
     expect(serialized.match(/\/fork \[序号或任务 ID\]/g)).toHaveLength(1);
+    expect(serialized.match(/\/turns\*\*/g)).toHaveLength(1);
+    expect(serialized).not.toContain("/reset");
+    expect(serialized).toContain("将对话上下文恢复到所选轮次");
     expect(serialized.match(/\/newgroup/g)).toHaveLength(1);
     expect(serialized.match(/\/stop/g)).toHaveLength(1);
     expect(serialized.match(/\/nosteer/g)).toHaveLength(1);

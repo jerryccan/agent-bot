@@ -142,6 +142,19 @@ export interface TaskListCardAction {
 export interface TaskListCardEntry {
   lines: string[];
   actions?: TaskListCardAction[];
+  current?: boolean;
+}
+
+export interface ResetHistoryCardEntry extends TaskListCardEntry {
+  sequence: number;
+  graphNodeLine: string;
+  graphConnectorLine?: string;
+}
+
+export interface ResetHistoryCardView {
+  entries: ResetHistoryCardEntry[];
+  footerLines: string[];
+  pageActions: TaskListCardAction[];
 }
 
 export class CardRenderer {
@@ -662,6 +675,18 @@ export class CardRenderer {
         type: "danger",
         value: { action: "turn_cancel", sessionId: state.sessionId, turnId: state.turnId },
       }]));
+    } else if (state.status === "completed") {
+      elements.push(
+        { tag: "hr" },
+        taskActionRow([{
+          text: "Reset",
+          value: { action: "turn_reset", sessionId: state.sessionId, turnId: state.turnId },
+        }]),
+        {
+          ...markdown("<font color='grey'>Reset 会将当前任务的对话上下文恢复到本轮完成时；不会回退本地文件。</font>"),
+          text_size: "notation",
+        },
+      );
     }
     return turnCard(
       turnTitle(state.status, state.prompt ?? state.taskTitle),
@@ -774,7 +799,7 @@ export class CardRenderer {
     sectionTitle: string,
     entries: TaskListCardEntry[],
     footerLines: string[],
-    footerAction?: TaskListCardAction,
+    footerActions: TaskListCardAction[] = [],
   ): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [markdown(`**${sectionTitle}**`)];
     if (entries.length === 0) {
@@ -791,27 +816,7 @@ export class CardRenderer {
     if (footerLines.length > 0) {
       elements.push({ tag: "hr" }, markdown(footerLines.join("\n")));
     }
-    if (footerAction) {
-      elements.push({
-        tag: "column_set",
-        flex_mode: "none",
-        columns: [{
-          tag: "column",
-          width: "weighted",
-          weight: 1,
-          elements: [{
-            tag: "button",
-            text: { tag: "plain_text", content: footerAction.text },
-            type: footerAction.type ?? "default",
-            width: "fill",
-            behaviors: [{
-              type: "callback",
-              value: footerAction.value,
-            }],
-          }],
-        }],
-      });
-    }
+    if (footerActions.length > 0) elements.push(taskActionRow(footerActions));
     return {
       schema: "2.0",
       config: {
@@ -829,6 +834,39 @@ export class CardRenderer {
         elements,
       },
     };
+  }
+
+  renderResetHistoryCard(view: ResetHistoryCardView): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [
+      {
+        ...markdown("<font color='grey'>Reset 会将当前任务的对话上下文恢复到所选轮次完成时；不会回退本地文件。</font>"),
+        text_size: "notation",
+      },
+      { tag: "hr" },
+      markdown("**历史对话轮次**"),
+    ];
+    if (view.entries.length === 0) {
+      elements.push(markdown("当前任务还没有成功完成的 turn。"));
+    } else {
+      view.entries.forEach((entry) => {
+        const action = entry.actions?.[0];
+        elements.push(resetHistoryEntryRow(
+          entry.graphNodeLine,
+          entry.graphConnectorLine,
+          entry.lines,
+          action,
+          entry.current === true,
+        ));
+      });
+    }
+    if (view.footerLines.length > 0) {
+      elements.push({ tag: "hr" }, {
+        ...markdown(view.footerLines.join("\n")),
+        text_size: "notation",
+      });
+    }
+    if (view.pageActions.length > 0) elements.push(taskActionRow(view.pageActions));
+    return sectionCard("历史对话轮次", elements);
   }
 
   private baseCard(title: string, template: string, elements: unknown[]): Record<string, unknown> {
@@ -1465,6 +1503,55 @@ function settingsOptionRow(input: {
         width: "auto",
         vertical_align: "center",
         elements: input.current ? [markdown("✅ 当前")] : [taskActionElement(input.action)],
+      },
+    ],
+  };
+}
+
+function resetHistoryEntryRow(
+  graphNodeLine: string,
+  graphConnectorLine: string | undefined,
+  lines: string[],
+  action: TaskListCardAction | undefined,
+  current: boolean,
+): Record<string, unknown> {
+  const graph = [
+    `<font color='${current ? "green" : "blue"}'>${escapeCardHtml(graphNodeLine)}</font>`,
+    ...(graphConnectorLine
+      ? [`<font color='grey'>${escapeCardHtml(graphConnectorLine)}</font>`]
+      : []),
+  ].join("\n");
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "12px",
+    vertical_align: "top",
+    columns: [
+      {
+        tag: "column",
+        width: "auto",
+        vertical_align: "top",
+        elements: [{
+          ...markdown(graph),
+          text_align: "center",
+        }],
+      },
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [markdown(lines.join("\n"))],
+      },
+      {
+        tag: "column",
+        width: "auto",
+        vertical_align: "top",
+        elements: current
+          ? [markdown("✅ 当前")]
+          : action
+            ? [taskActionElement(action)]
+            : [],
       },
     ],
   };

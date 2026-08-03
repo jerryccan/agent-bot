@@ -367,9 +367,86 @@ describe("CardRenderer", () => {
     expect(serialized).not.toContain("查看详情");
     expect(serialized).toContain("<font color='red'>Stop</font>");
     expect(serialized).toContain('"action":"turn_cancel","sessionId":"s1","turnId":"turn_1"');
+    expect(serialized).not.toContain('"action":"turn_reset"');
     expect(serialized).not.toContain("已完成的工具（");
     expect(serialized).not.toContain("失败的工具（");
     expect(serialized).not.toContain("/cancel");
+  });
+
+  test("shows Reset with a compact explanation only after a turn completes successfully", () => {
+    const renderer = new CardRenderer();
+    const completed = renderer.renderTurn({
+      ...state(),
+      status: "completed",
+      completedAt: 2_000,
+    });
+    const completedObjects = collectObjects(completed);
+    const resetNote = completedObjects.find((item) =>
+      item.tag === "markdown" && String(item.content ?? "").includes("不会回退本地文件"));
+    const completedSerialized = JSON.stringify(completed);
+    const completedElements = (completed as {
+      body: { elements: Array<Record<string, unknown>> };
+    }).body.elements;
+    const resetActionIndex = completedElements.findIndex((item) => JSON.stringify(item).includes('"action":"turn_reset"'));
+    const resetNoteIndex = completedElements.findIndex((item) => String(item.content ?? "").includes("不会回退本地文件"));
+
+    expect(resetNote).toMatchObject({ text_size: "notation" });
+    expect(resetNoteIndex).toBe(resetActionIndex + 1);
+    expect(completedSerialized).toContain("<font color='blue'>Reset</font>");
+    expect(completedSerialized).toContain('"action":"turn_reset","sessionId":"s1","turnId":"turn_1"');
+    expect(completedSerialized).not.toContain('"action":"turn_cancel"');
+
+    const failedSerialized = JSON.stringify(renderer.renderTurn({
+      ...state(),
+      status: "failed",
+      error: "failed",
+    }));
+    expect(failedSerialized).not.toContain('"action":"turn_reset"');
+  });
+
+  test("renders each Reset history action beside its completed turn", () => {
+    const card = new CardRenderer().renderResetHistoryCard({
+      entries: [
+        {
+          sequence: 1,
+          graphNodeLine: "● 1",
+          graphConnectorLine: "│",
+          lines: ["**1. First prompt**", "08/03 10:00 · `turn_2`"],
+          current: true,
+        },
+        {
+          sequence: 2,
+          graphNodeLine: "● 2",
+          lines: ["**2. Earlier prompt**", "08/03 09:00 · `turn_1`"],
+          actions: [{ text: "Reset", value: { action: "turn_reset", turnId: "turn_1" } }],
+        },
+      ],
+      footerLines: ["第 1/1 页 · 共 2 个已完成 turn"],
+      pageActions: [],
+    });
+    const rows = collectObjects(card).filter((item) =>
+      item.tag === "column_set"
+      && item.flex_mode === "none"
+      && Array.isArray(item.columns)
+      && item.columns.length === 3);
+    const elements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+
+    expect(rows).toHaveLength(2);
+    expect(elements[0]).toMatchObject({ tag: "markdown", text_size: "notation" });
+    expect(String(elements[0]?.content)).toContain("不会回退本地文件");
+    expect(elements[1]).toEqual({ tag: "hr" });
+    expect(elements[2]).toEqual({ tag: "markdown", content: "**历史对话轮次**" });
+    expect(JSON.stringify(rows[0])).toContain("<font color='green'>● 1</font>");
+    expect(JSON.stringify(rows[0])).toContain("<font color='grey'>│</font>");
+    expect(JSON.stringify(rows[1])).toContain("<font color='blue'>● 2</font>");
+    expect(JSON.stringify(rows[1])).not.toContain("<font color='grey'>│</font>");
+    for (const row of rows) {
+      const columns = row.columns as Array<{ elements?: Array<Record<string, unknown>> }>;
+      expect(columns[1]?.elements?.[0]).not.toHaveProperty("padding");
+    }
+    expect(card).toMatchObject({ header: { title: { content: "历史对话轮次" } } });
+    expect(JSON.stringify(card)).toContain("✅ 当前");
+    expect(JSON.stringify(card).match(/"action":"turn_reset"/g)).toHaveLength(1);
   });
 
   test.each([
@@ -850,10 +927,12 @@ describe("CardRenderer", () => {
     const completedCard = new CardRenderer().renderTurn(generating) as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    expect(completedCard.body.elements).toEqual([{
+    expect(completedCard.body.elements[0]).toEqual({
       tag: "markdown",
       content: "正在组织回答",
-    }]);
+    });
+    expect(JSON.stringify(completedCard.body.elements)).toContain('"action":"turn_reset"');
+    expect(JSON.stringify(completedCard.body.elements)).not.toContain("正在组织回答正文");
 
     const detailsCard = new CardRenderer().renderTurnDetails(generating) as {
       body: { elements: Array<Record<string, unknown>> };
@@ -1187,23 +1266,18 @@ describe("CardRenderer", () => {
     expect(collectObjects(card).some((item) => item.tag === "button" || item.tag === "interactive_container")).toBe(false);
   });
 
-  test("renders a full-width footer action for loading more tasks", () => {
-    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [], [], {
-      text: "More",
-      type: "primary",
-      value: { action: "session_more", visibleCount: "5" },
-    });
+  test("renders compact Previous and Next actions for task pagination", () => {
+    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [], [], [
+      { text: "Previous", value: { action: "session_page", page: "0" } },
+      { text: "Next", value: { action: "session_page", page: "2" } },
+    ]);
+    const serialized = JSON.stringify(card);
 
-    expect(collectObjects(card)).toContainEqual(expect.objectContaining({
-      tag: "button",
-      text: { tag: "plain_text", content: "More" },
-      type: "primary",
-      width: "fill",
-      behaviors: [{
-        type: "callback",
-        value: { action: "session_more", visibleCount: "5" },
-      }],
-    }));
+    expect(serialized).toContain("<font color='blue'>Previous</font>");
+    expect(serialized).toContain('"action":"session_page","page":"0"');
+    expect(serialized).toContain("<font color='blue'>Next</font>");
+    expect(serialized).toContain('"action":"session_page","page":"2"');
+    expect(serialized).not.toContain('"tag":"button"');
   });
 });
 

@@ -63,6 +63,21 @@ export interface TurnAnchorRecord {
   contextKey?: string;
 }
 
+export interface TurnRuntimeOriginRecord {
+  turnId: string;
+  localSessionId: string;
+  agentName: string;
+  remoteSessionId: string;
+  createdAt: string;
+}
+
+export interface CompletedTurnSnapshotRecord {
+  turnId: string;
+  parentTurnId?: string;
+  snapshot: unknown;
+  updatedAt: string;
+}
+
 export interface QueuedPromptRecord {
   promptId: string;
   localSessionId: string;
@@ -605,6 +620,50 @@ export class StateStore {
     return row ? JSON.parse(row.snapshot_json) : undefined;
   }
 
+  saveTurnRuntimeOrigin(
+    turnId: string,
+    localSessionId: string,
+    agentName: string,
+    remoteSessionId: string,
+  ): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO turn_runtime_origins (
+        turn_id, local_session_id, agent_name, remote_session_id, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(turnId, localSessionId, agentName, remoteSessionId, new Date().toISOString());
+  }
+
+  getTurnRuntimeOrigin(turnId: string): TurnRuntimeOriginRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT turn_id, local_session_id, agent_name, remote_session_id, created_at
+      FROM turn_runtime_origins
+      WHERE turn_id = ?
+    `).get(turnId) as {
+      turn_id: string;
+      local_session_id: string;
+      agent_name: string;
+      remote_session_id: string;
+      created_at: string;
+    } | undefined;
+    return row
+      ? {
+          turnId: row.turn_id,
+          localSessionId: row.local_session_id,
+          agentName: row.agent_name,
+          remoteSessionId: row.remote_session_id,
+          createdAt: row.created_at,
+        }
+      : undefined;
+  }
+
+  saveTurnParent(turnId: string, localSessionId: string, parentTurnId?: string): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO turn_parent_links (
+        turn_id, local_session_id, parent_turn_id, created_at
+      ) VALUES (?, ?, ?, ?)
+    `).run(turnId, localSessionId, parentTurnId ?? null, new Date().toISOString());
+  }
+
   findLatestCompletedTurnId(localSessionId: string, contextKey: string): string | undefined {
     const row = this.db
       .prepare(`
@@ -624,6 +683,143 @@ export class StateStore {
       `)
       .get(localSessionId, contextKey) as { turn_id: string } | undefined;
     return row?.turn_id;
+  }
+
+  countCompletedTurnSnapshots(localSessionId: string, contextKey: string): number {
+    const row = this.db.prepare(`
+      SELECT count(*) AS count
+      FROM turn_snapshots
+      WHERE local_session_id = ?
+        AND context_key = ?
+        AND json_extract(snapshot_json, '$.status') = 'completed'
+    `).get(localSessionId, contextKey) as { count: number };
+    return row.count;
+  }
+
+  listCompletedTurnSnapshots(
+    localSessionId: string,
+    contextKey: string,
+    limit: number,
+    offset = 0,
+  ): CompletedTurnSnapshotRecord[] {
+    const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const normalizedOffset = Math.max(0, Math.trunc(offset));
+    const rows = this.db.prepare(`
+      SELECT turn_id, snapshot_json, updated_at
+      FROM turn_snapshots
+      WHERE local_session_id = ?
+        AND context_key = ?
+        AND json_extract(snapshot_json, '$.status') = 'completed'
+      ORDER BY
+        coalesce(
+          json_extract(snapshot_json, '$.completedAt'),
+          json_extract(snapshot_json, '$.startedAt'),
+          0
+        ) DESC,
+        updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(localSessionId, contextKey, normalizedLimit, normalizedOffset) as Array<{
+      turn_id: string;
+      snapshot_json: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      turnId: row.turn_id,
+      snapshot: JSON.parse(row.snapshot_json),
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  listCompletedTurnGraph(
+    localSessionId: string,
+    contextKey: string,
+  ): CompletedTurnSnapshotRecord[] {
+    this.backfillTurnParents(localSessionId);
+    const rows = this.db.prepare(`
+      SELECT ts.turn_id, tpl.parent_turn_id, ts.snapshot_json, ts.updated_at
+      FROM turn_snapshots ts
+      LEFT JOIN turn_parent_links tpl ON tpl.turn_id = ts.turn_id
+      WHERE ts.local_session_id = ?
+        AND ts.context_key = ?
+        AND json_extract(ts.snapshot_json, '$.status') = 'completed'
+      ORDER BY
+        coalesce(
+          json_extract(ts.snapshot_json, '$.completedAt'),
+          json_extract(ts.snapshot_json, '$.startedAt'),
+          0
+        ) DESC,
+        ts.updated_at DESC
+    `).all(localSessionId, contextKey) as Array<{
+      turn_id: string;
+      parent_turn_id: string | null;
+      snapshot_json: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      turnId: row.turn_id,
+      parentTurnId: row.parent_turn_id ?? undefined,
+      snapshot: JSON.parse(row.snapshot_json),
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  private backfillTurnParents(localSessionId: string): void {
+    const turns = this.db.prepare(`
+      SELECT
+        turn_id,
+        coalesce(
+          json_extract(snapshot_json, '$.startedAt'),
+          json_extract(snapshot_json, '$.completedAt'),
+          cast(strftime('%s', updated_at) AS INTEGER) * 1000,
+          0
+        ) AS started_at
+      FROM turn_snapshots
+      WHERE local_session_id = ?
+        AND json_extract(snapshot_json, '$.status') = 'completed'
+      ORDER BY started_at ASC, updated_at ASC
+    `).all(localSessionId) as Array<{ turn_id: string; started_at: number }>;
+    if (turns.length === 0) return;
+
+    const existing = new Set((this.db.prepare(`
+      SELECT turn_id FROM turn_parent_links WHERE local_session_id = ?
+    `).all(localSessionId) as Array<{ turn_id: string }>).map((row) => row.turn_id));
+    const resets = (this.db.prepare(`
+      SELECT payload_json, created_at
+      FROM audit_events
+      WHERE event_type = 'session_reset_to_turn'
+        AND json_extract(payload_json, '$.localSessionId') = ?
+      ORDER BY created_at ASC, id ASC
+    `).all(localSessionId) as Array<{ payload_json: string; created_at: string }>).flatMap((row) => {
+      try {
+        const payload = JSON.parse(row.payload_json) as { resetTurnId?: unknown };
+        const resetTurnId = typeof payload.resetTurnId === "string" ? payload.resetTurnId : undefined;
+        const at = Date.parse(row.created_at);
+        return resetTurnId && Number.isFinite(at) ? [{ resetTurnId, at }] : [];
+      } catch {
+        return [];
+      }
+    });
+
+    let headTurnId: string | undefined;
+    let resetIndex = 0;
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO turn_parent_links (
+        turn_id, local_session_id, parent_turn_id, created_at
+      ) VALUES (?, ?, ?, ?)
+    `);
+    const backfill = this.db.transaction(() => {
+      for (const turn of turns) {
+        while (resetIndex < resets.length && resets[resetIndex]!.at <= turn.started_at) {
+          headTurnId = resets[resetIndex]!.resetTurnId;
+          resetIndex += 1;
+        }
+        if (!existing.has(turn.turn_id)) {
+          insert.run(turn.turn_id, localSessionId, headTurnId ?? null, new Date().toISOString());
+        }
+        headTurnId = turn.turn_id;
+      }
+    });
+    backfill();
   }
 
   saveTurnDelivery(
@@ -782,6 +978,31 @@ export class StateStore {
       .prepare("SELECT * FROM sessions ORDER BY updated_at DESC, created_at DESC")
       .all() as SessionRow[];
     return rows.map(mapSession);
+  }
+
+  findLatestMessageIdForSession(localSessionId: string, contextKey?: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT message_id
+      FROM message_reactions
+      WHERE local_session_id = ?
+        AND (? IS NULL OR context_key = ?)
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1
+    `).get(localSessionId, contextKey ?? null, contextKey ?? null) as { message_id: string } | undefined;
+    return row?.message_id;
+  }
+
+  findLatestMessageIdForContext(contextKey: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT json_extract(payload_json, '$.messageId') AS message_id
+      FROM audit_events
+      WHERE context_key = ?
+        AND event_type = 'incoming_message'
+        AND json_type(payload_json, '$.messageId') = 'text'
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(contextKey) as { message_id: string } | undefined;
+    return row?.message_id;
   }
 
   getServerActivityState(): {

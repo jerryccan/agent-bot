@@ -20,6 +20,7 @@ const COMMAND_NAMES = [
   "switch",
   "thinking",
   "title",
+  "turns",
 ] as const;
 
 type CommandName = (typeof COMMAND_NAMES)[number];
@@ -93,6 +94,9 @@ export class CommandRouter {
         if (args.length === 0) return { type: "restart" };
         if (args.length === 1 && args[0] === "--force") return { type: "restart", force: true };
         throw new Error("/restart 只接受一个可选的 --force 参数。");
+      case "turns":
+        if (args.length > 0) throw new Error("/turns 不接受参数，请在历史轮次卡片中选择 turn。");
+        return { type: "turns" };
       case "model":
         return settingsCommand("/model", args, { type: "model" });
       case "provider":

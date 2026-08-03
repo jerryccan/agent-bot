@@ -15,6 +15,7 @@ export type Command =
   | { type: "goal"; action: "set" | "edit"; objective: string }
   | { type: "goal"; action: "pause" | "resume" | "clear" }
   | { type: "restart"; force?: boolean }
+  | { type: "turns" }
   | { type: "model" }
   | { type: "provider" }
   | { type: "thinking" }
