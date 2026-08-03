@@ -159,7 +159,7 @@ function createApplication(dbPath: string, client: FakeClient) {
   const presenter = new FeishuTurnPresenter(outbound, store, undefined, { normalIntervalMs: 0, criticalGapMs: 0 });
   const router = new OutboundRouter([{ matches: () => true, outbound, presenter }]);
   const config = {
-    agents: { codex: { kind: "codex", title: "Codex", command: "codex", args: [], env: {} } },
+    agents: { codex: { kind: "app-server", title: "Codex", command: "codex", args: [], env: {} } },
     defaults: { agent: "codex", cwd: process.cwd() },
   } as unknown as AppConfig;
   const controller = new ProxySessionController(config, store, new AgentRuntimeRegistry({ acp, codex }), router, logger);

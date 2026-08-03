@@ -8,6 +8,7 @@ import {
   prepareCrashReportDirectory,
   resolveSupervisorDiagnosticsPaths,
 } from "../supervision/SupervisorDiagnostics.js";
+import { refreshedSystemEnvironment } from "../supervision/systemEnvironment.js";
 import { controlEndpoint } from "./controlProtocol.js";
 import { cliText } from "./i18n.js";
 import { isServerReachable, isServerRunning } from "./LocalControlClient.js";
@@ -94,6 +95,7 @@ const defaultDependencies: ServerStarterDependencies = {
     const entry = fileURLToPath(new URL("../supervisor.js", import.meta.url));
     const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
     prepareCrashReportDirectory(reportDirectory);
+    const environmentRefresh = refreshedSystemEnvironment();
     const child = spawn(process.execPath, [
       ...nodeDiagnosticReportArguments(reportDirectory),
       entry,
@@ -102,7 +104,10 @@ const defaultDependencies: ServerStarterDependencies = {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
-      env: { ...process.env, AGENT_BOT_RESTART_REASON: "通过 Agent Bot CLI 启动" },
+      env: {
+        ...environmentRefresh.environment,
+        AGENT_BOT_RESTART_REASON: "通过 Agent Bot CLI 启动",
+      },
     });
     child.unref();
   },

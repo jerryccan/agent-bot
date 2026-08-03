@@ -4,27 +4,36 @@ import type { TurnPresenter } from "../presentation/OutboundRouter.js";
 
 export class ConsoleTurnPresenter implements TurnPresenter {
   private readonly contexts = new Map<string, string>();
+  private readonly agentLabels = new Map<string, string>();
   private readonly delivered = new Set<string>();
 
   constructor(private readonly outbound: FeishuOutbound) {}
 
-  registerSession(sessionId: string, contextKey: string): void {
+  registerSession(
+    sessionId: string,
+    contextKey: string,
+    _taskTitle?: string,
+    _projectCwd?: string,
+    agentLabel?: string,
+  ): void {
     this.contexts.set(sessionId, contextKey);
+    if (agentLabel) this.agentLabels.set(sessionId, agentLabel);
   }
 
   updateSessionTitle(): void {}
 
   unregisterSession(sessionId: string): void {
     this.contexts.delete(sessionId);
+    this.agentLabels.delete(sessionId);
   }
 
-  async startPendingTurn(_sessionId: string, contextKey: string): Promise<void> {
-    await this.outbound.sendText(contextKey, "Connecting to Codex...");
+  async startPendingTurn(sessionId: string, contextKey: string): Promise<void> {
+    await this.outbound.sendText(contextKey, `Connecting to ${this.agentLabel(sessionId)}...`);
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {
     const contextKey = this.contexts.get(sessionId);
-    if (contextKey) await this.outbound.sendText(contextKey, `Codex failed to start: ${message}`);
+    if (contextKey) await this.outbound.sendText(contextKey, `${this.agentLabel(sessionId)} failed to start: ${message}`);
   }
 
   async appendSteerMessage(): Promise<void> {}
@@ -33,7 +42,7 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     const contextKey = this.contexts.get(event.sessionId);
     if (!contextKey) return;
     if (event.type === "turn_started") {
-      await this.outbound.sendText(contextKey, `Codex started (${event.turnId})`);
+      await this.outbound.sendText(contextKey, `${this.agentLabel(event.sessionId)} started (${event.turnId})`);
     } else if (event.type === "progress") {
       await this.outbound.sendText(contextKey, event.text);
     } else if (event.type === "tool_started") {
@@ -44,9 +53,9 @@ export class ConsoleTurnPresenter implements TurnPresenter {
       this.delivered.add(event.turnId);
       await this.outbound.sendMarkdown(contextKey, event.finalResponse || "(completed without text)");
     } else if (event.type === "turn_failed") {
-      await this.outbound.sendText(contextKey, `Codex failed: ${event.message}`);
+      await this.outbound.sendText(contextKey, `${this.agentLabel(event.sessionId)} failed: ${event.message}`);
     } else if (event.type === "turn_cancelled") {
-      await this.outbound.sendText(contextKey, "Codex stopped.");
+      await this.outbound.sendText(contextKey, `${this.agentLabel(event.sessionId)} stopped.`);
     }
   }
 
@@ -61,4 +70,8 @@ export class ConsoleTurnPresenter implements TurnPresenter {
   async resumeDelivery(): Promise<void> {}
 
   async flushAll(): Promise<void> {}
+
+  private agentLabel(sessionId: string): string {
+    return this.agentLabels.get(sessionId) ?? "Agent";
+  }
 }

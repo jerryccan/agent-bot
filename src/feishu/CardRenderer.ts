@@ -928,15 +928,16 @@ function renderTurnElements(
     const heading = state.status === "completed" ? "回答" : "回答生成中";
     elements.push(markdown(`**${heading}**\n${truncateText(state.assistantText, 3_000)}`));
   }
-  if (elements.length === 0) elements.push(markdown(emptyTurnText(state.status)));
+  if (elements.length === 0) elements.push(markdown(emptyTurnText(state.status, state.agentLabel)));
   return elements;
 }
 
-function emptyTurnText(status: TurnViewStatus): string {
-  if (status === "starting") return "正在连接 Codex…";
+function emptyTurnText(status: TurnViewStatus, agentLabel?: string): string {
+  const label = agentLabel?.trim().replace(/[\r\n]+/g, " ") || "Agent";
+  if (status === "starting") return `正在连接 ${label}…`;
   if (status === "completed") return "本轮已完成。";
   if (status === "cancelled") return "本轮已停止。";
-  return "正在等待 Codex 返回进度…";
+  return `正在等待 ${label} 返回进度…`;
 }
 
 function planPanel(plan: TurnViewState["plan"]): Record<string, unknown> {

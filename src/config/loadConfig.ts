@@ -22,7 +22,7 @@ console:
 
 agents:
   codex:
-    kind: "codex"
+    kind: "app-server"
     title: "Codex"
     command: "codex"
     args:

@@ -51,7 +51,7 @@ describe("loadConfig", () => {
     const config = loadConfig(path.resolve("config.example.yaml"));
 
     expect(config.defaults.agent).toBe("codex");
-    expect(config.agents.codex?.kind).toBe("codex");
+    expect(config.agents.codex?.kind).toBe("app-server");
     expect(config.feishu.respondToAllGroupMessages).toBe(true);
     expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
     expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
@@ -65,7 +65,7 @@ describe("loadConfig", () => {
       "  respondToAllGroupMessages: false",
       "agents:",
       "  codex:",
-      "    kind: codex",
+      "    kind: app-server",
       "    title: Codex",
       "    command: codex",
     ].join("\n"));
@@ -85,7 +85,7 @@ describe("loadConfig", () => {
     fs.writeFileSync(configPath, [
       "agents:",
       "  codex:",
-      "    kind: codex",
+      "    kind: app-server",
       "    title: Codex",
       "    command: codex",
       "feishu: {}",
@@ -125,7 +125,7 @@ describe("loadConfig", () => {
       "  userOpenId: ${FEISHU_USER_OPEN_ID}",
       "agents:",
       "  codex:",
-      "    kind: codex",
+      "    kind: app-server",
       "    title: Codex",
       "    command: codex",
       "defaults:",
@@ -171,7 +171,7 @@ describe("loadConfig", () => {
       "  appSecret: ${FEISHU_APP_SECRET}",
       "agents:",
       "  codex:",
-      "    kind: codex",
+      "    kind: app-server",
       "    title: Codex",
       "    command: codex",
       "defaults:",
@@ -210,6 +210,12 @@ test("uses ACP when agent kind is omitted", () => {
   const parsed = agentConfigSchema.parse({ title: "Example", command: "node" });
 
   expect(parsed.kind).toBe("acp");
+});
+
+test("normalizes the previous Codex kind to App Server", () => {
+  const parsed = agentConfigSchema.parse({ kind: "codex", title: "Codex", command: "codex" });
+
+  expect(parsed.kind).toBe("app-server");
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

@@ -12,7 +12,7 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 - Worker 启动 Codex/ACP Runtime、飞书传输、Console 传输、本地控制服务和 SQLite
 - 飞书事件和 Console 输入统一进入任务控制器
 - 展示层为每个 turn 维护一张进度卡，并单独发送 Markdown 最终回答
-- Codex Agent 通过 stdio 连接 Codex App Server，其他 Agent 使用 ACP
+- App Server Agent 通过 stdio 连接 App Server，其他 Agent 使用 ACP
 
 主要源码目录：
 
@@ -136,7 +136,7 @@ console:
 
 agents:
   codex:
-    kind: "codex"
+    kind: "app-server"
     title: "Codex"
     command: "codex"
     args: ["app-server", "--enable", "goals", "--listen", "stdio://"]
@@ -164,7 +164,7 @@ logging:
 
 Agent 配置的标准名是运行时隔离键。每个配置的 Agent 都拥有独立、按需启动的子进程和 Runtime 实例，即使多个 Agent 使用相同的 `kind` 也不会合并。不同 Agent 的任务不会共享命令、环境变量、协议连接、会话映射或事件流；同一 Agent 的多个任务共享该 Agent 进程，但使用独立的协议会话。
 
-`kind` 只用于选择连接适配器。`kind: "codex"` 的每个 Agent 使用各自的 Codex App Server 进程。Agent Bot 通过 App Server 协议传递项目目录、模型、思考强度、权限模式、文字输入和本地图片。`/sessions` 会聚合所有 Codex Agent 返回的任务，同时保留任务所属 Agent，确保 Switch、Status、Stop、New 和 Fork 操作回到正确进程。
+`kind` 只用于选择连接适配器。`kind: "app-server"` 的每个 Agent 使用各自的 App Server 进程，不论其可执行程序是 Codex、TraeX 还是其他兼容产品。Agent Bot 通过 App Server 协议传递项目目录、模型、思考强度、权限模式、文字输入和本地图片。`/sessions` 会聚合所有 App Server Agent 返回的任务，同时保留任务所属 Agent，确保 Switch、Status、Stop、New 和 Fork 操作回到正确进程。加载已有 Profile 时，旧的 `kind: "codex"` 会被规范化为 `app-server`。
 
 `kind: "acp"` 或未填写 `kind` 的 Agent 使用各自的 ACP 进程。同一 Agent 的多个任务会在该连接上创建独立 ACP session。Agent 配置中的 `env` 只会加入该 Agent 的环境变量。
 
@@ -217,6 +217,8 @@ Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeT
 
 每个任务条目都提供 `NewGroup` 和 `ForkGroup` 回调。回调数据保留所选任务 ID 与来源上下文，并使用飞书操作者的 `open_id` 邀请用户进入新群。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
 
+CLI 通过 `agentbot task newgroup <任务> [标题] [--agent <标准名>] [--dir <目录> | --nodir]` 和 `agentbot task forkgroup <任务> [标题]` 提供相同的指定任务操作。两个命令都要求 Server 正在运行，并通过当前 Profile 的本地控制端点发送稳定的本地任务 ID。CLI 进程没有飞书操作者，因此 Server 会邀请 `feishu.userOpenId`，该值由初始化保存为 `FEISHU_USER_OPEN_ID`。NewGroup 默认继承指定任务的 Agent 和执行设置；`--agent <标准名>` 可选择另一个已配置的 Runtime，同时继续继承来源项目形态，并省略执行设置以采用目标 Runtime 自己的默认值。ForkGroup 使用来源任务最新可用的已完成 turn，并让来源任务的活动 turn 继续执行。两类控制响应都包含新群、群上下文、来源任务和新任务；`--json` 会输出不做本地化的结构化结果。
+
 ## Codex Provider 设置
 
 Provider 是任务级设置，以 `model_provider` 与模型、思考强度和权限模式一起持久化。任务明确继承或选择 Provider 时，Agent Bot 通过 `thread/start`、`thread/resume` 和 `thread/fork` 传递 `modelProvider`。全新任务没有可继承 Provider 时，Agent Bot 省略该参数，由 Codex App Server 使用 Codex 配置中生效的 `model_provider`，再从 thread 响应中读取实际 Provider 并保存。
@@ -248,11 +250,13 @@ SQLite 保存：
 
 启动时，Agent Bot 通过 `thread/read` 将持久化的活动工作与 Codex 状态校准。Turn 标识变化、收到终态通知或控制请求失败时也会重新校准。
 
-最终消息投递账本用于避免重复发送成功回答。App Server 请求使用有限超时，避免阻塞的请求永久占用消息路由。
+最终消息投递账本用于避免重复发送成功回答。App Server 请求使用有限超时，避免阻塞的请求永久占用消息路由。会话生命周期请求允许 60 秒，因为兼容的第三方 Agent 完成 `thread/start` 可能需要超过 30 秒；控制请求仍使用更短的超时。
 
 ## Supervisor 与重启
 
 `agentbot server start` 启动后台 supervisor。Worker 意外退出后会自动拉起；连续崩溃时使用 1 到 30 秒的指数退避。
+
+Windows 下，CLI 在首次启动 Supervisor 前、Worker 在启动替换 Supervisor 前，以及 Supervisor 在每次启动 Worker 前，都会重新读取系统和用户环境变量。新值会覆盖继承值，`PATH` 在最新系统和用户路径之后保留进程专用条目。`AGENT_BOT_*` 和 `FEISHU_*` 仍保持进程级隔离，避免正在运行的 Profile 意外切换数据目录或机器人凭据。注册表读取失败时会回退到继承环境而不阻止启动，在运行时日志可用时会记录该错误。
 
 Supervisor 的崩溃诊断文件按当前 Profile 隔离：
 
@@ -275,7 +279,7 @@ Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fat
 
 等待中的安全重启状态卡底部带有 `Cancel` 操作。回调会携带调度器单调递增的计划 ID，因此旧卡片不会取消较新的重启。取消成功后，所有已发送的状态卡都会原地更新并移除按钮；调度器进入不可逆的正在重启阶段后也不再显示该按钮。
 
-本地控制服务负责修改任务和请求服务重启；只读任务查询直接访问 SQLite。
+本地控制服务负责修改任务、执行指定任务的 NewGroup 和 ForkGroup，以及请求服务重启；只读任务查询直接访问 SQLite。
 
 ## 权限模式
 

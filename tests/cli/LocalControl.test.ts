@@ -86,6 +86,42 @@ describe("local CLI control", () => {
     });
   });
 
+  test("round-trips task group creation and fork requests", async () => {
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-group-${process.pid}-${Date.now()}.sqlite`));
+    const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));
+    servers.push(server);
+    await server.start();
+
+    await expect(sendControlRequest(endpoint, {
+      action: "task_new_group",
+      localSessionId: "session_1",
+      title: "Review fixes",
+      cwd: "~/dev/project",
+      agentName: "traex",
+    })).resolves.toEqual({
+      ok: true,
+      data: {
+        action: "task_new_group",
+        localSessionId: "session_1",
+        title: "Review fixes",
+        cwd: "~/dev/project",
+        agentName: "traex",
+      },
+    });
+    await expect(sendControlRequest(endpoint, {
+      action: "task_fork_group",
+      localSessionId: "session_1",
+      title: "Parallel fix",
+    })).resolves.toEqual({
+      ok: true,
+      data: {
+        action: "task_fork_group",
+        localSessionId: "session_1",
+        title: "Parallel fix",
+      },
+    });
+  });
+
   test("round-trips a live task status request", async () => {
     const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-status-${process.pid}-${Date.now()}.sqlite`));
     const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));

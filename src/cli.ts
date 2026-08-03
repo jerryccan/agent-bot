@@ -7,6 +7,7 @@ import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.
 import {
   controlEndpoint,
   type ControlResponse,
+  type TaskGroupControlData,
   type TaskStatusControlData,
 } from "./cli/controlProtocol.js";
 import {
@@ -49,6 +50,10 @@ import {
   type ServerStartResult,
 } from "./cli/ServerStarter.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
+import {
+  parseTaskForkGroupOptions,
+  parseTaskNewGroupOptions,
+} from "./cli/taskGroupOptions.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
 import {
   nodeDiagnosticReportArguments,
@@ -408,6 +413,51 @@ async function taskCommand(input: string[]): Promise<void> {
         text,
       }, 60_000));
       process.stdout.write(cliText("Prompt submitted.\n", "提示词已提交。\n"));
+      return;
+    }
+    if (action === "newgroup") {
+      const options = parseTaskNewGroupOptions(rest);
+      const session = resolveTask(allSessions, options.reference);
+      const targetAgentName = options.agentName ?? session.agentName;
+      const targetAgent = config.agents[targetAgentName];
+      if (!targetAgent) {
+        throw new Error(cliText(
+          `Unknown Agent standard name: ${targetAgentName}.`,
+          `未知的 Agent 标准名：${targetAgentName}。`,
+        ));
+      }
+      if (options.projectless && targetAgent.kind !== "app-server") {
+        throw new Error(cliText(
+          "task newgroup --nodir is only available for App Server agents.",
+          "task newgroup --nodir 仅适用于 App Server Agent。",
+        ));
+      }
+      requireCliGroupUser(config.feishu.userOpenId);
+      const response = await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_new_group",
+        localSessionId: session.localSessionId,
+        ...(options.title ? { title: options.title } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        ...(options.agentName ? { agentName: options.agentName } : {}),
+        ...(options.projectless ? { projectless: true } : {}),
+      }, 120_000);
+      const result = taskGroupControlData(response);
+      if (options.json) printJson(result);
+      else printTaskGroupResult(result, "newgroup");
+      return;
+    }
+    if (action === "forkgroup") {
+      const options = parseTaskForkGroupOptions(rest);
+      const session = resolveTask(allSessions, options.reference);
+      requireCliGroupUser(config.feishu.userOpenId);
+      const response = await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_fork_group",
+        localSessionId: session.localSessionId,
+        ...(options.title ? { title: options.title } : {}),
+      }, 120_000);
+      const result = taskGroupControlData(response);
+      if (options.json) printJson(result);
+      else printTaskGroupResult(result, "forkgroup");
       return;
     }
     const sessions = filterSessions(allSessions, rest);
@@ -838,6 +888,50 @@ function ensureOk(response: ControlResponse): void {
         "Agent Bot control operation failed. Check the server logs for details.",
         "Agent Bot 控制操作失败，请查看服务日志了解详情。",
       ));
+}
+
+function requireCliGroupUser(userOpenId: string | undefined): asserts userOpenId is string {
+  if (userOpenId?.startsWith("ou_")) return;
+  throw new Error(cliText(
+    "The profile has no authorizing Lark user to invite. Run agentbot init again or configure FEISHU_USER_OPEN_ID.",
+    "当前 Profile 没有可邀请的飞书授权用户。请重新运行 agentbot init，或配置 FEISHU_USER_OPEN_ID。",
+  ));
+}
+
+function taskGroupControlData(response: ControlResponse): TaskGroupControlData {
+  ensureOk(response);
+  const data = response.data as Partial<TaskGroupControlData> | undefined;
+  if (
+    !data
+    || typeof data.sourceLocalSessionId !== "string"
+    || !data.group
+    || typeof data.group.chatId !== "string"
+    || typeof data.group.contextKey !== "string"
+    || typeof data.group.name !== "string"
+    || !data.task
+    || typeof data.task.localSessionId !== "string"
+  ) {
+    throw new Error(cliText(
+      "Agent Bot returned an invalid task-group result.",
+      "Agent Bot 返回了无效的任务群结果。",
+    ));
+  }
+  return data as TaskGroupControlData;
+}
+
+function printTaskGroupResult(
+  result: TaskGroupControlData,
+  action: "newgroup" | "forkgroup",
+): void {
+  process.stdout.write(cliText(
+    `${action === "forkgroup" ? "Fork group" : "Lark group"} created: ${result.group.name}\n`,
+    `${action === "forkgroup" ? "Fork 群" : "飞书群"}已创建：${result.group.name}\n`,
+  ));
+  process.stdout.write(`${cliText("Chat ID: ", "群 ID：")}${result.group.chatId}\n`);
+  process.stdout.write(`${cliText("Task ID: ", "任务 ID：")}${result.task.localSessionId}\n`);
+  if (result.task.remoteSessionId) {
+    process.stdout.write(`${cliText("Agent task ID: ", "Agent 任务 ID：")}${result.task.remoteSessionId}\n`);
+  }
 }
 
 function optionValue(args: string[], name: string): string | undefined {

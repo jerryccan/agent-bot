@@ -114,6 +114,28 @@ describe("CodexRuntime", () => {
     expect(request?.params).not.toHaveProperty("runtimeWorkspaceRoots");
   });
 
+  test("allows slow App Server session lifecycle requests to finish", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await runtime.createSession({
+      localSessionId: "slow-start",
+      agentName: "traex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.resumeSession({
+      localSessionId: "slow-resume",
+      remoteSessionId: "thr_slow",
+      agentName: "traex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    expect(client.timeouts).toContainEqual({ method: "thread/start", timeoutMs: 60_000 });
+    expect(client.timeouts).toContainEqual({ method: "thread/resume", timeoutMs: 60_000 });
+  });
+
   test("forks a thread through the requested completed turn", async () => {
     const client = new FakeAppServerClient();
     client.forkResult = {
@@ -1133,6 +1155,30 @@ describe("CodexRuntime", () => {
     }));
   });
 
+  test("falls back to updated_at when an App Server rejects recency_at sorting", async () => {
+    const client = new FakeAppServerClient();
+    client.listErrors.push(new AppServerRequestError(
+      "thread/list",
+      -32602,
+      "Invalid request: unknown variant recency_at, expected created_at or updated_at",
+    ));
+    const testLogger = logger();
+    const runtime = new CodexRuntime(provider(client), testLogger);
+
+    await expect(runtime.listRemoteSessions()).resolves.toEqual({ sessions: [], nextCursor: undefined });
+    await expect(runtime.listRemoteSessions()).resolves.toEqual({ sessions: [], nextCursor: undefined });
+
+    const requests = client.requests.filter((request) => request.method === "thread/list");
+    expect(requests).toHaveLength(3);
+    expect(requests[0]?.params).toEqual(expect.objectContaining({ sortKey: "recency_at" }));
+    expect(requests[1]?.params).toEqual(expect.objectContaining({ sortKey: "updated_at" }));
+    expect(requests[2]?.params).toEqual(expect.objectContaining({ sortKey: "updated_at" }));
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      { error: expect.any(AppServerRequestError) },
+      "App Server does not support thread/list recency_at sorting; retrying with updated_at.",
+    );
+  });
+
   test("enriches external task reads with locally persisted execution settings", async () => {
     const client = new FakeAppServerClient();
     client.readResult = {
@@ -1216,6 +1262,7 @@ class FakeAppServerClient {
   forkErrors: Error[] = [];
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
   listResult: unknown = { data: [], nextCursor: null };
+  listErrors: Error[] = [];
   configResult: unknown = { config: { model_provider: "openai", model_providers: {} } };
   goalResult: RuntimeGoal | null = null;
   private notificationListener?: (method: string, params: unknown) => void;
@@ -1235,7 +1282,11 @@ class FakeAppServerClient {
       return this.forkResult as T;
     }
     if (method === "thread/read") return this.readResult as T;
-    if (method === "thread/list") return this.listResult as T;
+    if (method === "thread/list") {
+      const error = this.listErrors.shift();
+      if (error) throw error;
+      return this.listResult as T;
+    }
     if (method === "config/read") return this.configResult as T;
     if (method === "thread/goal/get") return { goal: this.goalResult } as T;
     if (method === "thread/goal/set") {

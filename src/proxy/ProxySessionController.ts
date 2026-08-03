@@ -148,8 +148,21 @@ interface ResolvedThreadForkAnchor {
 }
 
 interface CreatedFeishuGroupContext {
+  chatId: string;
   contextKey: string;
   name: string;
+}
+
+interface CreatedFeishuTaskGroup {
+  group: CreatedFeishuGroupContext;
+  task: SessionRecord;
+}
+
+export interface ControlTaskGroupResult {
+  sourceLocalSessionId: string;
+  sourceTurnId?: string;
+  group: CreatedFeishuGroupContext;
+  task: SessionRecord;
 }
 
 export interface ProxyLifecycle {
@@ -615,6 +628,7 @@ export class ProxySessionController {
         responseContextKey,
         scopedRecord.title,
         scopedRecord.cwd,
+        this.agentLabel(scopedRecord.agentName),
       );
       const promptMessageId = await this.outbound.withReplyTarget(
         responseContextKey,
@@ -639,6 +653,82 @@ export class ProxySessionController {
       if (this.messageQueues.get(responseContextKey) === next) this.messageQueues.delete(responseContextKey);
     }
     return `The Prompt was posted to the original chat and submitted to the task: ${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+  }
+
+  async controlCreateTaskGroup(
+    localSessionId: string,
+    requestedTitle: string | undefined,
+    userOpenId: string | undefined,
+    requestedProjectCwd?: string,
+    forceProjectless = false,
+    requestedAgentName?: string,
+  ): Promise<ControlTaskGroupResult> {
+    const source = this.store.getSession(localSessionId);
+    if (!source || source.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
+    const agentName = requestedAgentName?.trim() || source.agentName;
+    const agent = this.ensureAgent(agentName);
+    if (forceProjectless && agent.kind !== "app-server") {
+      throw new Error("task newgroup --nodir is only available for Codex agents.");
+    }
+    const sourceContextKey = this.outbound.getSessionContextKey(localSessionId) ?? source.contextKey;
+    const replyTarget = this.outbound.getSessionReplyTarget(localSessionId);
+    const boundProjectCwd = forceProjectless
+      ? undefined
+      : requestedProjectCwd === undefined
+        ? detectProjectlessWorkspace(source.cwd) ? undefined : source.cwd
+        : resolveUserPath(requestedProjectCwd);
+    const created = await this.outbound.withReplyTarget(sourceContextKey, replyTarget, () =>
+      this.createFeishuGroupWithTask(
+        sourceContextKey,
+        agentName,
+        requestedTitle,
+        userOpenId,
+        boundProjectCwd,
+        source.agentName === agentName
+          ? {
+              modelProvider: source.modelProvider,
+              model: source.model,
+              reasoningEffort: source.reasoningEffort,
+              permissionMode: source.permissionMode,
+            }
+          : {},
+      ));
+    return {
+      sourceLocalSessionId: source.localSessionId,
+      group: created.group,
+      task: created.task,
+    };
+  }
+
+  async controlForkTaskGroup(
+    localSessionId: string,
+    requestedTitle: string | undefined,
+    userOpenId: string | undefined,
+  ): Promise<ControlTaskGroupResult> {
+    const source = this.store.getSession(localSessionId);
+    if (!source || source.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
+    const sourceContextKey = this.outbound.getSessionContextKey(localSessionId) ?? source.contextKey;
+    const replyTarget = this.outbound.getSessionReplyTarget(localSessionId);
+    const plan = await this.prepareForkSession(sourceContextKey, localSessionId, requestedTitle);
+    const prepared: ForkGroupSessionPlan = {
+      plan,
+      sourceDescription: plan.forkedFromHistoricalTurn
+        ? "当前任务最近已完成轮次"
+        : "当前任务最新轮次",
+    };
+    const forked = await this.outbound.withReplyTarget(sourceContextKey, replyTarget, () =>
+      this.forkPreparedSessionToFeishuGroup(
+        sourceContextKey,
+        prepared,
+        userOpenId ?? "",
+        "当前任务",
+      ));
+    return {
+      sourceLocalSessionId: source.localSessionId,
+      sourceTurnId: plan.lastTurnId,
+      group: forked.group,
+      task: forked.task,
+    };
   }
 
   private cardActionContextKey(action: CardAction): string {
@@ -676,8 +766,8 @@ export class ProxySessionController {
         await this.runShellCommand(contextKey, command.command);
         return;
       case "new":
-        if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "codex") {
-          throw new Error("/new --nodir 仅支持 Codex Agent。");
+        if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "app-server") {
+          throw new Error("/new --nodir 仅支持 App Server Agent。");
         }
         await this.createSession(
           contextKey,
@@ -696,8 +786,8 @@ export class ProxySessionController {
         );
         return;
       case "newgroup":
-        if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "codex") {
-          throw new Error("/newgroup --nodir 仅支持 Codex Agent。");
+        if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "app-server") {
+          throw new Error("/newgroup --nodir 仅支持 App Server Agent。");
         }
         await this.createFeishuGroup(
           contextKey,
@@ -772,7 +862,13 @@ export class ProxySessionController {
       const turnContextKey = session.lastTurnId
         ? this.store.getTurnContextKey(session.lastTurnId) ?? context.contextKey
         : context.contextKey;
-      this.outbound.registerSession(session.localSessionId, turnContextKey, session.title, session.cwd);
+      this.outbound.registerSession(
+        session.localSessionId,
+        turnContextKey,
+        session.title,
+        session.cwd,
+        this.agentLabel(session.agentName),
+      );
       if (!session.lastTurnId) continue;
       void this.outbound.resumeDelivery(session.localSessionId, turnContextKey, session.lastTurnId).catch((error: unknown) => {
         this.logger.warn({ error, sessionId: session.localSessionId }, "Failed to restore persisted turn delivery.");
@@ -838,7 +934,13 @@ export class ProxySessionController {
   ): Promise<void> {
     const configuredRuntime = this.runtimes.forAgent(record.agentName);
     if (!configuredRuntime.getSession(record.localSessionId)) {
-      this.outbound.registerSession(record.localSessionId, contextKey, record.title, record.cwd);
+      this.outbound.registerSession(
+        record.localSessionId,
+        contextKey,
+        record.title,
+        record.cwd,
+        this.agentLabel(record.agentName),
+      );
       await this.outbound.startPendingTurn(record.localSessionId, contextKey, record.title, replyTarget, text);
     }
     let loaded: LoadedSession;
@@ -1098,7 +1200,13 @@ export class ProxySessionController {
       permissionMode: source.permissionMode ?? "auto",
     });
     this.store.setCurrentSession(message.contextKey, localSessionId);
-    this.outbound.registerSession(localSessionId, message.contextKey, forkTitle, source.cwd);
+    this.outbound.registerSession(
+      localSessionId,
+      message.contextKey,
+      forkTitle,
+      source.cwd,
+      this.agentLabel(source.agentName),
+    );
 
     try {
       const forked = await runtime.forkSession({
@@ -1411,7 +1519,13 @@ export class ProxySessionController {
         lastTurnStatus: plan.lastTurnStatus,
       });
       this.store.setCurrentSession(contextKey, localSessionId);
-      this.outbound.registerSession(localSessionId, contextKey, forked.title ?? plan.forkTitle, plan.cwd);
+      this.outbound.registerSession(
+        localSessionId,
+        contextKey,
+        forked.title ?? plan.forkTitle,
+        plan.cwd,
+        this.agentLabel(plan.agentName),
+      );
       this.store.audit(contextKey, "session_forked", {
         sourceLocalSessionId: plan.source?.localSessionId,
         sourceRemoteSessionId: plan.remoteSessionId,
@@ -1566,7 +1680,7 @@ export class ProxySessionController {
     const agent = this.ensureAgent(agentName);
     const localSessionId = createId("sess");
     const initialTitle = normalizeTaskTitle(requestedTitle ?? prompt ?? "");
-    const sessionCwd = cwd === undefined && agent.kind === "codex"
+    const sessionCwd = cwd === undefined && agent.kind === "app-server"
       ? createProjectlessWorkspace({ prompt: initialTitle }).cwd
       : path.resolve(cwd ?? this.config.defaults.cwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
@@ -1580,7 +1694,13 @@ export class ProxySessionController {
       });
     }
     this.store.setCurrentSession(contextKey, localSessionId);
-    this.outbound.registerSession(localSessionId, contextKey, initialTitle, sessionCwd);
+    this.outbound.registerSession(
+      localSessionId,
+      contextKey,
+      initialTitle,
+      sessionCwd,
+      this.agentLabel(agentName),
+    );
     const runtime = this.runtimes.forAgent(agentName);
     try {
       if (prepareTurn) {
@@ -1666,9 +1786,9 @@ export class ProxySessionController {
     userId: string | undefined,
     boundProjectCwd: string | undefined,
     executionSettings: SessionExecutionSettings,
-  ): Promise<void> {
+  ): Promise<CreatedFeishuTaskGroup> {
     const explicitTitle = normalizeTaskTitle(requestedTitle);
-    const taskTitle = explicitTitle ?? "新任务";
+    const taskTitle = explicitTitle ?? `新任务 (${formatGroupDateSuffix(new Date())})`;
     const group = await this.createFeishuGroupContext(
       sourceContextKey,
       agentName,
@@ -1676,7 +1796,7 @@ export class ProxySessionController {
       userId,
       boundProjectCwd,
       "/newgroup",
-      !explicitTitle,
+      false,
     );
 
     let task: SessionRecord;
@@ -1719,6 +1839,7 @@ export class ProxySessionController {
       sourceContextKey,
       `已创建飞书群：${group.name}，并创建新任务 ${taskDescription}。`,
     );
+    return { group, task };
   }
 
   private async forkCurrentSessionToFeishuGroup(
@@ -1766,7 +1887,7 @@ export class ProxySessionController {
     prepared: ForkGroupSessionPlan,
     userId: string,
     sourceSummary: string,
-  ): Promise<void> {
+  ): Promise<CreatedFeishuTaskGroup> {
     const { plan } = prepared;
     const boundProjectCwd = detectProjectlessWorkspace(plan.cwd) ? undefined : plan.cwd;
     const group = await this.createFeishuGroupContext(
@@ -1809,6 +1930,7 @@ export class ProxySessionController {
       sourceContextKey,
       `已将${sourceSummary} Fork 到飞书群：${group.name}；新群当前任务为 ${taskDescription}。`,
     );
+    return { group, task: forked.record };
   }
 
   private async createFeishuGroupContext(
@@ -1836,7 +1958,7 @@ export class ProxySessionController {
     this.store.recordChatContext(groupContextKey, "group");
     this.store.getOrCreateUserContext(groupContextKey, agentName);
     if (boundProjectCwd) this.store.setBoundProjectCwd(groupContextKey, boundProjectCwd);
-    return { contextKey: groupContextKey, name: group.name };
+    return { chatId: group.chatId, contextKey: groupContextKey, name: group.name };
   }
 
   private async loadSession(record: SessionRecord): Promise<LoadedSession> {
@@ -1847,7 +1969,13 @@ export class ProxySessionController {
     const pending = this.sessionLoads.get(record.localSessionId);
     if (pending) return pending;
 
-    this.outbound.registerSession(record.localSessionId, record.contextKey, record.title, record.cwd);
+    this.outbound.registerSession(
+      record.localSessionId,
+      record.contextKey,
+      record.title,
+      record.cwd,
+      this.agentLabel(record.agentName),
+    );
     const loading = (async (): Promise<LoadedSession> => {
       if (record.lastTurnId) {
         try {
@@ -1874,14 +2002,14 @@ export class ProxySessionController {
             model: record.model,
             reasoningEffort: record.reasoningEffort,
             permissionMode,
-            activeTurnId: agent.kind === "codex" && record.status === "running" && record.lastTurnStatus === "running"
+            activeTurnId: agent.kind === "app-server" && record.status === "running" && record.lastTurnStatus === "running"
               ? record.lastTurnId
               : undefined,
             lastTurnId: record.lastTurnId,
             lastTurnStatus: record.lastTurnStatus,
           });
         } catch (error) {
-          if (!(agent.kind === "codex" && !record.lastTurnId && isMissingRolloutError(error))) throw error;
+          if (!(agent.kind === "app-server" && !record.lastTurnId && isMissingRolloutError(error))) throw error;
           this.logger.warn({ error, sessionId: record.localSessionId }, "Codex task has no rollout; creating a replacement task.");
           session = await runtime.createSession({
             localSessionId: record.localSessionId,
@@ -2480,7 +2608,7 @@ export class ProxySessionController {
       }
       const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
       const agent = this.ensureAgent(context.defaultAgent);
-      if (agent.kind !== "codex") throw new Error("Goal 模式仅支持 Codex App Server 任务。");
+      if (agent.kind !== "app-server") throw new Error("Goal 模式仅支持 App Server 任务。");
       record = await this.createSession(
         contextKey,
         context.defaultAgent,
@@ -2919,7 +3047,13 @@ export class ProxySessionController {
       await this.assertSessionTurnOwnership(existing, runtime);
       this.store.attachSessionToContext(contextKey, existing.localSessionId);
       this.store.setCurrentSession(contextKey, existing.localSessionId);
-      this.outbound.registerSession(existing.localSessionId, contextKey, existing.title, existing.cwd);
+      this.outbound.registerSession(
+        existing.localSessionId,
+        contextKey,
+        existing.title,
+        existing.cwd,
+        this.agentLabel(existing.agentName),
+      );
       await this.outbound.sendText(contextKey, `已切换到任务：${existing.title ?? existing.remoteSessionId ?? taskId}`);
       return;
     }
@@ -2946,7 +3080,13 @@ export class ProxySessionController {
       lastTurnStatus: mapRemoteTurnStatus(remote.lastTurnStatus),
     });
     this.store.setCurrentSession(contextKey, localSessionId);
-    this.outbound.registerSession(localSessionId, contextKey, remote.title ?? remote.preview, remote.cwd);
+    this.outbound.registerSession(
+      localSessionId,
+      contextKey,
+      remote.title ?? remote.preview,
+      remote.cwd,
+      this.agentLabel(agentName),
+    );
     await this.outbound.sendText(
       contextKey,
       `已切换到任务：${remote.title ?? remote.preview ?? remote.id}。历史消息不会重新发送。`,
@@ -3320,9 +3460,13 @@ export class ProxySessionController {
     return agent;
   }
 
+  private agentLabel(agentName: string): string {
+    return this.ensureAgent(agentName).title;
+  }
+
   private isCodexSession(session: SessionRecord): boolean {
     if (session.runtimeKind) return session.runtimeKind === "codex";
-    return this.config.agents[session.agentName]?.kind === "codex";
+    return this.config.agents[session.agentName]?.kind === "app-server";
   }
 
   private currentSession(contextKey: string): SessionRecord | undefined {

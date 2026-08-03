@@ -12,7 +12,7 @@ Agent Bot is a Node.js 22+ ESM TypeScript application built around these compone
 - The worker starts the configured Codex and ACP runtimes, Feishu transport, Console transport, local control server, and SQLite store.
 - Feishu events and Console input are normalized into the same task controller.
 - Presentation components maintain one progress card per turn and send the final Markdown response separately.
-- Codex agents use Codex App Server over stdio; other configured agents use ACP.
+- App Server agents use the App Server protocol over stdio; other configured agents use ACP.
 
 Relevant source areas:
 
@@ -136,7 +136,7 @@ console:
 
 agents:
   codex:
-    kind: "codex"
+    kind: "app-server"
     title: "Codex"
     command: "codex"
     args: ["app-server", "--enable", "goals", "--listen", "stdio://"]
@@ -164,7 +164,7 @@ At least one agent must be configured. `defaults.agent` must name a configured a
 
 The configured Agent standard name is the runtime isolation key. Every configured Agent owns a separate, lazily started child process and runtime instance, even when multiple Agents use the same `kind`. Tasks using different Agents never share a command, environment, protocol connection, session map, or event stream. Tasks using the same Agent share that Agent process while keeping separate protocol sessions.
 
-`kind` selects only the connection adapter. An agent with `kind: "codex"` uses its own Codex App Server process. Agent Bot passes project directory, model, reasoning effort, permission mode, text input, and local images through the App Server protocol. `/sessions` aggregates tasks reported by every configured Codex Agent while preserving the owning Agent for Switch, Status, Stop, New, and Fork actions.
+`kind` selects only the connection adapter. An agent with `kind: "app-server"` uses its own App Server process, whether the executable is Codex, TraeX, or another compatible product. Agent Bot passes project directory, model, reasoning effort, permission mode, text input, and local images through the App Server protocol. `/sessions` aggregates tasks reported by every configured App Server Agent while preserving the owning Agent for Switch, Status, Stop, New, and Fork actions. The previous `kind: "codex"` value is normalized to `app-server` when existing profiles are loaded.
 
 An agent with `kind: "acp"`, or without a `kind`, uses its own ACP process. Multiple tasks create separate ACP sessions on that connection. Agent-specific `env` values are added only to that Agent's environment.
 
@@ -217,6 +217,8 @@ Incoming rich-text images are downloaded into the inbound image cache and passed
 
 Each task entry exposes `NewGroup` and `ForkGroup` callbacks. The callback payload keeps the selected task ID and source context, while the Lark operator `open_id` is used to invite the user to the new group. `NewGroup` resolves the selected task's project and execution settings; `ForkGroup` resolves its latest available completed turn.
 
+The CLI exposes the same task-targeted operations through `agentbot task newgroup <task> [title] [--agent <name>] [--dir <cwd> | --nodir]` and `agentbot task forkgroup <task> [title]`. Both commands require a running Server and send the stable local task ID over the Profile's local control endpoint. Since a CLI process has no Lark operator, the Server invites `feishu.userOpenId`, which initialization stores as `FEISHU_USER_OPEN_ID`. New-group creation inherits the selected task's Agent and execution settings by default. `--agent <standard-name>` selects another configured runtime while retaining the source project shape; execution settings are omitted so that runtime applies its own defaults. ForkGroup uses the source task's latest available completed turn and leaves an active source turn running. Both control responses include the new chat, group context, source task, and created task; `--json` prints that structure without localization.
+
 ## Codex Provider Settings
 
 Provider is a task-level setting stored as `model_provider` alongside model, reasoning effort, and permission mode. Agent Bot passes `modelProvider` through `thread/start`, `thread/resume`, and `thread/fork` whenever a task explicitly inherits or selects one. For a brand-new task with no inherited Provider, Agent Bot omits `modelProvider`; the Codex App Server therefore uses the effective `model_provider` from Codex configuration and returns the selected Provider in its thread response for persistence.
@@ -248,11 +250,13 @@ SQLite stores:
 
 On startup, Agent Bot reconciles persisted active work with Codex through `thread/read`. It also reconciles when turn identifiers change, terminal notifications arrive, or control requests fail.
 
-The final-delivery ledger prevents duplicate successful replies. App Server requests use finite timeouts so a stalled request cannot permanently occupy a message route.
+The final-delivery ledger prevents duplicate successful replies. App Server requests use finite timeouts so a stalled request cannot permanently occupy a message route. Session lifecycle requests allow 60 seconds because compatible third-party Agents may need more than 30 seconds for `thread/start`; control requests remain shorter.
 
 ## Supervisor And Restart
 
 `agentbot server start` starts a detached supervisor. The supervisor restarts the worker after unexpected exits and applies exponential backoff from one to 30 seconds after repeated crashes.
+
+On Windows, the CLI refreshes Machine and User environment variables before the initial Supervisor launch, a Worker refreshes them before launching a replacement Supervisor, and the Supervisor refreshes them before every Worker launch. Fresh values override inherited values, while `PATH` retains process-only entries after the current Machine and User paths. `AGENT_BOT_*` and `FEISHU_*` values remain process-local so an active Profile cannot accidentally switch data roots or bot credentials. A registry-read failure falls back to the inherited environment without blocking startup and is recorded when a runtime logger is available.
 
 Supervisor crash diagnostics are isolated to the selected profile:
 
@@ -275,7 +279,7 @@ The first safe-restart status card is delayed by three seconds so a task's final
 
 Pending safe-restart cards include a bottom `Cancel` action. The action carries the scheduler's monotonic schedule ID, so an old card cannot cancel a newer restart. A successful cancellation updates every existing status card in place and removes the action; the action is also absent once the scheduler enters the irreversible restarting phase.
 
-The local control server implements task mutations and service restart requests. Read-only task queries access SQLite directly.
+The local control server implements task mutations, task-targeted NewGroup and ForkGroup operations, and service restart requests. Read-only task queries access SQLite directly.
 
 ## Permission Modes
 

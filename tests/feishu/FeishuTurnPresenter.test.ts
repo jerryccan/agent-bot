@@ -173,6 +173,22 @@ describe("FeishuTurnPresenter", () => {
     await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalled());
   });
 
+  test("persists and renders the registered Agent label on the starting card", async () => {
+    const { presenter, outbound, store } = createFixture();
+    presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\agent-bot", "TraeX");
+
+    await presenter.startPendingTurn("s1", "chat_id:c1");
+
+    expect(store.saveTurnSnapshot).toHaveBeenCalledWith(
+      expect.stringMatching(/^pending_/),
+      "s1",
+      expect.objectContaining({ agentLabel: "TraeX" }),
+      "chat_id:c1",
+    );
+    expect(JSON.stringify((outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]))
+      .toContain("正在连接 TraeX…");
+  });
+
   test("updates a persisted progress card instead of sending another card after restart", async () => {
     const { presenter, outbound, store } = createFixture();
     store.getTurnDelivery.mockReturnValue({

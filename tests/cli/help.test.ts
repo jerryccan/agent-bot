@@ -15,6 +15,9 @@ describe("CLI help", () => {
     expect(help).toContain("agentbot --profile ~/.agent-bot init --reset");
     expect(help).toContain("Show the server, Lark App ID, and safe-restart status");
     expect(help).toContain("task prompt <task> <prompt>");
+    expect(help).toContain("task newgroup <task> [title]");
+    expect(help).toContain("supports --agent, --dir, --nodir");
+    expect(help).toContain("task forkgroup <task> [title]");
     expect(help).toContain("-h, --help");
     expect(help).not.toMatch(/[一-龥]/u);
   });
@@ -29,5 +32,8 @@ describe("CLI help", () => {
     expect(help).toContain("初始化飞书应用并启动服务");
     expect(help).toContain("显示服务、飞书 App ID 和安全重启状态");
     expect(help).toContain("task prompt <任务> <提示词>");
+    expect(help).toContain("task newgroup <任务> [标题]");
+    expect(help).toContain("支持 --agent、--dir、--nodir");
+    expect(help).toContain("task forkgroup <任务> [标题]");
   });
 });

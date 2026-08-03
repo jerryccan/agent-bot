@@ -11,7 +11,16 @@ export type ControlRequest =
   | { action: "task_status"; localSessionId: string }
   | { action: "task_stop"; localSessionId: string }
   | { action: "task_title"; localSessionId: string; title: string }
-  | { action: "task_prompt"; localSessionId: string; text: string };
+  | { action: "task_prompt"; localSessionId: string; text: string }
+  | {
+      action: "task_new_group";
+      localSessionId: string;
+      title?: string;
+      cwd?: string;
+      agentName?: string;
+      projectless?: boolean;
+    }
+  | { action: "task_fork_group"; localSessionId: string; title?: string };
 
 export interface ControlResponse {
   ok: boolean;
@@ -23,6 +32,17 @@ export interface TaskStatusControlData {
   session: SessionRecord;
   snapshot?: TurnViewState;
   remote?: RemoteSessionSummary;
+}
+
+export interface TaskGroupControlData {
+  sourceLocalSessionId: string;
+  sourceTurnId?: string;
+  group: {
+    chatId: string;
+    contextKey: string;
+    name: string;
+  };
+  task: SessionRecord;
 }
 
 export function controlEndpoint(sqlitePath: string): string {

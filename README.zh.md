@@ -126,6 +126,8 @@ agentbot server restart
 
 `server restart` 默认等待当前工作完成后再重启；等待期间可通过状态卡片下方的 `Cancel` 按钮取消。只有可接受中断时才使用 `--immediate`。
 
+Windows 下每次启动 Supervisor 或 Worker 都会重新读取最新的系统和用户环境变量。修改 `PATH` 或其他系统环境变量后重启服务即可生效，当前 Profile 选择仍保持隔离。
+
 `server status` 会显示当前运行服务使用的 Lark App ID；添加 `--json` 后可从 `feishuAppId` 字段读取。
 
 ### Console
@@ -142,11 +144,15 @@ Console UI 不需要飞书凭据。除非传入 `--force`，否则不会与正�
 agentbot task list
 agentbot task status <任务>
 agentbot task prompt <任务> "<prompt>"
+agentbot task newgroup <任务> [标题] [--agent <标准名>] [--dir <路径> | --nodir]
+agentbot task forkgroup <任务> [标题]
 agentbot task title <任务> "<标题>"
 agentbot task stop <任务>
 ```
 
 `<任务>` 可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。运行 `agentbot --help` 可查看完整 CLI 参数。
+
+`task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
 
 ## 飞书命令
 
@@ -155,7 +161,7 @@ agentbot task stop <任务>
 | 命令                                    | 作用                       |
 | --------------------------------------- | -------------------------- |
 | `/new [标题] [--dir <路径> \| --nodir]` | 创建任务                   |
-| `/sessions [关键词]`                    | 浏览可用的 Codex 任务      |
+| `/sessions [关键词]`                    | 浏览可用的 App Server 任务 |
 | `/switch [任务]`                        | 切换任务，或返回上一个任务 |
 | `/fork [任务]`                          | 创建并打开任务分支         |
 | `/status [任务]`                        | 查看任务进度和结果         |
@@ -187,11 +193,11 @@ agentbot task stop <任务>
 
 `/forkgroup` 创建新群后，群内欢迎消息会显示分支任务当前使用的 Provider、模型、思考强度和权限类型。
 
-`/new` 和 `/newgroup` 支持相同的项目参数：使用 `--dir <cwd>` 覆盖继承的项目目录，或使用 `--nodir` 强制创建 Projectless Codex 任务，二者不能同时使用。两条命令中的 `~`、`~/...` 和 `~\...` 均表示当前用户目录。`/newgroup` 会立即在新群中创建并绑定任务，同时继续继承当前任务的 Provider、模型、思考强度和权限模式，不影响来源任务。来源聊天没有当前任务时，则使用选定 Agent 及其运行时默认设置。显式标题会同时作为群名后缀和任务标题。
+`/new` 和 `/newgroup` 支持相同的项目参数：使用 `--dir <cwd>` 覆盖继承的项目目录，或使用 `--nodir` 强制创建 Projectless App Server 任务，二者不能同时使用。两条命令中的 `~`、`~/...` 和 `~\...` 均表示当前用户目录。`/newgroup` 会立即在新群中创建并绑定任务，同时继续继承当前任务的 Provider、模型、思考强度和权限模式，不影响来源任务。来源聊天没有当前任务时，则使用选定 Agent 及其运行时默认设置。显式标题会同时作为群名后缀和任务标题。
 
-`/newgroup` 省略标题时，任务标题为 `新任务`，默认群名为 `[agent] [project dir] 新任务 (mm-dd)`。Projectless 群会完全省略项目段，群名格式为 `[agent] title`。`/forkgroup` 省略标题时，任务标题和群名都与 `/fork` 一样使用持久递增的 `源标题（分支 N）`，不追加日期。`/newgroup` 和 `/forkgroup` 创建的飞书群名最多显示 60 个字符。生成后的群名过长时，Agent Bot 只截断群名中的标题部分，任务标题本身保持不变。
+`/newgroup` 省略标题时，任务标题和群名中的标题部分统一使用 `新任务 (mm-dd)`，默认群名为 `[agent] [project dir] 新任务 (mm-dd)`。Projectless 群会完全省略项目段，群名格式为 `[agent] title`。`/forkgroup` 省略标题时，任务标题和群名都与 `/fork` 一样使用持久递增的 `源标题（分支 N）`，不追加日期。`/newgroup` 和 `/forkgroup` 创建的飞书群名最多显示 60 个字符。生成后的群名过长时，Agent Bot 只截断群名中的标题部分，任务标题本身保持不变。
 
-把已绑定任务的群改名为 `[agent] [project dir] title` 时，只会把 `title` 同步到当前任务；Agent 和工程目录前缀仅作为群元数据，不会写入 Codex 任务标题。旧的 `[agent] title` 格式仍然兼容。
+把已绑定任务的群改名为 `[agent] [project dir] title` 时，只会把 `title` 同步到当前任务；Agent 和工程目录前缀仅作为群元数据，不会写入任务标题。旧的 `[agent] title` 格式仍然兼容。
 
 ## 配置与数据
 

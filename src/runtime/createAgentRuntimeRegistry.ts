@@ -12,7 +12,7 @@ export function createAgentRuntimeRegistry(config: AppConfig, logger: Logger): A
   const runtimes: Record<string, AgentRuntime> = {};
   for (const [agentName, agent] of Object.entries(config.agents)) {
     const runtimeLogger = logger.child({ agentName, runtimeKind: agent.kind });
-    if (agent.kind === "codex") {
+    if (agent.kind === "app-server") {
       const processManager = new CodexProcessManager(agent.command, agent.args, agent.env, runtimeLogger);
       runtimes[agentName] = new CodexRuntime(processManager, runtimeLogger);
       continue;

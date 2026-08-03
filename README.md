@@ -126,6 +126,8 @@ agentbot server restart
 
 `server restart` waits for current work to finish by default. Its status card includes a `Cancel` button while the restart is still waiting. Use `--immediate` only when interruption is acceptable.
 
+On Windows, every Supervisor and Worker launch reloads the latest Machine and User environment variables. Restart the service after changing `PATH` or another system environment variable; the active Profile selection remains isolated.
+
 `server status` shows the Lark App ID used by the running server. Add `--json` to read it from `feishuAppId`.
 
 ### Console
@@ -142,11 +144,15 @@ The Console UI works without Feishu credentials. It will not share task state wi
 agentbot task list
 agentbot task status <task>
 agentbot task prompt <task> "<prompt>"
+agentbot task newgroup <task> [title] [--agent <name>] [--dir <path> | --nodir]
+agentbot task forkgroup <task> [title]
 agentbot task title <task> "<title>"
 agentbot task stop <task>
 ```
 
 `<task>` can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Run `agentbot --help` for all CLI options.
+
+`task newgroup` creates a Feishu group and a new task. By default it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while the selected Agent uses its own runtime defaults for Provider, model, reasoning effort, and permission mode. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. `task forkgroup` forks the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the Profile's saved authorizing user, leave the source chat on its current task, and support `--json`.
 
 ## Feishu Commands
 
@@ -155,7 +161,7 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | Command                                  | Purpose                                     |
 | ---------------------------------------- | ------------------------------------------- |
 | `/new [title] [--dir <path> \| --nodir]` | Create a task                               |
-| `/sessions [keyword]`                    | Browse available Codex tasks                |
+| `/sessions [keyword]`                    | Browse available App Server tasks           |
 | `/switch [task]`                         | Switch tasks or return to the previous task |
 | `/fork [task]`                           | Create and open a task branch               |
 | `/status [task]`                         | View task progress and results              |
@@ -187,11 +193,11 @@ Inside a thread, `/forkgroup` forks from the thread's original turn until the th
 
 After `/forkgroup` creates the new group, its welcome message shows the forked task's current Provider, model, reasoning effort, and permission type.
 
-`/new` and `/newgroup` accept the same project options. Pass `--dir <cwd>` to override the inherited project directory, or `--nodir` to force a Projectless Codex task; the two options are mutually exclusive. `~`, `~/...`, and `~\...` resolve from the current user's home directory for both commands. `/newgroup` immediately creates and binds the task in the new group while continuing to inherit the current task's Provider, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
+`/new` and `/newgroup` accept the same project options. Pass `--dir <cwd>` to override the inherited project directory, or `--nodir` to force a Projectless App Server task; the two options are mutually exclusive. `~`, `~/...`, and `~\...` resolve from the current user's home directory for both commands. `/newgroup` immediately creates and binds the task in the new group while continuing to inherit the current task's Provider, model, reasoning effort, and permission mode without affecting the source task. If there is no current task, Agent Bot uses the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title.
 
-When `/newgroup` omits the title, the task title is `新任务` and the default group name is `[agent] [project dir] 新任务 (mm-dd)`. Projectless groups omit the project segment entirely, using `[agent] title`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
+When `/newgroup` omits the title, both the task title and the group-title portion use `新任务 (mm-dd)`, producing the default group name `[agent] [project dir] 新任务 (mm-dd)`. Projectless groups omit the project segment entirely, using `[agent] title`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed characters. When a generated name is too long, Agent Bot truncates only the title portion in the group name; the task title itself stays unchanged.
 
-Renaming a bound group to `[agent] [project dir] title` synchronizes only `title` to the current task. The Agent and project-directory prefixes remain group metadata and are never included in the Codex task title. The older `[agent] title` format remains supported.
+Renaming a bound group to `[agent] [project dir] title` synchronizes only `title` to the current task. The Agent and project-directory prefixes remain group metadata and are never included in the task title. The older `[agent] title` format remains supported.
 
 ## Configuration And Data
 

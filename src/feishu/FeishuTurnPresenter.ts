@@ -64,6 +64,7 @@ export class FeishuTurnPresenter {
   private readonly sessionContexts = new Map<string, string>();
   private readonly sessionTitles = new Map<string, string>();
   private readonly sessionCwds = new Map<string, string>();
+  private readonly sessionAgentLabels = new Map<string, string>();
   private readonly entries = new Map<string, TurnEntry>();
   private readonly pendingEntries = new Map<string, TurnEntry>();
   private readonly renderer: CardRenderer;
@@ -77,10 +78,17 @@ export class FeishuTurnPresenter {
     this.renderer = renderer ?? new CardRenderer();
   }
 
-  registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void {
+  registerSession(
+    sessionId: string,
+    contextKey: string,
+    taskTitle?: string,
+    projectCwd?: string,
+    agentLabel?: string,
+  ): void {
     this.sessionContexts.set(sessionId, contextKey);
     if (taskTitle) this.sessionTitles.set(sessionId, taskTitle);
     if (projectCwd) this.sessionCwds.set(sessionId, projectCwd);
+    if (agentLabel) this.sessionAgentLabels.set(sessionId, agentLabel);
   }
 
   updateSessionTitle(sessionId: string, taskTitle: string): void {
@@ -97,6 +105,7 @@ export class FeishuTurnPresenter {
     this.sessionContexts.delete(sessionId);
     this.sessionTitles.delete(sessionId);
     this.sessionCwds.delete(sessionId);
+    this.sessionAgentLabels.delete(sessionId);
   }
 
   async startPendingTurn(
@@ -126,6 +135,7 @@ export class FeishuTurnPresenter {
       replyTarget,
       this.sessionCwds.get(sessionId),
       prompt,
+      this.sessionAgentLabels.get(sessionId),
     );
     const entry = { contextKey, state, initializing: Promise.resolve() } as TurnEntry;
     this.entries.set(state.turnId, entry);
@@ -179,6 +189,8 @@ export class FeishuTurnPresenter {
               this.sessionTitles.get(sessionId),
               undefined,
               this.sessionCwds.get(sessionId),
+              undefined,
+              this.sessionAgentLabels.get(sessionId),
             ),
             status: "running" as const,
           };
@@ -213,6 +225,7 @@ export class FeishuTurnPresenter {
             pending.state.replyTarget,
             pending.state.projectCwd,
             pending.state.prompt,
+            pending.state.agentLabel,
           ),
           event,
         );
@@ -347,6 +360,7 @@ export class FeishuTurnPresenter {
           undefined,
           this.sessionCwds.get(event.sessionId),
           undefined,
+          this.sessionAgentLabels.get(event.sessionId),
         );
     const state = reduceTurnEvent(
       initial,

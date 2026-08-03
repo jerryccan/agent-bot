@@ -1,6 +1,6 @@
 ---
 name: agent-bot
-description: Initialize Agent Bot, detect and work safely inside its runtime, and manage the local service and its Codex or ACP sessions through the agentbot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to initialize, inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
+description: Initialize Agent Bot, detect and work safely inside its runtime, and manage the local service and its Codex or ACP sessions through the agentbot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to initialize, inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; create or fork Lark groups from tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
 ---
 
 # Agent Bot
@@ -99,6 +99,8 @@ agentbot server stop
 
 Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window. The first safe-restart status card is delayed by three seconds so the active task's final response can usually be delivered first; this presentation delay does not postpone scheduler polling. While the restart is pending, its status card has a bottom `Cancel` button that conditionally cancels that exact schedule and updates the card in place.
 
+On Windows, initial start, safe or immediate replacement, and every crash-driven Worker launch reload the latest Machine and User environment variables. After changing `PATH` or installing a CLI shim, finish the current work and use the normal restart path. Agent Bot keeps `AGENT_BOT_*` and `FEISHU_*` process-local so Profile selection and bot credentials do not leak between isolated instances.
+
 In Feishu, `/restart` schedules the same safe restart. Use `/restart --force` only when the user explicitly accepts interruption; the command accepts no other arguments.
 
 Use `agentbot server restart --immediate` only when the user explicitly requests an immediate restart or accepts interruption. Never use `taskkill`, `Stop-Process`, or equivalent commands for routine Agent Bot restart management.
@@ -125,6 +127,8 @@ agentbot task status <number-or-task-id>
 agentbot task stop <number-or-task-id>
 agentbot task title <number-or-task-id> <new-title>
 agentbot task prompt <number-or-task-id> <prompt>
+agentbot task newgroup <number-or-task-id> [title] [--agent <standard-name>] [--dir <cwd> | --nodir] [--json]
+agentbot task forkgroup <number-or-task-id> [title] [--json]
 ```
 
 Task IDs may be supplied in full or as an unambiguous prefix. Use `task stop` to ask the running worker to send the Codex Interrupt signal; leave child-process lifecycle management to Codex.
@@ -133,13 +137,42 @@ Use `task chat <number-or-task-id>` to read the Feishu chat ID associated with a
 
 Use `task prompt` to send input to a specific task without changing any chat's current task. The bot first posts the Prompt text to the task's existing Feishu chat, thread, or private-chat route, then submits it to the task. If posting fails, the task is not started or steered. The thinking card and final response continue to the same route; the command line only reports whether the Prompt was accepted.
 
+### Create a task group from the CLI
+
+Use `task newgroup` to create a Lark group and bind a new task from outside Feishu. List tasks first and pass the intended source task explicitly; `<number-or-task-id>` defines the source context, so never substitute the shell's current working directory for the task's project directory.
+
+```powershell
+# Inherit the source task's Agent, project, and execution settings.
+agentbot task newgroup <number-or-task-id> "Review"
+
+# Override the project directory. Prefer an absolute path or a ~-based path.
+agentbot task newgroup <number-or-task-id> "Review" --dir ~/dev/project
+
+# Create a fresh Projectless App Server task instead of inheriting a project.
+agentbot task newgroup <number-or-task-id> "Question" --nodir
+
+# Use another configured Agent with the inherited project shape.
+agentbot task newgroup <number-or-task-id> "Review" --agent traex
+```
+
+Apply these rules:
+
+- With neither `--dir` nor `--nodir`, inherit the source task's project directory. If the source is Projectless, create a fresh Projectless workspace rather than reusing its generated directory.
+- `--dir <cwd>` overrides the inherited project and resolves `~`, `~/...`, and `~\...` from the user's home directory.
+- `--nodir` forces a Projectless task and is valid only for an App Server Agent. Reject combining it with `--dir`.
+- With no `--agent`, inherit the source task's Agent, Provider, model, reasoning effort, and permission mode. When `--agent <standard-name>` selects a different Agent, retain the chosen or inherited project shape but use that Agent runtime's own execution defaults.
+- The Server must be running. The Profile must contain `FEISHU_USER_OPEN_ID`; the Server invites that saved authorizing user because the CLI has no Lark operator identity.
+- Creating the group must not interrupt the source task or switch the source chat's current task. Add `--json` when the caller needs `group.chatId`, `group.contextKey`, or the created task IDs.
+
+Use `task forkgroup` to Fork the selected task's latest available completed turn into a new group. It does not interrupt a newer active source turn and does not switch the source chat. Both group commands accept an optional title and `--json`; use the structured result to read the new `group.chatId`, `group.contextKey`, and task IDs.
+
 Use `/queue <prompt>` in Feishu to persist a separate follow-up Prompt instead of steering the active turn. Queued Prompts run in FIFO order after the current turn completes and survive Agent Bot restarts. `/nosteer <prompt>` is an equivalent compatibility spelling.
 
 For a long-running objective in the active Feishu task, use `/goal <objective>`. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control automatic continuation, `/goal edit <objective>` to revise it, and `/goal clear` to remove it. Stopping a Goal turn through Agent Bot also pauses the Goal before sending Interrupt so it does not immediately continue.
 
 Use `/agent` in Feishu to open the unified execution-settings card on its Agent tab and `/agent <name>` to directly select the default agent. The Agent tab is present only when multiple agents are configured and remains usable before the chat has a current task. When only one Agent is configured, `/agent` reports that current Agent directly instead of sending a card. Agent selection affects future tasks and does not replace the Agent of an existing task; use `/new` after selecting when a new task is needed.
 
-Use `/newgroup [title] [--dir <cwd> | --nodir]` in Feishu to create a private group named `[agent] [project directory] <title>`, invite the command sender, and immediately create and bind a new task in that group. `/new` and `/newgroup` share the same project options: an explicit `--dir` overrides the inherited project directory, while `--nodir` forces a Projectless Codex task; reject using both together. Resolve `~`, `~/...`, and `~\...` from the current user's home directory for both commands. Projectless groups omit the project segment and use `[agent] <title>`. The new task inherits the source chat's current task project directory when neither option is present, plus its model, reasoning effort, and permission mode without interrupting or switching the source task. When the source chat has no current task, use the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title. When the title is omitted, use task title `新任务` and group name `[agent] [project directory] 新任务 (mm-dd)`, or `[agent] 新任务 (mm-dd)` for Projectless; an explicit title never gets a date suffix. Every new group gets a deterministic scheme-C Identicon avatar: Latin project names display their first word, Chinese names display up to their first four characters, and the normalized full project path hashes into the palette and symmetric node pattern. Projectless groups use the title as the stable seed. Replace the user's home-directory prefix with `~`. The bracketed project-directory value is limited to 15 characters. Longer paths keep the final two directories when they fit, otherwise keep the final directory, truncating the tail only when the final directory itself is overlong. Use `\` on Windows and `/` on macOS/Linux. Do not automatically send a Sessions or Status card to the new group. A later `/new --dir <cwd>` or `/new --nodir` in the group may explicitly replace the inherited project shape.
+Use `/newgroup [title] [--dir <cwd> | --nodir]` in Feishu to create a private group named `[agent] [project directory] <title>`, invite the command sender, and immediately create and bind a new task in that group. `/new` and `/newgroup` share the same project options: an explicit `--dir` overrides the inherited project directory, while `--nodir` forces a Projectless App Server task; reject using both together. Resolve `~`, `~/...`, and `~\...` from the current user's home directory for both commands. Projectless groups omit the project segment and use `[agent] <title>`. The new task inherits the source chat's current task project directory when neither option is present, plus its model, reasoning effort, and permission mode without interrupting or switching the source task. When the source chat has no current task, use the selected agent and its runtime defaults. An explicit title becomes both the group suffix and the task title. When the title is omitted, use task title `新任务` and group name `[agent] [project directory] 新任务 (mm-dd)`, or `[agent] 新任务 (mm-dd)` for Projectless; an explicit title never gets a date suffix. Every new group gets a deterministic scheme-C Identicon avatar: Latin project names display their first word, Chinese names display up to their first four characters, and the normalized full project path hashes into the palette and symmetric node pattern. Projectless groups use the title as the stable seed. Replace the user's home-directory prefix with `~`. The bracketed project-directory value is limited to 15 characters. Longer paths keep the final two directories when they fit, otherwise keep the final directory, truncating the tail only when the final directory itself is overlong. Use `\` on Windows and `/` on macOS/Linux. Do not automatically send a Sessions or Status card to the new group. A later `/new --dir <cwd>` or `/new --nodir` in the group may explicitly replace the inherited project shape.
 
 Provider is part of the same inherited execution-settings group as model, reasoning effort, and permission mode. Preserve all four across `/new`, `/newgroup`, `/fork`, `/forkgroup`, and the matching `/sessions` actions. New tasks with no inherited Provider must leave it unset so Codex App Server uses the default from Codex configuration. New-group welcome messages report all four settings.
 
@@ -147,7 +180,7 @@ Group names created by `/newgroup` and `/forkgroup` are capped at 60 displayed c
 
 Use `/forkgroup [title]` in Feishu to fork the current position into a newly created private group. In a Feishu thread, use the thread's original anchor turn when the thread has no bound task or its bound task has not completed a turn of its own. Once the bound thread task has completed a turn, use its latest locally persisted completed turn; exclude any newer active turn without interrupting it. Resolve this source before generic thread initialization so an unbound thread does not create an intermediate task. Outside a thread, fork the current Codex task's latest available completed turn. Agent Bot invites the command sender and binds the fork as the new group's current task, but does not automatically send a Sessions or Status card there. The new-group welcome message reports the forked task's model, reasoning effort, and permission type. An explicit title is used directly. Without an explicit title, both the forked task and group name use the same persistent `source title（分支 N）` sequence as `/fork`. `/forkgroup` does not add a date suffix.
 
-Use `/new [title] --nodir` to force a new Codex Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
+Use `/new [title] --nodir` to force a new App Server Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
 
 Every task in the Feishu `/sessions` card has `New`, `NewGroup`, `Fork`, and `ForkGroup` actions. `New` inherits the source task's project directory, model, reasoning effort, and permission mode, creates a new task, and switches the current chat to it without stopping or forking the source task. `NewGroup` applies the same inheritance in a newly created private group. `Fork` switches the current chat to a branch, while `ForkGroup` binds the branch to a newly created private group; both fork actions use the selected task's latest available completed turn without interrupting an active turn.
 

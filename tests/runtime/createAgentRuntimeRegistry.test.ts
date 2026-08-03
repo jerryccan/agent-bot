@@ -14,8 +14,8 @@ describe("createAgentRuntimeRegistry", () => {
     Object.assign(logger, { child: vi.fn(() => logger) });
     const config = {
       agents: {
-        codex: { kind: "codex", title: "Codex", command: "codex", args: [], env: {} },
-        traex: { kind: "codex", title: "TraeX", command: "traex", args: ["app-server"], env: {} },
+        codex: { kind: "app-server", title: "Codex", command: "codex", args: [], env: {} },
+        traex: { kind: "app-server", title: "TraeX", command: "traex", args: ["app-server"], env: {} },
         coco: { kind: "acp", title: "Coco", command: "coco", args: [], env: {} },
       },
     } as unknown as AppConfig;

@@ -30,6 +30,7 @@ import {
   prepareCrashReportDirectory,
   resolveSupervisorDiagnosticsPaths,
 } from "./supervision/SupervisorDiagnostics.js";
+import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 
 const processStartedAt = new Date();
 const agentBotVersion = readPackageVersion();
@@ -69,7 +70,7 @@ if (feishuOutbound) {
     defaultAgentName,
     defaultAgentTitle: defaultAgent?.title ?? defaultAgentName,
     cwd: path.resolve(config.defaults.cwd),
-    workspaceKind: defaultAgent?.kind === "codex" ? "projectless" : "project",
+    workspaceKind: defaultAgent?.kind === "app-server" ? "projectless" : "project",
     defaultUserOpenId: config.feishu.userOpenId,
   }, metadataHydrator);
   safeRestartNotifier = new SafeRestartNotifier(store, feishuOutbound, renderer, logger);
@@ -210,6 +211,27 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       return { ok: true, message: await controller.controlSetTaskTitle(request.localSessionId, request.title) };
     case "task_prompt":
       return { ok: true, message: await controller.controlSendTaskPrompt(request.localSessionId, request.text) };
+    case "task_new_group":
+      return {
+        ok: true,
+        data: await controller.controlCreateTaskGroup(
+          request.localSessionId,
+          request.title,
+          config.feishu.userOpenId,
+          request.cwd,
+          request.projectless === true,
+          request.agentName,
+        ),
+      };
+    case "task_fork_group":
+      return {
+        ok: true,
+        data: await controller.controlForkTaskGroup(
+          request.localSessionId,
+          request.title,
+          config.feishu.userOpenId,
+        ),
+      };
   }
 }
 
@@ -236,6 +258,15 @@ function startReplacementSupervisor(restartReason: string): void {
   const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
   const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
   prepareCrashReportDirectory(reportDirectory);
+  const environmentRefresh = refreshedSystemEnvironment();
+  if (environmentRefresh.error) {
+    logger.warn({ error: environmentRefresh.error }, "Failed to refresh the Windows environment for the replacement Supervisor.");
+  } else if (environmentRefresh.refreshed) {
+    logger.info(
+      { pathChanged: environmentRefresh.pathChanged },
+      "Refreshed the Windows environment for the replacement Supervisor.",
+    );
+  }
   const supervisor = spawn(process.execPath, [
     ...nodeDiagnosticReportArguments(reportDirectory),
     supervisorEntry,
@@ -244,7 +275,7 @@ function startReplacementSupervisor(restartReason: string): void {
     detached: true,
     windowsHide: true,
     stdio: "ignore",
-    env: replacementSupervisorEnvironment(restartReason),
+    env: replacementSupervisorEnvironment(restartReason, environmentRefresh.environment),
   });
   supervisor.unref();
 }

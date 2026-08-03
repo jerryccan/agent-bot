@@ -264,11 +264,17 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   const store = new StateStore(path.join(dir, "state.sqlite"));
   const config = {
     agents: {
-      codex: { kind: "codex", title: "Codex", command: "codex", args: [], env: {} },
+      codex: { kind: "app-server", title: "Codex", command: "codex", args: [], env: {} },
       acp: { kind: "acp", title: "ACP", command: "acp", args: [], env: {} },
       ...Object.fromEntries(Object.keys(extraRuntimes).map((agentName) => [
         agentName,
-        { kind: extraRuntimes[agentName]!.kind, title: agentName, command: agentName, args: [], env: {} },
+        {
+          kind: extraRuntimes[agentName]!.kind === "codex" ? "app-server" : "acp",
+          title: agentName,
+          command: agentName,
+          args: [],
+          env: {},
+        },
       ])),
     },
     defaults: { agent: "codex", cwd: process.cwd() },
@@ -488,6 +494,7 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "inspect this repo",
       expect.any(String),
+      "Codex",
     );
     expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ runtimeKind: "codex", remoteSessionId: "thr_1" });
   });
@@ -1074,6 +1081,7 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "build the source task（分支 1）",
       store.getSession(sourceSessionId!)?.cwd,
+      "Codex",
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
@@ -1146,6 +1154,7 @@ describe("ProxySessionController", () => {
       "chat_id:oc_new_group",
       "并行修复",
       store.getSession(sourceSessionId!)?.cwd,
+      "Codex",
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
@@ -1358,7 +1367,7 @@ describe("ProxySessionController", () => {
     });
   });
 
-  test("rejects --nodir when the current default agent is not Codex", async () => {
+  test("rejects --nodir when the current default agent is not App Server", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("/agent acp"));
 
@@ -1367,7 +1376,7 @@ describe("ProxySessionController", () => {
     expect(runtime.createSession).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "/new --nodir 仅支持 Codex Agent。",
+      "/new --nodir 仅支持 App Server Agent。",
     );
   });
 
@@ -1408,6 +1417,7 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "修复会话列表时间",
       cwd,
+      "Codex",
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
@@ -1454,6 +1464,7 @@ describe("ProxySessionController", () => {
       "chat_id:oc_new_group",
       "广州天气",
       expect.any(String),
+      "Codex",
     );
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:oc_new_group",
@@ -1585,7 +1596,7 @@ describe("ProxySessionController", () => {
     });
   });
 
-  test("rejects newgroup --nodir when the current default agent is not Codex", async () => {
+  test("rejects newgroup --nodir when the current default agent is not App Server", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("/agent acp"));
 
@@ -1602,7 +1613,7 @@ describe("ProxySessionController", () => {
     expect(runtime.createSession).not.toHaveBeenCalled();
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "/newgroup --nodir 仅支持 Codex Agent。",
+      "/newgroup --nodir 仅支持 App Server Agent。",
     );
   });
 
@@ -1711,8 +1722,9 @@ describe("ProxySessionController", () => {
     expect(groupInput.name).toMatch(
       /^\[codex\] 新任务 \(\d{2}-\d{2}\)$/,
     );
+    const taskTitle = groupInput.name.replace(/^\[codex\] /, "");
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      title: "新任务",
+      title: taskTitle,
       model: undefined,
       reasoningEffort: undefined,
       permissionMode: "auto",
@@ -2876,17 +2888,20 @@ describe("ProxySessionController", () => {
       },
     });
 
-    expect(outbound.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+    const groupInput = (outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(groupInput).toEqual(expect.objectContaining({
       name: expect.stringMatching(/^\[codex\] \[[^\]]+\] 新任务 \(\d{2}-\d{2}\)$/u),
       userOpenId: "ou_current_user",
       avatarPng: expect.any(Uint8Array),
     }));
+    const taskTitle = groupInput?.name.replace(/^\[codex\] \[[^\]]+\] /u, "");
+    expect(taskTitle).toMatch(/^新任务 \(\d{2}-\d{2}\)$/u);
     const groupSessionId = store.getUserContext("chat_id:oc_new_group")?.currentSessionId;
     expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({
       localSessionId: groupSessionId,
       agentName: "codex",
       cwd,
-      title: "新任务",
+      title: taskTitle,
       model: "gpt-5.6-sol",
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
@@ -2894,7 +2909,7 @@ describe("ProxySessionController", () => {
     expect(store.getSession(groupSessionId!)).toMatchObject({
       contextKey: "chat_id:oc_new_group",
       cwd,
-      title: "新任务",
+      title: taskTitle,
       model: "gpt-5.6-sol",
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
@@ -3866,6 +3881,7 @@ describe("ProxySessionController", () => {
       "chat_id:latest",
       "start task for targeted CLI prompt",
       expect.any(String),
+      "Codex",
     );
     expect(presenter.startPendingTurn).toHaveBeenLastCalledWith(
       localSessionId,
@@ -3905,6 +3921,7 @@ describe("ProxySessionController", () => {
       "chat_id:latest",
       "start task before route race",
       expect.any(String),
+      "Codex",
     );
   });
 
@@ -3957,6 +3974,210 @@ describe("ProxySessionController", () => {
 
     expect(runtime.startTurn).toHaveBeenCalledOnce();
     expect(runtime.steerTurn).not.toHaveBeenCalled();
+  });
+
+  test("creates a new group and inherited task from an explicit CLI source task", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-source-project-"));
+    tempDirs.push(sourceProject);
+    await controller.onMessage(groupMessage(
+      "origin",
+      `/new Source --dir "${sourceProject}"`,
+    ));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    const source = store.getSession(sourceSessionId)!;
+
+    const created = await controller.controlCreateTaskGroup(
+      sourceSessionId,
+      "CLI review room",
+      "ou_cli_user",
+    );
+
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: expect.stringContaining("CLI review room"),
+      userOpenId: "ou_cli_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+    expect(created).toMatchObject({
+      sourceLocalSessionId: sourceSessionId,
+      group: {
+        chatId: "oc_new_group",
+        contextKey: "chat_id:oc_new_group",
+        name: expect.stringContaining("CLI review room"),
+      },
+      task: {
+        contextKey: "chat_id:oc_new_group",
+        agentName: source.agentName,
+        cwd: sourceProject,
+        modelProvider: source.modelProvider,
+        model: source.model,
+        reasoningEffort: source.reasoningEffort,
+        permissionMode: source.permissionMode,
+        title: "CLI review room",
+      },
+    });
+    expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(sourceSessionId);
+    expect(store.getUserContext("chat_id:oc_new_group")?.currentSessionId)
+      .toBe(created.task.localSessionId);
+    expect(runtime.createSession).toHaveBeenCalledTimes(2);
+  });
+
+  test("lets CLI newgroup override the project directory and expand home shorthand", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-newgroup-home-"));
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-source-project-"));
+    const selectedProject = path.join(home, "work", "demo");
+    fs.mkdirSync(selectedProject, { recursive: true });
+    tempDirs.push(home, sourceProject);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    await controller.onMessage(groupMessage(
+      "origin",
+      `/new Source --dir "${sourceProject}"`,
+    ));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+
+    const created = await controller.controlCreateTaskGroup(
+      sourceSessionId,
+      "CLI home project",
+      "ou_cli_user",
+      "~/work/demo",
+    );
+
+    expect(created.task.cwd).toBe(selectedProject);
+    expect(store.getUserContext("chat_id:oc_new_group")?.boundProjectCwd).toBe(selectedProject);
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: selectedProject,
+      title: "CLI home project",
+    }));
+    expect(outbound.createGroup).toHaveBeenLastCalledWith({
+      name: `[codex] [~${path.sep}work${path.sep}demo] CLI home project`,
+      userOpenId: "ou_cli_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+  });
+
+  test("lets CLI newgroup force a Projectless task instead of inheriting the project", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-newgroup-home-"));
+    const sourceProject = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-source-project-"));
+    tempDirs.push(home, sourceProject);
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    await controller.onMessage(groupMessage(
+      "origin",
+      `/new Source --dir "${sourceProject}"`,
+    ));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+
+    const created = await controller.controlCreateTaskGroup(
+      sourceSessionId,
+      "CLI Projectless room",
+      "ou_cli_user",
+      undefined,
+      true,
+    );
+
+    expect(created.task.cwd.startsWith(path.join(home, "Documents", "Codex"))).toBe(true);
+    expect(store.getUserContext("chat_id:oc_new_group")?.boundProjectCwd).toBeUndefined();
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      cwd: created.task.cwd,
+      title: "CLI Projectless room",
+    }));
+    expect(outbound.createGroup).toHaveBeenLastCalledWith({
+      name: "[codex] CLI Projectless room",
+      userOpenId: "ou_cli_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+  });
+
+  test("creates a CLI newgroup with an explicitly selected Agent and its runtime defaults", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start source task for another Agent"));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    store.updateRuntimeSession(sourceSessionId, {
+      modelProvider: "azure",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
+
+    const created = await controller.controlCreateTaskGroup(
+      sourceSessionId,
+      "ACP review room",
+      "ou_cli_user",
+      undefined,
+      false,
+      "acp",
+    );
+
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: "[acp] ACP review room",
+      userOpenId: "ou_cli_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+    expect(created.task).toMatchObject({
+      contextKey: "chat_id:oc_new_group",
+      agentName: "acp",
+      modelProvider: "openai",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+      title: "ACP review room",
+    });
+    const createInput = (runtime.createSession as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(createInput).toMatchObject({
+      agentName: "acp",
+      title: "ACP review room",
+    });
+    expect(createInput.modelProvider).toBeUndefined();
+    expect(createInput.model).toBeUndefined();
+    expect(createInput.reasoningEffort).toBeUndefined();
+    expect(createInput.permissionMode).toBe("auto");
+    expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(sourceSessionId);
+  });
+
+  test("forks an explicit CLI source task into a group without switching the source context", async () => {
+    const { controller, runtime, sessions, remoteSessions, outbound, store, listeners } = fixture();
+    await controller.onMessage(groupMessage("origin", "start source task for CLI forkgroup"));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    sessions.get(sourceSessionId)!.activeTurnId = undefined;
+    const remote = remoteSessions.find((session) => session.id === "thr_1")!;
+    remote.status = "idle";
+    remote.lastTurnId = "turn_1";
+    remote.lastTurnStatus = "completed";
+
+    const created = await controller.controlForkTaskGroup(
+      sourceSessionId,
+      "CLI parallel fix",
+      "ou_cli_user",
+    );
+
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+      title: "CLI parallel fix",
+    }));
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: expect.stringContaining("CLI parallel fix"),
+      userOpenId: "ou_cli_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+    expect(created).toMatchObject({
+      sourceLocalSessionId: sourceSessionId,
+      sourceTurnId: "turn_1",
+      group: { chatId: "oc_new_group", contextKey: "chat_id:oc_new_group" },
+      task: { contextKey: "chat_id:oc_new_group", title: "CLI parallel fix" },
+    });
+    expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(sourceSessionId);
+    expect(store.getUserContext("chat_id:oc_new_group")?.currentSessionId)
+      .toBe(created.task.localSessionId);
   });
 
   test("opens the unified settings card on the Model tab", async () => {

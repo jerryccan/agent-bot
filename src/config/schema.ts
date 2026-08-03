@@ -3,8 +3,14 @@ import { DEFAULT_LOG_PATH, DEFAULT_SQLITE_PATH } from "./paths.js";
 
 const envRecordSchema = z.record(z.string(), z.string()).default({});
 
+const agentKindSchema = z.union([
+  z.literal("acp"),
+  z.literal("app-server"),
+  z.literal("codex").transform(() => "app-server" as const),
+]).default("acp");
+
 export const agentConfigSchema = z.object({
-  kind: z.enum(["acp", "codex"]).default("acp"),
+  kind: agentKindSchema,
   title: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),

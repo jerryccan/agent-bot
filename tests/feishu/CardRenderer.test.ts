@@ -32,6 +32,7 @@ function state(): TurnViewState {
   return {
     sessionId: "s1",
     turnId: "turn_1",
+    agentLabel: "Codex",
     prompt: "检查卡片渲染",
     status: "running",
     startedAt: 1_000,
@@ -794,6 +795,31 @@ describe("CardRenderer", () => {
 
     expect(card.schema).toBe("2.0");
     expect(card.body.elements).toEqual([{ tag: "markdown", content: "正在连接 Codex…" }]);
+  });
+
+  test("uses the current Agent label in empty progress states", () => {
+    const starting = state();
+    starting.agentLabel = "TraeX";
+    starting.status = "starting";
+    starting.progressText = undefined;
+    starting.activeTool = undefined;
+    starting.plan = [];
+    starting.activities = [];
+    starting.completedTools = [];
+    starting.failedTools = [];
+    starting.fileSummary = [];
+
+    const card = new CardRenderer().renderTurn(starting) as {
+      body: { elements: Array<{ tag: string; content: string }> };
+    };
+
+    expect(card.body.elements).toEqual([{ tag: "markdown", content: "正在连接 TraeX…" }]);
+
+    starting.status = "running";
+    const waitingCard = new CardRenderer().renderTurn(starting) as {
+      body: { elements: Array<{ tag: string; content: string }> };
+    };
+    expect(waitingCard.body.elements[0]).toEqual({ tag: "markdown", content: "正在等待 TraeX 返回进度…" });
   });
 
   test("renders commentary assistant text as plain Markdown and keeps final-answer text out of progress cards", () => {

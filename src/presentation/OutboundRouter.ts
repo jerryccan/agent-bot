@@ -8,7 +8,13 @@ import type {
 } from "../feishu/types.js";
 
 export interface TurnPresenter {
-  registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void;
+  registerSession(
+    sessionId: string,
+    contextKey: string,
+    taskTitle?: string,
+    projectCwd?: string,
+    agentLabel?: string,
+  ): void;
   updateSessionTitle(sessionId: string, taskTitle: string): void;
   unregisterSession(sessionId: string): void;
   startPendingTurn(
@@ -48,11 +54,17 @@ export class OutboundRouter {
     if (routes.length === 0) throw new Error("At least one outbound route is required.");
   }
 
-  registerSession(sessionId: string, contextKey: string, taskTitle?: string, projectCwd?: string): void {
+  registerSession(
+    sessionId: string,
+    contextKey: string,
+    taskTitle?: string,
+    projectCwd?: string,
+    agentLabel?: string,
+  ): void {
     const route = this.route(contextKey);
     this.sessionRoutes.set(sessionId, route);
     this.sessionContextKeys.set(sessionId, contextKey);
-    route.presenter.registerSession(sessionId, contextKey, taskTitle, projectCwd);
+    route.presenter.registerSession(sessionId, contextKey, taskTitle, projectCwd, agentLabel);
   }
 
   getSessionContextKey(sessionId: string): string | undefined {

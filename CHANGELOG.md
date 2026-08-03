@@ -6,7 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Rename the configured App Server adapter kind from `codex` to `app-server` while normalizing existing `codex` values during loading, and show the active Agent's display name in progress-card connection and waiting states.
+- Retry `thread/list` with `updated_at` and remember that capability when a compatible App Server such as TraeX rejects Codex's `recency_at` sort extension.
+- Add `agentbot task newgroup <task>` and `agentbot task forkgroup <task>` to create inherited task groups or fork a task's latest completed turn through the running Server, with optional titles, target-Agent and project overrides for NewGroup, and structured JSON output.
 - Register `agentbot` as the primary CLI executable, retain `agent-bot` as a deprecated forwarding entry with a localized warning, and update current documentation and CLI guidance to use the new command.
+- Refresh Windows Machine and User environment variables before initial Supervisor launch, replacement Supervisor launch, and every Worker launch so restarts pick up updated `PATH` and other values while preserving Profile isolation.
+- Extend App Server session lifecycle requests to 60 seconds so slower compatible Agents such as TraeX can complete `thread/start` without producing a late unknown response.
 
 ## [0.1.11] - 2026-08-02
 

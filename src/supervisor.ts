@@ -13,6 +13,7 @@ import {
   STOP_EXIT_CODE,
 } from "./supervision/restartPolicy.js";
 import { SupervisorDiagnostics, nodeDiagnosticReportArguments } from "./supervision/SupervisorDiagnostics.js";
+import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const config = loadConfig();
@@ -38,13 +39,23 @@ async function startChild(): Promise<void> {
   const restartReason = nextStartReason;
   nextStartReason = "Supervisor 重新拉起进程";
   const workerStderr = diagnostics.openWorkerStderr();
+  const environmentRefresh = refreshedSystemEnvironment();
+  if (environmentRefresh.error) {
+    writeSupervisorLog("environment_refresh_failed", { error: environmentRefresh.error });
+  } else if (environmentRefresh.refreshed) {
+    writeSupervisorLog("environment_refreshed", { pathChanged: environmentRefresh.pathChanged });
+  }
   try {
     child = spawn(process.execPath, [
       ...nodeDiagnosticReportArguments(diagnostics.paths.crashReportDirectory),
       childEntry,
     ], {
       cwd: process.cwd(),
-      env: { ...process.env, AGENT_BOT_SUPERVISED: "1", AGENT_BOT_RESTART_REASON: restartReason },
+      env: {
+        ...environmentRefresh.environment,
+        AGENT_BOT_SUPERVISED: "1",
+        AGENT_BOT_RESTART_REASON: restartReason,
+      },
       stdio: ["ignore", "ignore", workerStderr],
       windowsHide: true,
     });

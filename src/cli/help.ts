@@ -20,6 +20,8 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   task status <任务>                显示任务状态
   task chat <任务>                  显示任务绑定的飞书会话
   task prompt <任务> <提示词>       向任务发送提示词
+  task newgroup <任务> [标题]       创建新群；支持 --agent、--dir、--nodir
+  task forkgroup <任务> [标题]      从任务 Fork 新群
   task stop <任务>                  停止任务
   task title <任务> <标题>          重命名任务
   skills status                     显示内置 Skill 状态
@@ -66,6 +68,8 @@ Common commands:
   task status <task>                Show task status
   task chat <task>                  Show the task's Lark chat binding
   task prompt <task> <prompt>       Send a Prompt to a task
+  task newgroup <task> [title]      Create a group; supports --agent, --dir, --nodir
+  task forkgroup <task> [title]     Fork a task into a new group
   task stop <task>                  Stop a task
   task title <task> <title>         Rename a task
   skills status                     Show the built-in Skill status

@@ -25,6 +25,7 @@ export type TurnActivity =
 export interface TurnViewState {
   sessionId: string;
   turnId: string;
+  agentLabel?: string;
   taskTitle?: string;
   prompt?: string;
   projectCwd?: string;

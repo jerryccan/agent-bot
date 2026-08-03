@@ -35,12 +35,13 @@ const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
   "Call Graphics.CopyFromScreen with those physical coordinates and validate that the saved bitmap dimensions exactly equal the selected physical capture bounds.",
 ].join(" ");
 
-const SESSION_REQUEST_TIMEOUT_MS = 30_000;
+const SESSION_REQUEST_TIMEOUT_MS = 60_000;
 const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const SYNC_REQUEST_TIMEOUT_MS = 5_000;
 // A timed-out fork keeps running in App Server and can create an orphan thread.
 // Wait for its response; connection closure still rejects the request.
 const FORK_REQUEST_TIMEOUT_MS = 0;
+type ThreadListSortKey = "recency_at" | "updated_at";
 
 export interface AppServerClient {
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
@@ -84,6 +85,7 @@ export class CodexRuntime implements AgentRuntime {
   private readonly unsubscribeDisconnect?: () => void;
   private readonly sessionSyncs = new Map<string, Promise<RuntimeSession>>();
   private readonly localActivityDetector?: CodexLocalActivityDetector;
+  private threadListSortKey: ThreadListSortKey = "recency_at";
 
   constructor(
     private readonly provider: AppServerClientProvider,
@@ -215,18 +217,18 @@ export class CodexRuntime implements AgentRuntime {
     limit?: number;
   } = {}): Promise<RemoteSessionPage> {
     const client = await this.client();
-    const response = await client.request<ThreadListResponse>(
-      "thread/list",
-      {
-        cursor: input.cursor,
-        limit: input.limit ?? 20,
-        sortKey: "recency_at",
-        sortDirection: "desc",
-        archived: false,
-        searchTerm: input.searchTerm,
-      },
-      CONTROL_REQUEST_TIMEOUT_MS,
-    );
+    let response: ThreadListResponse;
+    try {
+      response = await this.requestThreadList(client, input, this.threadListSortKey);
+    } catch (error) {
+      if (this.threadListSortKey !== "recency_at" || !isUnsupportedRecencySortError(error)) throw error;
+      this.threadListSortKey = "updated_at";
+      this.logger.warn(
+        { error },
+        "App Server does not support thread/list recency_at sorting; retrying with updated_at.",
+      );
+      response = await this.requestThreadList(client, input, this.threadListSortKey);
+    }
     const sessions = await Promise.all(response.data.map(async (thread) => {
       const listed = remoteSessionSummary(thread);
       if (listed.status === "active" || listed.lastTurnStatus === "inProgress") return listed;
@@ -248,6 +250,25 @@ export class CodexRuntime implements AgentRuntime {
         : sessions,
       nextCursor: response.nextCursor ?? undefined,
     };
+  }
+
+  private requestThreadList(
+    client: AppServerClient,
+    input: { searchTerm?: string; cursor?: string; limit?: number },
+    sortKey: ThreadListSortKey,
+  ): Promise<ThreadListResponse> {
+    return client.request<ThreadListResponse>(
+      "thread/list",
+      {
+        cursor: input.cursor,
+        limit: input.limit ?? 20,
+        sortKey,
+        sortDirection: "desc",
+        archived: false,
+        searchTerm: input.searchTerm,
+      },
+      CONTROL_REQUEST_TIMEOUT_MS,
+    );
   }
 
   async readRemoteSession(remoteSessionId: string): Promise<RemoteSessionSummary> {
@@ -1019,6 +1040,18 @@ function isUnsupportedExcludeTurnsError(error: unknown): boolean {
   if (!details.toLowerCase().replaceAll(/[^a-z]/g, "").includes("excludeturns")) return false;
   return error.code === -32602
     || /unknown|unrecognized|unexpected|unsupported|not supported|experimental/i.test(details);
+}
+
+function isUnsupportedRecencySortError(error: unknown): boolean {
+  if (!(error instanceof AppServerRequestError) || error.method !== "thread/list") return false;
+  const data = typeof error.data === "string"
+    ? error.data
+    : error.data === undefined
+      ? ""
+      : JSON.stringify(error.data);
+  const details = `${error.serverMessage} ${data}`;
+  return /recency_at/i.test(details)
+    && /unknown|unrecognized|unexpected|unsupported|not supported|invalid/i.test(details);
 }
 
 function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {

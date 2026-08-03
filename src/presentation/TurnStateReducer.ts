@@ -16,10 +16,12 @@ export function createTurnViewState(
   replyTarget?: MessageReplyTarget,
   projectCwd?: string,
   prompt?: string,
+  agentLabel?: string,
 ): TurnViewState {
   return {
     sessionId,
     turnId,
+    agentLabel,
     taskTitle,
     prompt,
     projectCwd,
