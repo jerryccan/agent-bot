@@ -65,6 +65,7 @@ import {
   type ServerStartResult,
 } from "./cli/ServerStarter.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
+import { isThreadContextKey } from "./feishu/contextKey.js";
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 import {
   parseTaskForkGroupOptions,
@@ -136,6 +137,7 @@ interface InitCommandResult extends InitializationResult {
   feishu: {
     status: FeishuInitializationStatus;
     appId?: string;
+    userOpenIdStatus?: "configured" | "pending";
     configuration?: EnsureFeishuAppConfigurationResult;
   };
   server: InitializationServerResult;
@@ -448,6 +450,9 @@ async function initializeFeishu(
     return {
       status: "skipped",
       ...(existing.appId ? { appId: existing.appId } : {}),
+      ...(existing.appId && existing.appSecret
+        ? { userOpenIdStatus: existing.userOpenId ? "configured" as const : "pending" as const }
+        : {}),
     };
   }
   if (!options.json) {
@@ -513,6 +518,7 @@ async function initializeFeishu(
     return {
       status,
       appId: credentials.appId,
+      userOpenIdStatus: credentials.userOpenId ? "configured" : "pending",
       configuration,
     };
   } finally {
@@ -659,12 +665,14 @@ async function serverCommand(input: string[]): Promise<void> {
   }
   if (action === "restart") {
     const immediate = rest.includes("--immediate") || rest.includes("--force");
+    const notificationSessionId = resolveRestartNotificationSessionId(config.storage.sqlitePath, rest);
     const reason = optionValue(rest, "--reason")
       ?? (immediate ? "通过 Agent Bot CLI 立即重启" : "通过 Agent Bot CLI 安全重启");
     ensureOk(await sendControlRequest(endpoint, {
       action: "server_restart",
       mode: immediate ? "immediate" : "safe",
       reason,
+      notificationSessionId,
     }));
     process.stdout.write(immediate
       ? cliText("Immediate restart requested.\n", "已请求立即重启。\n")
@@ -672,6 +680,42 @@ async function serverCommand(input: string[]): Promise<void> {
     return;
   }
   throw new Error(cliText(`Unknown server command: ${action}`, `未知的 server 命令：${action}`));
+}
+
+function resolveRestartNotificationSessionId(sqlitePath: string, args: string[]): string | undefined {
+  const store = new StateStore(sqlitePath);
+  try {
+    const sessions = store.listAllSessions();
+    if (args.includes("--task")) {
+      const reference = optionValue(args, "--task")?.trim();
+      if (!reference || reference.startsWith("--")) throw new Error(cliText(
+        "server restart --task requires a task number or task ID.",
+        "server restart --task 需要任务序号或任务 ID。",
+      ));
+      const session = resolveTask(sessions, reference);
+      if (
+        isThreadContextKey(session.contextKey)
+        && !store.findLatestMessageIdForSession(session.localSessionId, session.contextKey)
+        && !store.findLatestMessageIdForContext(session.contextKey)
+      ) {
+        throw new Error(cliText(
+          "The task topic has no message anchor for restart notifications. Send /restart in that topic instead.",
+          "该任务话题没有可用于重启通知的消息锚点，请直接在该话题中发送 /restart。",
+        ));
+      }
+      return session.localSessionId;
+    }
+    const runningContexts = new Set(
+      sessions.filter((session) => session.status === "running").map((session) => session.contextKey),
+    );
+    if (runningContexts.size > 1) throw new Error(cliText(
+      "Multiple conversations are running. Pass --task <task> so restart notifications return to the requester.",
+      "当前有多个会话正在运行。请传入 --task <任务>，确保重启通知返回发起会话。",
+    ));
+    return undefined;
+  } finally {
+    store.close();
+  }
 }
 
 async function taskCommand(input: string[]): Promise<void> {
@@ -945,6 +989,12 @@ function printInitializationResult(result: Omit<InitCommandResult, "server">): v
       "飞书应用：已跳过；请使用 Console 模式或稍后重新运行 init。\n",
     ));
   }
+  if (result.feishu.userOpenIdStatus === "pending") {
+    process.stdout.write(cliText(
+      "Lark user: pending; send the bot a direct message to save FEISHU_USER_OPEN_ID\n",
+      "飞书用户：等待补全；请私聊机器人以保存 FEISHU_USER_OPEN_ID\n",
+    ));
+  }
   if (result.feishu.configuration?.status === "updated") {
     const added = result.feishu.configuration.added;
     process.stdout.write(cliText(
@@ -981,6 +1031,13 @@ function printInitializationServerResult(result: InitCommandResult["server"]): v
     process.stdout.write(cliText(
       "Agent Bot server: skipped (Lark is not configured; Console mode is available)\n",
       "Agent Bot 服务：已跳过（未配置飞书；可使用 Console 模式）\n",
+    ));
+    return;
+  }
+  if (result.status === "restart-scheduled") {
+    process.stdout.write(cliText(
+      "Agent Bot server: safe restart scheduled to load the current version.\n",
+      "Agent Bot 服务：已安排安全重启，以加载当前版本。\n",
     ));
     return;
   }

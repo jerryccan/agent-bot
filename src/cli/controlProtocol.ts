@@ -6,7 +6,12 @@ import type { SessionRecord } from "../state/StateStore.js";
 
 export type ControlRequest =
   | { action: "health" }
-  | { action: "server_restart"; mode: "safe" | "immediate"; reason: string }
+  | {
+      action: "server_restart";
+      mode: "safe" | "immediate";
+      reason: string;
+      notificationSessionId?: string;
+    }
   | { action: "server_stop" }
   | { action: "task_status"; localSessionId: string }
   | { action: "task_stop"; localSessionId: string }

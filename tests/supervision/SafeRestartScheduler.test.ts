@@ -30,11 +30,11 @@ describe("SafeRestartScheduler", () => {
     expect(onReady).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(200);
 
-    expect(onReady).toHaveBeenCalledWith("code updated");
+    expect(onReady).toHaveBeenCalledWith("code updated", []);
     expect(scheduler.scheduled).toBe(false);
   });
 
-  test("keeps only the latest safe restart request", async () => {
+  test("keeps the latest reason and collects every requesting conversation", async () => {
     vi.useFakeTimers();
     const onReady = vi.fn();
     const scheduler = new SafeRestartScheduler({
@@ -43,17 +43,35 @@ describe("SafeRestartScheduler", () => {
       quietPeriodMs: 1_000,
       pollIntervalMs: 100,
     });
-    expect(scheduler.schedule("first")).toBe(true);
+    expect(scheduler.schedule("first", {
+      contextKey: "chat_id:first:thread_id:topic",
+    })).toBe(true);
     await vi.advanceTimersByTimeAsync(900);
-    expect(scheduler.schedule("second")).toBe(false);
-    expect(scheduler.pendingReason).toBe("second");
+    expect(scheduler.schedule("second", {
+      contextKey: "chat_id:second",
+      replyMessageId: "om_second",
+    })).toBe(false);
+    expect(scheduler.schedule("third", {
+      contextKey: "chat_id:first:thread_id:topic",
+      replyMessageId: "om_newer_anchor",
+    })).toBe(false);
+    expect(scheduler.pendingReason).toBe("third");
 
     await vi.advanceTimersByTimeAsync(900);
     expect(onReady).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(200);
 
     expect(onReady).toHaveBeenCalledOnce();
-    expect(onReady).toHaveBeenCalledWith("second");
+    expect(onReady).toHaveBeenCalledWith("third", [
+      {
+        contextKey: "chat_id:first:thread_id:topic",
+        replyMessageId: "om_newer_anchor",
+      },
+      {
+        contextKey: "chat_id:second",
+        replyMessageId: "om_second",
+      },
+    ]);
     expect(scheduler.scheduled).toBe(false);
   });
 
@@ -139,6 +157,7 @@ describe("SafeRestartScheduler", () => {
     expect(onStatus).toHaveBeenLastCalledWith({
       scheduleId: 1,
       reason: "cancel from card",
+      notificationTargets: [],
       phase: "cancelled",
       activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
     });

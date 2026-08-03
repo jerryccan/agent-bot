@@ -14,7 +14,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   console                           打开本地控制台
   server start                      在后台启动 Agent Bot
   server status                     显示服务、飞书 App ID 和安全重启状态
-  server restart                    安排安全重启
+  server restart [--task <任务>]    安排安全重启并将状态发回指定任务会话
   server stop                       停止 Agent Bot
   task list                         列出任务
   task status <任务>                显示任务状态
@@ -39,6 +39,11 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   --skip-feishu                     仅初始化 Console 环境
   --reconfigure-feishu              仅替换现有飞书凭据
 
+重启选项：
+  --task <任务>                     将安全重启状态发回任务所在会话
+  --reason <原因>                   设置重启原因
+  --immediate                       立即重启，可能中断任务
+
 示例：
   agentbot init
   agentbot --profile ~/.agent-bot init --reset
@@ -62,7 +67,7 @@ Common commands:
   console                           Open the local console
   server start                      Start Agent Bot in the background
   server status                     Show the server, Lark App ID, and safe-restart status
-  server restart                    Schedule a safe restart
+  server restart [--task <task>]    Schedule a safe restart and return status to the task's conversation
   server stop                       Stop Agent Bot
   task list                         List tasks
   task status <task>                Show task status
@@ -86,6 +91,11 @@ Init options:
   --reset                           Back up and reset the selected explicit profile
   --skip-feishu                     Initialize for Console only
   --reconfigure-feishu              Replace only the existing Lark credentials
+
+Restart options:
+  --task <task>                     Return safe-restart status to the task's conversation
+  --reason <reason>                 Set the restart reason
+  --immediate                       Restart immediately and possibly interrupt tasks
 
 Examples:
   agentbot init

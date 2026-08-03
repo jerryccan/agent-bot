@@ -11,7 +11,11 @@ import {
 import { refreshedSystemEnvironment } from "../supervision/systemEnvironment.js";
 import { controlEndpoint } from "./controlProtocol.js";
 import { cliText } from "./i18n.js";
-import { isServerReachable, isServerRunning } from "./LocalControlClient.js";
+import {
+  isServerReachable,
+  isServerRunning,
+  sendControlRequest,
+} from "./LocalControlClient.js";
 
 export interface ServerStartResult {
   status: "started" | "already-running";
@@ -19,6 +23,7 @@ export interface ServerStartResult {
 
 export type InitializationServerResult =
   | ServerStartResult
+  | { status: "restart-scheduled" }
   | { status: "skipped"; reason: "feishu-skipped" };
 
 export interface ServerStarterDependencies {
@@ -33,6 +38,7 @@ const SERVER_START_TIMEOUT_MS = 45_000;
 interface InitializationServerDependencies {
   loadConfig(configPath?: string): AppConfig;
   startServer(config: AppConfig): Promise<ServerStartResult>;
+  restartServer(config: AppConfig): Promise<void>;
 }
 
 export async function startInitializedServer(
@@ -42,7 +48,11 @@ export async function startInitializedServer(
   if (options.skipFeishu) {
     return { status: "skipped", reason: "feishu-skipped" };
   }
-  return dependencies.startServer(dependencies.loadConfig(options.configPath));
+  const config = dependencies.loadConfig(options.configPath);
+  const result = await dependencies.startServer(config);
+  if (result.status !== "already-running") return result;
+  await dependencies.restartServer(config);
+  return { status: "restart-scheduled" };
 }
 
 export async function startServer(
@@ -116,6 +126,19 @@ const defaultDependencies: ServerStarterDependencies = {
 const defaultInitializationDependencies: InitializationServerDependencies = {
   loadConfig,
   startServer: (config) => startServer(config),
+  restartServer: async (config) => {
+    const response = await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+      action: "server_restart",
+      mode: "safe",
+      reason: "Agent Bot 初始化完成，需要加载当前版本",
+    });
+    if (!response.ok) {
+      throw new Error(response.message?.trim() || cliText(
+        "Could not schedule the Agent Bot restart after initialization.",
+        "初始化完成后无法安排 Agent Bot 重启。",
+      ));
+    }
+  },
 };
 
 async function waitForServer(endpoint: string, timeoutMs: number): Promise<boolean> {

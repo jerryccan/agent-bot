@@ -5,6 +5,8 @@ import { LocalControlServer } from "./cli/LocalControlServer.js";
 import { controlEndpoint, type ControlRequest, type ControlResponse } from "./cli/controlProtocol.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
 import { loadConfig } from "./config/loadConfig.js";
+import { persistFeishuUserOpenIdIfMissing } from "./config/FeishuUserOpenIdStore.js";
+import { defaultDotEnvPath } from "./config/paths.js";
 import { ConsoleConnector } from "./console/ConsoleConnector.js";
 import { ConsoleTurnPresenter } from "./console/ConsoleTurnPresenter.js";
 import { CardRenderer } from "./feishu/CardRenderer.js";
@@ -12,6 +14,8 @@ import { ConsoleFeishuClient } from "./feishu/ConsoleFeishuClient.js";
 import { FeishuConnector } from "./feishu/FeishuConnector.js";
 import { FeishuMessageClient } from "./feishu/FeishuMessageClient.js";
 import { FeishuTurnPresenter } from "./feishu/FeishuTurnPresenter.js";
+import { baseChatContextKey, isThreadContextKey } from "./feishu/contextKey.js";
+import type { MessageReplyTarget } from "./feishu/types.js";
 import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { createLogger } from "./logging/logger.js";
 import { OutboundRouter, type OutboundRoute } from "./presentation/OutboundRouter.js";
@@ -22,8 +26,13 @@ import { StartupNotifier } from "./startup/StartupNotifier.js";
 import { SessionMetadataHydrator } from "./startup/SessionMetadataHydrator.js";
 import { startFeishu } from "./startup/startFeishu.js";
 import { STOP_EXIT_CODE } from "./supervision/restartPolicy.js";
-import { replacementSupervisorEnvironment } from "./supervision/replacementSupervisor.js";
+import {
+  RESTART_GROUP_CONTEXTS_ENV,
+  replacementSupervisorEnvironment,
+  restartGroupContextKeysFromEnvironment,
+} from "./supervision/replacementSupervisor.js";
 import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
+import type { RestartNotificationTarget } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
 import {
   nodeDiagnosticReportArguments,
@@ -37,6 +46,9 @@ const agentBotVersion = readPackageVersion();
 const supervised = process.env.AGENT_BOT_SUPERVISED === "1";
 const startupReason = process.env.AGENT_BOT_RESTART_REASON?.trim()
   || (supervised ? "Supervisor 启动" : "直接启动");
+const restartGroupContextKeys = restartGroupContextKeysFromEnvironment(
+  process.env[RESTART_GROUP_CONTEXTS_ENV],
+);
 const consoleOnly = process.env.AGENT_BOT_CONSOLE_ONLY === "1";
 const config = loadConfig();
 const transport = consoleOnly ? "console" : requireServerFeishuTransport(config.feishu);
@@ -92,7 +104,7 @@ let shuttingDown = false;
 let restartRequested = false;
 const safeRestart = new SafeRestartScheduler({
   readActivity: () => store.getServerActivityState(),
-  onReady: (reason) => initiateRestart(reason),
+  onReady: (reason, notificationTargets) => initiateRestart(reason, notificationTargets),
   onStatus: (status) => safeRestartNotifier?.update(status),
   onStatusError: (error) => logger.warn({ error }, "Failed to publish safe restart status."),
 });
@@ -100,6 +112,16 @@ const controller = new ProxySessionController(config, store, runtimes, outbound,
   supervised,
   restart: requestRestart,
   cancelSafeRestart: (scheduleId) => safeRestart.cancelScheduled(scheduleId),
+  rememberFeishuUserOpenId: (userOpenId) => {
+    if (config.feishu.userOpenId?.startsWith("ou_")) return;
+    const persisted = persistFeishuUserOpenIdIfMissing(defaultDotEnvPath(), userOpenId);
+    config.feishu.userOpenId = persisted.userOpenId;
+    process.env.FEISHU_USER_OPEN_ID = persisted.userOpenId;
+    logger.info(
+      { status: persisted.status },
+      "Stored the default Lark user Open ID from the first private chat message.",
+    );
+  },
 });
 
 if (feishuOutbound) feishuConnector = new FeishuConnector(config, controller, logger);
@@ -126,6 +148,7 @@ if (feishuConnector && startupNotifier) {
     startupReason,
     startControlServer,
     () => { serverReady = true; },
+    restartGroupContextKeys,
   );
 } else {
   await startControlServer();
@@ -134,40 +157,59 @@ if (feishuConnector && startupNotifier) {
 }
 consoleConnector?.start();
 
-async function requestRestart(contextKey: string, force: boolean): Promise<void> {
+async function requestRestart(
+  contextKey: string,
+  force: boolean,
+  replyTarget?: MessageReplyTarget,
+): Promise<void> {
+  const notificationTarget: RestartNotificationTarget = {
+    contextKey,
+    ...(replyTarget ? { replyMessageId: replyTarget.messageId } : {}),
+  };
   if (restartRequested) {
     await outbound.sendText(contextKey, "Agent Bot 已在重启中，请稍候。").catch(() => undefined);
     return;
   }
   if (force) {
-    await initiateRestart("用户执行 /restart --force 命令", contextKey);
+    await initiateRestart("用户执行 /restart --force 命令", [notificationTarget]);
     return;
   }
-  const newlyScheduled = safeRestart.schedule("用户执行 /restart 命令");
+  const newlyScheduled = safeRestart.schedule("用户执行 /restart 命令", notificationTarget);
   await outbound.sendText(
     contextKey,
     newlyScheduled
       ? "已安排安全重启。Agent Bot 会等待所有任务完成、最终结果投递完成，并保持 15 秒无新消息后重启。"
-      : "安全重启已在等待中，已更新重启原因。",
+      : "安全重启已在等待中；当前会话已加入通知范围，并已更新重启原因。",
   ).catch((error: unknown) => {
     logger.warn({ error, contextKey }, "Failed to send safe restart acknowledgement.");
   });
 }
 
-async function initiateRestart(reason: string, contextKey?: string): Promise<void> {
+async function initiateRestart(
+  reason: string,
+  notificationTargets: RestartNotificationTarget[] = [],
+): Promise<void> {
   if (restartRequested) {
-    if (contextKey) await outbound.sendText(contextKey, "Agent Bot 已在重启中，请稍候。").catch(() => undefined);
+    await sendRestartTexts(notificationTargets, "Agent Bot 已在重启中，请稍候。");
     return;
   }
   restartRequested = true;
   await safeRestart.cancelCurrent();
   await safeRestartNotifier?.flush();
-  if (contextKey) {
-    await outbound.sendText(contextKey, "Agent Bot 正在重启，恢复在线后会发送启动状态通知。").catch((error: unknown) => {
-      logger.warn({ error, contextKey }, "Failed to send restart acknowledgement.");
-    });
-  }
-  setTimeout(() => void shutdown(supervised ? STOP_EXIT_CODE : 0, reason), 100);
+  const allNotificationTargets = mergeRestartNotificationTargets(
+    notificationTargets,
+    safeRestartNotifier?.getNotificationTargets() ?? [],
+  );
+  const restartGroupContextKeys = groupContextKeysForRestartTargets(allNotificationTargets);
+  await sendRestartTexts(
+    allNotificationTargets,
+    "Agent Bot 正在重启，恢复在线后会发送启动状态通知。",
+  );
+  setTimeout(() => void shutdown(
+    supervised ? STOP_EXIT_CODE : 0,
+    reason,
+    restartGroupContextKeys,
+  ), 100);
 }
 
 async function handleControlRequest(request: ControlRequest): Promise<ControlResponse> {
@@ -187,9 +229,10 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
           activity: store.getServerActivityState(),
         },
       };
-    case "server_restart":
+    case "server_restart": {
+      const notificationTarget = inferControlRestartTarget(request.notificationSessionId);
       if (request.mode === "safe") {
-        const newlyScheduled = safeRestart.schedule(request.reason);
+        const newlyScheduled = safeRestart.schedule(request.reason, notificationTarget);
         return {
           ok: true,
           message: newlyScheduled
@@ -197,8 +240,12 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
             : "A safe restart is already pending. Its reason has been updated.",
         };
       }
-      setTimeout(() => void initiateRestart(request.reason), 25);
+      setTimeout(() => void initiateRestart(
+        request.reason,
+        notificationTarget ? [notificationTarget] : [],
+      ), 25);
       return { ok: true, message: "Immediate restart requested." };
+    }
     case "server_stop":
       safeRestart.cancel();
       setTimeout(() => void shutdown(STOP_EXIT_CODE), 25);
@@ -235,7 +282,11 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
   }
 }
 
-async function shutdown(exitCode: number, restartReason?: string): Promise<void> {
+async function shutdown(
+  exitCode: number,
+  restartReason?: string,
+  restartGroupContextKeys: string[] = [],
+): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ exitCode }, "Shutting down Agent Bot.");
@@ -250,11 +301,11 @@ async function shutdown(exitCode: number, restartReason?: string): Promise<void>
   runtimes.close();
   await controlServer?.close().catch((error: unknown) => logger.warn({ error }, "Failed to close local control endpoint."));
   store.close();
-  if (restartReason) startReplacementSupervisor(restartReason);
+  if (restartReason) startReplacementSupervisor(restartReason, restartGroupContextKeys);
   process.exit(exitCode);
 }
 
-function startReplacementSupervisor(restartReason: string): void {
+function startReplacementSupervisor(restartReason: string, restartGroupContextKeys: string[]): void {
   const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
   const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
   prepareCrashReportDirectory(reportDirectory);
@@ -275,9 +326,98 @@ function startReplacementSupervisor(restartReason: string): void {
     detached: true,
     windowsHide: true,
     stdio: "ignore",
-    env: replacementSupervisorEnvironment(restartReason, environmentRefresh.environment),
+    env: replacementSupervisorEnvironment(
+      restartReason,
+      environmentRefresh.environment,
+      restartGroupContextKeys,
+    ),
   });
   supervisor.unref();
+}
+
+function inferControlRestartTarget(notificationSessionId?: string): RestartNotificationTarget | undefined {
+  const requestedSessionId = notificationSessionId?.trim();
+  if (requestedSessionId) {
+    const requested = store.getSession(requestedSessionId)
+      ?? store.findSessionByRemoteSessionId(requestedSessionId);
+    if (!requested) throw new Error(`Cannot route restart notifications: unknown task ${requestedSessionId}.`);
+    return restartNotificationTargetForSession(requested);
+  }
+
+  const runningSessions = store.listAllSessions().filter((session) => session.status === "running");
+  const runningContexts = new Set(runningSessions.map((session) => session.contextKey));
+  if (runningContexts.size > 1) {
+    throw new Error(
+      "Cannot determine which conversation requested the restart because multiple conversations are running. Pass --task <task>.",
+    );
+  }
+  const contextKey = runningContexts.size === 1 ? runningContexts.values().next().value : undefined;
+  const session = contextKey
+    ? runningSessions.find((candidate) => candidate.contextKey === contextKey)
+    : undefined;
+  return session ? restartNotificationTargetForSession(session) : undefined;
+}
+
+function restartNotificationTargetForSession(
+  session: { localSessionId: string; contextKey: string },
+): RestartNotificationTarget {
+  const replyMessageId = isThreadContextKey(session.contextKey)
+    ? store.findLatestMessageIdForSession(session.localSessionId, session.contextKey)
+      ?? store.findLatestMessageIdForContext(session.contextKey)
+    : undefined;
+  if (isThreadContextKey(session.contextKey) && !replyMessageId) {
+    throw new Error(
+      "Cannot route restart notifications to the task topic because it has no message anchor. Send /restart in that topic instead.",
+    );
+  }
+  return {
+    contextKey: session.contextKey,
+    ...(replyMessageId ? { replyMessageId } : {}),
+  };
+}
+
+async function sendRestartText(target: RestartNotificationTarget, text: string): Promise<string | undefined> {
+  if (isThreadContextKey(target.contextKey) && !target.replyMessageId) {
+    throw new Error("Cannot send a restart notice to a topic without a reply message anchor.");
+  }
+  const replyTarget = target.replyMessageId
+    ? { messageId: target.replyMessageId, replyInThread: true as const }
+    : undefined;
+  return outbound.withReplyTarget(target.contextKey, replyTarget, () =>
+    outbound.sendText(target.contextKey, text));
+}
+
+async function sendRestartTexts(targets: RestartNotificationTarget[], text: string): Promise<void> {
+  await Promise.all(targets.map(async (target) => {
+    await sendRestartText(target, text).catch((error: unknown) => {
+      logger.warn(
+        { error, contextKey: target.contextKey },
+        "Failed to send restart acknowledgement.",
+      );
+    });
+  }));
+}
+
+function groupContextKeysForRestartTargets(targets: RestartNotificationTarget[]): string[] {
+  const knownGroupContextKeys = new Set(
+    store.listChatContexts("group").map((chat) => chat.contextKey),
+  );
+  return [...new Set(targets
+    .map((target) => baseChatContextKey(target.contextKey))
+    .filter((contextKey) => knownGroupContextKeys.has(contextKey)))];
+}
+
+function mergeRestartNotificationTargets(
+  ...targetGroups: RestartNotificationTarget[][]
+): RestartNotificationTarget[] {
+  const targets = new Map<string, RestartNotificationTarget>();
+  for (const target of targetGroups.flat()) {
+    const existing = targets.get(target.contextKey);
+    if (!existing || (!existing.replyMessageId && target.replyMessageId)) {
+      targets.set(target.contextKey, { ...target });
+    }
+  }
+  return [...targets.values()];
 }
 
 function delay(milliseconds: number): Promise<void> {

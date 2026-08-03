@@ -1,8 +1,9 @@
 import type { Logger } from "pino";
 import { CardRenderer } from "../feishu/CardRenderer.js";
+import { isThreadContextKey } from "../feishu/contextKey.js";
 import type { FeishuOutbound } from "../feishu/types.js";
 import type { StateStore } from "../state/StateStore.js";
-import type { SafeRestartStatus } from "./SafeRestartScheduler.js";
+import type { RestartNotificationTarget, SafeRestartStatus } from "./SafeRestartScheduler.js";
 
 const DEFAULT_INITIAL_CARD_DELAY_MS = 3_000;
 
@@ -13,6 +14,7 @@ export interface SafeRestartNotifierOptions {
 export class SafeRestartNotifier {
   private readonly messageIds = new Map<string, string>();
   private readonly cardHashes = new Map<string, string>();
+  private readonly notificationTargets = new Map<string, RestartNotificationTarget>();
   private activeScheduleId?: number;
   private terminalScheduleId?: number;
   private pendingInitialStatus?: SafeRestartStatus;
@@ -41,8 +43,10 @@ export class SafeRestartNotifier {
       this.activeScheduleId = status.scheduleId;
       this.messageIds.clear();
       this.cardHashes.clear();
+      this.notificationTargets.clear();
       this.clearInitialCardTimer();
       this.pendingInitialStatus = status;
+      this.collectNotificationTargets(status);
       const delayMs = status.phase === "cancelled"
         ? 0
         : this.options.initialCardDelayMs ?? DEFAULT_INITIAL_CARD_DELAY_MS;
@@ -55,6 +59,7 @@ export class SafeRestartNotifier {
       }, delayMs);
       return Promise.resolve();
     }
+    this.collectNotificationTargets(status);
     if (this.pendingInitialStatus) {
       this.pendingInitialStatus = status;
       return Promise.resolve();
@@ -65,6 +70,10 @@ export class SafeRestartNotifier {
   async flush(): Promise<void> {
     await this.publishPendingInitialStatus();
     await this.queue;
+  }
+
+  getNotificationTargets(): RestartNotificationTarget[] {
+    return [...this.notificationTargets.values()].map((target) => ({ ...target }));
   }
 
   private publishPendingInitialStatus(): Promise<void> {
@@ -89,7 +98,8 @@ export class SafeRestartNotifier {
   }
 
   private async publish(status: SafeRestartStatus): Promise<void> {
-    const targets = this.store.listChatContexts("p2p");
+    this.collectNotificationTargets(status);
+    const targets = this.getNotificationTargets();
     if (targets.length === 0) return;
     const waitingTasks = status.phase === "cancelled"
       ? []
@@ -109,7 +119,7 @@ export class SafeRestartNotifier {
     });
     const cardHash = JSON.stringify(card);
 
-    await Promise.all(targets.map(async ({ contextKey }) => {
+    await Promise.all(targets.map(async ({ contextKey, replyMessageId }) => {
       const messageId = this.messageIds.get(contextKey);
       if (messageId) {
         if (this.cardHashes.get(contextKey) === cardHash) return;
@@ -124,7 +134,22 @@ export class SafeRestartNotifier {
         }
       }
       try {
-        const created = await this.outbound.sendInteractiveCard(contextKey, card);
+        let created: string | undefined;
+        if (isThreadContextKey(contextKey) && !replyMessageId) {
+          throw new Error("The safe-restart topic target has no reply message anchor.");
+        }
+        if (replyMessageId) {
+          if (!this.outbound.replyInteractiveCard) {
+            throw new Error("The outbound transport cannot preserve the requesting thread.");
+          }
+          created = await this.outbound.replyInteractiveCard(
+            contextKey,
+            { messageId: replyMessageId, replyInThread: true },
+            card,
+          );
+        } else {
+          created = await this.outbound.sendInteractiveCard(contextKey, card);
+        }
         if (created && this.activeScheduleId === status.scheduleId) {
           this.messageIds.set(contextKey, created);
           this.cardHashes.set(contextKey, cardHash);
@@ -133,5 +158,29 @@ export class SafeRestartNotifier {
         this.logger.warn({ error, contextKey }, "Failed to send safe restart status card.");
       }
     }));
+  }
+
+  private collectNotificationTargets(status: SafeRestartStatus): void {
+    const requestedTargets: RestartNotificationTarget[] = status.notificationTargets
+      ?? this.store.listChatContexts("p2p").map(({ contextKey }) => ({ contextKey }));
+    const recentTargets: RestartNotificationTarget[] = this.store.listRecentlyActiveChatContexts(
+      new Date(Date.now() - 60_000),
+    )
+      .filter((chat) => !isThreadContextKey(chat.contextKey))
+      .map(({ contextKey }) => ({ contextKey }));
+    for (const target of [
+      ...requestedTargets,
+      ...recentTargets,
+    ]) {
+      const contextKey = target.contextKey.trim();
+      if (!contextKey) continue;
+      const existing = this.notificationTargets.get(contextKey);
+      if (!existing || (!existing.replyMessageId && target.replyMessageId)) {
+        this.notificationTargets.set(contextKey, {
+          contextKey,
+          ...(target.replyMessageId?.trim() ? { replyMessageId: target.replyMessageId.trim() } : {}),
+        });
+      }
+    }
   }
 }

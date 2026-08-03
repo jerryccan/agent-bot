@@ -51,17 +51,23 @@ const options = {
 };
 
 describe("StartupNotifier", () => {
-  test("sends startup cards to every private chat and only groups active in the previous three minutes", async () => {
+  test("sends startup cards to every private chat, recent groups, and all safe-restart groups", async () => {
     const store = createStore();
     store.getOrCreateUserContext("chat_id:private", "codex");
     store.getOrCreateUserContext("chat_id:recent-group", "codex");
     store.getOrCreateUserContext("chat_id:boundary-group", "codex");
     store.getOrCreateUserContext("chat_id:stale-group", "codex");
+    store.getOrCreateUserContext("chat_id:scheduled-group", "codex");
+    store.getOrCreateUserContext("chat_id:topic-parent", "codex");
+    store.getOrCreateUserContext("chat_id:group:thread_id:topic", "codex");
     store.getOrCreateUserContext("console:local", "codex");
     store.recordChatContext("chat_id:private", "p2p");
     markActive(store, "chat_id:recent-group", "group", "2026-07-15T05:44:59.000Z");
-    markActive(store, "chat_id:boundary-group", "group", "2026-07-15T05:42:00.000Z");
-    markActive(store, "chat_id:stale-group", "group", "2026-07-15T05:41:59.999Z");
+    markActive(store, "chat_id:boundary-group", "group", "2026-07-15T05:44:00.000Z");
+    markActive(store, "chat_id:stale-group", "group", "2026-07-15T05:43:59.999Z");
+    markActive(store, "chat_id:scheduled-group", "group", "2026-07-15T05:00:00.000Z");
+    markActive(store, "chat_id:topic-parent", "group", "2026-07-15T05:00:00.000Z");
+    markActive(store, "chat_id:group:thread_id:topic", "group", "2026-07-15T05:44:59.000Z");
     store.createSession({
       localSessionId: "sess_1",
       contextKey: "chat_id:private",
@@ -83,13 +89,24 @@ describe("StartupNotifier", () => {
     const logger = { warn: vi.fn() };
     const notifier = new StartupNotifier(store, createOutbound(sendInteractiveCard), new CardRenderer(), logger, options);
 
-    await notifier.notify(new Date("2026-07-15T05:45:00.000Z"), "用户执行 /restart 命令");
+    await notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "用户执行 /restart 命令",
+      ["chat_id:scheduled-group", "chat_id:topic-parent:thread_id:topic"],
+    );
 
-    expect(sendInteractiveCard).toHaveBeenCalledTimes(3);
+    expect(sendInteractiveCard).toHaveBeenCalledTimes(5);
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:private", expect.any(Object));
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:recent-group", expect.any(Object));
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:boundary-group", expect.any(Object));
     expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:stale-group", expect.any(Object));
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:scheduled-group", expect.any(Object));
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:topic-parent", expect.any(Object));
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith(
+      "chat_id:topic-parent:thread_id:topic",
+      expect.any(Object),
+    );
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:group:thread_id:topic", expect.any(Object));
     const privateCard = sendInteractiveCard.mock.calls.find(([contextKey]) => contextKey === "chat_id:private")?.[1];
     expect(privateCard).toMatchObject({
       schema: "2.0",

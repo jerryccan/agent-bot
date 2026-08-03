@@ -167,6 +167,34 @@ describe("loadConfig", () => {
     }
   });
 
+  test("loads a persisted user Open ID when the inherited value is blank", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-blank-user-id-"));
+    const previousHome = process.env.AGENT_BOT_HOME;
+    const previousUserOpenId = process.env.FEISHU_USER_OPEN_ID;
+    process.env.AGENT_BOT_HOME = directory;
+    process.env.FEISHU_USER_OPEN_ID = "";
+    fs.writeFileSync(path.join(directory, "config.yaml"), [
+      "feishu:",
+      "  userOpenId: ${FEISHU_USER_OPEN_ID}",
+      "agents:",
+      "  codex:",
+      "    kind: app-server",
+      "    title: Codex",
+      "    command: codex",
+      "defaults:",
+      "  agent: codex",
+    ].join("\n"));
+    fs.writeFileSync(path.join(directory, ".env"), "FEISHU_USER_OPEN_ID=ou_persisted_user\n");
+
+    try {
+      expect(loadConfig(path.join(directory, "config.yaml")).feishu.userOpenId).toBe("ou_persisted_user");
+    } finally {
+      restoreEnv("AGENT_BOT_HOME", previousHome);
+      restoreEnv("FEISHU_USER_OPEN_ID", previousUserOpenId);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("inspects an explicit profile without retaining values loaded from its environment file", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-profile-inspection-"));
     const preserved = new Map([

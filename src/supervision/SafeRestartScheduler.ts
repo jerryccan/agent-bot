@@ -11,9 +11,15 @@ export type SafeRestartPhase =
   | "restarting"
   | "cancelled";
 
+export interface RestartNotificationTarget {
+  contextKey: string;
+  replyMessageId?: string;
+}
+
 export interface SafeRestartStatus {
   scheduleId: number;
   reason: string;
+  notificationTargets?: RestartNotificationTarget[];
   phase: SafeRestartPhase;
   activity: ServerActivityState;
   remainingMs?: number;
@@ -21,7 +27,7 @@ export interface SafeRestartStatus {
 
 export interface SafeRestartSchedulerOptions {
   readActivity(): ServerActivityState;
-  onReady(reason: string): void | Promise<void>;
+  onReady(reason: string, notificationTargets: RestartNotificationTarget[]): void | Promise<void>;
   onStatus?(status: SafeRestartStatus): void | Promise<void>;
   onStatusError?(error: unknown): void;
   quietPeriodMs?: number;
@@ -33,6 +39,7 @@ export class SafeRestartScheduler {
   private polling?: Promise<void>;
   private pollAgain = false;
   private reason?: string;
+  private notificationTargets: RestartNotificationTarget[] = [];
   private idleSince?: number;
   private idleInboundAt?: string;
   private scheduleId = 0;
@@ -47,9 +54,13 @@ export class SafeRestartScheduler {
     return this.reason;
   }
 
-  schedule(reason: string): boolean {
+  schedule(reason: string, notificationTarget?: RestartNotificationTarget): boolean {
     const newlyScheduled = !this.reason;
-    if (newlyScheduled) this.scheduleId += 1;
+    if (newlyScheduled) {
+      this.scheduleId += 1;
+      this.notificationTargets = [];
+    }
+    this.addNotificationTarget(notificationTarget);
     this.reason = reason;
     this.idleSince = undefined;
     this.idleInboundAt = undefined;
@@ -73,10 +84,12 @@ export class SafeRestartScheduler {
     const reason = this.reason;
     if (!reason || this.scheduleId !== expectedScheduleId) return false;
     const activity = this.options.readActivity();
+    const notificationTargets = this.notificationTargetsSnapshot();
     this.clear();
     await this.emitStatus({
       scheduleId: expectedScheduleId,
       reason,
+      notificationTargets,
       phase: "cancelled",
       activity,
     });
@@ -87,6 +100,7 @@ export class SafeRestartScheduler {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.reason = undefined;
+    this.notificationTargets = [];
     this.idleSince = undefined;
     this.idleInboundAt = undefined;
   }
@@ -101,6 +115,7 @@ export class SafeRestartScheduler {
       await this.emitStatus({
         scheduleId: this.scheduleId,
         reason,
+        notificationTargets: this.notificationTargetsSnapshot(),
         phase: state.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
         activity: state,
       });
@@ -111,12 +126,26 @@ export class SafeRestartScheduler {
     if (this.idleSince === undefined || this.idleInboundAt !== latestInboundAt) {
       this.idleSince = Date.now();
       this.idleInboundAt = latestInboundAt;
-      await this.emitStatus({ scheduleId: this.scheduleId, reason, phase: "countdown", activity: state, remainingMs: quietPeriodMs });
+      await this.emitStatus({
+        scheduleId: this.scheduleId,
+        reason,
+        notificationTargets: this.notificationTargetsSnapshot(),
+        phase: "countdown",
+        activity: state,
+        remainingMs: quietPeriodMs,
+      });
       return;
     }
     const remainingMs = Math.max(0, quietPeriodMs - (Date.now() - this.idleSince));
     if (remainingMs > 0) {
-      await this.emitStatus({ scheduleId: this.scheduleId, reason, phase: "countdown", activity: state, remainingMs });
+      await this.emitStatus({
+        scheduleId: this.scheduleId,
+        reason,
+        notificationTargets: this.notificationTargetsSnapshot(),
+        phase: "countdown",
+        activity: state,
+        remainingMs,
+      });
       return;
     }
     const confirmed = this.options.readActivity();
@@ -131,6 +160,7 @@ export class SafeRestartScheduler {
         await this.emitStatus({
           scheduleId: this.scheduleId,
           reason,
+          notificationTargets: this.notificationTargetsSnapshot(),
           phase: confirmed.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
           activity: confirmed,
         });
@@ -138,6 +168,7 @@ export class SafeRestartScheduler {
         await this.emitStatus({
           scheduleId: this.scheduleId,
           reason,
+          notificationTargets: this.notificationTargetsSnapshot(),
           phase: "countdown",
           activity: confirmed,
           remainingMs: quietPeriodMs,
@@ -146,9 +177,17 @@ export class SafeRestartScheduler {
       return;
     }
     const scheduleId = this.scheduleId;
+    const notificationTargets = this.notificationTargetsSnapshot();
     this.clear();
-    await this.emitStatus({ scheduleId, reason, phase: "restarting", activity: confirmed, remainingMs: 0 });
-    await this.options.onReady(reason);
+    await this.emitStatus({
+      scheduleId,
+      reason,
+      notificationTargets,
+      phase: "restarting",
+      activity: confirmed,
+      remainingMs: 0,
+    });
+    await this.options.onReady(reason, notificationTargets);
   }
 
   private requestPoll(): void {
@@ -175,4 +214,36 @@ export class SafeRestartScheduler {
       this.options.onStatusError?.(error);
     });
   }
+
+  private addNotificationTarget(value: RestartNotificationTarget | undefined): void {
+    const target = normalizedNotificationTarget(value);
+    if (!target) return;
+    const existingIndex = this.notificationTargets.findIndex(
+      (candidate) => candidate.contextKey === target.contextKey,
+    );
+    if (existingIndex < 0) {
+      this.notificationTargets.push(target);
+      return;
+    }
+    const existing = this.notificationTargets[existingIndex]!;
+    if (!existing.replyMessageId && target.replyMessageId) {
+      this.notificationTargets[existingIndex] = target;
+    }
+  }
+
+  private notificationTargetsSnapshot(): RestartNotificationTarget[] {
+    return this.notificationTargets.map((target) => ({ ...target }));
+  }
+}
+
+function normalizedNotificationTarget(
+  value: RestartNotificationTarget | undefined,
+): RestartNotificationTarget | undefined {
+  const contextKey = value?.contextKey.trim();
+  if (!contextKey) return undefined;
+  const replyMessageId = value?.replyMessageId?.trim();
+  return {
+    contextKey,
+    ...(replyMessageId ? { replyMessageId } : {}),
+  };
 }

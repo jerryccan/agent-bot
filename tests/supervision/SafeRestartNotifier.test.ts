@@ -17,6 +17,143 @@ afterEach(() => {
 });
 
 describe("SafeRestartNotifier", () => {
+  test("enrolls every recently active conversation for the rest of the restart", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-03T12:00:00.000Z"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-active-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.recordChatContext("chat_id:active-private", "p2p");
+    store.recordChatContext("chat_id:active-group", "group");
+    store.recordChatContext("chat_id:stale-group", "group");
+    store.markChatActive("chat_id:active-private", new Date("2026-08-03T11:59:30.000Z"));
+    store.markChatActive("chat_id:active-group", new Date("2026-08-03T11:59:30.000Z"));
+    store.markChatActive("chat_id:stale-group", new Date("2026-08-03T11:58:59.999Z"));
+    const sendInteractiveCard = vi.fn(async (contextKey: string) => `om_${contextKey}`);
+    const updateInteractiveCard = vi.fn(async () => undefined);
+    const notifier = new SafeRestartNotifier(
+      store,
+      {
+        sendText: vi.fn(async () => "text"),
+        sendMarkdown: vi.fn(async () => "markdown"),
+        sendInteractiveCard,
+        updateInteractiveCard,
+      },
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "active conversations",
+      notificationTargets: [{ contextKey: "chat_id:requester" }],
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    expect(sendInteractiveCard.mock.calls.map(([contextKey]) => contextKey).sort()).toEqual([
+      "chat_id:active-group",
+      "chat_id:active-private",
+      "chat_id:requester",
+    ]);
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:stale-group", expect.any(Object));
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    store.recordChatContext("chat_id:late-active-group", "group");
+    store.markChatActive("chat_id:late-active-group");
+    await notifier.update({
+      scheduleId: 1,
+      reason: "active conversations",
+      notificationTargets: [{ contextKey: "chat_id:requester" }],
+      phase: "countdown",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 5_000,
+    });
+
+    expect(updateInteractiveCard).toHaveBeenCalledTimes(3);
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:late-active-group", expect.any(Object));
+    expect(notifier.getNotificationTargets().map((target) => target.contextKey).sort()).toEqual([
+      "chat_id:active-group",
+      "chat_id:active-private",
+      "chat_id:late-active-group",
+      "chat_id:requester",
+    ]);
+  });
+
+  test("routes safe-restart cards to every requesting conversation", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-target-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.recordChatContext("chat_id:private", "p2p");
+    store.recordChatContext("chat_id:group", "group");
+    const sendInteractiveCard = vi.fn(async () => "om_group_restart");
+    const replyInteractiveCard = vi.fn(async () => "om_thread_restart");
+    const updateInteractiveCard = vi.fn(async () => undefined);
+    const outbound: FeishuOutbound = {
+      sendText: vi.fn(async () => "text"),
+      sendMarkdown: vi.fn(async () => "markdown"),
+      sendInteractiveCard,
+      replyInteractiveCard,
+      updateInteractiveCard,
+    };
+    const notifier = new SafeRestartNotifier(
+      store,
+      outbound,
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "thread restart",
+      notificationTargets: [
+        {
+          contextKey: "chat_id:group:thread_id:topic",
+          replyMessageId: "om_request",
+        },
+        { contextKey: "chat_id:second-group" },
+        { contextKey: "chat_id:missing-anchor:thread_id:topic" },
+      ],
+      phase: "countdown",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 15_000,
+    });
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:second-group", expect.any(Object));
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:private", expect.any(Object));
+    expect(replyInteractiveCard).toHaveBeenCalledOnce();
+    expect(replyInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:group:thread_id:topic",
+      { messageId: "om_request", replyInThread: true },
+      expect.any(Object),
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "thread restart",
+      notificationTargets: [
+        {
+          contextKey: "chat_id:group:thread_id:topic",
+          replyMessageId: "om_request",
+        },
+        { contextKey: "chat_id:second-group" },
+        { contextKey: "chat_id:missing-anchor:thread_id:topic" },
+      ],
+      phase: "countdown",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 14_000,
+    });
+
+    expect(updateInteractiveCard).toHaveBeenCalledTimes(2);
+    expect(updateInteractiveCard).toHaveBeenCalledWith("om_thread_restart", expect.any(Object));
+    expect(updateInteractiveCard).toHaveBeenCalledWith("om_group_restart", expect.any(Object));
+  });
+
   test("sends and updates one card only in persisted private chats", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-notifier-"));
     directories.push(directory);

@@ -3,7 +3,7 @@ export interface StartableFeishuConnector {
 }
 
 export interface StartupNotificationSender {
-  notify(startedAt: Date, restartReason: string): Promise<void>;
+  notify(startedAt: Date, restartReason: string, restartGroupContextKeys?: string[]): Promise<void>;
 }
 
 export async function startFeishu(
@@ -13,9 +13,10 @@ export async function startFeishu(
   restartReason: string,
   prepare?: () => Promise<void>,
   onConnected?: () => void,
+  restartGroupContextKeys: string[] = [],
 ): Promise<void> {
   await prepare?.();
   await connector.start();
-  await notifier.notify(startedAt, restartReason);
+  await notifier.notify(startedAt, restartReason, restartGroupContextKeys);
   onConnected?.();
 }

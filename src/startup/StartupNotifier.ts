@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import { CardRenderer } from "../feishu/CardRenderer.js";
+import { baseChatContextKey, isThreadContextKey } from "../feishu/contextKey.js";
 import type { FeishuOutbound } from "../feishu/types.js";
 import type { SessionRecord, StateStore, UserContextRecord } from "../state/StateStore.js";
 
@@ -32,15 +33,30 @@ export class StartupNotifier {
     private readonly metadataHydrator?: StartupTaskMetadataHydrator,
   ) {}
 
-  async notify(startedAt: Date, restartReason: string): Promise<void> {
+  async notify(
+    startedAt: Date,
+    restartReason: string,
+    restartGroupContextKeys: string[] = [],
+  ): Promise<void> {
     let targets: StartupNotificationTarget[];
     try {
-      const activeGroupSince = new Date(startedAt.getTime() - 3 * 60 * 1_000);
-      const chats = [
-        ...this.store.listChatContexts("p2p"),
-        ...this.store.listRecentlyActiveChatContexts(activeGroupSince)
-          .filter((chat) => chat.chatType === "group"),
-      ];
+      const activeGroupSince = new Date(startedAt.getTime() - 60_000);
+      const knownGroups = new Map(
+        this.store.listChatContexts("group")
+          .filter((chat) => !isThreadContextKey(chat.contextKey))
+          .map((chat) => [chat.contextKey, chat]),
+      );
+      const targetGroups = new Map(
+        this.store.listRecentlyActiveChatContexts(activeGroupSince)
+          .filter((chat) => chat.chatType === "group" && !isThreadContextKey(chat.contextKey))
+          .map((chat) => [chat.contextKey, chat]),
+      );
+      for (const contextKey of restartGroupContextKeys) {
+        const baseContextKey = baseChatContextKey(contextKey.trim());
+        const group = knownGroups.get(baseContextKey);
+        if (group) targetGroups.set(baseContextKey, group);
+      }
+      const chats = [...this.store.listChatContexts("p2p"), ...targetGroups.values()];
       targets = chats.map((chat) => ({
         contextKey: chat.contextKey,
         context: this.store.getUserContext(chat.contextKey),

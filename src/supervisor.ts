@@ -14,6 +14,10 @@ import {
 } from "./supervision/restartPolicy.js";
 import { SupervisorDiagnostics, nodeDiagnosticReportArguments } from "./supervision/SupervisorDiagnostics.js";
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
+import {
+  RESTART_GROUP_CONTEXTS_ENV,
+  restartGroupContextKeysFromEnvironment,
+} from "./supervision/replacementSupervisor.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const config = loadConfig();
@@ -24,9 +28,13 @@ const diagnostics = new SupervisorDiagnostics(config);
 diagnostics.initialize();
 let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
+let restartGroupContextExpiryTimer: NodeJS.Timeout | undefined;
 let stopping = false;
 let consecutiveFailures = 0;
 let nextStartReason = process.env.AGENT_BOT_RESTART_REASON?.trim() || "Supervisor 启动";
+let nextRestartGroupContextKeys = restartGroupContextKeysFromEnvironment(
+  process.env[RESTART_GROUP_CONTEXTS_ENV],
+);
 
 async function startChild(): Promise<void> {
   if (stopping || child) return;
@@ -37,6 +45,7 @@ async function startChild(): Promise<void> {
   }
   const startedAt = Date.now();
   const restartReason = nextStartReason;
+  const restartGroupContextKeys = nextRestartGroupContextKeys;
   nextStartReason = "Supervisor 重新拉起进程";
   const workerStderr = diagnostics.openWorkerStderr();
   const environmentRefresh = refreshedSystemEnvironment();
@@ -51,11 +60,11 @@ async function startChild(): Promise<void> {
       childEntry,
     ], {
       cwd: process.cwd(),
-      env: {
+      env: workerEnvironment({
         ...environmentRefresh.environment,
         AGENT_BOT_SUPERVISED: "1",
         AGENT_BOT_RESTART_REASON: restartReason,
-      },
+      }, restartGroupContextKeys),
       stdio: ["ignore", "ignore", workerStderr],
       windowsHide: true,
     });
@@ -66,6 +75,7 @@ async function startChild(): Promise<void> {
   writeSupervisorLog("started", {
     pid: child.pid,
     restartReason,
+    restartGroupContextKeys,
     workerStderrPath: diagnostics.paths.workerStderrPath,
     crashReportDirectory: diagnostics.paths.crashReportDirectory,
   });
@@ -76,6 +86,26 @@ async function startChild(): Promise<void> {
   child.once("exit", (code, signal) => {
     void handleChildExit(code, signal, startedAt, workerPid);
   });
+  if (restartGroupContextKeys.length > 0) {
+    if (restartGroupContextExpiryTimer) clearTimeout(restartGroupContextExpiryTimer);
+    restartGroupContextExpiryTimer = setTimeout(() => {
+      nextRestartGroupContextKeys = [];
+      restartGroupContextExpiryTimer = undefined;
+    }, STABLE_UPTIME_MS);
+  }
+}
+
+function workerEnvironment(
+  environment: NodeJS.ProcessEnv,
+  restartGroupContextKeys: readonly string[],
+): NodeJS.ProcessEnv {
+  const result = { ...environment };
+  if (restartGroupContextKeys.length > 0) {
+    result[RESTART_GROUP_CONTEXTS_ENV] = JSON.stringify(restartGroupContextKeys);
+  } else {
+    delete result[RESTART_GROUP_CONTEXTS_ENV];
+  }
+  return result;
 }
 
 async function handleChildExit(
@@ -134,6 +164,7 @@ function stop(signal: NodeJS.Signals): void {
   if (stopping) return;
   stopping = true;
   if (restartTimer) clearTimeout(restartTimer);
+  if (restartGroupContextExpiryTimer) clearTimeout(restartGroupContextExpiryTimer);
   if (child && !child.killed) {
     child.kill(signal);
     return;

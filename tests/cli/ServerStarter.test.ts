@@ -85,27 +85,48 @@ describe("startInitializedServer", () => {
   test("starts the server with the initialized configuration", async () => {
     const loadInitializedConfig = vi.fn(() => config);
     const startInitializedConfig = vi.fn(async () => ({ status: "started" as const }));
+    const restartInitializedConfig = vi.fn(async () => undefined);
 
     await expect(startInitializedServer(
       { skipFeishu: false, configPath: "D:/profile/config.yaml" },
       {
         loadConfig: loadInitializedConfig,
         startServer: startInitializedConfig,
+        restartServer: restartInitializedConfig,
       },
     )).resolves.toEqual({ status: "started" });
     expect(loadInitializedConfig).toHaveBeenCalledWith("D:/profile/config.yaml");
     expect(startInitializedConfig).toHaveBeenCalledWith(config);
+    expect(restartInitializedConfig).not.toHaveBeenCalled();
+  });
+
+  test("schedules a safe restart when the initialized server is already running", async () => {
+    const loadInitializedConfig = vi.fn(() => config);
+    const startInitializedConfig = vi.fn(async () => ({ status: "already-running" as const }));
+    const restartInitializedConfig = vi.fn(async () => undefined);
+
+    await expect(startInitializedServer(
+      { skipFeishu: false, configPath: "D:/profile/config.yaml" },
+      {
+        loadConfig: loadInitializedConfig,
+        startServer: startInitializedConfig,
+        restartServer: restartInitializedConfig,
+      },
+    )).resolves.toEqual({ status: "restart-scheduled" });
+    expect(restartInitializedConfig).toHaveBeenCalledWith(config);
   });
 
   test("does not load configuration or start a server for Console-only initialization", async () => {
     const loadInitializedConfig = vi.fn(() => config);
     const startInitializedConfig = vi.fn(async () => ({ status: "started" as const }));
+    const restartInitializedConfig = vi.fn(async () => undefined);
 
     await expect(startInitializedServer(
       { skipFeishu: true },
       {
         loadConfig: loadInitializedConfig,
         startServer: startInitializedConfig,
+        restartServer: restartInitializedConfig,
       },
     )).resolves.toEqual({
       status: "skipped",
@@ -113,6 +134,7 @@ describe("startInitializedServer", () => {
     });
     expect(loadInitializedConfig).not.toHaveBeenCalled();
     expect(startInitializedConfig).not.toHaveBeenCalled();
+    expect(restartInitializedConfig).not.toHaveBeenCalled();
   });
 });
 

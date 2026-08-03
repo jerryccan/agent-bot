@@ -58,6 +58,9 @@ logging:
 export function loadConfig(
   configPath?: string,
 ): AppConfig {
+  if (process.env.FEISHU_USER_OPEN_ID !== undefined && !process.env.FEISHU_USER_OPEN_ID.trim()) {
+    delete process.env.FEISHU_USER_OPEN_ID;
+  }
   loadDotEnv({
     path: defaultDotEnvPath(),
     quiet: true,
