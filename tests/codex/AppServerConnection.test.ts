@@ -123,7 +123,7 @@ describe("AppServerConnection", () => {
 
     expect(testLogger.warn).toHaveBeenCalledWith(
       { responseId: 1, responseKind: "result" },
-      "Received Codex App Server response for unknown request.",
+      "Received App Server response for unknown request.",
     );
     expect(testLogger.warn).not.toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.anything() }),

@@ -163,7 +163,7 @@ export class CardRenderer {
           : `**默认 Agent**：${inlineCode(view.currentAgent)}`,
         ...(view.runtimeSettingsAvailable
           ? [
-              `**Provider / 模型**：${inlineCode(view.currentProvider ?? "Codex 默认")} / ${inlineCode(view.currentModel ?? "默认")}`,
+              `**Provider / 模型**：${inlineCode(view.currentProvider ?? "Agent 默认")} / ${inlineCode(view.currentModel ?? "默认")}`,
               `**思考强度 / 权限**：${inlineCode(view.currentEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentPermissionMode))}`,
             ]
           : []),
@@ -190,7 +190,7 @@ export class CardRenderer {
       if (!view.providerSupported) {
         elements.push(markdown("当前运行时不支持 Provider 切换；其他设置仍可通过上方 tab 修改。"));
       } else if (view.providers.length === 0) {
-        elements.push(markdown("Codex 配置中没有可用的 Provider。"));
+        elements.push(markdown("当前 Agent 配置中没有可用的 Provider。"));
       } else {
         elements.push(...view.providers.map((provider) => settingsOptionRow({
           label: [
@@ -270,14 +270,14 @@ export class CardRenderer {
   renderProviderSelector(view: ProviderSelectorCardView): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [
       markdown([
-        `**当前 Provider**：${inlineCode(view.currentProvider ?? "Codex 默认")}`,
+        `**当前 Provider**：${inlineCode(view.currentProvider ?? "Agent 默认")}`,
         `**模型 / 思考强度 / 权限**：${inlineCode(view.currentModel ?? "默认")} / ${inlineCode(view.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.permissionMode))}`,
         ...(view.notice ? [view.notice] : []),
       ].join("\n")),
       { tag: "hr" },
     ];
     if (view.providers.length === 0) {
-      elements.push(markdown("Codex 配置中没有可用的 Provider。"));
+      elements.push(markdown("当前 Agent 配置中没有可用的 Provider。"));
     } else {
       elements.push(...view.providers.map((provider) => ({
         tag: "column_set",
@@ -635,14 +635,14 @@ export class CardRenderer {
       ? [
         `**当前任务**：${inlineCode(view.currentTask.title ?? view.currentTask.id)}`,
         workspaceLine,
-        `**Provider / 模型 / 思考强度 / 权限**：${inlineCode(view.currentTask.modelProvider ?? "Codex 默认")} / ${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentTask.permissionMode))}`,
+        `**Provider / 模型 / 思考强度 / 权限**：${inlineCode(view.currentTask.modelProvider ?? "Agent 默认")} / ${inlineCode(view.currentTask.model ?? "默认")} / ${inlineCode(view.currentTask.reasoningEffort ?? "自动")} / ${inlineCode(permissionModeLabel(view.currentTask.permissionMode))}`,
         `**任务状态 / Agent**：${persistedTaskStatus(view.currentTask.sessionStatus, view.currentTask.lastTurnStatus)} / ${inlineCode(view.currentTask.agentName)}`,
         `**任务 ID**：${inlineCode(view.currentTask.id)}`,
       ]
       : [
         "**当前任务**：无，下一条普通消息会创建新任务",
         workspaceLine,
-        `**Provider / 模型 / 思考强度 / 权限**：${inlineCode("Codex 默认")} / ${inlineCode("默认")} / ${inlineCode("自动")} / ${inlineCode(permissionModeLabel())}`,
+        `**Provider / 模型 / 思考强度 / 权限**：${inlineCode("Agent 默认")} / ${inlineCode("默认")} / ${inlineCode("自动")} / ${inlineCode(permissionModeLabel())}`,
         `**默认 Agent**：${view.defaultAgentTitle} (${inlineCode(view.defaultAgentName)})`,
       ];
     lines.push(
@@ -673,8 +673,8 @@ export class CardRenderer {
 
   renderTurnDetails(state: TurnViewState): Record<string, unknown> {
     const title = state.taskTitle
-      ? `Codex 执行详情：${truncateText(state.taskTitle.replace(/\s+/g, " ").trim(), 60)}`
-      : "Codex 执行详情";
+      ? `任务执行详情：${truncateText(state.taskTitle.replace(/\s+/g, " ").trim(), 60)}`
+      : "任务执行详情";
     return turnCard(title, "blue", renderTurnElements(state, "always"), renderTurnSubtitle(state));
   }
 

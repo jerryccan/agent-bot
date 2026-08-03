@@ -108,7 +108,7 @@ export class AppServerConnection {
       try {
         message = JSON.parse(line) as AppServerMessage;
       } catch (error) {
-        this.logger.warn({ line, error }, "Ignoring non-JSON Codex App Server stdout line.");
+        this.logger.warn({ line, error }, "Ignoring non-JSON App Server stdout line.");
         return;
       }
       this.handleMessage(message);
@@ -128,7 +128,7 @@ export class AppServerConnection {
       for (const listener of this.notificationListeners) listener(message.method, message.params);
       return;
     }
-    this.logger.warn({ message }, "Ignoring unknown Codex App Server message shape.");
+    this.logger.warn({ message }, "Ignoring unknown App Server message shape.");
   }
 
   private handleResponse(message: AppServerResponse): void {
@@ -139,7 +139,7 @@ export class AppServerConnection {
           responseId: message.id,
           responseKind: "error" in message ? "error" : "result",
         },
-        "Received Codex App Server response for unknown request.",
+        "Received App Server response for unknown request.",
       );
       return;
     }

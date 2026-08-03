@@ -163,7 +163,7 @@ export class CodexRuntime implements AgentRuntime {
       if (!isUnsupportedExcludeTurnsError(error)) throw error;
       this.logger.warn(
         { error },
-        "Codex App Server does not support thread/fork excludeTurns; retrying without it.",
+        "App Server does not support thread/fork excludeTurns; retrying without it.",
       );
       response = await client.request<ThreadResponse>("thread/fork", forkParams, FORK_REQUEST_TIMEOUT_MS);
     }
@@ -343,7 +343,7 @@ export class CodexRuntime implements AgentRuntime {
     );
     this.logger.info(
       { ...(sessionId ? { sessionId } : {}), threadId: remoteSessionId, turnId },
-      "Codex accepted the turn interrupt request.",
+      "App Server accepted the turn interrupt request.",
     );
   }
 
@@ -554,7 +554,7 @@ export class CodexRuntime implements AgentRuntime {
       const session = [...this.sessions.values()].find((candidate) => candidate.remoteSessionId === threadId);
       if (session?.activeTurnId && status && status !== "active") {
         void this.synchronizeSession(session.localSessionId).catch((error: unknown) => {
-          this.logger.warn({ error, sessionId: session.localSessionId, status }, "Failed to reconcile Codex thread status.");
+          this.logger.warn({ error, sessionId: session.localSessionId, status }, "Failed to reconcile App Server thread status.");
         });
       }
       return;
@@ -566,7 +566,7 @@ export class CodexRuntime implements AgentRuntime {
     if (session.terminalTurnIds.has(mapped.turnId)) {
       this.logger.debug(
         { sessionId: session.localSessionId, turnId: mapped.turnId, method },
-        "Ignoring a replayed terminal Codex turn event.",
+        "Ignoring a replayed terminal App Server turn event.",
       );
       return;
     }
@@ -586,7 +586,7 @@ export class CodexRuntime implements AgentRuntime {
             notificationTurnId: mapped.turnId,
             notificationStartedAt: mapped.startedAt,
           },
-          "Ignoring a replayed historical Codex turn start.",
+          "Ignoring a replayed historical App Server turn start.",
         );
         return;
       }
@@ -597,10 +597,10 @@ export class CodexRuntime implements AgentRuntime {
     if (!session.activeTurnId || session.activeTurnId !== mapped.turnId) {
       this.logger.debug(
         { sessionId: session.localSessionId, activeTurnId: session.activeTurnId, notificationTurnId: mapped.turnId, method },
-        "Ignoring out-of-order Codex notification and scheduling reconciliation.",
+        "Ignoring out-of-order App Server notification and scheduling reconciliation.",
       );
       void this.synchronizeSession(session.localSessionId).catch((error: unknown) => {
-        this.logger.warn({ error, sessionId: session.localSessionId }, "Failed to reconcile out-of-order Codex notification.");
+        this.logger.warn({ error, sessionId: session.localSessionId }, "Failed to reconcile out-of-order App Server notification.");
       });
       return;
     }
@@ -671,9 +671,12 @@ export class CodexRuntime implements AgentRuntime {
       if (mapped.status === "cancelled") {
         this.emit({ type: "turn_cancelled", sessionId, turnId: mapped.turnId });
       } else if (mapped.status === "failed") {
-        this.emit({ type: "turn_failed", sessionId, turnId: mapped.turnId, message: mapped.error ?? "Codex turn failed." });
+        this.emit({ type: "turn_failed", sessionId, turnId: mapped.turnId, message: mapped.error ?? "App Server turn failed." });
       } else {
-        const finalResponse = appendGeneratedImageMarkdown(session.finalText, session.generatedImagePaths);
+        const finalResponse = appendModelSwitchGuidance(
+          appendGeneratedImageMarkdown(session.finalText, session.generatedImagePaths),
+          session.model,
+        );
         this.emit({
           type: "turn_completed",
           sessionId,
@@ -703,7 +706,7 @@ export class CodexRuntime implements AgentRuntime {
       turnId,
       request: {
         id: requestId,
-        title: stringValue(params.command) ?? "Codex approval request",
+        title: stringValue(params.command) ?? "Agent approval request",
         command: stringValue(params.command),
         reason: stringValue(params.reason),
         options: [
@@ -781,7 +784,7 @@ export class CodexRuntime implements AgentRuntime {
           type: "turn_failed",
           sessionId: session.localSessionId,
           turnId: activeTurnId,
-          message: "Codex no longer reports this execution in the thread history.",
+          message: "The App Server no longer reports this execution in the thread history.",
         });
       }
       return;
@@ -828,7 +831,7 @@ export class CodexRuntime implements AgentRuntime {
         type: "turn_failed",
         sessionId: session.localSessionId,
         turnId: turn.id,
-        message: turn.error?.message ?? "Codex turn failed.",
+        message: turn.error?.message ?? "App Server turn failed.",
       });
       return;
     }
@@ -836,9 +839,12 @@ export class CodexRuntime implements AgentRuntime {
       ...session.generatedImagePaths,
       ...extractGeneratedImagePaths(turn),
     ]);
-    const finalResponse = appendGeneratedImageMarkdown(
-      extractFinalResponse(turn) || session.finalText,
-      generatedImagePaths,
+    const finalResponse = appendModelSwitchGuidance(
+      appendGeneratedImageMarkdown(
+        extractFinalResponse(turn) || session.finalText,
+        generatedImagePaths,
+      ),
+      session.model,
     );
     session.finalText = finalResponse;
     session.generatedImagePaths = [];
@@ -888,13 +894,13 @@ export class CodexRuntime implements AgentRuntime {
 
   private requireSession(sessionId: string): CodexSession {
     const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`Unknown Codex session: ${sessionId}`);
+    if (!session) throw new Error(`Unknown App Server session: ${sessionId}`);
     return session;
   }
 
   private requireActiveTurn(sessionId: string, turnId: string): CodexSession {
     const session = this.requireSession(sessionId);
-    if (session.activeTurnId !== turnId) throw new Error(`Codex turn is no longer active: ${turnId}`);
+    if (session.activeTurnId !== turnId) throw new Error(`App Server turn is no longer active: ${turnId}`);
     return session;
   }
 
@@ -917,7 +923,7 @@ export class CodexRuntime implements AgentRuntime {
         type: "turn_failed",
         sessionId: session.localSessionId,
         turnId,
-        message: `Codex App Server disconnected: ${error.message}`,
+        message: `App Server disconnected: ${error.message}`,
       });
     }
     for (const [requestId, pending] of this.approvals) {
@@ -976,6 +982,20 @@ function permissionParams(mode: PermissionMode): { approvalPolicy: "never" | "on
   return mode === "auto"
     ? { approvalPolicy: "never", sandbox: "danger-full-access" }
     : { approvalPolicy: "on-request", sandbox: "workspace-write" };
+}
+
+const MODEL_SWITCH_GUIDANCE = "请发送 `/model` 切换到其他模型后重试。";
+
+function appendModelSwitchGuidance(response: string, model?: string): string {
+  if (!hasKnownCodeModeFailure(response) || response.includes(MODEL_SWITCH_GUIDANCE)) return response;
+  const modelLabel = model?.trim() ? ` \`${model.trim()}\`` : "";
+  const guidance = `> 当前模型${modelLabel} 的本地工具执行通道异常。${MODEL_SWITCH_GUIDANCE}`;
+  return response.trimEnd() ? `${response.trimEnd()}\n\n${guidance}` : guidance;
+}
+
+function hasKnownCodeModeFailure(response: string): boolean {
+  return /code-mode host closed its stdout/i.test(response)
+    || /exec expects an object containing raw JavaScript in [`'"]?input[`'"]?/i.test(response);
 }
 
 function threadLifecycleParams(cwd: string): {

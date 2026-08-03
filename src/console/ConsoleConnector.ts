@@ -12,8 +12,8 @@ export class ConsoleConnector {
 
   start(): void {
     if (this.reader) return;
-    this.logger.info("Starting local Codex test console.");
-    console.log("Codex console ready. Type /help or enter a prompt.");
+    this.logger.info("Starting the local Agent Bot console.");
+    console.log("Agent Bot console ready. Type /help or enter a prompt.");
     const reader = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "agentbot> " });
     this.reader = reader;
     reader.prompt();

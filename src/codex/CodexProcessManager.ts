@@ -27,15 +27,15 @@ export class CodexProcessManager implements AppServerClientProvider {
     const client = new AppServerConnection(child, this.logger.child({ component: "codex-app-server" }));
     this.client = client;
     readline.createInterface({ input: child.stderr, crlfDelay: Infinity }).on("line", (line) => {
-      this.logger.debug({ line }, "Codex App Server stderr.");
+      this.logger.debug({ line }, "App Server stderr.");
     });
-    child.once("error", (error) => this.logger.error({ error }, "Codex App Server process error."));
+    child.once("error", (error) => this.logger.error({ error }, "App Server process error."));
     child.once("exit", (code, signal) => {
-      this.logger.warn({ code, signal }, "Codex App Server process exited.");
+      this.logger.warn({ code, signal }, "App Server process exited.");
       client.close();
       if (this.client === client) this.client = undefined;
       if (this.child === child) this.child = undefined;
-      const error = new Error(`Codex App Server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`);
+      const error = new Error(`App Server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`);
       for (const listener of this.disconnectListeners) listener(error);
     });
     await client.request("initialize", {

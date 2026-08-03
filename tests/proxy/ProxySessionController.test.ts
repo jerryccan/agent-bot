@@ -711,7 +711,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_group_1", "turn_thr_group_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:group_1",
-      "已向 Codex 发送 Interrupt 请求：turn_thr_group_1",
+      "已向 Agent 发送 Interrupt 请求：turn_thr_group_1",
     );
     expect(sessions.get(second!)?.activeTurnId).toBe("turn_thr_group_2");
     expect(store.getOrCreateUserContext("chat_id:group_2", "codex").currentSessionId).toBe(second);
@@ -786,7 +786,7 @@ describe("ProxySessionController", () => {
     expect(outbound.replyText).toHaveBeenCalledWith(
       topicContextKey,
       { messageId: "om_topic_status_card", replyInThread: true },
-      "已向 Codex 发送 Interrupt 请求：turn_1",
+      "已向 Agent 发送 Interrupt 请求：turn_1",
     );
   });
 
@@ -2260,7 +2260,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Codex 发送 Interrupt 请求：turn_1",
+      "已向 Agent 发送 Interrupt 请求：turn_1",
     );
   });
 
@@ -2275,7 +2275,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Codex 发送 Interrupt 请求：turn_1",
+      "已向 Agent 发送 Interrupt 请求：turn_1",
     );
   });
 
@@ -2295,7 +2295,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_from_another_client");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Codex 发送 Interrupt 请求：turn_from_another_client",
+      "已向 Agent 发送 Interrupt 请求：turn_from_another_client",
     );
   });
 
@@ -2324,7 +2324,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("external_current", "turn_external_active");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Codex 发送 Interrupt 请求：turn_external_active",
+      "已向 Agent 发送 Interrupt 请求：turn_external_active",
     );
   });
 
@@ -2753,7 +2753,7 @@ describe("ProxySessionController", () => {
 
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledOnce();
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("active_external", "turn_external");
-    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Codex 发送 Interrupt 请求：turn_external");
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Agent 发送 Interrupt 请求：turn_external");
     expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(updatedCard);
@@ -3270,7 +3270,7 @@ describe("ProxySessionController", () => {
     expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("Codex 状态：Status target");
+    expect(serialized).toContain("Agent 状态：Status target");
     expect(serialized).toContain("status_target");
     expect(serialized).toContain("Status result");
     expect(serialized).toContain('"element_id":"status_execution_details"');
@@ -3728,7 +3728,7 @@ describe("ProxySessionController", () => {
 
     expect(store.findSessionByRemoteSessionId("external_active")).toBeUndefined();
     expect(runtime.resumeSession).not.toHaveBeenCalled();
-    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", expect.stringContaining("正在外部 Codex 中执行"));
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", expect.stringContaining("正在外部 Agent 中执行"));
 
     external.status = "idle";
     external.lastTurnStatus = "completed";
@@ -3827,7 +3827,7 @@ describe("ProxySessionController", () => {
     });
 
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
-    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Codex 发送 Interrupt 请求：turn_1");
+    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Agent 发送 Interrupt 请求：turn_1");
   });
 
   test("supports local CLI task stop and title controls", async () => {
@@ -4674,7 +4674,7 @@ describe("ProxySessionController", () => {
     expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(cardsBeforeStatus + 1);
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(card).toMatchObject({ header: { title: { content: "Codex 状态" } } });
+    expect(card).toMatchObject({ header: { title: { content: "Agent 状态" } } });
     expect(serialized).toContain("当前任务");
     expect(serialized).toContain("**标题**：`inspect this repo`");
     expect(serialized).toContain("**工作目录**：");
@@ -4683,7 +4683,7 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("**权限 / 任务范围**：自动执行 / 未指定项目");
     expect(serialized).toContain("**Agent**：`Codex`");
     expect(serialized).not.toContain("Agent / 运行时");
-    expect(serialized).toContain("**Codex 任务 ID**：`thr_1`");
+    expect(serialized).toContain("**App Server 任务 ID**：`thr_1`");
     expect(serialized).toContain("**创建时间 / 最近活动**：");
     expect(serialized).not.toContain("**创建 / 更新**：");
     expect(serialized).toContain("Agent Bot");
@@ -4851,7 +4851,7 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(card).toMatchObject({ header: { title: { content: "Codex 状态：inspect this repo" } } });
+    expect(card).toMatchObject({ header: { title: { content: "Agent 状态：inspect this repo" } } });
     expect(serialized).toContain("指定任务");
     expect(serialized).toContain("执行详情");
     expect(serialized).toContain("**当前 / 最后步骤**：整理测试结果");
@@ -4915,7 +4915,7 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(card);
-    expect(card).toMatchObject({ header: { title: { content: "Codex 状态：Second status task" } } });
+    expect(card).toMatchObject({ header: { title: { content: "Agent 状态：Second status task" } } });
     expect(serialized).toContain("Second task result");
     expect(store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId).toBe(currentSessionId);
   });

@@ -59,7 +59,7 @@ if (feishuOutbound) {
   const presenter = new FeishuTurnPresenter(feishuOutbound, store, renderer, {
     normalIntervalMs: 2_000,
     criticalGapMs: 500,
-    onError: (error) => logger.warn({ error }, "Failed to update Codex progress card."),
+    onError: (error) => logger.warn({ error }, "Failed to update Agent progress card."),
   });
   routes.push({ matches: (contextKey) => !contextKey.startsWith("console:"), outbound: feishuOutbound, presenter });
   const defaultAgentName = config.defaults.agent!;

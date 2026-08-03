@@ -99,7 +99,9 @@ export class AcpRuntimeAdapter implements AgentRuntime {
 
   async startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string> {
     const { text, localImagePaths } = normalizeRuntimePrompt(prompt);
-    if (localImagePaths.length > 0) throw new Error("当前 ACP Agent 不支持图片输入，请切换到 Codex 后重试。");
+    if (localImagePaths.length > 0) {
+      throw new Error("当前 ACP Agent 不支持图片输入，请切换到支持图片输入的 App Server Agent 后重试。");
+    }
     const session = this.requireSession(sessionId);
     const turnId = createId("turn");
     session.activeTurnId = turnId;

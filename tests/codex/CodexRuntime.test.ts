@@ -213,7 +213,7 @@ describe("CodexRuntime", () => {
     expect(requests[1]?.params).not.toHaveProperty("excludeTurns");
     expect(testLogger.warn).toHaveBeenCalledWith(
       { error: expect.any(AppServerRequestError) },
-      "Codex App Server does not support thread/fork excludeTurns; retrying without it.",
+      "App Server does not support thread/fork excludeTurns; retrying without it.",
     );
   });
 
@@ -458,6 +458,112 @@ describe("CodexRuntime", () => {
     }));
   });
 
+  test("suggests switching models when a completed turn reports the code-mode stdout failure", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "traex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+      model: "gpt-5.6-sol",
+    });
+    const turnId = await runtime.startTurn("s1", "run it");
+
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId,
+      itemId: "final_1",
+      delta: "The command failed: code-mode host closed its stdout",
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: turnId, status: "completed" },
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      finalResponse: [
+        "The command failed: code-mode host closed its stdout",
+        "> 当前模型 `gpt-5.6-sol` 的本地工具执行通道异常。请发送 `/model` 切换到其他模型后重试。",
+      ].join("\n\n"),
+    }));
+  });
+
+  test("suggests switching models when snapshot recovery reports malformed exec input", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "traex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+      model: "gpt-5.6-luna",
+    });
+    await runtime.startTurn("s1", "run it");
+    client.readResult = {
+      thread: {
+        id: "thr_1",
+        status: { type: "idle" },
+        turns: [{
+          id: "turn_1",
+          status: "completed",
+          items: [{
+            type: "agentMessage",
+            id: "final",
+            phase: "final_answer",
+            text: "exec expects an object containing raw JavaScript in `input`",
+          }],
+        }],
+      },
+    };
+
+    await runtime.synchronizeSession("s1");
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      finalResponse: [
+        "exec expects an object containing raw JavaScript in `input`",
+        "> 当前模型 `gpt-5.6-luna` 的本地工具执行通道异常。请发送 `/model` 切换到其他模型后重试。",
+      ].join("\n\n"),
+    }));
+  });
+
+  test("does not add model guidance for ordinary command failures", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "traex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+      model: "gpt-5.6-sol",
+    });
+    const turnId = await runtime.startTurn("s1", "run it");
+
+    client.emit("item/agentMessage/delta", {
+      threadId: "thr_1",
+      turnId,
+      itemId: "final_1",
+      delta: "The command exited with code 1.",
+    });
+    client.emit("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: turnId, status: "completed" },
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn_completed",
+      finalResponse: "The command exited with code 1.",
+    }));
+  });
+
   test("turns generated image items into a deliverable final response", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
@@ -679,7 +785,7 @@ describe("CodexRuntime", () => {
     expect(client.timeouts).toContainEqual({ method: "turn/interrupt", timeoutMs: 10_000 });
     expect(log.info).toHaveBeenCalledWith(
       { sessionId: "s1", threadId: "thr_1", turnId },
-      "Codex accepted the turn interrupt request.",
+      "App Server accepted the turn interrupt request.",
     );
   });
 

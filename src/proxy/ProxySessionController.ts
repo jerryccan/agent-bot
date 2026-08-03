@@ -564,7 +564,7 @@ export class ProxySessionController {
         try {
           remote = await runtime.readRemoteSession(record.remoteSessionId);
         } catch (error) {
-          this.logger.warn({ error, sessionId: record.localSessionId }, "Failed to inspect Codex task status for CLI.");
+          this.logger.warn({ error, sessionId: record.localSessionId }, "Failed to inspect App Server task status for CLI.");
         }
       }
     }
@@ -668,7 +668,7 @@ export class ProxySessionController {
     const agentName = requestedAgentName?.trim() || source.agentName;
     const agent = this.ensureAgent(agentName);
     if (forceProjectless && agent.kind !== "app-server") {
-      throw new Error("task newgroup --nodir is only available for Codex agents.");
+      throw new Error("task newgroup --nodir is only available for App Server agents.");
     }
     const sourceContextKey = this.outbound.getSessionContextKey(localSessionId) ?? source.contextKey;
     const replyTarget = this.outbound.getSessionReplyTarget(localSessionId);
@@ -907,7 +907,7 @@ export class ProxySessionController {
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
   ): Promise<void> {
-    if (!text.trim()) throw new Error("请输入要交给 Codex 的内容。");
+    if (!text.trim()) throw new Error("请输入要交给 Agent 的内容。");
     let record = this.currentSession(contextKey);
     if (!record) {
       const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
@@ -981,7 +981,7 @@ export class ProxySessionController {
         if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, activeTurnId);
         return;
       } catch (error) {
-        this.logger.debug({ error, sessionId: record.localSessionId, activeTurnId }, "Steering failed; reconciling the Codex thread.");
+        this.logger.debug({ error, sessionId: record.localSessionId, activeTurnId }, "Steering failed; reconciling the App Server thread.");
         let current = loaded.runtime.getSession(record.localSessionId);
         try {
           current = await loaded.runtime.synchronizeSession(record.localSessionId);
@@ -1006,7 +1006,7 @@ export class ProxySessionController {
           } catch (retryError) {
             this.logger.warn(
               { error: retryError, sessionId: record.localSessionId, activeTurnId: current.activeTurnId },
-              "Failed to steer the reconciled Codex turn; queueing prompt.",
+              "Failed to steer the reconciled App Server turn; queueing prompt.",
             );
           }
         }
@@ -1176,7 +1176,7 @@ export class ProxySessionController {
     const agent = this.ensureAgent(source.agentName);
     const runtime = this.runtimes.forAgent(source.agentName);
     if (runtime.kind !== "codex" || !runtime.forkSession) {
-      throw new Error("当前 Codex 运行时不支持 fork 任务。");
+      throw new Error("当前 App Server Agent 不支持 fork 任务。");
     }
 
     const context = this.store.getOrCreateUserContext(message.contextKey, source.agentName);
@@ -1253,14 +1253,14 @@ export class ProxySessionController {
       .map((messageId) => this.store.findTurnAnchorByMessageId(messageId))
       .find((candidate) => candidate !== undefined);
     if (!anchor) {
-      throw new Error("无法确定这个话题对应的 Codex 轮次，因此没有创建分支任务。请从该轮的用户消息、思考卡片或最终回答创建话题。");
+      throw new Error("无法确定这个话题对应的 App Server 轮次，因此没有创建分支任务。请从该轮的用户消息、思考卡片或最终回答创建话题。");
     }
 
     const source = anchor.contextKey
       ? this.store.getSessionForContext(anchor.localSessionId, anchor.contextKey)
       : this.store.getSession(anchor.localSessionId);
     if (!source || !source.remoteSessionId || !this.isCodexSession(source)) {
-      throw new Error("这个话题的来源不是可 fork 的 Codex 任务。");
+      throw new Error("这个话题的来源不是可 fork 的 App Server 任务。");
     }
     if (baseChatContextKey(anchor.contextKey ?? source.contextKey) !== `chat_id:${message.chatId}`) {
       throw new Error("话题来源任务不属于当前会话，已拒绝创建分支。");
@@ -1269,7 +1269,7 @@ export class ProxySessionController {
     const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(anchor.turnId));
     if (isTurnStillRunning(snapshot?.status)
       || (source.lastTurnId === anchor.turnId && source.lastTurnStatus === "running")) {
-      throw new Error("话题对应的轮次仍在执行，Codex 暂时不能从这一轮 fork。请等待该轮完成后再在话题中发送消息。");
+      throw new Error("话题对应的轮次仍在执行，App Server 暂时不能从这一轮 fork。请等待该轮完成后再在话题中发送消息。");
     }
 
     return { anchor, source, snapshot };
@@ -1311,7 +1311,7 @@ export class ProxySessionController {
     }
 
     if (source && (!source.remoteSessionId || !this.isCodexSession(source))) {
-      throw new Error(`${sourceLabel}不是可 fork 的 Codex 任务。`);
+      throw new Error(`${sourceLabel}不是可 fork 的 App Server 任务。`);
     }
 
     let runtime: AgentRuntime;
@@ -1321,20 +1321,20 @@ export class ProxySessionController {
       agentName = source.agentName;
       runtime = this.runtimes.forAgent(agentName);
     } else {
-      if (!taskId) throw new Error("缺少要 fork 的 Codex 任务 ID。");
+      if (!taskId) throw new Error("缺少要 fork 的 App Server 任务 ID。");
       const resolved = await this.resolveRemoteCodexSession(taskId);
       agentName = resolved.agentName;
       runtime = resolved.runtime;
       remote = resolved.remote;
     }
     if (runtime.kind !== "codex" || !runtime.forkSession) {
-      throw new Error("当前 Codex 运行时不支持 fork 任务。");
+      throw new Error("当前 App Server Agent 不支持 fork 任务。");
     }
 
     const remoteSessionId = source?.remoteSessionId ?? remote?.id ?? taskId;
-    if (!remoteSessionId) throw new Error("当前任务尚未创建 Codex 任务 ID，暂时不能 fork。");
+    if (!remoteSessionId) throw new Error("当前任务尚未创建 App Server 任务 ID，暂时不能 fork。");
     if (!runtime.readRemoteSession && !source) {
-      throw new Error("当前 Codex 运行时不支持读取指定任务。");
+      throw new Error("当前 App Server Agent 不支持读取指定任务。");
     }
     remote ??= runtime.readRemoteSession
       ? await runtime.readRemoteSession(remoteSessionId)
@@ -1359,7 +1359,7 @@ export class ProxySessionController {
     const forkedFromHistoricalTurn = isRunning && lastTurnId !== latestTurnId;
 
     const cwd = remote?.cwd || source?.cwd;
-    if (!cwd) throw new Error("指定的 Codex 任务没有可用的工作目录，暂时不能 fork。");
+    if (!cwd) throw new Error("指定的 App Server 任务没有可用的工作目录，暂时不能 fork。");
     const sourceTitle = remote?.title ?? source?.title ?? remote?.preview;
     const forkTitle = normalizeTaskTitle(requestedTitle) ?? this.store.nextForkTitle(sourceTitle);
     const modelProvider = remote?.modelProvider ?? source?.modelProvider;
@@ -1440,16 +1440,16 @@ export class ProxySessionController {
     sourceLabel: string,
   ): ForkSessionPlan {
     if (!source.remoteSessionId || !this.isCodexSession(source)) {
-      throw new Error(`${sourceLabel}不是可 fork 的 Codex 任务。`);
+      throw new Error(`${sourceLabel}不是可 fork 的 App Server 任务。`);
     }
     const runtime = this.runtimes.forAgent(source.agentName);
     if (runtime.kind !== "codex" || !runtime.forkSession) {
-      throw new Error("当前 Codex 运行时不支持 fork 任务。");
+      throw new Error("当前 App Server Agent 不支持 fork 任务。");
     }
 
     const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(lastTurnId));
     if (isTurnStillRunning(snapshot?.status)) {
-      throw new Error(`${sourceLabel}仍在执行，Codex 暂时不能从这一轮 fork。`);
+      throw new Error(`${sourceLabel}仍在执行，App Server 暂时不能从这一轮 fork。`);
     }
     const sourceWasRunning = Boolean(
       runtime.getSession(source.localSessionId)?.activeTurnId
@@ -1578,7 +1578,7 @@ export class ProxySessionController {
     }
     const source = direct ?? this.findStoredSessionByReference(taskId);
     if (source && !this.isCodexSession(source)) {
-      throw new Error("指定任务不是 Codex 任务，暂时不能按项目创建新任务。");
+      throw new Error("指定任务不是 App Server 任务，暂时不能按项目创建新任务。");
     }
 
     let agentName: string;
@@ -1609,7 +1609,7 @@ export class ProxySessionController {
 
     const cwd = remote?.cwd || source?.cwd;
     if (!cwd) {
-      throw new Error("指定的 Codex 任务没有可用的工作目录，暂时不能按项目创建新任务。");
+      throw new Error("指定的 App Server 任务没有可用的工作目录，暂时不能按项目创建新任务。");
     }
     const executionSettings: SessionExecutionSettings = {
       modelProvider: remote?.modelProvider ?? source?.modelProvider,
@@ -1829,7 +1829,7 @@ export class ProxySessionController {
         "群和新任务已创建。",
         `当前任务：${taskDescription}`,
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
-        `当前 Provider：${task.modelProvider ?? "Codex 默认"}`,
+        `当前 Provider：${task.modelProvider ?? "Agent 默认"}`,
         `当前模型：${task.model ?? "默认"}`,
         `思考强度：${task.reasoningEffort ?? "自动"}`,
         `权限类型：${task.permissionMode === "confirm" ? "执行前确认" : "自动执行"}`,
@@ -1920,7 +1920,7 @@ export class ProxySessionController {
         `已从${prepared.sourceDescription}创建分支。`,
         `当前任务：${taskDescription}`,
         `当前 Project 目录：${boundProjectCwd ?? "未绑定（Projectless）"}`,
-        `当前 Provider：${forked.session.modelProvider ?? "Codex 默认"}`,
+        `当前 Provider：${forked.session.modelProvider ?? "Agent 默认"}`,
         `当前模型：${forked.session.model ?? "默认"}`,
         `思考强度：${forked.session.reasoningEffort ?? "自动"}`,
         `权限类型：${forked.session.permissionMode === "confirm" ? "执行前确认" : "自动执行"}`,
@@ -2010,7 +2010,7 @@ export class ProxySessionController {
           });
         } catch (error) {
           if (!(agent.kind === "app-server" && !record.lastTurnId && isMissingRolloutError(error))) throw error;
-          this.logger.warn({ error, sessionId: record.localSessionId }, "Codex task has no rollout; creating a replacement task.");
+          this.logger.warn({ error, sessionId: record.localSessionId }, "App Server task has no rollout; creating a replacement task.");
           session = await runtime.createSession({
             localSessionId: record.localSessionId,
             agentName: record.agentName,
@@ -2230,7 +2230,7 @@ export class ProxySessionController {
         } catch (error) {
           this.logger.warn(
             { error, sessionId: record.localSessionId },
-            "Failed to pause the active Codex goal before interrupting its turn.",
+            "Failed to pause the active Agent goal before interrupting its turn.",
           );
         }
       }
@@ -2244,7 +2244,7 @@ export class ProxySessionController {
         } catch (error) {
           this.logger.warn(
             { error, sessionId: record.localSessionId, remoteSessionId: record.remoteSessionId },
-            "Failed to inspect the current Codex turn before interrupting; using the locally tracked turn.",
+            "Failed to inspect the current App Server turn before interrupting; using the locally tracked turn.",
           );
         }
       }
@@ -2258,7 +2258,7 @@ export class ProxySessionController {
         remoteSessionId: record.remoteSessionId,
         turnId,
       });
-      await this.outbound.sendText(record.contextKey, `已向 Codex 发送 Interrupt 请求：${turnId}`);
+      await this.outbound.sendText(record.contextKey, `已向 Agent 发送 Interrupt 请求：${turnId}`);
       return;
     }
 
@@ -2621,7 +2621,7 @@ export class ProxySessionController {
 
     const loaded = await this.loadSession(record);
     if (loaded.runtime.kind !== "codex" || !loaded.runtime.getGoal || !loaded.runtime.setGoal || !loaded.runtime.clearGoal) {
-      throw new Error("当前任务不支持 Codex Goal 模式。");
+      throw new Error("当前 Agent 不支持 Goal 模式。");
     }
 
     if (command.action === "show") {
@@ -2648,7 +2648,7 @@ export class ProxySessionController {
         goal,
         command.action === "pause"
           ? "Goal 已暂停；当前轮次可以完成，但不会继续自动执行。"
-          : "Goal 已恢复，Codex 会继续自动执行。",
+          : "Goal 已恢复，Agent 会继续自动执行。",
         record,
       );
       return;
@@ -2669,7 +2669,7 @@ export class ProxySessionController {
     await this.sendGoalCard(
       contextKey,
       goal,
-      command.action === "edit" ? "Goal 已更新。" : "Goal 已启动，Codex 会持续执行直到完成、暂停或遇到阻塞。",
+      command.action === "edit" ? "Goal 已更新。" : "Goal 已启动，Agent 会持续执行直到完成、暂停或遇到阻塞。",
       record,
     );
   }
@@ -2690,7 +2690,7 @@ export class ProxySessionController {
         title: "任务",
         lines: [
           `**标题**：${cardText(record.title ?? "未命名任务")}`,
-          `**Codex 任务 ID**：${cardText(record.remoteSessionId ?? "尚未创建")}`,
+          `**App Server 任务 ID**：${cardText(record.remoteSessionId ?? "尚未创建")}`,
         ],
       });
     }
@@ -2701,7 +2701,7 @@ export class ProxySessionController {
         "**/goal edit &#60;新目标&#62;**　修改　　**/goal clear**　清除",
       ],
     });
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Codex Goal", sections));
+    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Agent Goal", sections));
   }
 
   private async runShellCommand(contextKey: string, command: string): Promise<void> {
@@ -2845,7 +2845,7 @@ export class ProxySessionController {
         remoteSessions.push(...page.sessions.map((session) => ({ agentName, session })));
         remoteHasMore ||= Boolean(page.nextCursor);
       } catch (error) {
-        this.logger.warn({ error, contextKey, agentName }, "Failed to list Codex sessions for an Agent.");
+        this.logger.warn({ error, contextKey, agentName }, "Failed to list App Server sessions for an Agent.");
         remoteErrors.push(`${agentName}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }));
@@ -2937,7 +2937,7 @@ export class ProxySessionController {
       };
     });
     const card = this.cardRenderer.renderTaskListCard(
-      searchTerm ? `Codex 任务：${searchTerm}` : "Codex 任务",
+      searchTerm ? `App Server 任务：${searchTerm}` : "App Server 任务",
       activeCount > 0 ? `任务（${activeCount} 个活跃）` : "任务",
       cardEntries,
       [
@@ -3006,7 +3006,7 @@ export class ProxySessionController {
     const candidates = scoped
       ? [[scoped.agentName, this.runtimes.forAgent(scoped.agentName)] as const]
       : this.runtimes.entries("codex");
-    if (candidates.length === 0) throw new Error("未配置 Codex Agent。");
+    if (candidates.length === 0) throw new Error("未配置 App Server Agent。");
 
     const reads = await Promise.allSettled(candidates.map(async ([agentName, runtime]) => {
       if (runtime.kind !== "codex" || !runtime.readRemoteSession) {
@@ -3031,7 +3031,7 @@ export class ProxySessionController {
         : undefined)
       .filter((detail): detail is string => Boolean(detail))
       .join("；");
-    throw new Error(`找不到 Codex 任务：${scoped?.remoteSessionId ?? reference}${details ? `（${details}）` : ""}`);
+    throw new Error(`找不到 App Server 任务：${scoped?.remoteSessionId ?? reference}${details ? `（${details}）` : ""}`);
   }
 
   private async switchSession(contextKey: string, reference?: string): Promise<void> {
@@ -3060,9 +3060,9 @@ export class ProxySessionController {
 
     const { agentName, remote } = await this.resolveRemoteCodexSession(taskId);
     if (remote.status === "active" || remote.lastTurnStatus === "inProgress") {
-      throw new Error(`这个任务正在外部 Codex 中执行，当前不会切换。可使用 /status ${taskId} 查看进度。`);
+      throw new Error(`这个任务正在外部 Agent 中执行，当前不会切换。可使用 /status ${taskId} 查看进度。`);
     }
-    if (!remote.cwd) throw new Error("这个 Codex 任务没有可用的工作目录，暂时无法切换。");
+    if (!remote.cwd) throw new Error("这个 App Server 任务没有可用的工作目录，暂时无法切换。");
     const localSessionId = createId("sess");
     this.store.createSession({
       localSessionId,
@@ -3109,7 +3109,7 @@ export class ProxySessionController {
 
     const { runtime, remote } = await this.resolveRemoteCodexSession(taskId);
     if (!runtime.readRemoteSession || !runtime.interruptRemoteTurn) {
-      throw new Error("当前 Codex 运行时不支持停止外部任务。");
+      throw new Error("当前 App Server Agent 不支持停止外部任务。");
     }
     const turnId = remote.status === "active" || remote.lastTurnStatus === "inProgress"
       ? remote.lastTurnId
@@ -3124,7 +3124,7 @@ export class ProxySessionController {
       turnId,
       source: "sessions_card",
     });
-    await this.outbound.sendText(contextKey, `已向 Codex 发送 Interrupt 请求：${turnId}`);
+    await this.outbound.sendText(contextKey, `已向 Agent 发送 Interrupt 请求：${turnId}`);
   }
 
   private resolveSessionReference(contextKey: string, reference?: string): string {
@@ -3165,7 +3165,7 @@ export class ProxySessionController {
         && activity.activeTurnId === record.lastTurnId;
       const botOwnsActiveTurn = runtimeOwnsActiveTurn || persistedTurnMatches;
       if (activity.active && !botOwnsActiveTurn) {
-        throw new Error("这个任务正在外部 Codex 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
+        throw new Error("这个任务正在外部 Agent 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
       }
       return activity;
     }
@@ -3173,14 +3173,14 @@ export class ProxySessionController {
     try {
       remote = await runtime.readRemoteSession(record.remoteSessionId);
     } catch (error) {
-      // Codex does not materialize a new thread until its first user message.
+      // App Server does not materialize a new thread until its first user message.
       // Such a thread has no turn to take over, so allow turn/start to create it.
       if (!record.lastTurnId && isUnmaterializedCodexThreadError(error)) return;
       throw error;
     }
     const botOwnsActiveTurn = isBotOwnedActiveTurn(record, remote);
     if ((remote.status === "active" || remote.lastTurnStatus === "inProgress") && !botOwnsActiveTurn) {
-      throw new Error("这个任务正在外部 Codex 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
+      throw new Error("这个任务正在外部 Agent 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
     }
     return undefined;
   }
@@ -3245,7 +3245,7 @@ export class ProxySessionController {
         try {
           remote = await runtime.readRemoteSession(current.remoteSessionId);
         } catch (error) {
-          this.logger.warn({ error, sessionId: current.localSessionId }, "Failed to inspect Codex task status.");
+          this.logger.warn({ error, sessionId: current.localSessionId }, "Failed to inspect App Server task status.");
         }
       }
       if (runtime.kind === "codex" && runtime.getGoal) {
@@ -3253,7 +3253,7 @@ export class ProxySessionController {
           const loaded = runtime.getSession(current.localSessionId) ?? (await this.loadSession(current)).session;
           goal = await runtime.getGoal(loaded.localSessionId);
         } catch (error) {
-          this.logger.warn({ error, sessionId: current.localSessionId }, "Failed to inspect Codex goal status.");
+          this.logger.warn({ error, sessionId: current.localSessionId }, "Failed to inspect Agent goal status.");
         }
       }
     }
@@ -3265,7 +3265,7 @@ export class ProxySessionController {
     let activeTurnId: string | undefined;
     let queued = 0;
     if (!current) {
-      taskLines.push("无。直接发送消息即可创建一个未指定项目的 Codex 任务。");
+      taskLines.push("无。直接发送消息即可创建一个未指定项目的 Agent 任务。");
     } else {
       const agent = this.ensureAgent(current.agentName);
       const runtimeSession = this.runtimes.forAgent(current.agentName).getSession(current.localSessionId);
@@ -3283,11 +3283,11 @@ export class ProxySessionController {
       taskLines.push(
         `**标题**：${cardCode(current.title ?? "未命名任务")}`,
         `**工作目录**：${cardCode(current.cwd)}`,
-        `**Provider / 模型 / 思考强度**：${cardCode(current.modelProvider ?? "Codex 默认")} / ${cardCode(current.model ?? "默认")} / ${cardCode(current.reasoningEffort ?? "自动")}`,
+        `**Provider / 模型 / 思考强度**：${cardCode(current.modelProvider ?? "Agent 默认")} / ${cardCode(current.model ?? "默认")} / ${cardCode(current.reasoningEffort ?? "自动")}`,
         `**状态 / 最近结果**：${statusLabel} / ${resultLabel}`,
         `**Agent**：${cardCode(agent.title)}`,
         `**权限 / 任务范围**：${current.permissionMode === "confirm" ? "执行前确认" : "自动执行"} / ${detectProjectlessWorkspace(current.cwd) ? "未指定项目" : "指定项目"}`,
-        `**Codex 任务 ID**：${cardCode(current.remoteSessionId ?? "尚未创建")}`,
+        `**App Server 任务 ID**：${cardCode(current.remoteSessionId ?? "尚未创建")}`,
         `**当前执行 / 排队消息**：${activeTurnId ? cardCode(activeTurnId) : "无"} / ${queued} 条`,
         `**创建时间 / 最近活动**：${formatStatusTime(current.createdAt)} / ${formatStatusTime(current.updatedAt)}`,
       );
@@ -3318,8 +3318,8 @@ export class ProxySessionController {
       },
     ];
     const title = targetSessionId && current
-      ? `Codex 状态：${truncateText((current.title ?? current.remoteSessionId ?? current.localSessionId).replace(/\s+/g, " "), 40)}`
-      : "Codex 状态";
+      ? `Agent 状态：${truncateText((current.title ?? current.remoteSessionId ?? current.localSessionId).replace(/\s+/g, " "), 40)}`
+      : "Agent 状态";
     const taskId = current?.remoteSessionId
       ? remoteSessionReference(current.agentName, current.remoteSessionId)
       : current?.localSessionId;
@@ -3363,7 +3363,7 @@ export class ProxySessionController {
           `**工作目录**：${cardCode(remote.cwd || "目录未知")}`,
           `**状态 / 当前任务**：${remoteSessionDetailStatus(remote)} / 未切换`,
           `**Agent**：${cardCode(agentName)}`,
-          `**Codex 任务 ID**：${cardCode(remote.id)}`,
+          `**App Server 任务 ID**：${cardCode(remote.id)}`,
           `**最近回合**：${cardCode(remote.lastTurnId ?? "无")}　${remoteTurnStatusLabel(remote.lastTurnStatus)}`,
           `**创建时间 / 最近活动**：${formatRemoteTime(remote.createdAt)} / ${formatRemoteTime(latestRemoteTimestamp(remote.recencyAt, remote.updatedAt))}`,
         ],
@@ -3374,14 +3374,14 @@ export class ProxySessionController {
         lines: [
           `**当前 / 最后步骤**：${statusExcerpt(remote.lastActivity ?? remoteStatusStep(remote), 500)}`,
           isRemoteSessionActive(remote)
-            ? "外部 Codex 正在执行；Agent Bot 只读取状态，不会接管。"
+            ? "外部 Agent 正在执行；Agent Bot 只读取状态，不会接管。"
             : `发送 **/switch ${cardText(remote.id)}** 切换到此任务。`,
         ],
         collapsible: true,
         elementId: "status_execution_details",
       },
     ];
-    const title = `Codex 状态：${truncateText((remote.title ?? remote.preview ?? remote.id).replace(/\s+/g, " "), 40)}`;
+    const title = `Agent 状态：${truncateText((remote.title ?? remote.preview ?? remote.id).replace(/\s+/g, " "), 40)}`;
     const showStop = isRemoteSessionActive(remote)
       && options.forceSwitchTaskId !== actionReference
       && options.forceSwitchTaskId !== remote.id;
