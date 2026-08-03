@@ -73,6 +73,7 @@ CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Local
 - 进程环境变量优先于 `~/.agent-bot/.env`
 - `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 必须同时存在
 - 一键注册还会把授权用户的 `open_id` 保存为 `FEISHU_USER_OPEN_ID`
+- 已有应用凭据但缺少用户 Open ID 时，第一条发送者为有效 `ou_` 标识的私聊消息会把该用户原子写入 Profile 的 `.env`；群消息和后续用户都不会覆盖它
 - 除非使用 `--reconfigure-feishu`，完整凭据不会被替换
 - 缺少凭据或只有一项时会重新创建应用
 - 新创建的凭据经过 fsync、原子替换写入 `.env`，并在配置权限前读回校验
@@ -100,7 +101,7 @@ https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi
 
 `agentbot --profile <目录> init --reset` 会完整重置显式指定的 Profile。执行前必须先停止该 Profile 的 Server。命令会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `<profile>/.reset-backups/` 下唯一的时间戳目录，从随包模板创建干净的新文件和目录，再继续正常初始化。已有重置备份及其他无关文件会保留。备份中可能含有旧 App Secret 和会话数据，应妥善保护 Profile 目录。远端旧飞书应用不会被删除。`--reset --skip-feishu` 可创建干净的 Console-only Profile，`--reset` 不能与 `--reconfigure-feishu` 同时使用。
 
-飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agentbot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
+飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agentbot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor，而是安排安全重启，在活动任务和最终结果投递完成后加载当前安装的代码及更新后的配置；JSON 结果将其表示为 `server.status: "restart-scheduled"`。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
 
 ## 飞书应用要求
 
@@ -171,7 +172,7 @@ logging:
 
 `feishu.respondToAllGroupMessages` 默认为 `true`。设为 `false` 后，未 @ 当前机器人的群消息会被忽略；Worker 启动时会解析机器人的 Open ID，因此 @ 其他成员不会误触发。私聊始终正常处理。无论该运行时配置如何，初始化都会申请接收全部群消息的权限，之后切换配置无需再次授权。
 
-`agentbot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。通知通常发往已知私聊和最近活跃的群聊；数据库里尚无已知会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续。缺少凭据时仍会启动失败并提示先初始化。`agentbot console` 是明确的纯本地入口，不需要飞书凭据。
+`agentbot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。每次启动都会向所有已知私聊发送卡片，不受最近活跃时间影响；同时向本次 Worker 启动前 1 分钟内活跃的非话题群聊发送卡片。安全重启后，还会向所有已加入本次重启通知范围的群发送，不受活跃时间限制；话题路由会折算为所属普通群，因此话题会话永远不会成为启动卡目标。数据库里尚无符合条件的会话时，改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续；之后收到的第一条私聊消息可以补全用户 Open ID，供后续启动通知和 CLI 建群使用。缺少凭据时仍会启动失败并提示先初始化。`agentbot console` 是明确的纯本地入口，不需要飞书凭据。
 
 必须至少配置一个 Agent，`defaults.agent` 必须指向已配置的 Agent。
 
@@ -222,13 +223,15 @@ Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeT
 
 每个 turn 只有一张进度卡。普通更新最多每两秒一次，关键更新最短间隔 500 毫秒。完成时先把进度卡更新为终态，再单独发送 Markdown 最终回答。
 
+成功完成的思考卡片包含 `Reset` 操作，其作用提示紧跟在按钮下方。`/turns` 卡片把相同的作用提示放在最上方，然后按时间倒序显示当前任务的已完成 turn，每页 10 条。每次 `turn_started` 都会把前一个已完成 turn 保存为父节点；现有任务会结合快照时间和 `session_reset_to_turn` 审计记录回填，因此历史 Reset 后的第一轮会指向所选 turn，而不是时间上相邻的废弃路径。渲染器先基于完整历史计算 lane，再切分页面，从而跨分页正确显示延续和合并；内容缩进到第二列，状态或操作位于第三列。当前对话位置显示“当前”标记，其余 turn 提供 `Reset` 按钮。翻页和成功的 Reset 都会更新同一张卡片、保持与打开卡片时的任务绑定，并把“当前”标记移动到所选 turn；成功提示会用 Prompt 摘要、完成时间和 Turn ID 标明目标轮次。Agent Bot 会持久化每个 turn 原本所属的 App Server thread，从所选 turn fork，并替换当前任务的远端 thread 绑定；本地任务 ID、标题、Agent、项目目录、运行设置和聊天路由保持不变。所选 turn 之后已经完成的快照不会被删除，因此卡片会同时显示旧路径保留的轮次和 Reset 后新分支产生的轮次。当前任务仍在执行时会拒绝 Reset，本地文件修改也不会被回退。
+
 完成持久化消息去重占位后，Agent Bot 会等待 `OnIt` 表情添加成功，再进行聊天信息持久化、图片下载、队列等待、命令执行或 Runtime 调用。Turn 成功、失败或取消时分别替换为 `DONE`、`ERROR` 或 `CrossMark`。表情操作失败会记录日志，但不会阻塞任务。
 
 富文本图片会下载到输入图片缓存，并以 `localImage` 传给 App Server。纯图片消息使用默认 Prompt `请查看这张图片`。ACP Runtime 不支持图片输入时会明确报错。
 
 ## 任务、项目与外部 App Server 工作
 
-`/sessions` 通过 `thread/list` 读取每个已配置 App Server Agent 的任务。对于 Codex，可发现同一 `CODEX_HOME` 下由 Codex Desktop、CLI、Agent Bot 或其他 App Server 客户端创建的任务；其他 Agent 通过同一协议暴露各自的任务存储。
+`/sessions` 通过 `thread/list` 读取每个已配置 App Server Agent 的任务。对于 Codex，可发现同一 `CODEX_HOME` 下由 Codex Desktop、CLI、Agent Bot 或其他 App Server 客户端创建的任务；其他 Agent 通过同一协议暴露各自的任务存储。多 Agent 任务合并并全局排序后，每页显示 5 个；`Previous` 和 `Next` 会替换当前卡片内容而不是继续追加任务，同时保留搜索条件和全局任务序号。
 
 每个任务条目都提供 `NewGroup` 和 `ForkGroup` 回调。回调数据保留所选任务 ID 与来源上下文，并使用飞书操作者的 `open_id` 邀请用户进入新群。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
 
@@ -290,9 +293,13 @@ Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fat
 
 飞书 `/restart` 命令默认使用这条安全重启路径；`/restart --force` 会立即重启，并可能中断正在执行的任务。该命令拒绝其他所有参数。新消息会重置静默计时，CLI 的 `--immediate` 和 `--force` 也会跳过这些检查。退出码 `75` 表示主动 worker 重启。
 
+待执行的安全重启计划会收集每一个触发它的精确会话路由。收到任何用户消息时，包括斜杠命令，都会把所属基础私聊或群聊标为活跃；每次状态更新还会加入此前 1 分钟内活跃的所有已知会话。每个已加入的会话都会收到各自的状态卡片和真正开始重启前的提示，而且即使之后超过 1 分钟未活跃，也会一直保留到本次计划结束。同一路由会去重；如果话题路由最初缺少消息锚点，后续带锚点的触发会补全它。话题请求会保留原消息 ID，并通过话题回复发送，避免重启状态落到群主会话；话题中的最近活动记在所属普通群，只有显式从话题触发时才向该话题本身发送。后续请求也会更新重启原因。替换进程前，Agent Bot 会提取并去重所有已加入路由所属的普通群，经替换 Supervisor 传给 Worker，再把这些群加入服务级启动卡目标。Supervisor 会保留该列表，直到 Worker 连续稳定运行 60 秒，避免启动阶段异常退出并重新拉起时丢失必发群。
+
+当 CLI 重启属于某个具体任务时，使用 `agentbot server restart --task <任务>`。任务序号、完整 ID 和不冲突的 ID 前缀会在发送控制请求前解析。未传 `--task` 时，只有所有运行中任务都属于同一个会话，Server 才会自动推断安全重启状态的发送目标；如果同时有多个运行中的会话，请求会被拒绝。没有运行中任务的本地 CLI 重启没有等待状态所属会话。
+
 首次安全重启状态卡会延迟 3 秒发送，让任务最终回答尽可能先到达；延迟期间的状态变化会合并到首张卡片。该延迟不阻塞调度器轮询，真正关闭前会立即 flush 尚未发送的卡片。
 
-等待中的安全重启状态卡底部带有 `Cancel` 操作。回调会携带调度器单调递增的计划 ID，因此旧卡片不会取消较新的重启。取消成功后，所有已发送的状态卡都会原地更新并移除按钮；调度器进入不可逆的正在重启阶段后也不再显示该按钮。
+等待中的安全重启状态卡底部带有 `Cancel` 操作。回调会携带调度器单调递增的计划 ID，因此旧卡片不会取消较新的重启。取消成功后，所有已加入会话中的状态卡都会原地更新并移除按钮；调度器进入不可逆的正在重启阶段后也不再显示该按钮。
 
 本地控制服务负责修改任务、执行指定任务的 NewGroup 和 ForkGroup，以及请求服务重启；只读任务查询直接访问 SQLite。
 

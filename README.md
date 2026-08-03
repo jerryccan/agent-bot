@@ -14,6 +14,7 @@ Agent Bot runs on your computer and connects a Feishu bot to your local coding a
 
 - Use your existing local Codex or TraeX login from Feishu
 - Create, continue, switch, fork, and stop tasks
+- Reset the current conversation to any successfully completed progress card
 - Work with text, images, groups, and threads
 - Queue follow-up Prompts or add instructions while a task is running
 - Resume work after Agent Bot restarts
@@ -66,6 +67,8 @@ Then follow the displayed link or scan the QR code to create and authorize the F
 
 Only a complete app ID and secret saved locally count as a successful bot creation. If initialization is interrupted before both credentials are saved, rerunning `agentbot init` creates a new bot. If credentials were saved, initialization resumes by auditing that bot's remote permissions and subscriptions.
 
+If an existing bot has an App ID and secret but no `FEISHU_USER_OPEN_ID`, Agent Bot fills it automatically from the first direct message sent to the bot. The value is stored in the Profile's `.env` and is never replaced by later messages. Group messages cannot claim this default user.
+
 The `im:message.group_msg` permission cannot be added through Feishu's one-click configuration. When it is missing, Agent Bot prints a QR code and a direct Developer Console link already filtered to that permission. Add it manually, publish the app version, and complete tenant approval if required. While Agent Bot waits for it to become active, enter `Y` to skip this permission and continue initialization; the final result warns that ordinary group messages which do not mention the bot will be unavailable.
 
 When optional permissions or subscriptions are missing, Agent Bot first shows their QR code and authorization link, then immediately waits up to five minutes for them to become active. The terminal offers only one choice: enter `Y` to skip optional authorization and continue. Otherwise, complete authorization in the browser while Agent Bot waits. Optional authorization failures or timeouts do not block startup, and Agent Bot reports which features may be unavailable.
@@ -79,7 +82,7 @@ When optional permissions or subscriptions are missing, Agent Bot first shows th
 | `--profile <directory>`| Use an isolated profile directory   |
 | `--config <path>`      | Use a specific configuration file   |
 
-After upgrading Agent Bot, rerun `agentbot init` to refresh the Profile. It preserves existing values in `config.yaml` and `.env`, fills settings and environment variables added by the current version, lets you confirm or change the default Agent, and rechecks the Agents and bot configuration. If the server is already running, initialization leaves it running. In a non-interactive terminal, `init` cannot ask for a selection and keeps the already configured default Agent.
+After upgrading Agent Bot, rerun `agentbot init` to refresh the Profile. It preserves existing values in `config.yaml` and `.env`, fills settings and environment variables added by the current version, lets you confirm or change the default Agent, and rechecks the Agents and bot configuration. If the server is already running, initialization schedules a safe restart so the current Agent Bot version and refreshed configuration take effect after active work finishes. In a non-interactive terminal, `init` cannot ask for a selection and keeps the already configured default Agent.
 
 To fully reconfigure a Profile, stop its server and select the Profile explicitly:
 
@@ -97,7 +100,7 @@ agentbot server status
 
 `agentbot init` starts the server automatically. If you stop it later, run `agentbot server start` to start it again. For local-only use, initialize with `--skip-feishu` and run `agentbot console` instead.
 
-The `Agent Bot 已启动` startup card shows the version of Agent Bot currently running.
+The `Agent Bot 已启动` startup card shows the version currently running. It is sent to every known private chat, groups active in the previous minute, and every group enrolled for the current safe restart; topic routes receive it in their parent group.
 
 Open Feishu, find the bot, and send a message. Agent Bot automatically creates a task for a chat that does not have one yet.
 
@@ -137,7 +140,7 @@ agentbot server stop
 agentbot server restart
 ```
 
-`server restart` waits for current work to finish by default. Its status card includes a `Cancel` button while the restart is still waiting. Use `--immediate` only when interruption is acceptable.
+`server restart` waits for current work to finish by default. Its status card includes a `Cancel` button while the restart is still waiting. Every conversation that triggers the pending restart and every conversation active during the previous minute receives the waiting status and restarting notice. Once included, a conversation stays in the notification set until that restart finishes. When restarting for a specific task, use `--task <task>` to add that task's Lark conversation. Use `--immediate` only when interruption is acceptable.
 
 On Windows, every Supervisor and Worker launch reloads the latest Machine and User environment variables. Restart the service after changing `PATH` or another system environment variable; the active Profile selection remains isolated.
 
@@ -177,6 +180,7 @@ Plain text continues the current task. Messages beginning with `/` are commands.
 | `/sessions [keyword]`                    | Browse available App Server tasks           |
 | `/switch [task]`                         | Switch tasks or return to the previous task |
 | `/fork [task]`                           | Create and open a task branch               |
+| `/turns`                                 | Browse historical turns and reset the conversation |
 | `/status [task]`                         | View task progress and results              |
 | `/title <title>`                         | Rename the current task                     |
 | `/stop`                                  | Stop the current execution                  |
@@ -200,7 +204,9 @@ Slash commands accept any unique prefix, and compound commands accept registered
 
 Private chats, group timelines, and threads keep separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions to the current work; use `/queue` (or `/nosteer`) to always create a later turn.
 
-The `/sessions` card provides `NewGroup` and `ForkGroup` actions for each task, so you can create a project-matched group or fork a selected task directly into a new group.
+The `/sessions` card shows five tasks per page and uses `Previous` and `Next` to update the card in place. It provides `NewGroup` and `ForkGroup` actions for each task, so you can create a project-matched group or fork a selected task directly into a new group.
+
+`/turns` opens the current task's completed-turn history, 10 turns per page. Each turn is an indented numbered node in a compact commit graph whose lanes follow the actual parent turns, including branches and merges created by Reset. The active conversation point is marked as `Current`; every other entry has a `Reset` action that restores the conversation context to that completed turn and moves the marker there without reverting local file changes. The success notice identifies the selected Prompt, completion time, and Turn ID. Turns completed after the selected point remain in the history, alongside turns later completed on the new branch. Reset is unavailable while the task is running.
 
 Inside a thread, `/forkgroup` forks from the thread's original turn until the thread task completes its own turn. After that, it forks from the thread task's latest completed turn. A currently running turn is never used as a fork point.
 

@@ -6,6 +6,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Route safe-restart status cards and restarting acknowledgements to every conversation that triggers the pending restart plus every conversation active during the previous minute, retaining each enrolled route until the restart completes while preserving Feishu topic replies; add `agentbot server restart --task <task>` and reject ambiguous CLI routing when multiple conversations are active.
+- Send every startup card to all known private chats, non-topic groups active during the previous minute, and every group enrolled for the current safe restart; fold topic routes into their parent group instead of sending startup cards into topics.
+- Replace the expanding `More` action in `/sessions` with in-place five-task pagination using `Previous` and `Next`, preserving search terms, task actions, and global numbering across pages.
+- Add `Reset` actions to successfully completed progress cards and a paginated `/turns` history card with 10 completed turns per page. Persist each new turn's parent, backfill existing tasks from Reset audits, and render true branch lanes and merges across page boundaries instead of connecting turns merely because their completion times are adjacent. The card marks the current conversation point and moves that marker after a successful Reset while preserving the Agent Bot task and leaving local files unchanged. Completed turns after the selected Reset point remain visible because history snapshots are retained, and the success notice identifies the selected Prompt, completion time, and Turn ID.
+- Recover a missing `FEISHU_USER_OPEN_ID` from the first valid private-chat message, persist it atomically without allowing group or later messages to replace it, and reload it correctly after Worker restarts.
+- Schedule a safe restart after `agentbot init` when the selected Profile server is already running, ensuring upgraded code and refreshed configuration take effect without interrupting active work.
+
 ## [0.1.13-alpha.0] - 2026-08-03
 
 - Upgrade existing Profiles during `agentbot init` by filling missing `config.yaml` and `.env` settings, detecting Codex and TraeX versions, offering explicit install or upgrade actions, and requiring an interactive default-Agent selection.
