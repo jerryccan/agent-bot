@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.13-alpha.2] - 2026-08-04
+
 - Show every configured Agent process's PID and initialized version in `agentbot server status` and its JSON output.
 - Stop forwarding Lark credentials and internal restart state to Agent processes; preserve ordinary parent variables while exposing only namespaced, non-secret Agent Bot Profile and Lark identity context.
 - Repair missing turn-parent links after a Worker crash so `/turns` keeps the correct conversation graph across restart recovery.
