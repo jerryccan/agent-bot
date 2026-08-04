@@ -65,6 +65,12 @@ import {
   type ServerStartResult,
 } from "./cli/ServerStarter.js";
 import { taskChatRoute } from "./cli/taskChatRoute.js";
+import {
+  currentAppServerThreadIds,
+  formatTaskList,
+  resolveCurrentTask,
+  taskStateLabel,
+} from "./cli/taskListOutput.js";
 import { isThreadContextKey } from "./feishu/contextKey.js";
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 import {
@@ -724,6 +730,16 @@ async function taskCommand(input: string[]): Promise<void> {
   const store = new StateStore(config.storage.sqlitePath);
   try {
     const allSessions = store.listAllSessions();
+    if (action === "current") {
+      const unsupported = rest.filter((value) => value !== "--json");
+      if (unsupported.length > 0) throw new Error(cliText(
+        `task current does not accept arguments: ${unsupported.join(" ")}`,
+        `task current 不接受这些参数：${unsupported.join(" ")}`,
+      ));
+      const session = resolveCurrentTaskFromEnvironment(allSessions);
+      await outputTaskStatus(config.storage.sqlitePath, store, session, rest.includes("--json"));
+      return;
+    }
     if (action === "prompt" || action === "send") {
       const [reference, ...promptParts] = rest;
       if (!reference) throw new Error(cliText(
@@ -809,28 +825,7 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "status") {
-      const endpoint = controlEndpoint(config.storage.sqlitePath);
-      let live: TaskStatusControlData | undefined;
-      let response: ControlResponse | undefined;
-      try {
-        response = await sendControlRequest(endpoint, {
-          action: "task_status",
-          localSessionId: session.localSessionId,
-        });
-      } catch {
-        // The server can be stopped or still run an older control protocol
-        // while a safe restart is pending. Preserve the local read-only fallback.
-      }
-      if (response) {
-        ensureOk(response);
-        live = response.data as TaskStatusControlData;
-      }
-      const statusSession = live?.session ?? session;
-      const snapshot = live?.snapshot
-        ?? (statusSession.lastTurnId ? store.getTurnSnapshot(statusSession.lastTurnId) : undefined);
-      const result = { ...statusSession, snapshot, ...(live?.remote ? { remote: live.remote } : {}) };
-      if (rest.includes("--json")) printJson(result);
-      else printTaskStatus(statusSession, snapshot, live?.remote);
+      await outputTaskStatus(config.storage.sqlitePath, store, session, rest.includes("--json"));
       return;
     }
     const endpoint = controlEndpoint(config.storage.sqlitePath);
@@ -860,6 +855,53 @@ async function taskCommand(input: string[]): Promise<void> {
   } finally {
     store.close();
   }
+}
+
+function resolveCurrentTaskFromEnvironment(sessions: SessionRecord[]): SessionRecord {
+  const resolution = resolveCurrentTask(sessions, currentAppServerThreadIds(process.env));
+  if (resolution.status === "found") return resolution.session;
+  if (resolution.status === "missing-thread-id") throw new Error(cliText(
+    "The current task cannot be detected because neither CODEX_THREAD_ID nor TRAECLI_THREAD_ID is set. Run this command from a Codex or TraeX task.",
+    "无法检测当前任务：CODEX_THREAD_ID 和 TRAECLI_THREAD_ID 均未设置。请从 Codex 或 TraeX 任务中运行此命令。",
+  ));
+  if (resolution.status === "not-found") throw new Error(cliText(
+    `No AgentBot task matches the current App Server Thread ID (${resolution.threadIds.join(", ")}). Check that the correct Profile is selected.`,
+    `没有 AgentBot 任务匹配当前 App Server Thread ID（${resolution.threadIds.join("，")}）。请检查是否选择了正确的 Profile。`,
+  ));
+  throw new Error(cliText(
+    "The current task is ambiguous because multiple injected Thread IDs match AgentBot tasks. Use task status <task> with an explicit AgentBot task ID.",
+    "当前任务存在歧义：多个注入的 Thread ID 匹配到了 AgentBot 任务。请使用明确的 AgentBot 任务 ID 执行 task status <任务>。",
+  ));
+}
+
+async function outputTaskStatus(
+  sqlitePath: string,
+  store: StateStore,
+  session: SessionRecord,
+  json: boolean,
+): Promise<void> {
+  const endpoint = controlEndpoint(sqlitePath);
+  let live: TaskStatusControlData | undefined;
+  let response: ControlResponse | undefined;
+  try {
+    response = await sendControlRequest(endpoint, {
+      action: "task_status",
+      localSessionId: session.localSessionId,
+    });
+  } catch {
+    // The server can be stopped or still run an older control protocol
+    // while a safe restart is pending. Preserve the local read-only fallback.
+  }
+  if (response) {
+    ensureOk(response);
+    live = response.data as TaskStatusControlData;
+  }
+  const statusSession = live?.session ?? session;
+  const snapshot = live?.snapshot
+    ?? (statusSession.lastTurnId ? store.getTurnSnapshot(statusSession.lastTurnId) : undefined);
+  const result = { ...statusSession, snapshot, ...(live?.remote ? { remote: live.remote } : {}) };
+  if (json) printJson(result);
+  else printTaskStatus(statusSession, snapshot, live?.remote);
 }
 
 function filterSessions(sessions: SessionRecord[], args: string[]): SessionRecord[] {
@@ -896,19 +938,12 @@ function resolveTask(sessions: SessionRecord[], reference: string): SessionRecor
 }
 
 function printTaskList(sessions: SessionRecord[]): void {
-  if (sessions.length === 0) {
-    process.stdout.write(cliText("No tasks.\n", "没有任务。\n"));
-    return;
-  }
-  for (const [index, session] of sessions.entries()) {
-    const id = session.remoteSessionId ?? session.acpSessionId ?? session.localSessionId;
-    process.stdout.write(`${index + 1}. [${taskStateLabel(session.status)}/${taskStateLabel(session.lastTurnStatus)}] ${session.title ?? cliText("Untitled task", "未命名任务")}\n`);
-    process.stdout.write(`   ${id} · ${session.contextKey} · ${session.updatedAt}\n`);
-  }
+  process.stdout.write(formatTaskList(sessions, cliLanguage, currentAppServerThreadIds(process.env)));
 }
 
 function printTaskStatus(session: SessionRecord, snapshot: unknown, remote?: TaskStatusControlData["remote"]): void {
   process.stdout.write(`${cliText("Title: ", "标题：")}${session.title ?? cliText("Untitled task", "未命名任务")}\n`);
+  process.stdout.write(`${cliText("Agent: ", "Agent：")}${session.agentName}\n`);
   process.stdout.write(`${cliText("Task ID: ", "任务 ID：")}${session.remoteSessionId ?? session.acpSessionId ?? session.localSessionId}\n`);
   process.stdout.write(`${cliText("Local ID: ", "本地 ID：")}${session.localSessionId}\n`);
   process.stdout.write(`${cliText("Context: ", "上下文：")}${session.contextKey}\n`);
@@ -1199,26 +1234,6 @@ function initializationStatusLabel(status: InitializationStatus): string {
   if (status === "updated") return cliText("updated with missing settings", "已补全缺失配置");
   if (status === "reset") return cliText("reset from template", "已从模板重置");
   return cliText("already exists; unchanged", "已存在，未修改");
-}
-
-function taskStateLabel(status: string | undefined): string {
-  if (!status) return "-";
-  const chinese: Record<string, string> = {
-    starting: "启动中",
-    ready: "就绪",
-    running: "运行中",
-    closed: "已关闭",
-    failed: "失败",
-    completed: "已完成",
-    cancelled: "已取消",
-    interrupted: "已中断",
-    inProgress: "进行中",
-    active: "活动中",
-    idle: "空闲",
-    not_loaded: "未加载",
-    error: "错误",
-  };
-  return cliLanguage === "zh" ? chinese[status] ?? status : status;
 }
 
 function ensureOk(response: ControlResponse): void {

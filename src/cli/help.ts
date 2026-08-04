@@ -13,10 +13,11 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   init --reset                      重置并重新配置显式指定的 Profile
   console                           打开本地控制台
   server start                      在后台启动 Agent Bot
-  server status                     显示服务、飞书 App ID 和安全重启状态
+  server status                     显示服务、飞书 App ID、Agent 进程和安全重启状态
   server restart [--task <任务>]    安排安全重启并将状态发回指定任务会话
   server stop                       停止 Agent Bot
   task list                         列出任务
+  task current [--json]             显示当前调用任务的详情
   task status <任务>                显示任务状态
   task chat <任务>                  显示任务绑定的飞书会话
   task prompt <任务> <提示词>       向任务发送提示词
@@ -66,10 +67,11 @@ Common commands:
   init --reset                      Reset and reconfigure an explicit profile
   console                           Open the local console
   server start                      Start Agent Bot in the background
-  server status                     Show the server, Lark App ID, and safe-restart status
+  server status                     Show the server, Lark App ID, Agent processes, and safe-restart status
   server restart [--task <task>]    Schedule a safe restart and return status to the task's conversation
   server stop                       Stop Agent Bot
   task list                         List tasks
+  task current [--json]             Show details for the task invoking the CLI
   task status <task>                Show task status
   task chat <task>                  Show the task's Lark chat binding
   task prompt <task> <prompt>       Send a Prompt to a task
