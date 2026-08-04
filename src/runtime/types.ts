@@ -1,4 +1,8 @@
 export type RuntimeKind = "acp" | "codex";
+export interface AgentProcessInfo {
+  pid?: number;
+  version?: string;
+}
 export type PermissionMode = "auto" | "confirm";
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 export type ToolStatus = "running" | "completed" | "failed";
@@ -203,6 +207,7 @@ export interface ReasoningEffortOption {
 
 export interface AgentRuntime {
   readonly kind: RuntimeKind;
+  getProcessInfo?(): AgentProcessInfo;
   createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession>;
   forkSession?(input: ForkRuntimeSessionInput): Promise<RuntimeSession>;

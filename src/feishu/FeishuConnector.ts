@@ -5,6 +5,7 @@ import { resolveFeishuBotOpenId } from "./FeishuBotIdentity.js";
 import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
 
 type BotOpenIdResolver = (appId: string, appSecret: string) => Promise<string>;
+type BotOpenIdListener = (botOpenId: string) => void;
 
 export class FeishuConnector {
   constructor(
@@ -12,6 +13,7 @@ export class FeishuConnector {
     private readonly handler: FeishuEventHandler,
     private readonly logger: Logger,
     private readonly botOpenIdResolver: BotOpenIdResolver = resolveFeishuBotOpenId,
+    private readonly onBotOpenId?: BotOpenIdListener,
   ) {}
 
   async start(): Promise<void> {
@@ -21,10 +23,17 @@ export class FeishuConnector {
     }
 
     const respondToAllGroupMessages = this.config.feishu.respondToAllGroupMessages !== false;
-    const botOpenId = respondToAllGroupMessages
-      ? undefined
-      : await this.botOpenIdResolver(appId, appSecret);
-    await this.startFeishuWs(appId, appSecret, botOpenId);
+    let botOpenId: string | undefined;
+    if (!respondToAllGroupMessages || this.onBotOpenId) {
+      try {
+        botOpenId = await this.botOpenIdResolver(appId, appSecret);
+        this.onBotOpenId?.(botOpenId);
+      } catch (error) {
+        if (!respondToAllGroupMessages) throw error;
+        this.logger.warn({ error }, "Failed to resolve the Lark bot Open ID for the Agent environment.");
+      }
+    }
+    await this.startFeishuWs(appId, appSecret, respondToAllGroupMessages ? undefined : botOpenId);
   }
 
   stop(): void {

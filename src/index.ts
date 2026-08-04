@@ -6,7 +6,12 @@ import { controlEndpoint, type ControlRequest, type ControlResponse } from "./cl
 import { readPackageVersion } from "./cli/packageVersion.js";
 import { loadConfig } from "./config/loadConfig.js";
 import { persistFeishuUserOpenIdIfMissing } from "./config/FeishuUserOpenIdStore.js";
-import { defaultDotEnvPath } from "./config/paths.js";
+import {
+  agentBotHome,
+  defaultConfigPath,
+  defaultDotEnvPath,
+  resolveUserPath,
+} from "./config/paths.js";
 import { ConsoleConnector } from "./console/ConsoleConnector.js";
 import { ConsoleTurnPresenter } from "./console/ConsoleTurnPresenter.js";
 import { CardRenderer } from "./feishu/CardRenderer.js";
@@ -20,6 +25,7 @@ import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { createLogger } from "./logging/logger.js";
 import { OutboundRouter, type OutboundRoute } from "./presentation/OutboundRouter.js";
 import { ProxySessionController } from "./proxy/ProxySessionController.js";
+import type { AgentEnvironmentContext } from "./runtime/agentEnvironment.js";
 import { createAgentRuntimeRegistry } from "./runtime/createAgentRuntimeRegistry.js";
 import { StateStore } from "./state/StateStore.js";
 import { StartupNotifier } from "./startup/StartupNotifier.js";
@@ -55,7 +61,14 @@ const transport = consoleOnly ? "console" : requireServerFeishuTransport(config.
 const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
 
-const runtimes = createAgentRuntimeRegistry(config, logger);
+const configuredConfigPath = process.env.AGENT_BOT_CONFIG?.trim();
+const agentEnvironmentContext: AgentEnvironmentContext = {
+  profilePath: agentBotHome(),
+  configPath: configuredConfigPath ? resolveUserPath(configuredConfigPath) : defaultConfigPath(),
+  larkAppId: config.feishu.appId,
+  larkUserOpenId: config.feishu.userOpenId,
+};
+const runtimes = createAgentRuntimeRegistry(config, logger, agentEnvironmentContext);
 
 const routes: OutboundRoute[] = [];
 let feishuConnector: FeishuConnector | undefined;
@@ -116,6 +129,7 @@ const controller = new ProxySessionController(config, store, runtimes, outbound,
     if (config.feishu.userOpenId?.startsWith("ou_")) return;
     const persisted = persistFeishuUserOpenIdIfMissing(defaultDotEnvPath(), userOpenId);
     config.feishu.userOpenId = persisted.userOpenId;
+    agentEnvironmentContext.larkUserOpenId = persisted.userOpenId;
     process.env.FEISHU_USER_OPEN_ID = persisted.userOpenId;
     logger.info(
       { status: persisted.status },
@@ -124,7 +138,15 @@ const controller = new ProxySessionController(config, store, runtimes, outbound,
   },
 });
 
-if (feishuOutbound) feishuConnector = new FeishuConnector(config, controller, logger);
+if (feishuOutbound) {
+  feishuConnector = new FeishuConnector(
+    config,
+    controller,
+    logger,
+    undefined,
+    (botOpenId) => { agentEnvironmentContext.larkBotOpenId = botOpenId; },
+  );
+}
 if (consoleEnabled) consoleConnector = new ConsoleConnector(controller, logger);
 
 process.on("SIGINT", () => void shutdown(0));
@@ -224,6 +246,16 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
           startedAt: processStartedAt.toISOString(),
           supervised,
           feishuAppId: config.feishu.appId ?? null,
+          agents: runtimes.entries().map(([name, runtime]) => {
+            const processInfo = runtime.getProcessInfo?.() ?? {};
+            return {
+              name,
+              title: config.agents[name]?.title ?? name,
+              kind: config.agents[name]?.kind ?? runtime.kind,
+              pid: processInfo.pid ?? null,
+              version: processInfo.version ?? null,
+            };
+          }),
           safeRestartScheduled: safeRestart.scheduled,
           safeRestartReason: safeRestart.pendingReason,
           activity: store.getServerActivityState(),

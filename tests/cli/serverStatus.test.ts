@@ -11,6 +11,10 @@ describe("server status output", () => {
       feishuAppId: "cli_running",
       pid: 42,
       supervised: true,
+      agents: [
+        { name: "codex", title: "Codex", pid: 101, version: "0.146.0" },
+        { name: "traex", title: "TraeX", pid: null, version: null },
+      ],
       safeRestartScheduled: false,
       activity: {
         runningSessions: 2,
@@ -25,6 +29,9 @@ describe("server status output", () => {
       "PID: 42",
       "Started at: -",
       "Supervisor: enabled",
+      "Agents:",
+      "  codex (Codex): PID 101, version 0.146.0",
+      "  traex (TraeX): PID -, version -",
       "Running tasks: 2",
       "Pending final deliveries: 1",
       "Safe restart: not scheduled",
@@ -54,6 +61,7 @@ describe("server status output", () => {
     expect(output).toContain("Agent Bot 服务：正在启动（连接飞书中）");
     expect(output).toContain("飞书 App ID：cli_profile");
     expect(output).toContain("Supervisor：已启用");
+    expect(output).toContain("Agent 进程：-");
     expect(output).toContain("安全重启：未计划");
   });
 });

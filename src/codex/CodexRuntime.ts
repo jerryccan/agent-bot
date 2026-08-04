@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type {
   AgentRuntime,
+  AgentProcessInfo,
   ApprovalDecision,
   CreateRuntimeSessionInput,
   ForkRuntimeSessionInput,
@@ -55,6 +56,7 @@ export interface AppServerClient {
 
 export interface AppServerClientProvider {
   getClient(): Promise<AppServerClient>;
+  getProcessInfo?(): AgentProcessInfo;
   getCodexHome?(): string;
   onDisconnect?(listener: (error: Error) => void): () => void;
   close(): void;
@@ -98,6 +100,10 @@ export class CodexRuntime implements AgentRuntime {
 
   getSession(localSessionId: string): RuntimeSession | undefined {
     return this.sessions.get(localSessionId);
+  }
+
+  getProcessInfo(): AgentProcessInfo {
+    return this.provider.getProcessInfo?.() ?? {};
   }
 
   async createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {

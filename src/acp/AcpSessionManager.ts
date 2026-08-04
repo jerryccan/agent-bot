@@ -40,6 +40,7 @@ export class AcpSessionManager {
   private readonly sessions = new Map<string, RuntimeSession>();
   private readonly sessionsByAcpId = new Map<string, RuntimeSession>();
   private processStart?: Promise<ManagedAcpProcess>;
+  private processVersion?: string;
 
   constructor(
     private readonly agentName: string,
@@ -50,6 +51,15 @@ export class AcpSessionManager {
 
   get(localSessionId: string): RuntimeSession | undefined {
     return this.sessions.get(localSessionId);
+  }
+
+  getProcessInfo(): { pid?: number; version?: string } {
+    const pid = this.processManager.get(this.agentName)?.child.pid;
+    if (!pid) return {};
+    return {
+      pid,
+      ...(this.processVersion ? { version: this.processVersion } : {}),
+    };
   }
 
   async create(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {
@@ -133,6 +143,7 @@ export class AcpSessionManager {
     this.sessions.clear();
     this.sessionsByAcpId.clear();
     this.processStart = undefined;
+    this.processVersion = undefined;
     this.processManager.stopAll();
   }
 
@@ -181,6 +192,7 @@ export class AcpSessionManager {
   }
 
   private async startProcess(): Promise<ManagedAcpProcess> {
+    this.processVersion = undefined;
     const managed = this.processManager.start(this.agentName, this.agentName, this.agent);
     try {
       const connection = managed.connection;
@@ -210,6 +222,8 @@ export class AcpSessionManager {
           version: "0.1.0",
         },
       });
+      const version = initializeResult.agentInfo?.version?.trim();
+      if (version) this.processVersion = version;
       if (initializeResult.authMethods?.length) {
         const method = initializeResult.authMethods[0];
         this.logger.info({ methodId: method.id }, "Authenticating ACP agent with first advertised method.");

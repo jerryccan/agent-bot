@@ -8,7 +8,7 @@ describe("AcpSessionManager", () => {
   test("uses one long-lived process for all tasks belonging to the same Agent", async () => {
     let nextSession = 1;
     const request = vi.fn(async (method: string) => {
-      if (method === "initialize") return {};
+      if (method === "initialize") return { agentInfo: { version: "1.2.3" } };
       if (method === "session/new") return { sessionId: `acp_${nextSession++}` };
       return {};
     });
@@ -19,7 +19,7 @@ describe("AcpSessionManager", () => {
       on: vi.fn(),
       close: vi.fn(),
     };
-    const managed = { connection } as unknown as ManagedAcpProcess;
+    const managed = { connection, child: { pid: 5432 } } as unknown as ManagedAcpProcess;
     let running: ManagedAcpProcess | undefined;
     const processManager = {
       start: vi.fn(() => {
@@ -43,6 +43,7 @@ describe("AcpSessionManager", () => {
       env: {},
     } satisfies AgentConfig;
     const manager = new AcpSessionManager("coco", agent, processManager, logger);
+    expect(manager.getProcessInfo()).toEqual({});
     const callbacks = {
       agentName: "coco",
       cwd: process.cwd(),
@@ -58,6 +59,7 @@ describe("AcpSessionManager", () => {
     expect(processManager.start).toHaveBeenCalledOnce();
     expect(request.mock.calls.filter(([method]) => method === "initialize")).toHaveLength(1);
     expect(request.mock.calls.filter(([method]) => method === "session/new")).toHaveLength(2);
+    expect(manager.getProcessInfo()).toEqual({ pid: 5432, version: "1.2.3" });
 
     await manager.close("local_1");
     expect(processManager.stop).not.toHaveBeenCalled();
@@ -65,5 +67,6 @@ describe("AcpSessionManager", () => {
 
     manager.shutdown();
     expect(processManager.stopAll).toHaveBeenCalledOnce();
+    expect(manager.getProcessInfo()).toEqual({});
   });
 });

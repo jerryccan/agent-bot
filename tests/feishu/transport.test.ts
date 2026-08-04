@@ -416,6 +416,51 @@ test("dispatches group-main mentions without creating a thread reply", async () 
   });
 });
 
+test("reports the current bot Open ID for the safe Agent environment", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToAllGroupMessages: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const resolveBotOpenId = vi.fn(async () => "ou_current_bot");
+  const onBotOpenId = vi.fn();
+  const connector = new FeishuConnector(config, handler, logger, resolveBotOpenId, onBotOpenId);
+
+  await connector.start();
+
+  expect(resolveBotOpenId).toHaveBeenCalledWith("cli_app", "secret");
+  expect(onBotOpenId).toHaveBeenCalledWith("ou_current_bot");
+});
+
+test("keeps all-group-message startup available when bot Open ID lookup fails", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToAllGroupMessages: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const resolveBotOpenId = vi.fn(async () => { throw new Error("lookup failed"); });
+  const connector = new FeishuConnector(config, handler, logger, resolveBotOpenId, vi.fn());
+
+  await expect(connector.start()).resolves.toBeUndefined();
+
+  expect(logger.warn).toHaveBeenCalledWith(
+    expect.objectContaining({ error: expect.any(Error) }),
+    "Failed to resolve the Lark bot Open ID for the Agent environment.",
+  );
+});
+
 test("requires a mention of the current bot when all group messages are disabled", async () => {
   const config = {
     feishu: {

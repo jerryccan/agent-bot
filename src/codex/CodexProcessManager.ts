@@ -5,12 +5,17 @@ import readline from "node:readline";
 import type { Logger } from "pino";
 import { AppServerConnection } from "./AppServerConnection.js";
 import type { AppServerClient, AppServerClientProvider } from "./CodexRuntime.js";
-import { agentBotEnvironment } from "../runtime/agentEnvironment.js";
+import {
+  agentBotEnvironment,
+  type AgentEnvironmentContext,
+} from "../runtime/agentEnvironment.js";
+import type { AgentProcessInfo } from "../runtime/types.js";
 import { spawnStdioCommand } from "../utils/spawnCommand.js";
 
 export class CodexProcessManager implements AppServerClientProvider {
   private client?: AppServerConnection;
   private child?: ChildProcessWithoutNullStreams;
+  private version?: string;
   private readonly disconnectListeners = new Set<(error: Error) => void>();
 
   constructor(
@@ -18,11 +23,17 @@ export class CodexProcessManager implements AppServerClientProvider {
     private readonly args: string[],
     private readonly env: Record<string, string>,
     private readonly logger: Logger,
+    private readonly environmentContext: () => AgentEnvironmentContext = () => ({}),
   ) {}
 
   async getClient(): Promise<AppServerClient> {
     if (this.client) return this.client;
-    const child = spawnStdioCommand(this.command, this.args, agentBotEnvironment(process.env, this.env));
+    this.version = undefined;
+    const child = spawnStdioCommand(
+      this.command,
+      this.args,
+      agentBotEnvironment(process.env, this.env, this.environmentContext()),
+    );
     this.child = child;
     const client = new AppServerConnection(child, this.logger.child({ component: "codex-app-server" }));
     this.client = client;
@@ -38,12 +49,22 @@ export class CodexProcessManager implements AppServerClientProvider {
       const error = new Error(`App Server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`);
       for (const listener of this.disconnectListeners) listener(error);
     });
-    await client.request("initialize", {
+    const initializeResult = await client.request("initialize", {
       clientInfo: { name: "agent-bot", title: "Agent Bot", version: "0.1.0" },
       capabilities: { experimentalApi: true },
     });
+    this.version = initializedAgentVersion(initializeResult);
     client.notify("initialized", {});
     return client;
+  }
+
+  getProcessInfo(): AgentProcessInfo {
+    const pid = this.child?.pid;
+    if (!pid) return {};
+    return {
+      pid,
+      ...(this.version ? { version: this.version } : {}),
+    };
   }
 
   getCodexHome(): string {
@@ -61,4 +82,18 @@ export class CodexProcessManager implements AppServerClientProvider {
     this.disconnectListeners.add(listener);
     return () => this.disconnectListeners.delete(listener);
   }
+}
+
+function initializedAgentVersion(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const result = value as Record<string, unknown>;
+  const serverInfo = result.serverInfo && typeof result.serverInfo === "object"
+    ? result.serverInfo as Record<string, unknown>
+    : undefined;
+  for (const candidate of [serverInfo?.version, result.version, result.userAgent]) {
+    if (typeof candidate !== "string") continue;
+    const match = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/u.exec(candidate);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
 }

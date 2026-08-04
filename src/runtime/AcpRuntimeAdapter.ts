@@ -3,6 +3,7 @@ import { AcpSessionManager } from "../acp/AcpSessionManager.js";
 import { createId } from "../utils/id.js";
 import type {
   AgentRuntime,
+  AgentProcessInfo,
   ApprovalDecision,
   CreateRuntimeSessionInput,
   ModelOption,
@@ -35,6 +36,10 @@ export class AcpRuntimeAdapter implements AgentRuntime {
 
   getSession(localSessionId: string): RuntimeSession | undefined {
     return this.sessions.get(localSessionId);
+  }
+
+  getProcessInfo(): AgentProcessInfo {
+    return this.acp.getProcessInfo();
   }
 
   async createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {
