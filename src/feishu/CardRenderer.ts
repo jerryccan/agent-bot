@@ -35,6 +35,27 @@ export interface StartupStatusView {
   };
 }
 
+export type InitializationWelcomeKind = "first" | "upgrade" | "refresh";
+
+export interface InitializationWelcomeFeature {
+  icon: string;
+  title: string;
+  description: string;
+}
+
+export interface InitializationWelcomeView {
+  kind: InitializationWelcomeKind;
+  language: "en" | "zh";
+  version: string;
+  previousVersion?: string;
+  activationPending?: boolean;
+  defaultAgentName: string;
+  defaultAgentTitle: string;
+  availableAgents: string[];
+  logoPath: string;
+  features: InitializationWelcomeFeature[];
+}
+
 export interface SafeRestartStatusView {
   scheduleId: number;
   reason: string;
@@ -677,6 +698,122 @@ export class CardRenderer {
       "> 发送消息即可开始对话；发送 `/new` 创建新任务；发送 `/help` 查看帮助。",
     );
     return sectionCard("Agent Bot 已启动", [markdown(lines.join("\n"))], "green");
+  }
+
+  renderInitializationWelcome(view: InitializationWelcomeView): Record<string, unknown> {
+    const chinese = view.language === "zh";
+    const title = view.kind === "first"
+      ? (chinese ? "欢迎使用 Agent Bot" : "Welcome to Agent Bot")
+      : view.kind === "upgrade"
+        ? (chinese ? "Agent Bot 已更新" : "Agent Bot is updated")
+        : (chinese ? "Agent Bot 已准备就绪" : "Agent Bot is ready");
+    const subtitle = view.activationPending
+      ? (chinese ? "配置已完成，安全重启后生效" : "Configured and pending a safe restart")
+      : view.kind === "first"
+      ? (chinese ? "本地 Agent 已接入飞书" : "Your local Agents are now available in Lark")
+      : view.kind === "upgrade"
+        ? (chinese ? `新版本 ${view.version} 已生效` : `Version ${view.version} is now active`)
+        : (chinese ? "初始化配置已刷新" : "Initialization settings were refreshed");
+    const activationNote = view.activationPending
+      ? (chinese ? "当前任务完成并安全重启后生效。" : "It will take effect after active work finishes and the safe restart completes.")
+      : undefined;
+    const intro = view.kind === "first"
+      ? (chinese
+          ? "**初始化完成**\n从现在起，你可以直接在飞书里把任务交给本机 Agent，并随时查看进度、切换任务或创建分支。"
+          : "**Setup complete**\nYou can now work with local Agents from Lark, follow progress, switch tasks, and branch conversations.")
+      : view.kind === "upgrade"
+        ? (chinese
+            ? `**升级完成**\n${view.previousVersion ? `${inlineCode(view.previousVersion)} → ` : ""}${inlineCode(view.version)} 已准备好。${activationNote ?? "下面是本版值得关注的能力。"}`
+            : `**Upgrade complete**\n${view.previousVersion ? `${inlineCode(view.previousVersion)} → ` : ""}${inlineCode(view.version)} is ready. ${activationNote ?? "Here is what is new."}`)
+        : (chinese
+            ? `**配置刷新完成**\n${inlineCode(view.version)} 已重新检查配置、Agent 和飞书连接。${activationNote ?? ""}`
+            : `**Configuration refreshed**\n${inlineCode(view.version)} rechecked your configuration, Agents, and Lark connection. ${activationNote ?? ""}`);
+    const logo = {
+      ...localCardImage(view.logoPath, "Agent Bot logo"),
+      preview: false,
+    };
+    const featureColumns = view.features.slice(0, 4).map((feature) => ({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      vertical_align: "top",
+      elements: [markdown([
+        `${feature.icon} **${feature.title}**`,
+        `<font color='grey'>${feature.description}</font>`,
+      ].join("\n"))],
+    }));
+    const featureRows = [0, 2].flatMap((start) => {
+      const columns = featureColumns.slice(start, start + 2);
+      return columns.length > 0
+        ? [{
+            tag: "column_set",
+            flex_mode: "none",
+            horizontal_spacing: "16px",
+            vertical_align: "top",
+            columns,
+          }]
+        : [];
+    });
+    const availableAgents = view.availableAgents.length > 0
+      ? view.availableAgents.map((agent) => inlineCode(agent)).join(" · ")
+      : inlineCode(view.defaultAgentName);
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        width_mode: "fill",
+      },
+      header: {
+        template: view.kind === "first" ? "turquoise" : view.kind === "upgrade" ? "blue" : "green",
+        title: { tag: "plain_text", content: title },
+        subtitle: { tag: "plain_text", content: subtitle },
+        padding: "12px 12px 12px 12px",
+      },
+      body: {
+        direction: "vertical",
+        vertical_spacing: "12px",
+        padding: "12px 12px 12px 12px",
+        elements: [
+          {
+            tag: "column_set",
+            flex_mode: "none",
+            horizontal_spacing: "16px",
+            vertical_align: "center",
+            columns: [
+              {
+                tag: "column",
+                width: "weighted",
+                weight: 1,
+                vertical_align: "center",
+                elements: [logo],
+              },
+              {
+                tag: "column",
+                width: "weighted",
+                weight: 3,
+                vertical_align: "center",
+                elements: [markdown(intro)],
+              },
+            ],
+          },
+          { tag: "hr" },
+          markdown(chinese
+            ? `**${view.kind === "upgrade" ? "本版亮点" : "你可以这样使用"}**`
+            : `**${view.kind === "upgrade" ? "What's new" : "What you can do"}**`),
+          ...featureRows,
+          { tag: "hr" },
+          markdown(chinese
+            ? "> 直接发送消息即可开始；发送 `/new` 创建新任务；发送 `/help` 查看全部命令。"
+            : "> Send a message to begin, `/new` for a new task, or `/help` for all commands."),
+          {
+            ...markdown(chinese
+              ? `**版本** ${inlineCode(view.version)}　·　**默认 Agent** ${inlineCode(view.defaultAgentTitle)}　·　**可用 Agent** ${availableAgents}`
+              : `**Version** ${inlineCode(view.version)}　·　**Default Agent** ${inlineCode(view.defaultAgentTitle)}　·　**Available** ${availableAgents}`),
+            text_size: "notation",
+          },
+        ],
+      },
+    };
   }
 
   renderTurn(state: TurnViewState): Record<string, unknown> {

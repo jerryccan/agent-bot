@@ -244,6 +244,87 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("下一条普通消息会创建新任务");
   });
 
+  test("renders a polished initialization welcome card with the project logo", () => {
+    const card = new CardRenderer().renderInitializationWelcome({
+      kind: "first",
+      language: "zh",
+      version: "1.2.3",
+      defaultAgentName: "codex",
+      defaultAgentTitle: "Codex",
+      availableAgents: ["Codex", "TraeX"],
+      logoPath: "D:\\agent-bot\\assets\\agent-bot-logo.png",
+      features: [
+        { icon: "💬", title: "飞书直接对话", description: "私聊、群聊和话题分别维护上下文。" },
+        { icon: "🤖", title: "连接本地 Agent", description: "使用 Codex 或 TraeX。" },
+        { icon: "🌿", title: "新建与分支", description: "并行推进多个任务。" },
+        { icon: "📍", title: "进度始终可见", description: "查看工具和文件变更。" },
+      ],
+    });
+    const objects = collectObjects(card);
+    const serialized = JSON.stringify(card);
+    const image = objects.find((item) => item.tag === "img");
+
+    expect(card).toMatchObject({
+      schema: "2.0",
+      header: {
+        template: "turquoise",
+        title: { content: "欢迎使用 Agent Bot" },
+        subtitle: { content: "本地 Agent 已接入飞书" },
+      },
+    });
+    expect(image).toMatchObject({
+      img_key: "",
+      __acp_local_image_path: "D:\\agent-bot\\assets\\agent-bot-logo.png",
+      preview: false,
+    });
+    expect(serialized).toContain("初始化完成");
+    expect(serialized).toContain("飞书直接对话");
+    expect(serialized).toContain("Codex");
+    expect(serialized).toContain("TraeX");
+    expect(serialized).toContain("/new");
+    expect(objects.filter((item) => item.tag === "button" || item.tag === "interactive_container"))
+      .toHaveLength(0);
+    const featureRows = objects.filter((item) => (
+      item.tag === "column_set"
+      && Array.isArray(item.columns)
+      && (item.columns as unknown[]).every((column) => (
+        typeof column === "object"
+        && column !== null
+        && (column as Record<string, unknown>).width === "weighted"
+      ))
+    ));
+    expect(featureRows).toHaveLength(3);
+    expect(featureRows.every((row) => (row.columns as unknown[]).length === 2)).toBe(true);
+  });
+
+  test("shows the previous and current versions in an upgrade welcome card", () => {
+    const card = new CardRenderer().renderInitializationWelcome({
+      kind: "upgrade",
+      language: "en",
+      version: "1.3.0",
+      previousVersion: "1.2.3",
+      activationPending: true,
+      defaultAgentName: "traex",
+      defaultAgentTitle: "TraeX",
+      availableAgents: ["TraeX"],
+      logoPath: "C:\\agent-bot-logo.png",
+      features: [{ icon: "🛡️", title: "Recovery", description: "Turn links are repaired." }],
+    });
+    const serialized = JSON.stringify(card);
+
+    expect(card).toMatchObject({
+      header: {
+        template: "blue",
+        title: { content: "Agent Bot is updated" },
+        subtitle: { content: "Configured and pending a safe restart" },
+      },
+    });
+    expect(serialized).toContain("1.2.3");
+    expect(serialized).toContain("1.3.0");
+    expect(serialized).toContain("What's new");
+    expect(serialized).toContain("safe restart completes");
+  });
+
   test("renders safe restart blockers and countdown", () => {
     const renderer = new CardRenderer();
     const waiting = renderer.renderSafeRestartStatus({

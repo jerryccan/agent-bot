@@ -71,7 +71,7 @@ agentbot init
     | 事件 | `im.chat.updated_v1` | 检测群改名，把群名同步到 agent 任务标题。 |
     | 回调 | `card.action.trigger` | 卡片按钮交互。 |
 
-完成这些步骤后，即完成了 `~/.agent-bot` 目录的初始化。Agent Bot 会自动启动，并使用飞书机器人向你发送欢迎消息，你可以开始在飞书中使用 Agent Bot 了。
+完成这些步骤后，即完成了 `~/.agent-bot` 目录的初始化，Agent Bot 会自动启动。每次 `agentbot init` 成功后，机器人都会向授权用户私聊发送一张包含 Agent Bot Logo 的欢迎卡片：首次初始化会介绍主要能力，升级后初始化会展示新版亮点，同版本再次初始化则会确认 Profile 已刷新。
 
 Agent Bot 自带保活机制，确保在 Agent Bot，Codex 或 TraeX 崩溃后能够自动重新连接。
 

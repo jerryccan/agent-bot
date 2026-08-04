@@ -71,7 +71,7 @@ A fresh initialization normally presents three QR-code or link steps in the term
     | Event | `im.chat.updated_v1` | Detect group renames and synchronize them to Agent task titles. |
     | Callback | `card.action.trigger` | Enable card button interactions. |
 
-After these steps, the `~/.agent-bot` directory is initialized. Agent Bot starts automatically and sends you a welcome message through the Feishu bot, so you can begin using it in Feishu.
+After these steps, the `~/.agent-bot` directory is initialized and Agent Bot starts automatically. Every successful `agentbot init` sends a private welcome card containing the Agent Bot logo. The first card introduces the main capabilities; after an upgrade it highlights the new version, while a same-version rerun confirms that the Profile was refreshed.
 
 Agent Bot includes a keepalive mechanism that automatically reconnects after Agent Bot, Codex, or TraeX crashes.
 

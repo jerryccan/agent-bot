@@ -56,6 +56,13 @@ import {
 import { formatServerStatus, withConfiguredFeishuAppId } from "./cli/serverStatus.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
+import {
+  readInitializationReceipt,
+  resolveInitializationWelcomeKind,
+  sendInitializationWelcome,
+  writeInitializationReceipt,
+  type InitializationWelcomeResult,
+} from "./cli/InitializationWelcome.js";
 import { applyExplicitProfile, parseGlobalOptions } from "./cli/profile.js";
 import { printVerificationQrAndLink } from "./cli/VerificationOutput.js";
 import {
@@ -147,6 +154,7 @@ interface InitCommandResult extends InitializationResult {
     configuration?: EnsureFeishuAppConfigurationResult;
   };
   server: InitializationServerResult;
+  welcome: InitializationWelcomeResult;
 }
 
 interface InitializedAgent extends SupportedAgentInspection {
@@ -162,11 +170,13 @@ async function initCommand(
   explicitProfile: boolean,
 ): Promise<void> {
   const options = parseInitCommandOptions(input, explicitProfile);
+  const version = readPackageVersion();
+  const previousInitialization = readInitializationReceipt(agentBotHome());
   let initializationLock = options.reset
     ? acquireInitializationLock(agentBotHome())
     : undefined;
   let paths: InitializationResult;
-  let initialized: Omit<InitCommandResult, "server">;
+  let initialized: Omit<InitCommandResult, "server" | "welcome">;
   try {
     if (options.reset) await assertResetProfileServerStopped(configPath);
     paths = initializeAgentBot({ configPath, reset: options.reset });
@@ -189,9 +199,46 @@ async function initCommand(
     process.stdout.write(cliText("\nStarting Agent Bot server...\n", "\n正在启动 Agent Bot 服务...\n"));
   }
   const server = await startInitializedServer({ skipFeishu: options.skipFeishu, configPath });
-  const result: InitCommandResult = { ...initialized, server };
+  const welcomeKind = resolveInitializationWelcomeKind({
+    firstInitialization: paths.config.status === "created",
+    previousVersion: previousInitialization?.version,
+    currentVersion: version,
+  });
+  let welcome: InitializationWelcomeResult;
+  if (options.skipFeishu) {
+    welcome = { status: "skipped", kind: welcomeKind, reason: "feishu-skipped" };
+  } else {
+    try {
+      welcome = await sendInitializationWelcome({
+        configPath,
+        language: cliLanguage,
+        version,
+        previousVersion: previousInitialization?.version,
+        kind: welcomeKind,
+        activationPending: server.status === "restart-scheduled",
+      });
+    } catch (error) {
+      welcome = {
+        status: "failed",
+        kind: welcomeKind,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  try {
+    writeInitializationReceipt(paths.home.path, version);
+  } catch (error) {
+    process.stderr.write(`${cliText(
+      "Warning: Could not save initialization version metadata: ",
+      "警告：无法保存初始化版本信息：",
+    )}${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  const result: InitCommandResult = { ...initialized, server, welcome };
   if (options.json) printJson(result);
-  else printInitializationServerResult(server);
+  else {
+    printInitializationServerResult(server);
+    printInitializationWelcomeResult(welcome);
+  }
 }
 
 async function initializeSupportedAgents(json: boolean): Promise<InitializedAgent[]> {
@@ -1002,7 +1049,7 @@ function printInitializationPaths(result: InitializationResult): void {
   process.stdout.write(`${cliText("Log directory: ", "日志目录：")}${result.logs.path} (${initializationStatusLabel(result.logs.status)})\n`);
 }
 
-function printInitializationResult(result: Omit<InitCommandResult, "server">): void {
+function printInitializationResult(result: Omit<InitCommandResult, "server" | "welcome">): void {
   process.stdout.write(cliText(
     "\nAgent Bot initialization completed.\n",
     "\nAgent Bot 初始化完成。\n",
@@ -1077,6 +1124,29 @@ function printInitializationServerResult(result: InitCommandResult["server"]): v
     return;
   }
   printServerStartResult(result);
+}
+
+function printInitializationWelcomeResult(result: InitializationWelcomeResult): void {
+  if (result.status === "sent") {
+    process.stdout.write(cliText(
+      "Welcome card: sent to your Lark private chat.\n",
+      "欢迎卡片：已发送到你的飞书私聊。\n",
+    ));
+    return;
+  }
+  if (result.status === "failed") {
+    process.stderr.write(cliText(
+      `Warning: The private welcome card could not be sent: ${result.message}\n`,
+      `警告：无法发送私聊欢迎卡片：${result.message}\n`,
+    ));
+    return;
+  }
+  if (result.reason === "missing-user-open-id") {
+    process.stderr.write(cliText(
+      "Warning: The private welcome card was skipped because FEISHU_USER_OPEN_ID is not available. Send the bot a private message, then run agentbot init again.\n",
+      "警告：尚未获得 FEISHU_USER_OPEN_ID，无法发送私聊欢迎卡片。请先私聊机器人，再次运行 agentbot init。\n",
+    ));
+  }
 }
 
 function printServerStartResult(result: ServerStartResult): void {
