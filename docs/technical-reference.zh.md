@@ -35,7 +35,7 @@ Agent Bot 是基于 Node.js 22+、ESM 和 TypeScript 的应用，主要组件如
 
 CLI 还支持显式指定目录的 Profile。不使用 `--profile` 时，命令使用主 Profile 以及原有的环境变量路径规则。`--profile <目录>` 会为当前命令及其启动的 Supervisor、Worker 固定 `AGENT_BOT_HOME` 和 `AGENT_BOT_CONFIG`，配置文件固定为 `<目录>/config.yaml`。它还会先清除继承的飞书凭据环境变量，再加载所选 Profile 的 `.env`，避免从主 Agent Bot 进程树中启动辅助实例时误用主机器人的凭据。`--profile` 不能和 `--config` 同时使用。其他 Profile 必须在每次命令中显式选择；Agent Bot 不维护按名称注册的 Profile。
 
-CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Locale 使用中文界面；英文及所有未支持 Locale 使用英文。帮助、状态、进度、交互提示和 CLI 自身错误都遵循此规则；JSON 字段名及枚举值不做本地化。系统生成的重启原因仍使用中文，因为它会显示在中文 Lark 状态卡中；显式传入的 `--reason` 保持原样。`agentbot server status` 会报告运行中 Worker 的 Lark App ID，JSON 字段名为 `feishuAppId`；服务停止或旧版健康协议尚未提供该字段时，CLI 会回退到当前 Profile 配置的 App ID。
+CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Locale 使用中文界面；英文及所有未支持 Locale 使用英文。帮助、状态、进度、交互提示和 CLI 自身错误都遵循此规则；JSON 字段名及枚举值不做本地化。系统生成的重启原因仍使用中文，因为它会显示在中文 Lark 状态卡中；显式传入的 `--reason` 保持原样。`agentbot server status` 会报告运行中 Worker 的 Lark App ID，JSON 字段名为 `feishuAppId`；服务停止或旧版健康协议尚未提供该字段时，CLI 会回退到当前 Profile 配置的 App ID。`agents` 数组会报告每个已配置 Agent 进程的 PID 和协议初始化返回的版本号；Agent 尚未启动时两者均为 `null`。
 
 | 默认路径                             | 内容                 |
 | ------------------------------------ | -------------------- |
@@ -184,13 +184,19 @@ Agent 配置的标准名是运行时隔离键。每个配置的 Agent 都拥有�
 
 `kind: "acp"` 或未填写 `kind` 的 Agent 使用各自的 ACP 进程。同一 Agent 的多个任务会在该连接上创建独立 ACP session。Agent 配置中的 `env` 只会加入该 Agent 的环境变量。
 
-所有 Agent 子进程都会收到：
+Agent 进程会继承普通父进程变量。启动 App Server 或 ACP 进程前，Agent Bot 会移除继承环境及 Agent 配置中名称不区分大小写匹配 `FEISHU_*` 或 `AGENT_BOT_*` 的全部变量，然后注入以下受控的非敏感上下文：
 
 ```text
 AGENT_BOT=1
+AGENT_BOT_HOME=<当前 Profile 根目录>
+AGENT_BOT_CONFIG=<当前 config.yaml 路径>
+AGENT_BOT_AGENT_NAME=<Agent 配置标准名>
+AGENT_BOT_LARK_APP_ID=<Lark App ID>
+AGENT_BOT_LARK_BOT_OPEN_ID=<Lark 机器人 open_id，可用时提供>
+AGENT_BOT_LARK_USER_OPEN_ID=<已保存的授权用户 open_id，可用时提供>
 ```
 
-内置 Skill 使用该环境变量判断自己是否运行在 Agent Bot 中。
+内置 Skill 使用 `AGENT_BOT` 判断自己是否运行在 Agent Bot 中。Lark App Secret、Supervisor 状态、重启原因和重启通知路由不会传给 Agent。`agents.<name>.env` 中不使用保留命名空间的变量，仍是显式配置该 Agent 专用环境的方式。
 
 ## 聊天路由
 

@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Show every configured Agent process's PID and initialized version in `agentbot server status` and its JSON output.
+- Stop forwarding Lark credentials and internal restart state to Agent processes; preserve ordinary parent variables while exposing only namespaced, non-secret Agent Bot Profile and Lark identity context.
+
 ## [0.1.13-alpha.1] - 2026-08-03
 
 - Route safe-restart status cards and restarting acknowledgements to every conversation that triggers the pending restart plus every conversation active during the previous minute, retaining each enrolled route until the restart completes while preserving Feishu topic replies; add `agentbot server restart --task <task>` and reject ambiguous CLI routing when multiple conversations are active.

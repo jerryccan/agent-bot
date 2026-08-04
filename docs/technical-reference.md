@@ -35,7 +35,7 @@ The default user-data root is `~/.agent-bot`. `AGENT_BOT_HOME` replaces that roo
 
 The CLI also supports explicit directory-based profiles. Without `--profile`, commands use the main profile and the normal environment-based path rules. `--profile <directory>` pins both `AGENT_BOT_HOME` and `AGENT_BOT_CONFIG` for the command and every spawned supervisor or worker, with the configuration fixed at `<directory>/config.yaml`. It also clears inherited Feishu credential variables before loading the selected profile's `.env`, which prevents a secondary service launched from inside the primary Agent Bot process tree from accidentally reusing the primary bot. It cannot be combined with `--config`. Alternative profiles must be selected explicitly on every command; Agent Bot does not maintain a named-profile registry.
 
-The CLI reads the system locale through Node.js internationalization support. Locales beginning with `zh` use Chinese interface text; English and every unsupported locale use English. This applies to help, status, progress, prompts, and CLI-owned errors. JSON field names and enum values are not localized. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agentbot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID.
+The CLI reads the system locale through Node.js internationalization support. Locales beginning with `zh` use Chinese interface text; English and every unsupported locale use English. This applies to help, status, progress, prompts, and CLI-owned errors. JSON field names and enum values are not localized. System-generated restart reasons remain Chinese because they are rendered in Chinese Lark status cards; an explicit `--reason` is preserved verbatim. `agentbot server status` reports the running worker's Lark App ID as `feishuAppId` in JSON; when the server is stopped or predates that health field, the CLI falls back to the selected profile's configured App ID. Its `agents` array reports each configured Agent process's PID and protocol-reported version; both are `null` until that Agent starts.
 
 | Default path                         | Contents                           |
 | ------------------------------------ | ---------------------------------- |
@@ -184,13 +184,19 @@ The configured Agent standard name is the runtime isolation key. Every configure
 
 An agent with `kind: "acp"`, or without a `kind`, uses its own ACP process. Multiple tasks create separate ACP sessions on that connection. Agent-specific `env` values are added only to that Agent's environment.
 
-Every agent process receives:
+Agent processes inherit ordinary parent-process variables. Before an App Server or ACP process is spawned, Agent Bot removes every inherited or Agent-configured variable whose name case-insensitively matches `FEISHU_*` or `AGENT_BOT_*`. It then injects this controlled, non-secret context:
 
 ```text
 AGENT_BOT=1
+AGENT_BOT_HOME=<active Profile root>
+AGENT_BOT_CONFIG=<active config.yaml path>
+AGENT_BOT_AGENT_NAME=<configured Agent standard name>
+AGENT_BOT_LARK_APP_ID=<Lark App ID>
+AGENT_BOT_LARK_BOT_OPEN_ID=<Lark bot open_id, when available>
+AGENT_BOT_LARK_USER_OPEN_ID=<saved authorizing user open_id, when available>
 ```
 
-The bundled skill uses this variable to detect that it is running inside Agent Bot.
+The bundled skill uses `AGENT_BOT` to detect that it is running inside Agent Bot. The Lark App Secret, Supervisor state, restart reasons, and restart notification routes are never forwarded. Non-reserved values in `agents.<name>.env` remain the explicit way to configure environment required only by that Agent.
 
 ## Chat Routing
 
