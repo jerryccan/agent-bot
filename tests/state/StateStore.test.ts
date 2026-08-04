@@ -526,6 +526,7 @@ describe("StateStore runtime metadata", () => {
       resetTurnId: "turn_8",
       forkedRemoteSessionId: "thread_reset",
     });
+    store.saveTurnParent("turn_5", "session_1");
     saveCompleted("turn_5", now + 1_000);
 
     expect(store.listCompletedTurnGraph("session_1", "chat_id:c1").map((turn) => ({
@@ -537,6 +538,40 @@ describe("StateStore runtime metadata", () => {
       { turnId: "turn_7", parentTurnId: "turn_8" },
       { turnId: "turn_8", parentTurnId: undefined },
     ]);
+  });
+
+  test("repairs a missing parent recorded before crash recovery completed", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.saveTurnSnapshot("turn_6", "session_1", {
+      turnId: "turn_6",
+      status: "completed",
+      startedAt: 1_000,
+      completedAt: 2_000,
+    }, "chat_id:c1");
+    store.saveTurnParent("turn_6", "session_1");
+    store.saveTurnParent("turn_5", "session_1");
+    store.saveTurnSnapshot("turn_5", "session_1", {
+      turnId: "turn_5",
+      status: "completed",
+      startedAt: 3_000,
+      completedAt: 4_000,
+    }, "chat_id:c1");
+
+    const graph = () => store.listCompletedTurnGraph("session_1", "chat_id:c1").map((turn) => ({
+      turnId: turn.turnId,
+      parentTurnId: turn.parentTurnId,
+    }));
+    expect(graph()).toEqual([
+      { turnId: "turn_5", parentTurnId: "turn_6" },
+      { turnId: "turn_6", parentTurnId: undefined },
+    ]);
+
+    store.saveTurnParent("turn_5", "session_1", "turn_other");
+    expect(graph()[0]).toEqual({ turnId: "turn_5", parentTurnId: "turn_6" });
   });
 
   test("atomically promotes a pending turn snapshot and progress delivery", () => {

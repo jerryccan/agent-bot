@@ -2231,7 +2231,7 @@ export class ProxySessionController {
         this.store.saveTurnParent(
           event.turnId,
           event.sessionId,
-          source?.lastTurnStatus === "completed" ? source.lastTurnId : undefined,
+          this.completedParentTurnId(source),
         );
       }
     }
@@ -2327,6 +2327,13 @@ export class ProxySessionController {
         queueMicrotask(() => void this.scheduleNextQueuedPrompt(sessionId));
       }
     }
+  }
+
+  private completedParentTurnId(source: SessionRecord | undefined): string | undefined {
+    if (!source?.lastTurnId) return undefined;
+    if (source.lastTurnStatus === "completed") return source.lastTurnId;
+    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(source.lastTurnId));
+    return snapshot?.status === "completed" ? source.lastTurnId : undefined;
   }
 
   private async finalizeStandaloneMessageReaction(

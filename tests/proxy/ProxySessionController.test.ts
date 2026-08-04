@@ -323,6 +323,39 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
 }
 
 describe("ProxySessionController", () => {
+  test("uses a completed snapshot as the next turn parent after stale crash state", async () => {
+    const { controller, store, listeners } = fixture();
+
+    await controller.onMessage(message("before crash"));
+    const task = store.listSessions("chat_id:c1")[0]!;
+    store.saveTurnSnapshot("turn_1", task.localSessionId, {
+      turnId: "turn_1",
+      status: "completed",
+      startedAt: 1_000,
+      completedAt: 2_000,
+    }, "chat_id:c1");
+    store.updateRuntimeSession(task.localSessionId, {
+      lastTurnId: "turn_1",
+      lastTurnStatus: "running",
+    });
+    const saveTurnParent = vi.spyOn(store, "saveTurnParent");
+
+    for (const listener of listeners) {
+      listener({
+        type: "turn_started",
+        sessionId: task.localSessionId,
+        turnId: "turn_2",
+        startedAt: 3_000,
+      });
+    }
+
+    await vi.waitFor(() => expect(saveTurnParent).toHaveBeenCalledWith(
+      "turn_2",
+      task.localSessionId,
+      "turn_1",
+    ));
+  });
+
   test("records an Open ID from private chat after acknowledging the message", async () => {
     const { controller, outbound, rememberFeishuUserOpenId } = fixture();
 

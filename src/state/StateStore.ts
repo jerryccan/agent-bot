@@ -658,9 +658,13 @@ export class StateStore {
 
   saveTurnParent(turnId: string, localSessionId: string, parentTurnId?: string): void {
     this.db.prepare(`
-      INSERT OR IGNORE INTO turn_parent_links (
+      INSERT INTO turn_parent_links (
         turn_id, local_session_id, parent_turn_id, created_at
       ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(turn_id) DO UPDATE SET
+        parent_turn_id = excluded.parent_turn_id
+      WHERE turn_parent_links.parent_turn_id IS NULL
+        AND excluded.parent_turn_id IS NOT NULL
     `).run(turnId, localSessionId, parentTurnId ?? null, new Date().toISOString());
   }
 
@@ -780,9 +784,6 @@ export class StateStore {
     `).all(localSessionId) as Array<{ turn_id: string; started_at: number }>;
     if (turns.length === 0) return;
 
-    const existing = new Set((this.db.prepare(`
-      SELECT turn_id FROM turn_parent_links WHERE local_session_id = ?
-    `).all(localSessionId) as Array<{ turn_id: string }>).map((row) => row.turn_id));
     const resets = (this.db.prepare(`
       SELECT payload_json, created_at
       FROM audit_events
@@ -802,10 +803,14 @@ export class StateStore {
 
     let headTurnId: string | undefined;
     let resetIndex = 0;
-    const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO turn_parent_links (
+    const upsert = this.db.prepare(`
+      INSERT INTO turn_parent_links (
         turn_id, local_session_id, parent_turn_id, created_at
       ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(turn_id) DO UPDATE SET
+        parent_turn_id = excluded.parent_turn_id
+      WHERE turn_parent_links.parent_turn_id IS NULL
+        AND excluded.parent_turn_id IS NOT NULL
     `);
     const backfill = this.db.transaction(() => {
       for (const turn of turns) {
@@ -813,9 +818,7 @@ export class StateStore {
           headTurnId = resets[resetIndex]!.resetTurnId;
           resetIndex += 1;
         }
-        if (!existing.has(turn.turn_id)) {
-          insert.run(turn.turn_id, localSessionId, headTurnId ?? null, new Date().toISOString());
-        }
+        upsert.run(turn.turn_id, localSessionId, headTurnId ?? null, new Date().toISOString());
         headTurnId = turn.turn_id;
       }
     });
