@@ -1235,6 +1235,65 @@ describe("CardRenderer", () => {
     expect(bodyElements.at(-2)).toEqual({ tag: "hr" });
   });
 
+  test("renders each help command as a callback control beside its description", () => {
+    const card = new CardRenderer().renderHelpCard(
+      "Agent Bot 使用帮助",
+      ["点击命令按钮执行默认命令。"],
+      [{
+        title: "任务管理",
+        commands: [
+          {
+            text: "/sessions",
+            action: {
+              text: "/sessions",
+              value: { action: "help_command", command: "/sessions", contextKey: "chat_id:c1" },
+            },
+            usage: "[关键词]",
+            description: "查找本机任务",
+          },
+          {
+            text: "/turns",
+            action: {
+              text: "/turns",
+              value: { action: "help_command", command: "/turns", contextKey: "chat_id:c1" },
+            },
+            description: "浏览历史轮次",
+          },
+          {
+            text: "/title",
+            usage: "&#60;新标题&#62;",
+            description: "修改当前任务标题",
+          },
+        ],
+      }],
+    );
+    const objects = collectObjects(card);
+    const controls = objects.filter((item) => item.tag === "interactive_container");
+
+    expect(controls).toHaveLength(2);
+    expect(controls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        elements: [{ tag: "markdown", content: "<font color='blue'>/sessions</font>" }],
+        behaviors: [{
+          type: "callback",
+          value: { action: "help_command", command: "/sessions", contextKey: "chat_id:c1" },
+        }],
+      }),
+      expect.objectContaining({
+        elements: [{ tag: "markdown", content: "<font color='blue'>/turns</font>" }],
+      }),
+    ]));
+    expect(objects).toContainEqual(expect.objectContaining({
+      tag: "markdown",
+      content: "**[关键词]**　查找本机任务",
+    }));
+    expect(objects).toContainEqual(expect.objectContaining({
+      tag: "markdown",
+      content: "**/title**",
+    }));
+    expect(objects.filter((item) => item.tag === "column_set" && item.flex_mode === "none")).toHaveLength(3);
+  });
+
   test("renders destructive task actions as red callback links", () => {
     const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [{
       lines: ["**Task**"],
@@ -1267,17 +1326,34 @@ describe("CardRenderer", () => {
   });
 
   test("renders compact Previous and Next actions for task pagination", () => {
-    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [], [], [
+    const card = new CardRenderer().renderTaskListCard("Codex 任务", "任务", [], [
+      "第 2 页",
+      "",
+      "> **Next** 查看下一页。",
+    ], [
       { text: "Previous", value: { action: "session_page", page: "0" } },
       { text: "Next", value: { action: "session_page", page: "2" } },
     ]);
     const serialized = JSON.stringify(card);
+    const bodyElements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+    const paginationIndex = bodyElements.findIndex((item) => JSON.stringify(item).includes('"action":"session_page"'));
+    const footerIndex = bodyElements.findIndex((item) => item.tag === "markdown" && item.content === [
+      "第 2 页",
+      "",
+      "> **Next** 查看下一页。",
+    ].join("\n"));
 
     expect(serialized).toContain("<font color='blue'>Previous</font>");
     expect(serialized).toContain('"action":"session_page","page":"0"');
     expect(serialized).toContain("<font color='blue'>Next</font>");
     expect(serialized).toContain('"action":"session_page","page":"2"');
     expect(serialized).not.toContain('"tag":"button"');
+    expect(paginationIndex).toBeGreaterThan(-1);
+    expect(footerIndex).toBeGreaterThan(paginationIndex);
+    expect(bodyElements.at(-1)).toMatchObject({
+      tag: "markdown",
+      content: "第 2 页\n\n> **Next** 查看下一页。",
+    });
   });
 });
 

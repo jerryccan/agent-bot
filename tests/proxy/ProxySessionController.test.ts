@@ -2895,7 +2895,8 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain('"action":"session_status","sessionId":"agent-runtime:codex:external_1"');
     expect(serialized).not.toContain("Legacy ACP task");
     expect(serialized).not.toContain("remote_acp");
-    expect(serialized).toContain("/switch [序号或任务 ID]");
+    expect(serialized).toContain("> **Switch** 切换任务；**Stop** 停止运行；**Status** 查看状态。");
+    expect(serialized).not.toContain("/switch [序号或任务 ID]");
     expect(serialized).not.toContain("已接入");
     expect(serialized).not.toContain("其他 Codex 任务");
   });
@@ -3329,6 +3330,11 @@ describe("ProxySessionController", () => {
     expect(initial).toContain("<font color='blue'>Next</font>");
     expect(initial).toContain('"action":"session_page","page":"1"');
     expect(initial).not.toContain("<font color='blue'>Previous</font>");
+    expect(initial).toContain("> **Switch** 切换任务；**Stop** 停止运行；**Status** 查看状态。");
+    expect(initial).toContain("> **New** / **Fork** 新建 / 分支任务；**NewGroup** / **ForkGroup** 新建 / 分支群。");
+    expect(initial.indexOf("<font color='blue'>Next</font>")).toBeLessThan(
+      initial.indexOf("> **Switch** 切换任务"),
+    );
 
     await controller.onCardAction({
       actionId: "sessions-next-page",
@@ -5194,36 +5200,51 @@ describe("ProxySessionController", () => {
     expect(intro).toContain(
       "> 命令前缀示例：/sess 等同于 /sessions。\n> 命令缩写示例：/fg 等同于 /forkgroup。",
     );
+    expect(intro).toContain("点击命令按钮可执行默认形式；有必填参数的命令需要手动发送。");
     expect(serialized).toContain("**任务管理**");
     expect(serialized).toContain("**执行设置**");
     expect(serialized).toContain("**Agent**");
     expect(serialized).toContain("**系统**");
-    expect(serialized.match(/\/provider\*\*/g)).toHaveLength(1);
-    expect(serialized.match(/\/model\*\*/g)).toHaveLength(1);
-    expect(serialized.match(/\/thinking\*\*/g)).toHaveLength(1);
-    expect(serialized.match(/\/permissions\*\*/g)).toHaveLength(1);
+    const clickableCommands = [
+      "/new",
+      "/newgroup",
+      "/forkgroup",
+      "/fork",
+      "/turns",
+      "/sessions",
+      "/switch",
+      "/stop",
+      "/provider",
+      "/model",
+      "/thinking",
+      "/permissions",
+      "/agent",
+      "/status",
+      "/restart",
+      "/help",
+    ];
+    expect(serialized.match(/"action":"help_command"/g)).toHaveLength(clickableCommands.length);
+    for (const command of clickableCommands) {
+      expect(serialized.split(`"command":"${command}"`)).toHaveLength(2);
+    }
+    for (const command of ["!", "/title", "/queue", "/nosteer", "/goal"]) {
+      expect(serialized).not.toContain(`"command":"${command}"`);
+      expect(serialized).toContain(`**${command}**`);
+    }
     expect(serialized).toContain("选择 AI 服务提供商");
     expect(serialized).toContain("选择当前任务使用的模型");
     expect(serialized).toContain("设置模型的思考强度");
     expect(serialized).toContain("设置执行工具前是否需要确认");
     expect(serialized).not.toContain("/model [name]");
     expect(serialized).not.toContain("/permissions [auto|confirm]");
-    expect(serialized.match(/\/restart \[--force\]/g)).toHaveLength(1);
-    expect(serialized.match(/\/status \[序号或任务 ID\]/g)).toHaveLength(1);
-    expect(serialized.match(/\/fork \[序号或任务 ID\]/g)).toHaveLength(1);
-    expect(serialized.match(/\/turns\*\*/g)).toHaveLength(1);
+    expect(serialized).toContain("**[--force]**");
+    expect(serialized).toContain("**[序号或任务 ID]**");
     expect(serialized).not.toContain("/reset");
-    expect(serialized).toContain("将对话上下文恢复到所选轮次");
-    expect(serialized.match(/\/newgroup/g)).toHaveLength(1);
-    expect(serialized.match(/\/stop/g)).toHaveLength(1);
-    expect(serialized.match(/\/nosteer/g)).toHaveLength(1);
-    expect(serialized.match(/\/queue/g)).toHaveLength(1);
-    expect(serialized.match(/\/agent \[name\]/g)).toHaveLength(1);
+    expect(serialized).toContain("Reset 对话上下文");
     expect(serialized).not.toContain("/attach");
     expect(serialized).not.toContain("/detach");
     expect(serialized).not.toContain("/cancel");
     expect(serialized).not.toContain("/close");
-    expect(serialized).toContain("/switch [序号或任务 ID]");
     expect(serialized).not.toContain("/agents");
     expect(serialized).not.toContain("/ask");
     expect(serialized).not.toContain("/use");
@@ -5231,5 +5252,62 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("<name>");
     expect(serialized).not.toContain("###");
     expect(serialized).not.toContain("`");
+  });
+
+  test("executes only registered default commands from help-card callbacks", async () => {
+    const { controller, outbound, shellCommandExecutor } = fixture();
+
+    await controller.onCardAction({
+      actionId: "help-sessions",
+      contextKey: "chat_id:c1",
+      messageId: "om_help",
+      value: {
+        action: "help_command",
+        command: "/sessions",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: expect.objectContaining({ content: "App Server 任务" }),
+        }),
+      }),
+    );
+
+    await controller.onCardAction({
+      actionId: "help-required-shell",
+      contextKey: "chat_id:c1",
+      messageId: "om_help",
+      value: {
+        action: "help_command",
+        command: "!",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(shellCommandExecutor).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "帮助卡片中的命令无效，请发送 /help 获取最新卡片。",
+    );
+
+    await controller.onCardAction({
+      actionId: "help-required-goal",
+      contextKey: "chat_id:c1",
+      messageId: "om_help",
+      value: {
+        action: "help_command",
+        command: "/goal",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      "帮助卡片中的命令无效，请发送 /help 获取最新卡片。",
+    );
   });
 });

@@ -17,6 +17,7 @@ import {
   CardRenderer,
   type CardSection,
   type ExecutionSettingsTab,
+  type HelpCardSection,
   type ResetHistoryCardEntry,
   type TaskListCardAction,
   type TaskListCardEntry,
@@ -66,6 +67,123 @@ const MESSAGE_CANCELLED_REACTION = "CrossMark";
 const SESSION_PAGE_SIZE = 5;
 const RESET_HISTORY_PAGE_SIZE = 10;
 const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
+
+interface HelpCommandDefinition {
+  command: string;
+  usage?: string;
+  description: string;
+  requiresArgument?: boolean;
+}
+
+const HELP_COMMAND_SECTIONS: Array<{
+  title: string;
+  commands: HelpCommandDefinition[];
+}> = [
+  {
+    title: "任务管理",
+    commands: [
+      {
+        command: "/new",
+        usage: "[title] [--dir &#60;cwd&#62; | --nodir]",
+        description: "使用默认 Agent 创建任务；--nodir 创建 Projectless 任务",
+      },
+      {
+        command: "/newgroup",
+        usage: "[title] [--dir &#60;cwd&#62; | --nodir]",
+        description: "创建飞书群和新任务",
+      },
+      {
+        command: "/forkgroup",
+        usage: "[title]",
+        description: "从当前任务最近完成轮次创建分支群",
+      },
+      {
+        command: "/fork",
+        usage: "[序号或任务 ID]",
+        description: "从当前或指定任务最近完成轮次创建分支",
+      },
+      { command: "/turns", description: "浏览历史轮次，并可 Reset 对话上下文" },
+      {
+        command: "/title",
+        usage: "&#60;新标题&#62;",
+        description: "修改当前任务标题",
+        requiresArgument: true,
+      },
+      { command: "/sessions", usage: "[关键词]", description: "查找本机任务" },
+      {
+        command: "/switch",
+        usage: "[序号或任务 ID]",
+        description: "切换任务；不填参数切回上一个任务",
+      },
+    ],
+  },
+  {
+    title: "执行设置",
+    commands: [
+      {
+        command: "!",
+        usage: "&#60;命令&#62;",
+        description: "在当前任务目录执行本地命令",
+        requiresArgument: true,
+      },
+      { command: "/stop", description: "停止当前执行" },
+      {
+        command: "/queue",
+        usage: "&#60;prompt&#62;",
+        description: "将 Prompt 排队为后续轮次",
+        requiresArgument: true,
+      },
+      {
+        command: "/nosteer",
+        usage: "&#60;prompt&#62;",
+        description: "与 /queue 相同",
+        requiresArgument: true,
+      },
+      {
+        command: "/goal",
+        usage: "&#60;目标或操作&#62;",
+        description: "查看或创建长任务 Goal；支持 pause、resume、edit、clear",
+        requiresArgument: true,
+      },
+      { command: "/provider", description: "选择 AI 服务提供商" },
+      { command: "/model", description: "选择当前任务使用的模型" },
+      { command: "/thinking", description: "设置模型的思考强度" },
+      { command: "/permissions", description: "设置执行工具前是否需要确认" },
+    ],
+  },
+  {
+    title: "Agent",
+    commands: [
+      {
+        command: "/agent",
+        usage: "[name]",
+        description: "选择新任务使用的默认 Agent",
+      },
+    ],
+  },
+  {
+    title: "系统",
+    commands: [
+      {
+        command: "/status",
+        usage: "[序号或任务 ID]",
+        description: "查看当前或指定任务状态",
+      },
+      {
+        command: "/restart",
+        usage: "[--force]",
+        description: "默认安全重启；--force 立即重启",
+      },
+      { command: "/help", description: "显示本帮助" },
+    ],
+  },
+];
+
+const HELP_DEFAULT_COMMANDS = new Set(
+  HELP_COMMAND_SECTIONS.flatMap((section) => section.commands)
+    .filter((command) => !command.requiresArgument)
+    .map((command) => command.command),
+);
 
 interface AgentRemoteSession {
   agentName: string;
@@ -365,7 +483,9 @@ export class ProxySessionController {
     await this.outbound.withReplyTarget(contextKey, replyTarget, async () => {
       try {
         const kind = String(scopedAction.value.action ?? "");
-        if (kind === "turn_details") {
+        if (kind === "help_command") {
+          await this.executeHelpCommandAction(scopedAction, contextKey, replyTarget);
+        } else if (kind === "turn_details") {
           await this.outbound.showDetails(contextKey, String(scopedAction.value.turnId ?? ""));
         } else if (kind === "activity_history") {
           const requestedPage = String(scopedAction.value.page ?? "0");
@@ -3191,11 +3311,9 @@ export class ProxySessionController {
       [
         ...(remoteHint ? [remoteHint] : []),
         `第 ${page + 1} 页 · 每页 ${SESSION_PAGE_SIZE} 个任务${hasNext ? "" : ` · 当前共 ${entries.length} 个任务`}`,
-        "点击 **New** 在对应任务的项目中创建新任务；点击 **Switch** 快速切换；点击 **Fork** 从任务最新已完成轮次创建分支；外部正在运行的任务显示 **Stop**，点击后发送 Interrupt 并变为 **Switch**。",
-        "点击 **NewGroup** 在对应任务的项目中创建新群和新任务；点击 **ForkGroup** 从对应任务最新已完成轮次创建分支群。",
-        "也可发送 **/switch [序号或任务 ID]**；不带参数切回上一个任务。外部正在执行的回合不会被接管。",
-        "发送 **/fork [序号或任务 ID]**，可从当前或指定任务创建分支；任务运行中时使用最近已完成轮次。",
-        "点击 **Status**，或发送 **/status [序号或任务 ID]**，查看当前或指定任务状态。",
+        "",
+        "> **Switch** 切换任务；**Stop** 停止运行；**Status** 查看状态。",
+        "> **New** / **Fork** 新建 / 分支任务；**NewGroup** / **ForkGroup** 新建 / 分支群。",
       ],
       [
         ...(hasPrevious ? [{
@@ -3657,59 +3775,61 @@ export class ProxySessionController {
     else await this.outbound.sendInteractiveCard(contextKey, card);
   }
 
+  private async executeHelpCommandAction(
+    action: CardAction,
+    contextKey: string,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void> {
+    const commandText = typeof action.value.command === "string"
+      ? action.value.command.trim()
+      : "";
+    if (!HELP_DEFAULT_COMMANDS.has(commandText)) {
+      throw new Error("帮助卡片中的命令无效，请发送 /help 获取最新卡片。");
+    }
+    const command = this.router.parse(commandText);
+    await this.execute(
+      contextKey,
+      command,
+      undefined,
+      replyTarget,
+      undefined,
+      action.userId,
+    );
+  }
+
   private async help(contextKey: string): Promise<void> {
-    const sections: CardSection[] = [
-      {
-        lines: [
-          "直接发送消息即可继续当前任务；执行中发送的新消息会追加到本次任务。",
-          "> 命令前缀示例：/sess 等同于 /sessions。",
-          "> 命令缩写示例：/fg 等同于 /forkgroup。",
-          "前缀或缩写匹配多个命令时，需要输入更长的形式。",
-          "**[参数]** 可选　**&#60;参数&#62;** 必填",
-        ],
-      },
-      {
-        title: "任务管理",
-        lines: [
-          "**/new [title] [--dir &#60;cwd&#62; | --nodir]**　使用默认 Agent 创建任务；--nodir 强制创建 Projectless 任务",
-          "**/newgroup [title] [--dir &#60;cwd&#62; | --nodir]**　创建飞书群和新任务；参数与 /new 相同",
-          "**/forkgroup [title]**　从当前任务最新已完成轮次创建分支并绑定到新群",
-          "**/fork [序号或任务 ID]**　从当前或指定任务创建分支；运行中使用最近已完成轮次",
-          "**/turns**　浏览当前任务的历史对话轮次，并可将对话上下文恢复到所选轮次",
-          "**/title &#60;新标题&#62;**　修改当前任务的标题",
-          "**/sessions [关键词]**　查找本机任务",
-          "**/switch [序号或任务 ID]**　不填参数切回上一个任务",
-        ],
-      },
-      {
-        title: "执行设置",
-        lines: [
-          "**! &#60;命令&#62;**　在当前任务目录直接执行本地命令",
-          "**/stop**　停止当前执行",
-          "**/queue &#60;prompt&#62;**（兼容 **/nosteer**）　不追加到当前轮次，按顺序排队为后续轮次",
-          "**/goal [目标]**　查看或创建长任务 Goal；支持 pause、resume、edit、clear",
-          "**/provider**　选择 AI 服务提供商；没有其他候选时仅显示当前 Provider",
-          "**/model**　选择当前任务使用的模型",
-          "**/thinking**　设置模型的思考强度",
-          "**/permissions**　设置执行工具前是否需要确认",
-        ],
-      },
-      {
-        title: "Agent",
-        lines: [
-          "**/agent [name]**　选择新任务使用的默认 Agent；仅配置一个时直接显示当前 Agent",
-        ],
-      },
-      {
-        title: "系统",
-        lines: [
-          "**/status [序号或任务 ID]**　查看当前或指定任务的详细状态",
-          "**/restart [--force]**　默认安全重启；--force 立即重启",
-          "**/help**　显示本帮助",
-        ],
-      },
-    ];
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Agent Bot 使用帮助", sections));
+    const sections: HelpCardSection[] = HELP_COMMAND_SECTIONS.map((section) => ({
+      title: section.title,
+      commands: section.commands.map((command) => ({
+        text: command.command,
+        ...(command.requiresArgument
+          ? {}
+          : {
+              action: {
+                text: command.command,
+                value: {
+                  action: "help_command",
+                  command: command.command,
+                  contextKey,
+                },
+              },
+            }),
+        ...(command.usage ? { usage: command.usage } : {}),
+        description: command.description,
+      })),
+    }));
+    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderHelpCard(
+      "Agent Bot 使用帮助",
+      [
+        "直接发送消息即可继续当前任务；执行中发送的新消息会追加到本次任务。",
+        "点击命令按钮可执行默认形式；有必填参数的命令需要手动发送。",
+        "> 命令前缀示例：/sess 等同于 /sessions。",
+        "> 命令缩写示例：/fg 等同于 /forkgroup。",
+        "前缀或缩写匹配多个命令时，需要输入更长的形式。",
+        "**[参数]** 可选　**&#60;参数&#62;** 必填",
+      ],
+      sections,
+    ));
   }
 
   private ensureAgent(agentName: string) {

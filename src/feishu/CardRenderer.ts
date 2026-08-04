@@ -139,6 +139,18 @@ export interface TaskListCardAction {
   value: Record<string, string>;
 }
 
+export interface HelpCardCommand {
+  text: string;
+  action?: TaskListCardAction;
+  usage?: string;
+  description: string;
+}
+
+export interface HelpCardSection {
+  title: string;
+  commands: HelpCardCommand[];
+}
+
 export interface TaskListCardEntry {
   lines: string[];
   actions?: TaskListCardAction[];
@@ -794,6 +806,19 @@ export class CardRenderer {
     return sectionCard(title, elements);
   }
 
+  renderHelpCard(
+    title: string,
+    introLines: string[],
+    sections: HelpCardSection[],
+  ): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [markdown(introLines.join("\n"))];
+    for (const section of sections) {
+      elements.push({ tag: "hr" }, markdown(`**${section.title}**`));
+      elements.push(...section.commands.map(helpCommandRow));
+    }
+    return sectionCard(title, elements);
+  }
+
   renderTaskListCard(
     title: string,
     sectionTitle: string,
@@ -813,10 +838,12 @@ export class CardRenderer {
         if (index < entries.length - 1) elements.push({ tag: "hr" });
       });
     }
+    if (footerActions.length > 0) {
+      elements.push({ tag: "hr" }, taskActionRow(footerActions));
+    }
     if (footerLines.length > 0) {
       elements.push({ tag: "hr" }, markdown(footerLines.join("\n")));
     }
-    if (footerActions.length > 0) elements.push(taskActionRow(footerActions));
     return {
       schema: "2.0",
       config: {
@@ -1585,6 +1612,39 @@ function taskActionElement(action: TaskListCardAction): Record<string, unknown> 
       type: "callback",
       value: action.value,
     }],
+  };
+}
+
+function helpCommandRow(command: HelpCardCommand): Record<string, unknown> {
+  const details = [
+    command.usage ? `**${command.usage}**` : undefined,
+    command.description,
+  ].filter((line): line is string => Boolean(line)).join("　");
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "12px",
+    vertical_align: "top",
+    margin: "2px 0 0 0",
+    columns: [
+      {
+        tag: "column",
+        width: "auto",
+        vertical_align: "top",
+        elements: [
+          command.action
+            ? taskActionElement(command.action)
+            : markdown(`**${escapeCardHtml(command.text)}**`),
+        ],
+      },
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [markdown(details)],
+      },
+    ],
   };
 }
 
