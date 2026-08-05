@@ -17,7 +17,41 @@ afterEach(() => {
 });
 
 describe("SafeRestartNotifier", () => {
-  test("enrolls every recently active conversation for the rest of the restart", async () => {
+  test("does not infer recipients when a restart has no requesting conversation", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-no-target-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.recordChatContext("chat_id:private", "p2p");
+    store.recordChatContext("chat_id:group", "group");
+    store.markChatActive("chat_id:private");
+    store.markChatActive("chat_id:group");
+    const sendInteractiveCard = vi.fn(async () => "om_restart");
+    const notifier = new SafeRestartNotifier(
+      store,
+      {
+        sendText: vi.fn(async () => "text"),
+        sendMarkdown: vi.fn(async () => "markdown"),
+        sendInteractiveCard,
+        updateInteractiveCard: vi.fn(async () => undefined),
+      },
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "internal restart",
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    expect(sendInteractiveCard).not.toHaveBeenCalled();
+    expect(notifier.getNotificationTargets()).toEqual([]);
+  });
+
+  test("notifies only requesting conversations and does not enroll recently active chats", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-03T12:00:00.000Z"));
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-active-"));
@@ -53,11 +87,10 @@ describe("SafeRestartNotifier", () => {
       activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
     });
 
-    expect(sendInteractiveCard.mock.calls.map(([contextKey]) => contextKey).sort()).toEqual([
-      "chat_id:active-group",
-      "chat_id:active-private",
-      "chat_id:requester",
-    ]);
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:requester", expect.any(Object));
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:active-group", expect.any(Object));
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:active-private", expect.any(Object));
     expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:stale-group", expect.any(Object));
 
     await vi.advanceTimersByTimeAsync(61_000);
@@ -72,14 +105,9 @@ describe("SafeRestartNotifier", () => {
       remainingMs: 5_000,
     });
 
-    expect(updateInteractiveCard).toHaveBeenCalledTimes(3);
-    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:late-active-group", expect.any(Object));
-    expect(notifier.getNotificationTargets().map((target) => target.contextKey).sort()).toEqual([
-      "chat_id:active-group",
-      "chat_id:active-private",
-      "chat_id:late-active-group",
-      "chat_id:requester",
-    ]);
+    expect(updateInteractiveCard).toHaveBeenCalledOnce();
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:late-active-group", expect.any(Object));
+    expect(notifier.getNotificationTargets()).toEqual([{ contextKey: "chat_id:requester" }]);
   });
 
   test("routes safe-restart cards to every requesting conversation", async () => {
@@ -154,7 +182,7 @@ describe("SafeRestartNotifier", () => {
     expect(updateInteractiveCard).toHaveBeenCalledWith("om_group_restart", expect.any(Object));
   });
 
-  test("sends and updates one card only in persisted private chats", async () => {
+  test("sends and updates one card only for an explicit requesting chat", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-notifier-"));
     directories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
@@ -188,6 +216,7 @@ describe("SafeRestartNotifier", () => {
     notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "waiting_tasks",
       activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
     });
@@ -202,6 +231,7 @@ describe("SafeRestartNotifier", () => {
     notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 9_500,
@@ -215,6 +245,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 9_100,
@@ -224,6 +255,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 8_900,
@@ -264,6 +296,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "countdown",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 15_000,
@@ -271,6 +304,7 @@ describe("SafeRestartNotifier", () => {
     const first = notifier.update({
       scheduleId: 1,
       reason: "countdown",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 14_000,
@@ -279,6 +313,7 @@ describe("SafeRestartNotifier", () => {
     const second = notifier.update({
       scheduleId: 1,
       reason: "countdown",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 13_000,
@@ -321,6 +356,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "waiting_tasks",
       activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
     });
@@ -328,6 +364,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 12_000,
@@ -370,6 +407,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "new build",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "restarting",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 0,
@@ -408,12 +446,14 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "cancel this",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "waiting_tasks",
       activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
     });
     await notifier.update({
       scheduleId: 1,
       reason: "cancel this",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "cancelled",
       activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
     });
@@ -426,6 +466,7 @@ describe("SafeRestartNotifier", () => {
     await notifier.update({
       scheduleId: 1,
       reason: "cancel this",
+      notificationTargets: [{ contextKey: "chat_id:private" }],
       phase: "countdown",
       activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
       remainingMs: 5_000,

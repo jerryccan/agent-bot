@@ -161,17 +161,7 @@ export class SafeRestartNotifier {
   }
 
   private collectNotificationTargets(status: SafeRestartStatus): void {
-    const requestedTargets: RestartNotificationTarget[] = status.notificationTargets
-      ?? this.store.listChatContexts("p2p").map(({ contextKey }) => ({ contextKey }));
-    const recentTargets: RestartNotificationTarget[] = this.store.listRecentlyActiveChatContexts(
-      new Date(Date.now() - 60_000),
-    )
-      .filter((chat) => !isThreadContextKey(chat.contextKey))
-      .map(({ contextKey }) => ({ contextKey }));
-    for (const target of [
-      ...requestedTargets,
-      ...recentTargets,
-    ]) {
+    for (const target of status.notificationTargets ?? []) {
       const contextKey = target.contextKey.trim();
       if (!contextKey) continue;
       const existing = this.notificationTargets.get(contextKey);
