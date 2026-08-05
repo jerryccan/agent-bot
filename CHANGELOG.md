@@ -6,7 +6,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- Send a polished, logo-branded private welcome card after every successful `agentbot init`, with first-use capabilities, upgrade highlights, or same-version refresh confirmation based on Profile initialization history.
+- Send a polished, logo-branded private welcome card after every successful `agentbot init`, with first-use capabilities, upgrade highlights, same-version refresh confirmation based on Profile initialization history, and a link to the project Changelog.
 
 ## [0.1.13-alpha.2] - 2026-08-04
 

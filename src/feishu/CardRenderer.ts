@@ -811,6 +811,12 @@ export class CardRenderer {
               : `**Version** ${inlineCode(view.version)}　·　**Default Agent** ${inlineCode(view.defaultAgentTitle)}　·　**Available** ${availableAgents}`),
             text_size: "notation",
           },
+          {
+            ...markdown(chinese
+              ? "📋 [查看更新日志](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)"
+              : "📋 [View Changelog](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)"),
+            text_size: "notation",
+          },
         ],
       },
     };

@@ -282,6 +282,7 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("Codex");
     expect(serialized).toContain("TraeX");
     expect(serialized).toContain("/new");
+    expect(serialized).toContain("[查看更新日志](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)");
     expect(objects.filter((item) => item.tag === "button" || item.tag === "interactive_container"))
       .toHaveLength(0);
     const featureRows = objects.filter((item) => (
@@ -323,6 +324,7 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("1.3.0");
     expect(serialized).toContain("What's new");
     expect(serialized).toContain("safe restart completes");
+    expect(serialized).toContain("[View Changelog](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)");
   });
 
   test("renders safe restart blockers and countdown", () => {
