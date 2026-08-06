@@ -247,7 +247,6 @@ describe("CardRenderer", () => {
   test("renders a polished initialization welcome card with the project logo", () => {
     const card = new CardRenderer().renderInitializationWelcome({
       kind: "first",
-      language: "zh",
       version: "1.2.3",
       defaultAgentName: "codex",
       defaultAgentTitle: "Codex",
@@ -301,7 +300,6 @@ describe("CardRenderer", () => {
   test("shows the previous and current versions in an upgrade welcome card", () => {
     const card = new CardRenderer().renderInitializationWelcome({
       kind: "upgrade",
-      language: "en",
       version: "1.3.0",
       previousVersion: "1.2.3",
       activationPending: true,
@@ -316,15 +314,15 @@ describe("CardRenderer", () => {
     expect(card).toMatchObject({
       header: {
         template: "blue",
-        title: { content: "Agent Bot is updated" },
-        subtitle: { content: "Configured and pending a safe restart" },
+        title: { content: "Agent Bot 已更新" },
+        subtitle: { content: "配置已完成，安全重启后生效" },
       },
     });
     expect(serialized).toContain("1.2.3");
     expect(serialized).toContain("1.3.0");
-    expect(serialized).toContain("What's new");
-    expect(serialized).toContain("safe restart completes");
-    expect(serialized).toContain("[View Changelog](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)");
+    expect(serialized).toContain("本版亮点");
+    expect(serialized).toContain("当前任务完成并安全重启后生效");
+    expect(serialized).toContain("[查看更新日志](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)");
   });
 
   test("renders safe restart blockers and countdown", () => {

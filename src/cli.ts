@@ -211,7 +211,6 @@ async function initCommand(
     try {
       welcome = await sendInitializationWelcome({
         configPath,
-        language: cliLanguage,
         version,
         previousVersion: previousInitialization?.version,
         kind: welcomeKind,

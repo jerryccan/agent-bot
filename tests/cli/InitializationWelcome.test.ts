@@ -47,14 +47,13 @@ describe("initialization welcome", () => {
     });
   });
 
-  test("sends a localized logo card to the configured Lark user", async () => {
+  test("sends a Chinese logo card to the configured Lark user", async () => {
     const sendCard = vi.fn(async (
       _config: AppConfig,
       _contextKey: string,
       _card: Record<string, unknown>,
     ) => undefined);
     const result = await sendInitializationWelcome({
-      language: "zh",
       version: "1.2.3",
       previousVersion: "1.2.2",
       kind: "upgrade",
@@ -72,6 +71,7 @@ describe("initialization welcome", () => {
     expect(serialized).toContain("Agent Bot 已更新");
     expect(serialized).toContain("本版亮点");
     expect(serialized).toContain("安全重启后生效");
+    expect(serialized).not.toContain("What's new");
     expect(serialized).toContain("D:\\\\package\\\\assets\\\\agent-bot-logo.png");
   });
 
@@ -82,7 +82,6 @@ describe("initialization welcome", () => {
       _card: Record<string, unknown>,
     ) => undefined);
     const result = await sendInitializationWelcome({
-      language: "en",
       version: "1.2.3",
       kind: "refresh",
     }, {

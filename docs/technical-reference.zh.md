@@ -103,7 +103,7 @@ https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi
 
 飞书初始化成功后，CLI 会先释放初始化锁，再通过与 `agentbot server start` 相同的就绪检查流程启动后台 Supervisor，并等待最多 45 秒，直到 Worker 连接飞书并进入就绪状态。如果当前 Profile 的服务已经运行，不会创建第二个 Supervisor，而是安排安全重启，在活动任务和最终结果投递完成后加载当前安装的代码及更新后的配置；JSON 结果将其表示为 `server.status: "restart-scheduled"`。`--skip-feishu` 会跳过自动启动；`--json` 会把结果写入 `server.status`，不会混入非 JSON 文本。
 
-Server 成功启动或安全重启成功安排后，`init` 会直接向 `feishu.userOpenId` 发送 Card 2.0 私聊欢迎卡。卡片会上传随包提供的 `assets/agent-bot-logo.png`，跟随 CLI 语言，并显示当前安装版本、默认 Agent 和已配置 Agent。如果安全重启仍在等待，卡片会明确说明刷新后的版本将在重启完成后生效，而不会声称新版已经接管。`<profile>/data/initialization.json` 会记录上次成功初始化的包版本，用于区分首次初始化、版本升级和同版本配置刷新。JSON 输出通过 `welcome` 对象报告发送结果。缺少用户 Open ID 或卡片发送失败时会明确警告，但不会撤销已完成的配置，也不会停止已经就绪的 Server；`--skip-feishu` 会记录欢迎卡已跳过。
+Server 成功启动或安全重启成功安排后，`init` 会直接向 `feishu.userOpenId` 发送 Card 2.0 私聊欢迎卡。无论 CLI 使用什么系统语言，欢迎卡都固定显示中文；卡片会上传随包提供的 `assets/agent-bot-logo.png`，并显示当前安装版本、默认 Agent 和已配置 Agent。如果安全重启仍在等待，卡片会明确说明刷新后的版本将在重启完成后生效，而不会声称新版已经接管。`<profile>/data/initialization.json` 会记录上次成功初始化的包版本，用于区分首次初始化、版本升级和同版本配置刷新。JSON 输出通过 `welcome` 对象报告发送结果。缺少用户 Open ID 或卡片发送失败时会明确警告，但不会撤销已完成的配置，也不会停止已经就绪的 Server；`--skip-feishu` 会记录欢迎卡已跳过。
 
 ## 飞书应用要求
 

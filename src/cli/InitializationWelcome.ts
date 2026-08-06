@@ -10,7 +10,6 @@ import {
   type InitializationWelcomeKind,
 } from "../feishu/CardRenderer.js";
 import { FeishuMessageClient } from "../feishu/FeishuMessageClient.js";
-import type { CliLanguage } from "./i18n.js";
 
 export interface InitializationReceipt {
   version: string;
@@ -24,7 +23,6 @@ export type InitializationWelcomeResult =
 
 export interface SendInitializationWelcomeInput {
   configPath?: string;
-  language: CliLanguage;
   version: string;
   previousVersion?: string;
   kind: InitializationWelcomeKind;
@@ -83,7 +81,6 @@ export async function sendInitializationWelcome(
   const renderer = new CardRenderer();
   const card = renderer.renderInitializationWelcome({
     kind: input.kind,
-    language: input.language,
     version: input.version,
     previousVersion: input.previousVersion,
     activationPending: input.activationPending,
@@ -91,7 +88,7 @@ export async function sendInitializationWelcome(
     defaultAgentTitle: defaultAgent.title,
     availableAgents: Object.values(config.agents).map((agent) => agent.title),
     logoPath: dependencies.logoPath,
-    features: welcomeFeatures(input.kind, input.language),
+    features: welcomeFeatures(input.kind),
   });
   await dependencies.sendCard(config, `open_id:${userOpenId}`, card);
   return { status: "sent", kind: input.kind };
@@ -103,51 +100,29 @@ function initializationReceiptPath(homePath: string): string {
 
 function welcomeFeatures(
   kind: InitializationWelcomeKind,
-  language: CliLanguage,
 ): InitializationWelcomeFeature[] {
   if (kind === "upgrade") {
-    return language === "zh"
-      ? [
-          { icon: "⚙️", title: "Agent 状态更透明", description: "Server 状态会显示每个 Agent 的 PID 与版本。" },
-          { icon: "🧭", title: "快速定位当前任务", description: "CLI 可识别正在调用它的 Codex 或 TraeX 任务。" },
-          { icon: "🗂️", title: "卡片操作更顺手", description: "Help 命令可点击，Sessions 翻页与操作更清晰。" },
-          { icon: "🛡️", title: "Crash 恢复更完整", description: "服务重启后会修复历史 Turn 的父子连接。" },
-        ]
-      : [
-          { icon: "⚙️", title: "Clearer Agent status", description: "Server status now shows each Agent's PID and version." },
-          { icon: "🧭", title: "Find the current task", description: "The CLI can identify its invoking Codex or TraeX task." },
-          { icon: "🗂️", title: "Better card actions", description: "Clickable Help commands and clearer Sessions pagination." },
-          { icon: "🛡️", title: "Stronger crash recovery", description: "Turn graph links are repaired after service recovery." },
-        ];
+    return [
+      { icon: "⚙️", title: "Agent 状态更透明", description: "Server 状态会显示每个 Agent 的 PID 与版本。" },
+      { icon: "🧭", title: "快速定位当前任务", description: "CLI 可识别正在调用它的 Codex 或 TraeX 任务。" },
+      { icon: "🗂️", title: "卡片操作更顺手", description: "Help 命令可点击，Sessions 翻页与操作更清晰。" },
+      { icon: "🛡️", title: "Crash 恢复更完整", description: "服务重启后会修复历史 Turn 的父子连接。" },
+    ];
   }
   if (kind === "refresh") {
-    return language === "zh"
-      ? [
-          { icon: "💬", title: "随时开始对话", description: "私聊或群聊发送消息，即可继续当前任务。" },
-          { icon: "🧠", title: "统一运行设置", description: "在同一张卡片中切换 Agent、模型、思考和权限。" },
-          { icon: "🌿", title: "任务分支", description: "使用 New Group 或 Fork Group 并行处理工作。" },
-          { icon: "🔄", title: "安全恢复", description: "任务、进度与服务状态会持久保存并恢复。" },
-        ]
-      : [
-          { icon: "💬", title: "Start anywhere", description: "Continue work from a private chat or group conversation." },
-          { icon: "🧠", title: "Unified settings", description: "Switch Agent, model, thinking, and permissions in one card." },
-          { icon: "🌿", title: "Branch tasks", description: "Use New Group or Fork Group for parallel work." },
-          { icon: "🔄", title: "Safe recovery", description: "Tasks, progress, and service state persist across restarts." },
-        ];
+    return [
+      { icon: "💬", title: "随时开始对话", description: "私聊或群聊发送消息，即可继续当前任务。" },
+      { icon: "🧠", title: "统一运行设置", description: "在同一张卡片中切换 Agent、模型、思考和权限。" },
+      { icon: "🌿", title: "任务分支", description: "使用 New Group 或 Fork Group 并行处理工作。" },
+      { icon: "🔄", title: "安全恢复", description: "任务、进度与服务状态会持久保存并恢复。" },
+    ];
   }
-  return language === "zh"
-    ? [
-        { icon: "💬", title: "飞书直接对话", description: "私聊、群聊和话题分别维护自己的任务上下文。" },
-        { icon: "🤖", title: "连接本地 Agent", description: "目前支持 Codex、TraeX 和兼容的编程 Agent。" },
-        { icon: "🌿", title: "新建与分支", description: "把新任务或对话分支放进独立群聊并行推进。" },
-        { icon: "📍", title: "进度始终可见", description: "通过思考卡片查看工具调用、文件变更和最终结果。" },
-      ]
-    : [
-        { icon: "💬", title: "Work from Lark", description: "Private chats, groups, and topics keep separate task context." },
-        { icon: "🤖", title: "Connect local Agents", description: "Use Codex, TraeX, and compatible coding Agents." },
-        { icon: "🌿", title: "Create and branch", description: "Move fresh tasks or conversation branches into new groups." },
-        { icon: "📍", title: "See every step", description: "Follow tools, file changes, and final results in progress cards." },
-      ];
+  return [
+    { icon: "💬", title: "飞书直接对话", description: "私聊、群聊和话题分别维护自己的任务上下文。" },
+    { icon: "🤖", title: "连接本地 Agent", description: "目前支持 Codex、TraeX 和兼容的编程 Agent。" },
+    { icon: "🌿", title: "新建与分支", description: "把新任务或对话分支放进独立群聊并行推进。" },
+    { icon: "📍", title: "进度始终可见", description: "通过思考卡片查看工具调用、文件变更和最终结果。" },
+  ];
 }
 
 const defaultDependencies: InitializationWelcomeDependencies = {

@@ -45,7 +45,6 @@ export interface InitializationWelcomeFeature {
 
 export interface InitializationWelcomeView {
   kind: InitializationWelcomeKind;
-  language: "en" | "zh";
   version: string;
   previousVersion?: string;
   activationPending?: boolean;
@@ -701,33 +700,26 @@ export class CardRenderer {
   }
 
   renderInitializationWelcome(view: InitializationWelcomeView): Record<string, unknown> {
-    const chinese = view.language === "zh";
     const title = view.kind === "first"
-      ? (chinese ? "欢迎使用 Agent Bot" : "Welcome to Agent Bot")
+      ? "欢迎使用 Agent Bot"
       : view.kind === "upgrade"
-        ? (chinese ? "Agent Bot 已更新" : "Agent Bot is updated")
-        : (chinese ? "Agent Bot 已准备就绪" : "Agent Bot is ready");
+        ? "Agent Bot 已更新"
+        : "Agent Bot 已准备就绪";
     const subtitle = view.activationPending
-      ? (chinese ? "配置已完成，安全重启后生效" : "Configured and pending a safe restart")
+      ? "配置已完成，安全重启后生效"
       : view.kind === "first"
-      ? (chinese ? "本地 Agent 已接入飞书" : "Your local Agents are now available in Lark")
+      ? "本地 Agent 已接入飞书"
       : view.kind === "upgrade"
-        ? (chinese ? `新版本 ${view.version} 已生效` : `Version ${view.version} is now active`)
-        : (chinese ? "初始化配置已刷新" : "Initialization settings were refreshed");
+        ? `新版本 ${view.version} 已生效`
+        : "初始化配置已刷新";
     const activationNote = view.activationPending
-      ? (chinese ? "当前任务完成并安全重启后生效。" : "It will take effect after active work finishes and the safe restart completes.")
+      ? "当前任务完成并安全重启后生效。"
       : undefined;
     const intro = view.kind === "first"
-      ? (chinese
-          ? "**初始化完成**\n从现在起，你可以直接在飞书里把任务交给本机 Agent，并随时查看进度、切换任务或创建分支。"
-          : "**Setup complete**\nYou can now work with local Agents from Lark, follow progress, switch tasks, and branch conversations.")
+      ? "**初始化完成**\n从现在起，你可以直接在飞书里把任务交给本机 Agent，并随时查看进度、切换任务或创建分支。"
       : view.kind === "upgrade"
-        ? (chinese
-            ? `**升级完成**\n${view.previousVersion ? `${inlineCode(view.previousVersion)} → ` : ""}${inlineCode(view.version)} 已准备好。${activationNote ?? "下面是本版值得关注的能力。"}`
-            : `**Upgrade complete**\n${view.previousVersion ? `${inlineCode(view.previousVersion)} → ` : ""}${inlineCode(view.version)} is ready. ${activationNote ?? "Here is what is new."}`)
-        : (chinese
-            ? `**配置刷新完成**\n${inlineCode(view.version)} 已重新检查配置、Agent 和飞书连接。${activationNote ?? ""}`
-            : `**Configuration refreshed**\n${inlineCode(view.version)} rechecked your configuration, Agents, and Lark connection. ${activationNote ?? ""}`);
+        ? `**升级完成**\n${view.previousVersion ? `${inlineCode(view.previousVersion)} → ` : ""}${inlineCode(view.version)} 已准备好。${activationNote ?? "下面是本版值得关注的能力。"}`
+        : `**配置刷新完成**\n${inlineCode(view.version)} 已重新检查配置、Agent 和飞书连接。${activationNote ?? ""}`;
     const logo = {
       ...localCardImage(view.logoPath, "Agent Bot logo"),
       preview: false,
@@ -797,24 +789,16 @@ export class CardRenderer {
             ],
           },
           { tag: "hr" },
-          markdown(chinese
-            ? `**${view.kind === "upgrade" ? "本版亮点" : "你可以这样使用"}**`
-            : `**${view.kind === "upgrade" ? "What's new" : "What you can do"}**`),
+          markdown(`**${view.kind === "upgrade" ? "本版亮点" : "你可以这样使用"}**`),
           ...featureRows,
           { tag: "hr" },
-          markdown(chinese
-            ? "> 直接发送消息即可开始；发送 `/new` 创建新任务；发送 `/help` 查看全部命令。"
-            : "> Send a message to begin, `/new` for a new task, or `/help` for all commands."),
+          markdown("> 直接发送消息即可开始；发送 `/new` 创建新任务；发送 `/help` 查看全部命令。"),
           {
-            ...markdown(chinese
-              ? `**版本** ${inlineCode(view.version)}　·　**默认 Agent** ${inlineCode(view.defaultAgentTitle)}　·　**可用 Agent** ${availableAgents}`
-              : `**Version** ${inlineCode(view.version)}　·　**Default Agent** ${inlineCode(view.defaultAgentTitle)}　·　**Available** ${availableAgents}`),
+            ...markdown(`**版本** ${inlineCode(view.version)}　·　**默认 Agent** ${inlineCode(view.defaultAgentTitle)}　·　**可用 Agent** ${availableAgents}`),
             text_size: "notation",
           },
           {
-            ...markdown(chinese
-              ? "📋 [查看更新日志](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)"
-              : "📋 [View Changelog](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)"),
+            ...markdown("📋 [查看更新日志](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)"),
             text_size: "notation",
           },
         ],
