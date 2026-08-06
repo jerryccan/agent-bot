@@ -10,6 +10,8 @@ import {
   readConfiguredAgentSelection,
   readFeishuCredentials,
   shouldCreateFeishuApp,
+  shouldConfigureAgentsDuringInitialization,
+  writeConfiguredAgentSelection,
   writeDefaultAgent,
   writeFeishuCredentials,
 } from "../../src/cli/Initializer.js";
@@ -27,6 +29,15 @@ interface ParsedUpgradeConfig {
 
 afterEach(() => {
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+});
+
+describe("shouldConfigureAgentsDuringInitialization", () => {
+  test("configures Agents for a first-time config or an explicit reset", () => {
+    expect(shouldConfigureAgentsDuringInitialization("created")).toBe(true);
+    expect(shouldConfigureAgentsDuringInitialization("existing")).toBe(false);
+    expect(shouldConfigureAgentsDuringInitialization("updated")).toBe(false);
+    expect(shouldConfigureAgentsDuringInitialization("reset")).toBe(true);
+  });
 });
 
 describe("initializeAgentBot", () => {
@@ -243,6 +254,49 @@ describe("initializeAgentBot", () => {
       agents: [{ name: "custom", title: "Custom Agent" }],
       defaultAgent: "custom",
     });
+  });
+
+  test("keeps only selected Agents and sets the selected default atomically", () => {
+    const fixture = createFixture();
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const configPath = path.join(fixture.home, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "# keep this header",
+      "agents:",
+      "  codex:",
+      "    title: Codex",
+      "    command: codex",
+      "  traex:",
+      "    title: TraeX",
+      "    command: traex",
+      "defaults:",
+      "  agent: codex",
+      "  cwd: .",
+      "",
+    ].join("\n"), "utf8");
+
+    expect(writeConfiguredAgentSelection(configPath, ["codex", "traex"], "traex")).toBe(true);
+    expect(readConfiguredAgentSelection(configPath)).toEqual({
+      agents: [
+        { name: "codex", title: "Codex" },
+        { name: "traex", title: "TraeX" },
+      ],
+      defaultAgent: "traex",
+    });
+    expect(writeConfiguredAgentSelection(configPath, ["codex", "traex"], "traex")).toBe(false);
+
+    expect(writeConfiguredAgentSelection(configPath, ["traex"], "traex")).toBe(true);
+    expect(readConfiguredAgentSelection(configPath)).toEqual({
+      agents: [{ name: "traex", title: "TraeX" }],
+      defaultAgent: "traex",
+    });
+    expect(fs.readFileSync(configPath, "utf8")).toContain("# keep this header");
+    expect(() => writeConfiguredAgentSelection(configPath, [], "traex")).toThrow(
+      "At least one Agent must be configured",
+    );
+    expect(() => writeConfiguredAgentSelection(configPath, ["traex"], "codex")).toThrow(
+      "Default Agent must be included",
+    );
   });
 
   test("does not overwrite an invalid existing config during upgrade", () => {

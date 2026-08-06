@@ -39,6 +39,10 @@ export interface InitializationOptions {
   reset?: boolean;
 }
 
+export function shouldConfigureAgentsDuringInitialization(status: InitializationStatus): boolean {
+  return status === "created" || status === "reset";
+}
+
 export interface ConfiguredAgentOption {
   name: string;
   title: string;
@@ -168,6 +172,69 @@ export function writeDefaultAgent(configPath: string, agentName: string): boolea
   if (isMap(defaults)) defaults.set("agent", agentName);
   else document.setIn(["defaults"], { agent: agentName });
   writeFileAtomically(configPath, document.toString());
+  return true;
+}
+
+export function writeConfiguredAgentSelection(
+  configPath: string,
+  agentNames: string[],
+  defaultAgent: string,
+): boolean {
+  const selected = new Set(agentNames.map((name) => name.trim()).filter(Boolean));
+  if (selected.size === 0) {
+    throw new Error(cliText(
+      "At least one Agent must be configured.",
+      "必须至少配置一个 Agent。",
+    ));
+  }
+  if (!selected.has(defaultAgent)) {
+    throw new Error(cliText(
+      `Default Agent must be included in the configured Agents: ${defaultAgent}`,
+      `默认 Agent 必须包含在已配置 Agent 中：${defaultAgent}`,
+    ));
+  }
+
+  const original = fs.readFileSync(configPath, "utf8");
+  const document = parseConfigurationDocument(original, configPath);
+  if (!isMap(document.contents)) {
+    throw new Error(cliText(
+      `Configuration file must contain a YAML mapping: ${configPath}`,
+      `配置文件必须包含 YAML 映射：${configPath}`,
+    ));
+  }
+  const configuredAgents = document.contents.get("agents", true);
+  if (!isMap(configuredAgents)) {
+    throw new Error(cliText(
+      `Configuration file must contain an agents mapping: ${configPath}`,
+      `配置文件必须包含 agents 映射：${configPath}`,
+    ));
+  }
+  for (const agentName of selected) {
+    if (!configuredAgents.has(agentName)) {
+      throw new Error(cliText(
+        `Cannot configure an Agent that is not defined: ${agentName}`,
+        `不能配置尚未定义的 Agent：${agentName}`,
+      ));
+    }
+  }
+  for (const pair of [...configuredAgents.items]) {
+    const name = yamlMappingKey(pair.key);
+    if (name && !selected.has(name)) configuredAgents.delete(name);
+  }
+
+  const defaults = document.contents.get("defaults", true);
+  if (defaults !== undefined && !isMap(defaults)) {
+    throw new Error(cliText(
+      `Configuration defaults must contain a YAML mapping: ${configPath}`,
+      `配置文件的 defaults 必须是 YAML 映射：${configPath}`,
+    ));
+  }
+  if (isMap(defaults)) defaults.set("agent", defaultAgent);
+  else document.setIn(["defaults"], { agent: defaultAgent });
+
+  const updated = document.toString();
+  if (updated === original) return false;
+  writeFileAtomically(configPath, updated);
   return true;
 }
 

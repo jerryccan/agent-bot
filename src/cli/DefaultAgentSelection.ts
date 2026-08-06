@@ -12,12 +12,29 @@ export function selectableDefaultAgents(
   const supported = new Map(inspections.map((inspection) => [inspection.id, inspection]));
   return configured.flatMap((agent) => {
     const inspection = supported.get(agent.name as SupportedAgentInspection["id"]);
-    if (inspection && !inspection.installedVersion) return [];
+    if (!inspection?.installedVersion) return [];
     return [{
       ...agent,
-      ...(inspection?.installedVersion ? { installedVersion: inspection.installedVersion } : {}),
+      installedVersion: inspection.installedVersion,
     }];
   });
+}
+
+export function resolveAgentConfigurationChoices(
+  input: string,
+  choices: SelectableDefaultAgent[],
+): number[] | undefined {
+  const value = input.trim();
+  if (!value || /^(?:a|all)$/iu.test(value)) {
+    return choices.map((_choice, index) => index);
+  }
+  const selected = new Set<number>();
+  for (const token of value.split(/[,，\s]+/u).filter(Boolean)) {
+    const index = resolveDefaultAgentChoice(token, choices);
+    if (index === undefined) return undefined;
+    selected.add(index);
+  }
+  return selected.size > 0 ? [...selected].sort((left, right) => left - right) : undefined;
 }
 
 export function parseMaintenanceSelection(input: string, choiceCount: number): number[] | undefined {

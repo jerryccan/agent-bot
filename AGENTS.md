@@ -116,7 +116,7 @@ agentbot server restart --reason "brief reason"
 ## Configuration
 
 - `~/.agent-bot/config.yaml` is the default user config. `loadConfig()` creates it from the built-in default when no explicit config path is supplied and the file is missing.
-- Interactive `agentbot init` requires the user to select a default configured Agent and persists its standard name as `defaults.agent`; non-interactive initialization preserves an existing valid selection.
+- The first fresh interactive `agentbot init` and every explicit `--reset` ask which detected installed Agents to configure, remove unselected template Agents, and ask for `defaults.agent` only when multiple Agents were selected; normal reruns preserve both settings without prompting.
 - `config.example.yaml` is the checked-in example config. Keep it aligned with the built-in default config in `src/config/loadConfig.ts`.
 - `.env` is loaded from `~/.agent-bot/.env`. Update `.env.example` when adding new required or useful environment variables.
 - Relative `storage.sqlitePath` and `logging.path` values resolve against the directory containing the loaded config file.

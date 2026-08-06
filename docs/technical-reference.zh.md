@@ -60,7 +60,7 @@ CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Local
 
 初始化开始阶段，`agentbot init` 会并行检查目前支持的 Codex 和 TraeX CLI，并显示各自已安装的版本。Codex 与最新稳定版 `@openai/codex` 比较，TraeX 与 Alpha 通道比较。未安装或版本较旧的 Agent 会汇总到一个编号列表，并显示准确的安装或升级命令。交互式用户可以输入用逗号或空格分隔的操作编号、输入 `all`，或直接回车跳过维护；所选命令按顺序执行并继承终端输入输出，跳过或失败的操作都会记录结果，初始化继续。非交互式终端只显示供手动执行的命令。使用 `--json` 时，进度与询问写入 stderr，最终 `agents` 数组记录检测和辅助执行结果。Codex 升级会先执行 `codex update`，旧版 updater 失败时回退到当前 npm 包安装命令。
 
-版本与维护检查完成后，交互式 `init` 会要求用户输入编号或标准名选择默认 Agent。自定义 Agent 无需版本检测即可选择；Codex 或 TraeX CLI 仍缺失时，对应 Agent 不会进入候选列表。当前默认 Agent 仍可选择时，直接回车即可确认。所选标准名通过保留注释的 YAML 原子更新写入 `defaults.agent`。非交互式调用无法询问，因此保留已有且仍在配置中的默认 Agent；没有有效默认值时会失败并提示改用交互式终端。JSON 结果通过 `defaultAgent.name` 和 `defaultAgent.status`（`selected` 或 `existing`）报告选择状态。
+版本与维护检查完成后，第一次全新交互式 `init` 和每次显式 `--reset` 都会根据实际检测到安装版本的受支持 Agent 生成 Profile 的 Agent 配置；仍未安装的 Codex 或 TraeX 不会进入候选列表。检测到多个 Agent 时，用户可以通过编号或标准名选择一个或多个，输入 `all` 或直接回车选择全部。未选择的 Agent 定义会通过保留注释的 YAML 原子更新从新配置中移除。只选择一个 Agent 时自动将其设为默认值；选择多个时再显示一次默认 Agent 选择，可输入编号或标准名写入 `defaults.agent`。后续升级和同版本刷新直接保留已配置 Agent 列表与默认值，不再显示这两类选择器，已有自定义 Agent 也会保留。第一次非交互式初始化或 reset 会配置所有检测到且已安装的 Agent；模板默认值在所选列表中时继续使用，否则选择第一个检测结果。已有 Profile 没有有效默认值时会失败，并提示在 `config.yaml` 中设置 `defaults.agent`。JSON 输出通过 `configuredAgents` 报告最终列表，在每个受支持 Agent 的检测结果中增加 `configured`，并通过 `defaultAgent.name` 和 `defaultAgent.status`（`selected` 或 `existing`）报告默认值。
 
 目标文件不存在时，`agentbot init` 会复制随包提供的 `config.example.yaml` 和 `.env.example`，创建数据和日志目录，并在平台支持时把 `.env` 权限限制为 POSIX `0600`。
 

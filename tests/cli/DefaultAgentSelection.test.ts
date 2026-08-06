@@ -1,12 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
   parseMaintenanceSelection,
+  resolveAgentConfigurationChoices,
   resolveDefaultAgentChoice,
   selectableDefaultAgents,
 } from "../../src/cli/DefaultAgentSelection.js";
 
 describe("selectableDefaultAgents", () => {
-  test("keeps installed supported Agents and custom Agents while omitting missing supported Agents", () => {
+  test("keeps detected installed Agents while omitting missing and custom Agents", () => {
     expect(selectableDefaultAgents([
       { name: "codex", title: "Codex" },
       { name: "traex", title: "TraeX" },
@@ -26,8 +27,22 @@ describe("selectableDefaultAgents", () => {
       },
     ])).toEqual([
       { name: "codex", title: "Codex", installedVersion: "0.146.0" },
-      { name: "custom", title: "Custom Agent" },
     ]);
+  });
+});
+
+describe("resolveAgentConfigurationChoices", () => {
+  const choices = [
+    { name: "codex", title: "Codex", installedVersion: "0.146.0" },
+    { name: "traex", title: "TraeX", installedVersion: "0.201.1-alpha.8" },
+  ];
+
+  test("accepts numbers, standard names, all, and an empty all selection", () => {
+    expect(resolveAgentConfigurationChoices("2, codex", choices)).toEqual([0, 1]);
+    expect(resolveAgentConfigurationChoices("TRaEx", choices)).toEqual([1]);
+    expect(resolveAgentConfigurationChoices("all", choices)).toEqual([0, 1]);
+    expect(resolveAgentConfigurationChoices("", choices)).toEqual([0, 1]);
+    expect(resolveAgentConfigurationChoices("missing", choices)).toBeUndefined();
   });
 });
 

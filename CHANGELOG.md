@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- During first setup or `--reset`, configure only the detected installed Agents selected by the user, choose the sole Agent as default automatically, and ask for a default only when multiple Agents were selected; normal reruns preserve both settings.
+- Always render the private initialization welcome card in Chinese, independently of the CLI locale.
+
 ## [0.1.13-alpha.3] - 2026-08-05
 
 - Send a polished, logo-branded private welcome card after every successful `agentbot init`, with first-use capabilities, upgrade highlights, same-version refresh confirmation based on Profile initialization history, and a link to the project Changelog.

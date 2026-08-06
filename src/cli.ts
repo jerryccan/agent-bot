@@ -18,7 +18,8 @@ import {
   readConfiguredAgentSelection,
   readFeishuCredentials,
   shouldCreateFeishuApp,
-  writeDefaultAgent,
+  shouldConfigureAgentsDuringInitialization,
+  writeConfiguredAgentSelection,
   writeFeishuCredentials,
   type InitializationResult,
   type InitializationStatus,
@@ -49,6 +50,7 @@ import {
 } from "./cli/AgentPrerequisites.js";
 import {
   parseMaintenanceSelection,
+  resolveAgentConfigurationChoices,
   resolveDefaultAgentChoice,
   selectableDefaultAgents,
   type SelectableDefaultAgent,
@@ -143,6 +145,7 @@ type FeishuInitializationStatus = "created" | "existing" | "skipped";
 
 interface InitCommandResult extends InitializationResult {
   agents: InitializedAgent[];
+  configuredAgents: string[];
   defaultAgent: {
     name: string;
     status: "selected" | "existing";
@@ -158,6 +161,7 @@ interface InitCommandResult extends InitializationResult {
 }
 
 interface InitializedAgent extends SupportedAgentInspection {
+  configured?: boolean;
   assistance?: {
     status: "completed" | "skipped" | "unavailable" | "failed";
     error?: string;
@@ -181,15 +185,26 @@ async function initCommand(
     if (options.reset) await assertResetProfileServerStopped(configPath);
     paths = initializeAgentBot({ configPath, reset: options.reset });
     if (!options.json) printInitializationPaths(paths);
-    const agents = await initializeSupportedAgents(options.json);
-    const defaultAgent = await selectDefaultAgent(paths.config.path, agents, options.json);
+    const inspectedAgents = await initializeSupportedAgents(options.json);
+    const defaultAgent = await configureAgentsAndDefault(
+      paths.config.path,
+      inspectedAgents,
+      options.json,
+      shouldConfigureAgentsDuringInitialization(paths.config.status),
+    );
+    const configuredAgents = readConfiguredAgentSelection(paths.config.path).agents.map((agent) => agent.name);
+    const configuredAgentNames = new Set(configuredAgents);
+    const agents = inspectedAgents.map((agent) => ({
+      ...agent,
+      configured: configuredAgentNames.has(agent.id),
+    }));
     initializationLock ??= acquireInitializationLock(paths.home.path);
     cleanupFeishuCredentialTemporaryFiles(paths.env.path);
     const feishu = await initializeFeishu(
       paths,
       options,
     );
-    initialized = { ...paths, agents, defaultAgent, feishu };
+    initialized = { ...paths, agents, configuredAgents, defaultAgent, feishu };
   } finally {
     initializationLock?.release();
   }
@@ -323,49 +338,81 @@ async function initializeSupportedAgents(json: boolean): Promise<InitializedAgen
   return initialized;
 }
 
-async function selectDefaultAgent(
+async function configureAgentsAndDefault(
   configPath: string,
   inspections: InitializedAgent[],
   json: boolean,
+  configureAgents: boolean,
 ): Promise<InitCommandResult["defaultAgent"]> {
   const output = json ? process.stderr : process.stdout;
   const configured = readConfiguredAgentSelection(configPath);
-  const choices = selectableDefaultAgents(configured.agents, inspections);
-  if (!process.stdin.isTTY) {
-    if (!configured.defaultAgent || !configured.agents.some((agent) => agent.name === configured.defaultAgent)) {
+  const configuredDefaultIsValid = Boolean(
+    configured.defaultAgent
+    && configured.agents.some((agent) => agent.name === configured.defaultAgent),
+  );
+  if (!configureAgents) {
+    if (!configuredDefaultIsValid) {
       throw new Error(cliText(
-        "A default Agent is not configured. Run agentbot init in an interactive terminal and select one.",
-        "尚未配置默认 Agent。请在交互式终端中运行 agentbot init 并选择一个 Agent。",
+        "The existing Profile has no valid default Agent. Set defaults.agent in config.yaml, then run agentbot init again.",
+        "现有 Profile 没有有效的默认 Agent。请在 config.yaml 中设置 defaults.agent，然后重新运行 agentbot init。",
       ));
     }
     output.write(cliText(
-      `Default Agent: ${configured.defaultAgent} (kept because no interactive terminal is available)\n`,
-      `默认 Agent：${configured.defaultAgent}（当前没有交互式终端，已保留现有设置）\n`,
+      `Default Agent: ${configured.defaultAgent} (unchanged)\n`,
+      `默认 Agent：${configured.defaultAgent}（保持不变）\n`,
     ));
-    return { name: configured.defaultAgent, status: "existing" };
+    return { name: configured.defaultAgent!, status: "existing" };
   }
+
+  const choices = selectableDefaultAgents(configured.agents, inspections);
   if (choices.length === 0) {
     throw new Error(cliText(
-      "No available configured Agent can be selected. Install Codex or TraeX, then run agentbot init again.",
-      "没有可选择的已配置 Agent。请安装 Codex 或 TraeX，然后重新运行 agentbot init。",
+      "No installed supported Agent was detected. Install Codex or TraeX, then run agentbot init again.",
+      "没有检测到已安装且受支持的 Agent。请安装 Codex 或 TraeX，然后重新运行 agentbot init。",
     ));
   }
 
-  output.write(cliText("\nSelect the default Agent:\n", "\n请选择默认 Agent：\n"));
-  for (const [index, choice] of choices.entries()) {
-    const version = choice.installedVersion ? ` (${choice.installedVersion})` : "";
-    const current = choice.name === configured.defaultAgent
-      ? cliText(" [current]", " [当前]")
-      : "";
-    output.write(`  ${index + 1}. ${choice.name} - ${choice.title}${version}${current}\n`);
+  let selectedAgents = choices;
+  if (process.stdin.isTTY && choices.length > 1) {
+    output.write(cliText("\nSelect Agents to configure:\n", "\n请选择要配置的 Agent：\n"));
+    for (const [index, choice] of choices.entries()) {
+      output.write(`  ${index + 1}. ${choice.name} - ${choice.title} (${choice.installedVersion})\n`);
+    }
+    const selectedIndexes = await promptForConfiguredAgents(choices);
+    selectedAgents = selectedIndexes.flatMap((index) => choices[index] ? [choices[index]!] : []);
   }
-  const selected = choices[await promptForDefaultAgent(choices, configured.defaultAgent)];
-  if (!selected) throw new Error(cliText("Default Agent selection failed.", "默认 Agent 选择失败。"));
-  const updated = writeDefaultAgent(configPath, selected.name);
-  output.write(updated
-    ? cliText(`Saved default Agent: ${selected.name}\n`, `已保存默认 Agent：${selected.name}\n`)
-    : cliText(`Default Agent unchanged: ${selected.name}\n`, `默认 Agent 保持不变：${selected.name}\n`));
-  return { name: selected.name, status: updated ? "selected" : "existing" };
+
+  const selectedNames = selectedAgents.map((agent) => agent.name);
+  output.write(cliText(
+    `Configured Agents: ${selectedNames.join(", ")}\n`,
+    `已配置 Agent：${selectedNames.join("、")}\n`,
+  ));
+
+  let selectedDefault = selectedAgents[0]!;
+  if (selectedAgents.length > 1) {
+    if (process.stdin.isTTY) {
+      output.write(cliText("\nSelect the default Agent:\n", "\n请选择默认 Agent：\n"));
+      for (const [index, choice] of selectedAgents.entries()) {
+        const current = choice.name === configured.defaultAgent
+          ? cliText(" [current]", " [当前]")
+          : "";
+        output.write(`  ${index + 1}. ${choice.name} - ${choice.title} (${choice.installedVersion})${current}\n`);
+      }
+      selectedDefault = selectedAgents[
+        await promptForDefaultAgent(selectedAgents, configured.defaultAgent)
+      ]!;
+    } else {
+      selectedDefault = selectedAgents.find((agent) => agent.name === configured.defaultAgent)
+        ?? selectedAgents[0]!;
+    }
+  }
+
+  const updated = writeConfiguredAgentSelection(configPath, selectedNames, selectedDefault.name);
+  output.write(cliText(
+    `Default Agent: ${selectedDefault.name}${process.stdin.isTTY ? "" : " (selected automatically)"}\n`,
+    `默认 Agent：${selectedDefault.name}${process.stdin.isTTY ? "" : "（已自动选择）"}\n`,
+  ));
+  return { name: selectedDefault.name, status: updated ? "selected" : "existing" };
 }
 
 function promptForAgentMaintenance(choiceCount: number): Promise<number[]> {
@@ -390,6 +437,40 @@ function promptForAgentMaintenance(choiceCount: number): Promise<number[]> {
         process.stderr.write(cliText(
           `Enter numbers from 1 to ${choiceCount}, all, or press Enter to skip.\n`,
           `请输入 1 到 ${choiceCount} 之间的编号、all，或直接回车跳过。\n`,
+        ));
+        ask();
+      });
+    };
+    listenForPromptCancellation(readline, () => {
+      settled = true;
+      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
+    }, () => settled);
+    ask();
+  });
+}
+
+function promptForConfiguredAgents(choices: SelectableDefaultAgent[]): Promise<number[]> {
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (selection: number[]): void => {
+      settled = true;
+      readline.close();
+      resolve(selection);
+    };
+    const ask = (): void => {
+      readline.question(cliText(
+        "Enter numbers or Agent names separated by commas, type all, or press Enter for all: ",
+        "请输入 Agent 编号或标准名（多个用逗号分隔），输入 all 或直接回车选择全部：",
+      ), (answer) => {
+        const selection = resolveAgentConfigurationChoices(answer, choices);
+        if (selection) {
+          finish(selection);
+          return;
+        }
+        process.stderr.write(cliText(
+          `Select at least one Agent using numbers from 1 to ${choices.length} or standard names.\n`,
+          `请使用 1 到 ${choices.length} 之间的编号或标准名，至少选择一个 Agent。\n`,
         ));
         ask();
       });
@@ -1053,6 +1134,7 @@ function printInitializationResult(result: Omit<InitCommandResult, "server" | "w
     "\nAgent Bot initialization completed.\n",
     "\nAgent Bot 初始化完成。\n",
   ));
+  process.stdout.write(`${cliText("Configured Agents: ", "已配置 Agent：")}${result.configuredAgents.join(", ")}\n`);
   process.stdout.write(`${cliText("Default Agent: ", "默认 Agent：")}${result.defaultAgent.name}\n`);
   if (result.feishu.status === "created") {
     process.stdout.write(cliText(

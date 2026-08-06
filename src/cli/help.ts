@@ -9,7 +9,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   agentbot [选项] <命令>
 
 常用命令：
-  init                              检查并选择 Agent，初始化飞书应用和服务
+  init                              检查并配置 Agent，初始化飞书应用和服务
   init --reset                      重置并重新配置显式指定的 Profile
   console                           打开本地控制台
   server start                      在后台启动 Agent Bot
@@ -63,7 +63,7 @@ Usage:
   agentbot [options] <command>
 
 Common commands:
-  init                              Check and select an Agent; initialize the Lark app and service
+  init                              Check and configure Agents; initialize the Lark app and service
   init --reset                      Reset and reconfigure an explicit profile
   console                           Open the local console
   server start                      Start Agent Bot in the background

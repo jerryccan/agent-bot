@@ -12,7 +12,7 @@ describe("CLI help", () => {
     expect(help).toContain("Return safe-restart status");
     expect(help).toContain("agentbot [options] <command>");
     expect(help).toContain("Codex, TraeX, and compatible ACP agents");
-    expect(help).toContain("Check and select an Agent; initialize the Lark app and service");
+    expect(help).toContain("Check and configure Agents; initialize the Lark app and service");
     expect(help).toContain("init --reset");
     expect(help).toContain("Back up and reset the selected explicit profile");
     expect(help).toContain("agentbot --profile ~/.agent-bot init --reset");
@@ -37,7 +37,7 @@ describe("CLI help", () => {
     expect(help).toContain("将安全重启状态发回任务所在会话");
     expect(help).toContain("agentbot [选项] <命令>");
     expect(help).toContain("Codex、TraeX 和兼容 ACP 的 Agent");
-    expect(help).toContain("检查并选择 Agent，初始化飞书应用和服务");
+    expect(help).toContain("检查并配置 Agent，初始化飞书应用和服务");
     expect(help).toContain("显示服务、飞书 App ID、Agent 进程和安全重启状态");
     expect(help).toContain("task prompt <任务> <提示词>");
     expect(help).toContain("task current [--json]");
