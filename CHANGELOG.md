@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Promote the validated 0.1.13 Alpha series to the stable release channel.
+
 ## [0.1.13-alpha.4] - 2026-08-06
 
 - During first setup or `--reset`, configure only the detected installed Agents selected by the user, choose the sole Agent as default automatically, and ask for a default only when multiple Agents were selected; normal reruns preserve both settings.
