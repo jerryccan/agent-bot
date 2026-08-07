@@ -207,6 +207,62 @@ describe("FeishuMessageClient", () => {
     expect(retried.uuid).toBe("reply-audit-safe-uuid");
   });
 
+  test("falls back to text when a final card exceeds the Feishu table limit", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 230099,
+        msg: "Failed to create card content, ext=ErrCode: 11310; ErrMsg: card table number over limit; ErrorValue: table;",
+      }, 400))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_text" } }));
+    globalThis.fetch = fetchMock;
+    const testLogger = logger();
+    const client = new FeishuMessageClient(config(), testLogger);
+    const markdown = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+
+    await expect(client.sendMarkdown("chat_id:c1", markdown, "table-fallback-uuid"))
+      .resolves.toBe("om_text");
+
+    const rejected = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    const fallback = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as Record<string, unknown>;
+    expect(rejected.msg_type).toBe("interactive");
+    expect(fallback).toMatchObject({ msg_type: "text", uuid: "table-fallback-uuid" });
+    expect(JSON.parse(String(fallback.content))).toEqual({ text: markdown });
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 230099, contextKey: "chat_id:c1" }),
+      expect.stringContaining("retrying as text"),
+    );
+  });
+
+  test("falls back to a text reply when a thread card exceeds the Feishu table limit", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 230099,
+        msg: "Failed to create card content, ext=ErrCode: 11310; ErrMsg: card table number over limit; ErrorValue: table;",
+      }, 400))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_reply_text" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+    const target = { messageId: "om_source", replyInThread: true as const };
+    const markdown = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+
+    await expect(client.replyMarkdown(
+      "chat_id:c1",
+      target,
+      markdown,
+      "reply-table-fallback-uuid",
+    )).resolves.toBe("om_reply_text");
+
+    const fallback = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as Record<string, unknown>;
+    expect(fallback).toMatchObject({
+      msg_type: "text",
+      reply_in_thread: true,
+      uuid: "reply-table-fallback-uuid",
+    });
+    expect(JSON.parse(String(fallback.content))).toEqual({ text: markdown });
+  });
+
   test("retries a rejected card update with audit-safe email text", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
@@ -526,8 +582,13 @@ describe("FeishuMessageClient", () => {
   });
 });
 
-function response(payload: unknown) {
-  return { ok: true, status: 200, statusText: "OK", json: async () => payload };
+function response(payload: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Bad Request",
+    json: async () => payload,
+  };
 }
 
 function config(): AppConfig {

@@ -8,13 +8,23 @@ interface TextRange {
   end: number;
 }
 
-export function splitMarkdown(text: string, maxLength = 4_000): string[] {
+export function splitMarkdown(
+  text: string,
+  maxLength = 4_000,
+  maxTablesPerChunk = Number.POSITIVE_INFINITY,
+): string[] {
   if (maxLength < 32) throw new Error("maxLength must be at least 32");
-  if (text.length <= maxLength) return [text];
+  if (
+    maxTablesPerChunk !== Number.POSITIVE_INFINITY
+    && (!Number.isInteger(maxTablesPerChunk) || maxTablesPerChunk < 1)
+  ) {
+    throw new Error("maxTablesPerChunk must be a positive integer");
+  }
 
   const chunks: string[] = [];
   let current = "";
   let fence: FenceState | undefined;
+  let currentTableCount = 0;
   const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 
   const closingSuffix = (): string => {
@@ -27,6 +37,7 @@ export function splitMarkdown(text: string, maxLength = 4_000): string[] {
     const continuation = fence;
     chunks.push(`${current}${closingSuffix()}`);
     current = continuation ? `${continuation.opener}\n` : "";
+    currentTableCount = 0;
   };
 
   const appendPlainLine = (line: string): void => {
@@ -78,10 +89,19 @@ export function splitMarkdown(text: string, maxLength = 4_000): string[] {
       ? headerLength + firstRow.length
       : headerLength;
 
-    if (current && initialTableLength <= maxLength && current.length + initialTableLength > maxLength) flush();
+    if (
+      current
+      && (
+        currentTableCount >= maxTablesPerChunk
+        || (initialTableLength <= maxLength && current.length + initialTableLength > maxLength)
+      )
+    ) {
+      flush();
+    }
     if (headerLength <= maxLength) {
       current += header;
       current += delimiter;
+      currentTableCount += 1;
     } else {
       appendPlainLine(header);
       appendPlainLine(delimiter);
@@ -95,6 +115,7 @@ export function splitMarkdown(text: string, maxLength = 4_000): string[] {
       flush();
       if (continuationPrefix.length + row.length <= maxLength) {
         current = continuationPrefix;
+        currentTableCount = 1;
         current += row;
         continue;
       }
@@ -103,8 +124,10 @@ export function splitMarkdown(text: string, maxLength = 4_000): string[] {
       // to preserve it as one Markdown table row in that case, so retain the
       // existing lossless hard-split fallback.
       current = continuationPrefix;
+      currentTableCount = 1;
       appendPlainLine(row);
     }
+    if (currentTableCount >= maxTablesPerChunk) flush();
   };
 
   for (let index = 0; index < lines.length; index += 1) {

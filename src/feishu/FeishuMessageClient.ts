@@ -179,12 +179,19 @@ export class FeishuMessageClient implements FeishuOutbound {
   }
 
   async sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined> {
+    const normalizedMarkdown = normalizeFeishuMarkdown(markdown);
     const elements = await renderMarkdownWithLocalImages(
-      normalizeFeishuMarkdown(markdown),
+      normalizedMarkdown,
       (filePath) => this.uploadImageCached(filePath),
       (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
     );
-    return this.sendMessage(contextKey, "interactive", finalAnswerCard(elements), idempotencyKey);
+    return this.sendMessage(
+      contextKey,
+      "interactive",
+      finalAnswerCard(elements),
+      idempotencyKey,
+      normalizedMarkdown,
+    );
   }
 
   async sendInteractiveCard(
@@ -209,12 +216,20 @@ export class FeishuMessageClient implements FeishuOutbound {
     markdown: string,
     idempotencyKey?: string,
   ): Promise<string | undefined> {
+    const normalizedMarkdown = normalizeFeishuMarkdown(markdown);
     const elements = await renderMarkdownWithLocalImages(
-      normalizeFeishuMarkdown(markdown),
+      normalizedMarkdown,
       (filePath) => this.uploadImageCached(filePath),
       (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
     );
-    return this.replyMessage(contextKey, target, "interactive", finalAnswerCard(elements), idempotencyKey);
+    return this.replyMessage(
+      contextKey,
+      target,
+      "interactive",
+      finalAnswerCard(elements),
+      idempotencyKey,
+      normalizedMarkdown,
+    );
   }
 
   async replyInteractiveCard(
@@ -278,8 +293,26 @@ export class FeishuMessageClient implements FeishuOutbound {
     msgType: string,
     content: Record<string, unknown>,
     idempotencyKey?: string,
+    cardTableLimitFallbackText?: string,
   ): Promise<string | undefined> {
-    return this.enqueueSend(contextKey, () => this.sendMessageNow(contextKey, msgType, content, idempotencyKey));
+    return this.enqueueSend(contextKey, async () => {
+      try {
+        return await this.sendMessageNow(contextKey, msgType, content, idempotencyKey);
+      } catch (error) {
+        const normalized = normalizeTransportError(error, "send");
+        if (!cardTableLimitFallbackText || !normalized.isCardTableLimitFailure) throw error;
+        this.logger.warn(
+          { code: normalized.code, contextKey },
+          "Feishu rejected a card with too many tables; retrying as text.",
+        );
+        return this.sendMessageNow(
+          contextKey,
+          "text",
+          { text: cardTableLimitFallbackText },
+          idempotencyKey,
+        );
+      }
+    });
   }
 
   private async replyMessage(
@@ -288,9 +321,26 @@ export class FeishuMessageClient implements FeishuOutbound {
     msgType: string,
     content: Record<string, unknown>,
     idempotencyKey?: string,
+    cardTableLimitFallbackText?: string,
   ): Promise<string | undefined> {
-    return this.enqueueSend(contextKey, () =>
-      this.replyMessageNow(target, msgType, content, idempotencyKey));
+    return this.enqueueSend(contextKey, async () => {
+      try {
+        return await this.replyMessageNow(target, msgType, content, idempotencyKey);
+      } catch (error) {
+        const normalized = normalizeTransportError(error, "reply");
+        if (!cardTableLimitFallbackText || !normalized.isCardTableLimitFailure) throw error;
+        this.logger.warn(
+          { code: normalized.code, messageId: target.messageId },
+          "Feishu rejected a reply card with too many tables; retrying as text.",
+        );
+        return this.replyMessageNow(
+          target,
+          "text",
+          { text: cardTableLimitFallbackText },
+          idempotencyKey,
+        );
+      }
+    });
   }
 
   private async replyMessageNow(
@@ -616,6 +666,7 @@ export class FeishuApiError extends Error {
   readonly isRateLimit: boolean;
   readonly isRetryable: boolean;
   readonly isEmailAddressAuditFailure: boolean;
+  readonly isCardTableLimitFailure: boolean;
 
   constructor(
     message: string,
@@ -635,6 +686,8 @@ export class FeishuApiError extends Error {
     this.isRateLimit = code === 230020 || message.toLowerCase().includes("frequency limit");
     this.isRetryable = forceRetryable || this.isRateLimit || (httpStatus !== undefined && httpStatus >= 500);
     this.isEmailAddressAuditFailure = code === 230028 && message.includes("EMAIL_ADDRESS");
+    this.isCardTableLimitFailure = code === 230099
+      && /table number over limit|ErrorValue:\s*table/iu.test(message);
   }
 }
 

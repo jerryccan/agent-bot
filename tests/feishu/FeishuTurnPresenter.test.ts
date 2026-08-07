@@ -547,6 +547,28 @@ describe("FeishuTurnPresenter", () => {
     expect(secondSend).toHaveBeenCalledOnce();
     expect(store.getTurnDelivery("turn_1")).toMatchObject({ finalDelivered: true, finalMessageIds: ["part_1", "part_2"] });
   });
+
+  test("splits table-heavy final answers at the Feishu card table limit", async () => {
+    const { presenter, outbound, store } = createFixture();
+    const answer = Array.from({ length: 9 }, (_, index) => [
+      `### Table ${index + 1}\n`,
+      "| Name | Value |\n",
+      "| --- | --- |\n",
+      `| item | ${index + 1} |\n`,
+      "\n",
+    ].join("")).join("");
+
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed(answer));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledTimes(2);
+    const chunks = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[1] as string);
+    expect(chunks[0]?.match(/^\| Name \| Value \|$/gmu)).toHaveLength(5);
+    expect(chunks[1]?.match(/^\| Name \| Value \|$/gmu)).toHaveLength(4);
+    expect(store.saveFinalDeliveryProgress).toHaveBeenCalledTimes(2);
+    expect(store.markFinalDelivered).toHaveBeenCalledWith("turn_1", ["final_1", "final_1"]);
+  });
 });
 
 class MemoryStore implements TurnPresentationStore {

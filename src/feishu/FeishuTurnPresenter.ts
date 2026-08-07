@@ -47,6 +47,8 @@ export interface FeishuTurnPresenterOptions {
   finalRetryBackoffMs?: number[];
 }
 
+const MAX_FINAL_TABLES_PER_CARD = 5;
+
 interface TurnEntry {
   contextKey: string;
   state: TurnViewState;
@@ -464,7 +466,11 @@ export class FeishuTurnPresenter {
   private async deliverFinal(contextKey: string, state: TurnViewState): Promise<void> {
     const delivery = this.store.getTurnDelivery(state.turnId);
     if (delivery?.finalDelivered || !state.finalResponse) return;
-    const chunks = splitMarkdown(state.finalResponse, this.options.finalChunkLength ?? 4_000);
+    const chunks = splitMarkdown(
+      state.finalResponse,
+      this.options.finalChunkLength ?? 4_000,
+      MAX_FINAL_TABLES_PER_CARD,
+    );
     const messageIds = [...(delivery?.finalMessageIds ?? [])];
     for (let index = messageIds.length; index < chunks.length; index += 1) {
       const chunk = chunks[index];

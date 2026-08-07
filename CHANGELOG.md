@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Split table-heavy final answers across multiple Feishu cards so the platform's per-card table limit cannot suppress a completed task result.
+
 ## [0.1.13] - 2026-08-07
 
 - Promote the validated 0.1.13 Alpha series to the stable release channel.
