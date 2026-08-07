@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-08-07
+
 - Promote the validated 0.1.13 Alpha series to the stable release channel.
 
 ## [0.1.13-alpha.4] - 2026-08-06
