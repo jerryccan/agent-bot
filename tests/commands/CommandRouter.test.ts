@@ -33,9 +33,34 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/restart --force extra")).toThrow("只接受一个可选的 --force 参数");
   });
 
+  test("parses group mute commands", () => {
+    expect(router.parse("/mute")).toEqual({ type: "mute", enabled: true });
+    expect(router.parse("/mute on")).toEqual({ type: "mute", enabled: true });
+    expect(router.parse("/mute ON")).toEqual({ type: "mute", enabled: true });
+    expect(router.parse("/mute off")).toEqual({ type: "mute", enabled: false });
+    expect(() => router.parse("/mute toggle")).toThrow("只接受 on 或 off");
+    expect(() => router.parse("/mute on extra")).toThrow("只接受 on 或 off");
+  });
+
   test("opens the turn history card without accepting arguments", () => {
     expect(router.parse("/turns")).toEqual({ type: "turns" });
     expect(() => router.parse("/turns turn_1")).toThrow("不接受参数");
+  });
+
+  test("opens the directory browser at the current or specified directory", () => {
+    expect(router.parse("/dir")).toEqual({ type: "dir", directory: undefined });
+    expect(router.parse('/dir "D:\\work space\\repo"')).toEqual({
+      type: "dir",
+      directory: "D:\\work space\\repo",
+    });
+    expect(router.parse("/dir ~/dev/project")).toEqual({
+      type: "dir",
+      directory: "~/dev/project",
+    });
+    expect(router.parse("/dir D:\\work space\\repo")).toEqual({
+      type: "dir",
+      directory: "D:\\work space\\repo",
+    });
   });
 
   test("parses current and specified task status", () => {
@@ -236,6 +261,7 @@ describe("CommandRouter", () => {
     expect(router.parse("/per")).toEqual({ type: "permissions" });
     expect(router.parse("/pro")).toEqual({ type: "provider" });
     expect(router.parse("/tu")).toEqual({ type: "turns" });
+    expect(router.parse("/di")).toEqual({ type: "dir", directory: undefined });
     expect(() => router.parse("/thi xhigh")).toThrow("不接受参数");
     expect(router.parse("/q 完成后运行测试")).toEqual({
       type: "nosteer",

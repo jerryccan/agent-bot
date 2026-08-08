@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
 import { threadContextKey } from "./contextKey.js";
 import { resolveFeishuBotOpenId } from "./FeishuBotIdentity.js";
+import { allowsFeishuUser } from "./ownerAccess.js";
 import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
 
 type BotOpenIdResolver = (appId: string, appSecret: string) => Promise<string>;
@@ -33,18 +34,31 @@ export class FeishuConnector {
         this.logger.warn({ error }, "Failed to resolve the Lark bot Open ID for the Agent environment.");
       }
     }
-    await this.startFeishuWs(appId, appSecret, respondToAllGroupMessages ? undefined : botOpenId);
+    await this.startFeishuWs(appId, appSecret, botOpenId, !respondToAllGroupMessages);
   }
 
   stop(): void {
     // SDK connector currently relies on process lifetime.
   }
 
-  private async startFeishuWs(appId: string, appSecret: string, requiredMentionOpenId?: string): Promise<void> {
+  private async startFeishuWs(
+    appId: string,
+    appSecret: string,
+    botOpenId?: string,
+    requireMention = false,
+  ): Promise<void> {
     const lark = (await import("@larksuiteoapi/node-sdk")) as Record<string, any>;
     const eventDispatcher = new lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data: unknown) => {
-        const message = toIncomingMessage(data, requiredMentionOpenId);
+        const senderOpenId = getFeishuEvent(data)?.sender?.sender_id?.open_id;
+        if (!allowsFeishuUser(this.config, senderOpenId)) {
+          this.logger.debug(
+            { messageId: getFeishuEvent(data)?.message?.message_id },
+            "Ignored a Feishu message from a non-owner.",
+          );
+          return;
+        }
+        const message = toIncomingMessage(data, botOpenId, requireMention);
         if (!message) {
           this.logger.debug({ data }, "Ignored unsupported Feishu message event.");
           return;
@@ -74,6 +88,14 @@ export class FeishuConnector {
           });
       },
       "card.action.trigger": async (data: unknown) => {
+        const operatorOpenId = getFeishuEvent(data)?.operator?.open_id;
+        if (!allowsFeishuUser(this.config, operatorOpenId)) {
+          this.logger.debug(
+            { actionId: getEventId(data) },
+            "Ignored a Feishu card action from a non-owner.",
+          );
+          return {};
+        }
         const action = toCardAction(data);
         if (!action) {
           this.logger.debug({ data }, "Ignored unsupported Feishu card action.");
@@ -115,7 +137,11 @@ function toChatUpdatedEvent(data: unknown): ChatUpdatedEvent | undefined {
   };
 }
 
-function toIncomingMessage(data: unknown, requiredMentionOpenId?: string): IncomingMessage | undefined {
+function toIncomingMessage(
+  data: unknown,
+  botOpenId?: string,
+  requireMention = false,
+): IncomingMessage | undefined {
   const event = getFeishuEvent(data);
   const message = event?.message;
   if (!message) {
@@ -128,11 +154,10 @@ function toIncomingMessage(data: unknown, requiredMentionOpenId?: string): Incom
   if (!parsed) return undefined;
   const chatId = message.chat_id;
   const chatType = message.chat_type === "group" ? "group" : "p2p";
-  if (
-    chatType === "group" &&
-    requiredMentionOpenId &&
-    !mentionsOpenId(message.mentions, requiredMentionOpenId)
-  ) {
+  const mentionedBot = chatType === "group"
+    && Boolean(botOpenId)
+    && mentionsOpenId(message.mentions, botOpenId!);
+  if (chatType === "group" && requireMention && !mentionedBot) {
     return undefined;
   }
   const threadId = typeof message.thread_id === "string" && message.thread_id ? message.thread_id : undefined;
@@ -161,6 +186,7 @@ function toIncomingMessage(data: unknown, requiredMentionOpenId?: string): Incom
     ...(threadId ? { threadId } : {}),
     ...(rootMessageId ? { rootMessageId } : {}),
     ...(parentMessageId ? { parentMessageId } : {}),
+    ...(mentionedBot ? { mentionedBot: true as const } : {}),
     text: parsed.text,
     ...(parsed.images.length > 0 ? { images: parsed.images.map((imageKey) => ({ imageKey })) } : {}),
   };
@@ -250,8 +276,16 @@ function toCardAction(data: unknown) {
     contextKey: chatId ? `chat_id:${chatId}` : `open_id:${openId}`,
     userId: openId,
     ...(typeof event.context?.open_message_id === "string" ? { messageId: event.context.open_message_id } : {}),
-    value: isRecord(event.action.value) ? event.action.value : {},
+    value: getCardActionValue(event.action),
   };
+}
+
+function getCardActionValue(action: Record<string, unknown>): Record<string, unknown> {
+  if (action.tag === "overflow" && typeof action.option === "string") {
+    const option = parseJsonObject(action.option);
+    if (Object.keys(option).length > 0) return option;
+  }
+  return isRecord(action.value) ? action.value : {};
 }
 
 function getEventId(data: unknown): string | undefined {

@@ -32,12 +32,16 @@ describe("loadConfig", () => {
           "appId",
           "appSecret",
           "respondToAllGroupMessages",
+          "respondToOwnerOnly",
+          "thinkingCardLayout",
           "transport",
           "userOpenId",
           "useConsoleWhenMissingCredentials",
         ].sort(),
       );
       expect(config.feishu.respondToAllGroupMessages).toBe(true);
+      expect(config.feishu.respondToOwnerOnly).toBe(true);
+      expect(config.feishu.thinkingCardLayout).toBe("grouped");
       expect(config.agents.traex).toMatchObject({
         kind: "app-server",
         title: "TraeX",
@@ -65,6 +69,8 @@ describe("loadConfig", () => {
       args: ["app-server", "--listen", "stdio://"],
     });
     expect(config.feishu.respondToAllGroupMessages).toBe(true);
+    expect(config.feishu.respondToOwnerOnly).toBe(true);
+    expect(config.feishu.thinkingCardLayout).toBe("grouped");
     expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
     expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
   });
@@ -84,6 +90,46 @@ describe("loadConfig", () => {
 
     try {
       expect(loadConfig(configPath).feishu.respondToAllGroupMessages).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("can allow Feishu messages from users other than the bot owner", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-owner-access-"));
+    const configPath = path.join(directory, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "feishu:",
+      "  respondToOwnerOnly: false",
+      "agents:",
+      "  codex:",
+      "    kind: app-server",
+      "    title: Codex",
+      "    command: codex",
+    ].join("\n"));
+
+    try {
+      expect(loadConfig(configPath).feishu.respondToOwnerOnly).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("can restore the original thinking-card timeline layout", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-thinking-card-"));
+    const configPath = path.join(directory, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "feishu:",
+      "  thinkingCardLayout: timeline",
+      "agents:",
+      "  codex:",
+      "    kind: app-server",
+      "    title: Codex",
+      "    command: codex",
+    ].join("\n"));
+
+    try {
+      expect(loadConfig(configPath).feishu.thinkingCardLayout).toBe("timeline");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

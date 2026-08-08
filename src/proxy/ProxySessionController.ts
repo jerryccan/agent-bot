@@ -1,3 +1,4 @@
+import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { Logger } from "pino";
@@ -16,13 +17,16 @@ import type {
 import {
   CardRenderer,
   type CardSection,
+  type DirectoryBrowserCardEntry,
   type ExecutionSettingsTab,
   type HelpCardSection,
   type ResetHistoryCardEntry,
+  type SessionTaskCardEntry,
+  type SessionTaskCardGroup,
   type TaskListCardAction,
-  type TaskListCardEntry,
 } from "../feishu/CardRenderer.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
+import { allowsFeishuUser } from "../feishu/ownerAccess.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
 import { buildTurnGraphRows } from "../presentation/turnGraph.js";
@@ -44,6 +48,7 @@ import {
   type MessageReactionStatus,
   type QueuedPromptRecord,
   type SessionRecord,
+  type TurnAttemptRecord,
   type TurnAnchorRecord,
 } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
@@ -60,13 +65,34 @@ interface LoadedSession {
   session: RuntimeSession;
 }
 
+interface StartTurnOptions {
+  attemptId?: string;
+  messageId?: string;
+  displayPrompt?: string;
+  preserveAttemptOnFailure?: boolean;
+}
+
 const MESSAGE_RECEIVED_REACTION = "OnIt";
 const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
 const MESSAGE_CANCELLED_REACTION = "CrossMark";
 const SESSION_PAGE_SIZE = 5;
+const DIRECTORY_PAGE_SIZE = 15;
 const RESET_HISTORY_PAGE_SIZE = 10;
+const MAX_LLM_TURN_RETRIES = 3;
+const RECOVERY_ACTIVITY_WINDOW_MS = 5 * 60 * 1_000;
+const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
 const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
+const WINDOWS_DRIVES_DIRECTORY = "agentbot://windows-drives";
+const IMAGE_FILE_EXTENSIONS = new Set([
+  ".avif", ".bmp", ".gif", ".heic", ".heif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp",
+]);
+const BINARY_FILE_EXTENSIONS = new Set([
+  ".7z", ".a", ".apk", ".avi", ".bin", ".bz2", ".class", ".dat", ".db", ".deb", ".dll", ".dmg", ".doc", ".docx",
+  ".dylib", ".eot", ".exe", ".flac", ".gz", ".ico", ".ipa", ".iso", ".jar", ".lib", ".mdb", ".mkv", ".mov", ".mp3",
+  ".mp4", ".msi", ".o", ".obj", ".ogg", ".otf", ".pdf", ".ppt", ".pptx", ".rar", ".rpm", ".so", ".sqlite", ".tar",
+  ".ttf", ".wav", ".webm", ".woff", ".woff2", ".xls", ".xlsx", ".xz", ".zip", ".zst",
+]);
 
 interface HelpCommandDefinition {
   command: string;
@@ -91,6 +117,11 @@ const HELP_COMMAND_SECTIONS: Array<{
         command: "/newgroup",
         usage: "[title] [--dir &#60;cwd&#62; | --nodir]",
         description: "创建飞书群和新任务",
+      },
+      {
+        command: "/dir",
+        usage: "[目录]",
+        description: "浏览、发送文件，并从选定目录创建任务或群",
       },
       {
         command: "/forkgroup",
@@ -174,6 +205,11 @@ const HELP_COMMAND_SECTIONS: Array<{
         usage: "[--force]",
         description: "默认安全重启；--force 立即重启",
       },
+      {
+        command: "/mute",
+        usage: "[on|off]",
+        description: "开启或关闭当前群的仅 @ 响应模式",
+      },
       { command: "/help", description: "显示本帮助" },
     ],
   },
@@ -199,6 +235,11 @@ interface AgentRemoteSessionSummary {
 interface SessionsCardOptions {
   updateMessageId?: string;
   forceSwitchTaskId?: string;
+  page?: number;
+}
+
+interface DirectoryBrowserOptions {
+  updateMessageId?: string;
   page?: number;
 }
 
@@ -301,6 +342,13 @@ export interface ProxyLifecycle {
 }
 
 export type ShellCommandExecutor = (command: string, cwd: string) => Promise<ShellCommandResult>;
+export interface WindowsDriveInfo {
+  root: string;
+  label?: string;
+  driveType?: string;
+}
+
+export type WindowsDriveLister = () => Promise<WindowsDriveInfo[]>;
 
 export class ProxySessionController {
   private readonly router = new CommandRouter();
@@ -313,7 +361,13 @@ export class ProxySessionController {
   private readonly sessionResets = new Map<string, Promise<void>>();
   private readonly lastSessionListings = new Map<string, string[]>();
   private readonly threadInitializations = new Map<string, Promise<void>>();
+  private readonly llmRetryingSessions = new Set<string>();
+  private readonly retriedFailureTurnIds = new Set<string>();
+  private readonly recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
   private readonly unsubscribe: Array<() => void> = [];
+  private readonly recoveryActivityHeartbeat: NodeJS.Timeout;
+  private startupRecovery?: Promise<void>;
+  private queuedPromptsRestored = false;
 
   constructor(
     private readonly config: AppConfig,
@@ -323,18 +377,8 @@ export class ProxySessionController {
     private readonly logger: Logger,
     private readonly lifecycle?: ProxyLifecycle,
     private readonly shellCommandExecutor: ShellCommandExecutor = executeShellCommand,
+    private readonly windowsDriveLister: WindowsDriveLister = listWindowsDriveRoots,
   ) {
-    const interruptedAcpSessions = this.store.reconcileInterruptedAcpSessions(
-      Object.entries(this.config.agents)
-        .filter(([, agent]) => agent.kind === "acp")
-        .map(([name]) => name),
-    );
-    if (interruptedAcpSessions.length > 0) {
-      this.logger.warn(
-        { sessionIds: interruptedAcpSessions.map((session) => session.localSessionId) },
-        "Marked interrupted ACP sessions as failed after process restart.",
-      );
-    }
     for (const [, runtime] of this.runtimes.entries()) {
       this.unsubscribe.push(
         runtime.onEvent((event) => {
@@ -345,15 +389,37 @@ export class ProxySessionController {
       );
     }
     this.restorePersistedSessionRoutes();
-    this.restorePersistedQueuedPrompts();
     void this.restorePersistedMessageReactions().catch((error: unknown) => {
       this.logger.warn({ error }, "Failed to restore persisted message reaction statuses.");
     });
+    this.recoveryActivityHeartbeat = setInterval(
+      () => this.persistActiveTurnHeartbeats(),
+      RECOVERY_HEARTBEAT_INTERVAL_MS,
+    );
+    this.recoveryActivityHeartbeat.unref?.();
   }
 
   async onMessage(message: IncomingMessage): Promise<void> {
-    // The durable deduplication claim is the only operation allowed before acknowledgement.
-    // It prevents event retries from adding duplicate reactions.
+    if (!message.contextKey.startsWith("console:") && !allowsFeishuUser(this.config, message.userId)) {
+      this.logger.debug(
+        { messageId: message.messageId },
+        "Ignored a Feishu message from a non-owner before acknowledgement.",
+      );
+      return;
+    }
+    if (
+      message.chatType === "group"
+      && this.store.chatRequiresMention(baseChatContextKey(message.contextKey))
+      && message.mentionedBot !== true
+    ) {
+      this.logger.debug(
+        { messageId: message.messageId, contextKey: message.contextKey },
+        "Ignored an unmentioned message from a muted Lark group.",
+      );
+      return;
+    }
+    // For accepted messages, claim durable deduplication before acknowledgement so event
+    // retries cannot add duplicate reactions.
     if (!this.store.claimInboundEvent(message.messageId, "message")) return;
     try {
       const reactionId = await this.outbound.addReaction(
@@ -473,6 +539,13 @@ export class ProxySessionController {
   }
 
   async onCardAction(action: CardAction): Promise<void> {
+    if (!allowsFeishuUser(this.config, action.userId)) {
+      this.logger.debug(
+        { actionId: action.actionId },
+        "Ignored a Feishu card action from a non-owner.",
+      );
+      return;
+    }
     if (!this.store.claimInboundEvent(action.actionId, "card_action")) return;
     const contextKey = this.cardActionContextKey(action);
     const scopedAction = contextKey === action.contextKey ? action : { ...action, contextKey };
@@ -533,6 +606,32 @@ export class ProxySessionController {
           if (!cancelled) {
             await this.outbound.sendText(contextKey, "该安全重启计划已失效，请查看最新状态卡片。");
           }
+        } else if (kind === "directory_open" || kind === "directory_page") {
+          await this.openDirectoryBrowser(
+            contextKey,
+            directoryActionPath(scopedAction.value.directory),
+            {
+              updateMessageId: requiredCardMessageId(scopedAction.messageId),
+              page: kind === "directory_page" ? directoryPageValue(scopedAction.value.page) : 0,
+            },
+          );
+        } else if (kind === "directory_send_file") {
+          const filePath = directoryFileActionPath(scopedAction.value.filePath);
+          await this.assertSendableFile(filePath);
+          await this.outbound.sendFile(contextKey, filePath);
+        } else if (kind === "directory_new" || kind === "directory_new_group") {
+          const directory = directoryActionPath(scopedAction.value.directory);
+          await this.assertBrowsableDirectory(directory);
+          await this.execute(
+            contextKey,
+            kind === "directory_new"
+              ? { type: "new", cwd: directory }
+              : { type: "newgroup", cwd: directory },
+            undefined,
+            replyTarget,
+            undefined,
+            scopedAction.userId,
+          );
         } else if (kind === "session_page") {
           await this.refreshSessionsCardFromAction(scopedAction);
         } else if (kind === "session_switch") {
@@ -692,6 +791,9 @@ export class ProxySessionController {
     this.queuedPromptCards.clear();
     this.queuedPromptCardWrites.clear();
     this.sessionResets.clear();
+    for (const timer of this.recoveryRetryTimers.values()) clearTimeout(timer);
+    this.recoveryRetryTimers.clear();
+    clearInterval(this.recoveryActivityHeartbeat);
   }
 
   async controlStopTask(localSessionId: string): Promise<string> {
@@ -916,6 +1018,9 @@ export class ProxySessionController {
       case "shell":
         await this.runShellCommand(contextKey, command.command);
         return;
+      case "dir":
+        await this.openDirectoryBrowser(contextKey, command.directory);
+        return;
       case "new":
         if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "app-server") {
           throw new Error("/new --nodir 仅支持 App Server Agent。");
@@ -984,6 +1089,9 @@ export class ProxySessionController {
         if (!this.lifecycle) throw new Error("当前运行方式不支持自动重启。");
         await this.lifecycle.restart(contextKey, command.force === true, replyTarget);
         return;
+      case "mute":
+        await this.setGroupMute(contextKey, command.enabled);
+        return;
       case "turns":
         await this.openResetHistory(contextKey);
         return;
@@ -1016,6 +1124,7 @@ export class ProxySessionController {
       const turnContextKey = session.lastTurnId
         ? this.store.getTurnContextKey(session.lastTurnId) ?? context.contextKey
         : context.contextKey;
+      if (!this.outbound.canRoute(turnContextKey)) continue;
       this.outbound.registerSession(
         session.localSessionId,
         turnContextKey,
@@ -1028,14 +1137,384 @@ export class ProxySessionController {
         this.logger.warn({ error, sessionId: session.localSessionId }, "Failed to restore persisted turn delivery.");
       });
     }
+    for (const turn of this.store.listUndeliveredCompletedTurns()) {
+      const contextKey = turn.contextKey ?? this.store.getSession(turn.localSessionId)?.contextKey;
+      if (!contextKey || !this.outbound.canRoute(contextKey)) continue;
+      void this.outbound.resumeDelivery(turn.localSessionId, contextKey, turn.turnId).catch((error: unknown) => {
+        this.logger.warn(
+          { error, sessionId: turn.localSessionId, turnId: turn.turnId },
+          "Failed to resume an undelivered completed turn.",
+        );
+      });
+    }
   }
 
   private restorePersistedQueuedPrompts(): void {
+    if (this.queuedPromptsRestored) return;
+    this.queuedPromptsRestored = true;
     for (const sessionId of this.store.listQueuedPromptSessionIds()) {
+      const firstPrompt = this.store.listQueuedPrompts(sessionId)[0];
+      if (firstPrompt && !this.outbound.canRoute(firstPrompt.contextKey)) continue;
       void this.scheduleNextQueuedPrompt(sessionId).catch((error: unknown) => {
         this.logger.warn({ error, sessionId }, "Failed to resume a persisted prompt queue.");
       });
     }
+  }
+
+  async recoverInterruptedTasks(): Promise<void> {
+    if (this.startupRecovery) return this.startupRecovery;
+    const recovery = this.runStartupRecovery();
+    this.startupRecovery = recovery;
+    return recovery;
+  }
+
+  private async runStartupRecovery(): Promise<void> {
+    this.backfillTurnAttemptsForUpgrade();
+    const attempts = this.store.listIncompleteTurnAttempts();
+    const recoveryCutoff = Date.now() - RECOVERY_ACTIVITY_WINDOW_MS;
+    const recentAttempts = attempts.filter((attempt) => isRecoveryAttemptRecent(attempt, recoveryCutoff));
+    if (recentAttempts.length > 0) {
+      this.logger.warn(
+        { attemptIds: recentAttempts.map((attempt) => attempt.attemptId) },
+        "Recovering unfinished Agent Bot tasks after startup.",
+      );
+    }
+    for (const attempt of attempts) {
+      if (!isRecoveryAttemptRecent(attempt, recoveryCutoff)) {
+        await this.expireStaleTurnAttempt(attempt);
+        continue;
+      }
+      if (!this.outbound.canRoute(attempt.contextKey)) continue;
+      try {
+        await this.recoverTurnAttempt(attempt);
+      } catch (error) {
+        this.logger.error(
+          { error, attemptId: attempt.attemptId, sessionId: attempt.localSessionId },
+          "Failed to recover an unfinished task; it will be retried while the server is running.",
+        );
+        this.scheduleRecoveryRetry(attempt.attemptId);
+      }
+    }
+    this.restorePersistedQueuedPrompts();
+  }
+
+  private backfillTurnAttemptsForUpgrade(): void {
+    for (const session of this.store.listAllSessions()) {
+      if (session.status !== "starting" && session.status !== "running" && session.status !== "ready") continue;
+      if (this.store.findIncompleteTurnAttemptForSession(session.localSessionId)) continue;
+      const lastTurn = session.lastTurnId
+        ? {
+            turnId: session.lastTurnId,
+            localSessionId: session.localSessionId,
+            contextKey: this.store.getTurnContextKey(session.lastTurnId),
+            snapshot: this.store.getTurnSnapshot(session.lastTurnId),
+            updatedAt: session.updatedAt,
+          }
+        : undefined;
+      const lastTurnSnapshot = turnViewSnapshot(lastTurn?.snapshot);
+      const latestPersisted = this.store.findLatestTurnSnapshotForSession(session.localSessionId);
+      const latestPersistedSnapshot = turnViewSnapshot(latestPersisted?.snapshot);
+      const latest = lastTurnSnapshot && !isTerminalTurnViewStatus(lastTurnSnapshot.status)
+        ? lastTurn
+        : latestPersistedSnapshot && !isTerminalTurnViewStatus(latestPersistedSnapshot.status)
+          ? latestPersisted
+          : session.status === "ready"
+            ? undefined
+            : lastTurn;
+      if (!latest && session.status === "ready") continue;
+      const snapshot = turnViewSnapshot(latest?.snapshot);
+      if (snapshot && isTerminalTurnViewStatus(snapshot.status)) {
+        this.store.updateSession(session.localSessionId, {
+          status: snapshot.status === "failed" ? "failed" : "ready",
+        });
+        continue;
+      }
+      const persistedTurnId = latest?.turnId;
+      const pendingTurnId = persistedTurnId?.startsWith("pending_") ? persistedTurnId : undefined;
+      const turnId = pendingTurnId ? undefined : persistedTurnId ?? session.lastTurnId;
+      const replyTarget = snapshot?.replyTarget?.replyInThread ? snapshot.replyTarget : undefined;
+      this.store.createTurnAttempt({
+        attemptId: createId("attempt"),
+        localSessionId: session.localSessionId,
+        contextKey: latest?.contextKey ?? session.contextKey,
+        promptText: snapshot?.prompt?.trim() || "继续完成重启前尚未完成的任务。",
+        messageId: turnId ? this.store.findMessageIdForTurn(turnId) : undefined,
+        replyMessageId: replyTarget?.messageId,
+        pendingTurnId,
+        turnId,
+        status: turnId ? "running" : "accepted",
+        createdAt: latest?.updatedAt ?? session.updatedAt,
+        updatedAt: latest?.updatedAt ?? session.updatedAt,
+      });
+    }
+  }
+
+  private async expireStaleTurnAttempt(attempt: TurnAttemptRecord): Promise<void> {
+    const session = this.store.getSession(attempt.localSessionId);
+    const oldCardTurnId = attempt.pendingTurnId ?? attempt.turnId;
+    if (session && oldCardTurnId && this.outbound.canRoute(attempt.contextKey)) {
+      await this.outbound.interruptTurnForRecovery(
+        session.localSessionId,
+        attempt.contextKey,
+        oldCardTurnId,
+        "执行中断已超过 5 分钟，未自动恢复。",
+      ).catch((error: unknown) => {
+        this.logger.warn(
+          { error, attemptId: attempt.attemptId, turnId: oldCardTurnId },
+          "Failed to close an expired interrupted thinking card.",
+        );
+      });
+    }
+    this.store.updateTurnAttempt(attempt.attemptId, { status: "interrupted" });
+    if (!session || session.status === "closed") return;
+    if (attempt.turnId && session.lastTurnId === attempt.turnId) {
+      this.store.updateRuntimeSession(session.localSessionId, { lastTurnStatus: "cancelled" });
+    }
+    if (session.status === "starting" || session.status === "running") {
+      this.store.updateSession(session.localSessionId, { status: "ready" });
+    }
+    if (attempt.turnId && this.outbound.canRoute(attempt.contextKey)) {
+      await this.finalizeTurnMessageReactions(attempt.turnId, "cancelled").catch((error: unknown) => {
+        this.logger.warn(
+          { error, attemptId: attempt.attemptId, turnId: attempt.turnId },
+          "Failed to finalize the message reaction for an expired interrupted turn.",
+        );
+      });
+    }
+  }
+
+  private persistActiveTurnHeartbeats(): void {
+    for (const attempt of this.store.listIncompleteTurnAttempts()) {
+      if (!attempt.turnId) continue;
+      const session = this.store.getSession(attempt.localSessionId);
+      if (!session) continue;
+      const activeTurnId = this.runtimes.forAgent(session.agentName).getSession(session.localSessionId)?.activeTurnId;
+      if (activeTurnId === attempt.turnId) this.store.touchTurnAttempt(attempt.turnId);
+    }
+  }
+
+  private async recoverTurnAttempt(attempt: TurnAttemptRecord, announce = true): Promise<void> {
+    const session = this.store.getSession(attempt.localSessionId);
+    if (!session || session.status === "closed") {
+      this.store.updateTurnAttempt(attempt.attemptId, { status: "interrupted" });
+      return;
+    }
+    const contextKey = attempt.contextKey || session.contextKey;
+    const replyTarget = attempt.replyMessageId
+      ? { messageId: attempt.replyMessageId, replyInThread: true as const }
+      : undefined;
+    this.outbound.registerSession(
+      session.localSessionId,
+      contextKey,
+      session.title,
+      session.cwd,
+      this.agentLabel(session.agentName),
+    );
+    if (announce) {
+      await this.outbound.withReplyTarget(contextKey, replyTarget, () =>
+        this.outbound.sendText(contextKey, "检测到任务在 Agent Bot 重启前尚未完成，正在自动恢复。"),
+      ).catch((error: unknown) => {
+        this.logger.warn(
+          { error, attemptId: attempt.attemptId, contextKey },
+          "Failed to send the task recovery notification.",
+        );
+        return undefined;
+      });
+    }
+
+    const runtime = this.runtimes.forAgent(session.agentName);
+    const sourceTurnId = attempt.turnId;
+    if (runtime.kind === "acp") {
+      await this.continueInterruptedAttempt(attempt, session, sourceTurnId, replyTarget);
+      return;
+    }
+
+    let remote: RemoteSessionSummary | undefined;
+    if (session.remoteSessionId && runtime.readRemoteSession) {
+      try {
+        remote = await runtime.readRemoteSession(session.remoteSessionId);
+      } catch (error) {
+        this.logger.warn(
+          { error, attemptId: attempt.attemptId, remoteSessionId: session.remoteSessionId },
+          "Failed to read the remote task during startup recovery; treating the old local execution as interrupted.",
+        );
+      }
+    }
+    const remoteTurnBelongsToAttempt = remoteTurnMatchesAttempt(remote, attempt);
+    if (remote && remoteTurnBelongsToAttempt && remote.lastTurnStatus === "completed") {
+      await this.reconcileRecoveredRemoteTurn(attempt, session, remote.lastTurnId);
+      return;
+    }
+    if (remote && remoteTurnBelongsToAttempt && remote.lastTurnStatus === "failed") {
+      await this.reconcileRecoveredRemoteTurn(attempt, session, remote.lastTurnId);
+      return;
+    }
+    if (remote && remoteTurnBelongsToAttempt && isRemoteSessionActive(remote) && remote.lastTurnId) {
+      await this.reattachActiveRecoveredTurn(attempt, session, remote.lastTurnId, replyTarget);
+      return;
+    }
+    if (remote && isRemoteSessionActive(remote) && !remoteTurnBelongsToAttempt) {
+      this.store.updateTurnAttempt(attempt.attemptId, { status: "recovering" });
+      if (announce) {
+        await this.outbound.withReplyTarget(contextKey, replyTarget, () =>
+          this.outbound.sendText(contextKey, "任务中检测到另一轮仍在执行；本次恢复将在它结束后重试。"),
+        );
+      }
+      this.scheduleRecoveryRetry(attempt.attemptId);
+      return;
+    }
+    await this.continueInterruptedAttempt(attempt, session, sourceTurnId, replyTarget);
+  }
+
+  private async reconcileRecoveredRemoteTurn(
+    attempt: TurnAttemptRecord,
+    session: SessionRecord,
+    remoteTurnId: string | undefined,
+  ): Promise<void> {
+    if (remoteTurnId && !attempt.turnId) {
+      this.store.updateTurnAttempt(attempt.attemptId, { turnId: remoteTurnId, status: "running" });
+      this.store.updateRuntimeSession(session.localSessionId, {
+        lastTurnId: remoteTurnId,
+        lastTurnStatus: "running",
+      });
+    }
+    const current = this.store.getSession(session.localSessionId) ?? session;
+    const loaded = await this.loadSession({
+      ...current,
+      contextKey: attempt.contextKey,
+      status: "running",
+      lastTurnStatus: "running",
+    });
+    const synchronized = await loaded.runtime.synchronizeSession(session.localSessionId);
+    if (synchronized.activeTurnId) this.scheduleRecoveryRetry(attempt.attemptId, synchronized.activeTurnId);
+  }
+
+  private scheduleRecoveryRetry(attemptId: string, activeTurnId?: string): void {
+    if (this.recoveryRetryTimers.has(attemptId)) return;
+    const timer = setTimeout(() => {
+      this.recoveryRetryTimers.delete(attemptId);
+      const attempt = this.store.getTurnAttempt(attemptId);
+      if (!attempt || !isIncompleteTurnAttemptStatus(attempt.status)) return;
+      const retry = async (): Promise<void> => {
+        let recoveryAttempt = attempt;
+        if (activeTurnId) {
+          const session = this.store.getSession(attempt.localSessionId);
+          if (session) {
+            const runtime = this.runtimes.forAgent(session.agentName);
+            const synchronized = await runtime.synchronizeSession(session.localSessionId);
+            if (synchronized.activeTurnId === activeTurnId) {
+              this.scheduleRecoveryRetry(attemptId, activeTurnId);
+              return;
+            }
+            const current = this.store.getTurnAttempt(attemptId);
+            if (!current || !isIncompleteTurnAttemptStatus(current.status)) return;
+            recoveryAttempt = current;
+          }
+        }
+        await this.recoverTurnAttempt(recoveryAttempt, false);
+      };
+      void retry().catch((error: unknown) => {
+        this.logger.warn(
+          { error, attemptId, sessionId: attempt.localSessionId },
+          "Failed to retry an unfinished task recovery.",
+        );
+        this.scheduleRecoveryRetry(attemptId, activeTurnId);
+      });
+    }, 5_000);
+    timer.unref?.();
+    this.recoveryRetryTimers.set(attemptId, timer);
+  }
+
+  private async reattachActiveRecoveredTurn(
+    attempt: TurnAttemptRecord,
+    session: SessionRecord,
+    turnId: string,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void> {
+    const oldCardTurnId = attempt.pendingTurnId ?? attempt.turnId;
+    if (oldCardTurnId) {
+      await this.outbound.interruptTurnForRecovery(
+        session.localSessionId,
+        attempt.contextKey,
+        oldCardTurnId,
+        "Agent Bot 已重启，执行仍在继续；进度已转移到新的思考卡片。",
+      );
+    }
+    const pendingTurnId = await this.outbound.startPendingTurn(
+      session.localSessionId,
+      attempt.contextKey,
+      session.title,
+      replyTarget,
+      recoveryCardPrompt(attempt.promptText),
+    );
+    this.store.updateTurnAttempt(attempt.attemptId, {
+      pendingTurnId: pendingTurnId ?? null,
+      turnId,
+      status: "running",
+    });
+    await this.outbound.onEvent({
+      type: "turn_started",
+      sessionId: session.localSessionId,
+      turnId,
+      startedAt: Date.now(),
+    });
+    this.store.updateTurnAttempt(attempt.attemptId, { pendingTurnId: null });
+    const current = this.store.getSession(session.localSessionId) ?? session;
+    const loaded = await this.loadSession({
+      ...current,
+      contextKey: attempt.contextKey,
+      status: "running",
+      lastTurnId: turnId,
+      lastTurnStatus: "running",
+    });
+    const synchronized = await loaded.runtime.synchronizeSession(session.localSessionId);
+    if (synchronized.activeTurnId) this.scheduleRecoveryRetry(attempt.attemptId, synchronized.activeTurnId);
+  }
+
+  private async continueInterruptedAttempt(
+    attempt: TurnAttemptRecord,
+    session: SessionRecord,
+    sourceTurnId: string | undefined,
+    replyTarget?: MessageReplyTarget,
+  ): Promise<void> {
+    const oldCardTurnId = attempt.pendingTurnId ?? sourceTurnId;
+    if (oldCardTurnId) {
+      await this.outbound.interruptTurnForRecovery(
+        session.localSessionId,
+        attempt.contextKey,
+        oldCardTurnId,
+        "Agent Bot 重启中断了这次执行，正在新的思考卡片中继续。",
+      ).catch((error: unknown) => {
+        this.logger.warn(
+          { error, attemptId: attempt.attemptId, turnId: oldCardTurnId },
+          "Failed to close the interrupted thinking card before recovery.",
+        );
+      });
+    }
+    this.store.prepareTurnAttemptRecovery(attempt.attemptId, oldCardTurnId);
+    this.store.updateSession(session.localSessionId, { status: "ready" });
+    if (sourceTurnId) {
+      this.store.updateRuntimeSession(session.localSessionId, {
+        lastTurnId: sourceTurnId,
+        lastTurnStatus: "cancelled",
+      });
+    }
+    const current = this.store.getSession(session.localSessionId) ?? session;
+    const loaded = await this.loadSession({ ...current, contextKey: attempt.contextKey });
+    const recoveryText = recoveryRuntimePrompt(attempt.promptText);
+    const turnId = await this.startTurn(
+      loaded,
+      recoveryText,
+      replyTarget,
+      attempt.localImagePaths,
+      {
+        attemptId: attempt.attemptId,
+        messageId: attempt.messageId,
+        displayPrompt: recoveryCardPrompt(attempt.promptText),
+        preserveAttemptOnFailure: true,
+      },
+    );
+    if (attempt.messageId) await this.bindMessageReactionToTurn(attempt.messageId, session.localSessionId, turnId);
   }
 
   private async restorePersistedMessageReactions(): Promise<void> {
@@ -1086,6 +1565,19 @@ export class ProxySessionController {
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
   ): Promise<void> {
+    if (this.llmRetryingSessions.has(record.localSessionId)) {
+      const queued = this.persistQueuedPrompt(record.localSessionId, contextKey, text, {
+        localImagePaths,
+        messageId,
+        replyTarget,
+      });
+      this.store.audit(contextKey, "queued_prompt_added_during_llm_retry", {
+        promptId: queued.promptId,
+        localSessionId: record.localSessionId,
+      });
+      await this.presentPromptQueueCard(record.localSessionId, contextKey);
+      return;
+    }
     const configuredRuntime = this.runtimes.forAgent(record.agentName);
     if (!configuredRuntime.getSession(record.localSessionId)) {
       this.outbound.registerSession(
@@ -1143,7 +1635,7 @@ export class ProxySessionController {
           this.logger.warn({ error: syncError, sessionId: record.localSessionId }, "Failed to synchronize after steering failure.");
         }
         if (!current?.activeTurnId) {
-          const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths);
+          const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths, { messageId });
           if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
           return;
         }
@@ -1172,7 +1664,7 @@ export class ProxySessionController {
         return;
       }
     }
-    const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths);
+    const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths, { messageId });
     if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
   }
 
@@ -1182,6 +1674,7 @@ export class ProxySessionController {
     text: string,
     messageId?: string,
   ): Promise<void> {
+    this.store.touchTurnAttempt(turnId);
     try {
       await this.outbound.appendSteerMessage(localSessionId, turnId, text, messageId);
     } catch (error) {
@@ -1311,6 +1804,9 @@ export class ProxySessionController {
     if (!message.threadContext || !message.threadId || !message.chatId) return;
     const current = this.store.getUserContext(message.contextKey)?.currentSessionId;
     if (current && this.store.getSession(current)) return;
+    const hasPersistedSourceTurn = threadForkAnchorMessageIds(message)
+      .some((messageId) => this.store.findTurnAnchorByMessageId(messageId) !== undefined);
+    if (!hasPersistedSourceTurn) return;
 
     const existing = this.threadInitializations.get(message.contextKey);
     if (existing) return existing;
@@ -1401,9 +1897,7 @@ export class ProxySessionController {
     if (!message.threadContext || !message.threadId || !message.chatId) {
       throw new Error("当前消息不属于可识别的飞书话题。");
     }
-    const anchorMessageIds = [message.rootMessageId, message.parentMessageId]
-      .filter((messageId): messageId is string => Boolean(messageId && messageId !== message.messageId));
-    const anchor = [...new Set(anchorMessageIds)]
+    const anchor = threadForkAnchorMessageIds(message)
       .map((messageId) => this.store.findTurnAnchorByMessageId(messageId))
       .find((candidate) => candidate !== undefined);
     if (!anchor) {
@@ -1785,31 +2279,60 @@ export class ProxySessionController {
     text: string,
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
+    options: StartTurnOptions = {},
   ): Promise<string> {
     const currentRecord = this.store.getSession(loaded.record.localSessionId);
     const title = currentRecord?.title ?? normalizeTaskTitle(text);
     if (!currentRecord?.title && title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
     if (title) this.outbound.updateSessionTitle(loaded.record.localSessionId, title);
-    await this.outbound.startPendingTurn(
-      loaded.record.localSessionId,
-      loaded.record.contextKey,
-      title,
-      replyTarget,
-      text,
-    );
+    const attemptId = options.attemptId ?? createId("attempt");
+    if (options.attemptId) {
+      this.store.updateTurnAttempt(attemptId, {
+        messageId: options.messageId ?? undefined,
+        replyMessageId: replyTarget?.messageId ?? undefined,
+        status: "recovering",
+      });
+    } else {
+      this.store.createTurnAttempt({
+        attemptId,
+        localSessionId: loaded.record.localSessionId,
+        contextKey: loaded.record.contextKey,
+        promptText: text,
+        localImagePaths,
+        messageId: options.messageId,
+        replyMessageId: replyTarget?.messageId,
+      });
+    }
     let turnId: string;
     try {
+      const pendingTurnId = await this.outbound.startPendingTurn(
+        loaded.record.localSessionId,
+        loaded.record.contextKey,
+        title,
+        replyTarget,
+        options.displayPrompt ?? text,
+      );
+      this.store.updateTurnAttempt(attemptId, { pendingTurnId: pendingTurnId ?? null });
       turnId = await loaded.runtime.startTurn(
         loaded.record.localSessionId,
         runtimePrompt(text, localImagePaths),
       );
     } catch (error) {
+      this.store.updateTurnAttempt(attemptId, {
+        status: options.preserveAttemptOnFailure ? "recovering" : "failed",
+      });
       await this.outbound.failPendingTurn(
         loaded.record.localSessionId,
         error instanceof Error ? error.message : String(error),
       );
       throw error;
     }
+    const attempt = this.store.getTurnAttempt(attemptId);
+    this.store.updateTurnAttempt(attemptId, {
+      pendingTurnId: null,
+      turnId,
+      ...(attempt && isIncompleteTurnAttemptStatus(attempt.status) ? { status: "running" as const } : {}),
+    });
     const latest = this.store.getSession(loaded.record.localSessionId);
     const alreadyTerminal = latest?.lastTurnId === turnId
       && ["completed", "cancelled", "failed"].includes(latest.lastTurnStatus ?? "");
@@ -2218,6 +2741,7 @@ export class ProxySessionController {
 
   private async handleRuntimeEvent(event: RuntimeEvent): Promise<void> {
     if ("turnId" in event) {
+      this.store.touchTurnAttempt(event.turnId);
       const source = this.store.getSession(event.sessionId);
       if (source?.remoteSessionId && this.isCodexSession(source)) {
         this.store.saveTurnRuntimeOrigin(
@@ -2228,11 +2752,29 @@ export class ProxySessionController {
         );
       }
       if (event.type === "turn_started") {
+        const attempt = this.store.bindTurnAttempt(event.sessionId, event.turnId);
+        if (attempt?.recoveredFromTurnId && attempt.recoveredFromTurnId !== event.turnId) {
+          this.store.rebindPendingTurnMessages(event.sessionId, attempt.recoveredFromTurnId, event.turnId);
+        }
         this.store.saveTurnParent(
           event.turnId,
           event.sessionId,
           this.completedParentTurnId(source),
         );
+      }
+    }
+    const failedAttempt = event.type === "turn_failed"
+      ? this.store.findIncompleteTurnAttemptByTurnId(event.turnId)
+      : undefined;
+    if (event.type === "turn_failed") {
+      if (this.retriedFailureTurnIds.has(event.turnId)) return;
+      if (failedAttempt && isRetryableLlmTurnFailure(event.message) && failedAttempt.retryCount < MAX_LLM_TURN_RETRIES) {
+        const retryAttempt = this.store.prepareTurnAttemptRetry(failedAttempt.attemptId, event.turnId);
+        if (retryAttempt) {
+          this.retriedFailureTurnIds.add(event.turnId);
+          await this.retryFailedLlmTurn(event, retryAttempt);
+          return;
+        }
       }
     }
     if (event.type === "session_metadata_updated") {
@@ -2244,15 +2786,27 @@ export class ProxySessionController {
       this.store.updateSession(event.sessionId, { status: "running" });
       this.store.updateRuntimeSession(event.sessionId, { lastTurnId: event.turnId, lastTurnStatus: "running" });
     } else if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+      this.store.markTurnAttemptTerminal(
+        event.turnId,
+        event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
+      );
       this.store.updateRuntimeSession(event.sessionId, {
         lastTurnId: event.turnId,
         lastTurnStatus: event.type === "turn_completed" ? "completed" : event.type === "turn_cancelled" ? "cancelled" : "failed",
       });
     }
 
+    const presentationEvent = event.type === "turn_failed"
+      && isRetryableLlmTurnFailure(event.message)
+      && (failedAttempt?.retryCount ?? 0) >= MAX_LLM_TURN_RETRIES
+      ? {
+          ...event,
+          message: `${event.message}\n\n已自动重试 ${MAX_LLM_TURN_RETRIES} 次，仍未成功。`,
+        }
+      : event;
     let presentationError: unknown;
     try {
-      await this.outbound.onEvent(event);
+      await this.outbound.onEvent(presentationEvent);
     } catch (error) {
       presentationError = error;
     }
@@ -2283,6 +2837,80 @@ export class ProxySessionController {
     }
 
     if (presentationError) throw presentationError;
+  }
+
+  private async retryFailedLlmTurn(
+    event: Extract<RuntimeEvent, { type: "turn_failed" }>,
+    attempt: TurnAttemptRecord,
+  ): Promise<void> {
+    const retryNumber = attempt.retryCount;
+    const session = this.store.getSession(event.sessionId);
+    if (!session || session.status === "closed") {
+      this.store.updateTurnAttempt(attempt.attemptId, { status: "failed" });
+      return;
+    }
+
+    this.llmRetryingSessions.add(session.localSessionId);
+    this.store.updateRuntimeSession(session.localSessionId, {
+      lastTurnId: event.turnId,
+      lastTurnStatus: "failed",
+    });
+    this.store.audit(attempt.contextKey, "llm_turn_retry_started", {
+      attemptId: attempt.attemptId,
+      failedTurnId: event.turnId,
+      retryNumber,
+      maxRetries: MAX_LLM_TURN_RETRIES,
+      error: event.message,
+    });
+
+    try {
+      await this.outbound.onEvent({
+        ...event,
+        message: `${event.message}\n\n检测到临时模型服务错误，正在自动重试（${retryNumber}/${MAX_LLM_TURN_RETRIES}）。`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        { error, sessionId: session.localSessionId, turnId: event.turnId },
+        "Failed to finalize the failed thinking card before an LLM retry.",
+      );
+    }
+
+    const replyTarget = attempt.replyMessageId
+      ? { messageId: attempt.replyMessageId, replyInThread: true as const }
+      : undefined;
+    try {
+      const current = this.store.getSession(session.localSessionId) ?? session;
+      const loaded = await this.loadSession(current);
+      const retryTurnId = await this.startTurn(
+        loaded,
+        llmRetryRuntimePrompt(attempt.promptText, retryNumber),
+        replyTarget,
+        attempt.localImagePaths,
+        {
+          attemptId: attempt.attemptId,
+          messageId: attempt.messageId,
+          displayPrompt: llmRetryCardPrompt(attempt.promptText, retryNumber),
+          preserveAttemptOnFailure: true,
+        },
+      );
+      this.store.rebindPendingTurnMessages(session.localSessionId, event.turnId, retryTurnId);
+    } catch (error) {
+      this.store.updateTurnAttempt(attempt.attemptId, { status: "failed" });
+      this.store.updateSession(session.localSessionId, { status: "failed" });
+      await this.finalizeTurnMessageReactions(event.turnId, "failed").catch((reactionError: unknown) => {
+        this.logger.warn(
+          { error: reactionError, sessionId: session.localSessionId, turnId: event.turnId },
+          "Failed to finalize reactions after an LLM retry could not start.",
+        );
+      });
+      this.logger.error(
+        { error, sessionId: session.localSessionId, retryNumber },
+        "Failed to start an automatic LLM turn retry.",
+      );
+      await this.scheduleNextQueuedPrompt(session.localSessionId);
+    } finally {
+      this.llmRetryingSessions.delete(session.localSessionId);
+    }
   }
 
   private scheduleNextQueuedPrompt(sessionId: string): Promise<void> {
@@ -2317,6 +2945,7 @@ export class ProxySessionController {
         prompt.text,
         prompt.replyMessageId ? { messageId: prompt.replyMessageId, replyInThread: true } : undefined,
         prompt.localImagePaths,
+        { messageId: prompt.messageId },
       );
       if (prompt.messageId) await this.bindMessageReactionToTurn(prompt.messageId, sessionId, turnId);
     } catch (error) {
@@ -2333,7 +2962,9 @@ export class ProxySessionController {
     if (!source?.lastTurnId) return undefined;
     if (source.lastTurnStatus === "completed") return source.lastTurnId;
     const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(source.lastTurnId));
-    return snapshot?.status === "completed" ? source.lastTurnId : undefined;
+    return snapshot?.status === "completed"
+      ? source.lastTurnId
+      : this.store.findLatestCompletedTurnId(source.localSessionId, source.contextKey);
   }
 
   private async finalizeStandaloneMessageReaction(
@@ -3194,6 +3825,175 @@ export class ProxySessionController {
     }
   }
 
+  private async openDirectoryBrowser(
+    contextKey: string,
+    requestedDirectory?: string,
+    options: DirectoryBrowserOptions = {},
+  ): Promise<void> {
+    if (requestedDirectory === WINDOWS_DRIVES_DIRECTORY) {
+      await this.openWindowsDriveBrowser(contextKey, options);
+      return;
+    }
+    const baseDirectory = this.currentSession(contextKey)?.cwd
+      ?? this.store.getUserContext(contextKey)?.boundProjectCwd
+      ?? this.config.defaults.cwd;
+    const directory = requestedDirectory === undefined
+      ? path.resolve(baseDirectory)
+      : resolveUserPath(requestedDirectory, baseDirectory);
+    await this.assertBrowsableDirectory(directory);
+
+    let directoryEntries: Dirent[];
+    try {
+      directoryEntries = await fs.readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      throw new Error(`无法读取目录 ${directory}：${runtimeErrorMessage(error)}`);
+    }
+    const entries = directoryEntries
+      .map((entry) => ({
+        name: entry.name,
+        path: path.join(directory, entry.name),
+        kind: directoryBrowserEntryKind(entry),
+      }))
+      .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory")
+        || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
+    const parentDirectory = isWindowsDriveRoot(directory)
+      ? WINDOWS_DRIVES_DIRECTORY
+      : path.dirname(directory);
+    const parentEntries: DirectoryBrowserCardEntry[] = parentDirectory === directory ? [] : [{
+      name: "..",
+      kind: "directory",
+      openAction: {
+        text: "..",
+        value: {
+          action: "directory_open",
+          directory: parentDirectory,
+          contextKey,
+        },
+      },
+    }];
+    const pageSize = DIRECTORY_PAGE_SIZE;
+    const requestedPage = Math.max(0, Math.trunc(options.page ?? 0));
+    const totalPages = Math.max(1, Math.ceil(entries.length / pageSize));
+    const page = Math.min(requestedPage, totalPages - 1);
+    const offset = page * pageSize;
+    const visibleEntries: DirectoryBrowserCardEntry[] = [
+      ...parentEntries,
+      ...entries
+      .slice(offset, offset + pageSize)
+      .map((entry): DirectoryBrowserCardEntry => entry.kind === "directory"
+        ? {
+            name: entry.name,
+            kind: entry.kind,
+            openAction: {
+              text: entry.name,
+              value: {
+                action: "directory_open",
+                directory: entry.path,
+                contextKey,
+              },
+            },
+            actions: directoryCreationActions(entry.path, contextKey),
+          }
+        : {
+            name: entry.name,
+            kind: entry.kind,
+            openAction: {
+              text: entry.name,
+              value: {
+                action: "directory_send_file",
+                filePath: entry.path,
+                contextKey,
+              },
+            },
+          }),
+    ];
+    const navigationActions = directoryPaginationActions(directory, page, totalPages, contextKey);
+    const directoryCount = entries.filter((entry) => entry.kind === "directory").length;
+    const card = this.cardRenderer.renderDirectoryBrowserCard({
+      directory: abbreviateHomeDirectory(directory),
+      entries: visibleEntries,
+      currentActions: directoryCreationActions(directory, contextKey),
+      navigationActions,
+      footerLines: [
+        `第 ${page + 1}/${totalPages} 页 · ${directoryCount} 个目录 · ${entries.length - directoryCount} 个文件`,
+        "",
+        "> 点击目录名称进入，点击文件名称发送到当前会话；**New** 在该目录创建任务，**NewGroup** 在该目录创建新群和任务。",
+      ],
+    });
+    if (options.updateMessageId) {
+      await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+    } else {
+      await this.outbound.sendInteractiveCard(contextKey, card);
+    }
+  }
+
+  private async openWindowsDriveBrowser(
+    contextKey: string,
+    options: DirectoryBrowserOptions,
+  ): Promise<void> {
+    const drives = await this.windowsDriveLister();
+    const requestedPage = Math.max(0, Math.trunc(options.page ?? 0));
+    const totalPages = Math.max(1, Math.ceil(drives.length / DIRECTORY_PAGE_SIZE));
+    const page = Math.min(requestedPage, totalPages - 1);
+    const offset = page * DIRECTORY_PAGE_SIZE;
+    const entries: DirectoryBrowserCardEntry[] = drives
+      .slice(offset, offset + DIRECTORY_PAGE_SIZE)
+      .map((drive) => ({
+        name: windowsDriveDisplayName(drive),
+        kind: "drive",
+        openAction: {
+          text: windowsDriveDisplayName(drive),
+          value: {
+            action: "directory_open",
+            directory: drive.root,
+            contextKey,
+          },
+        },
+        actions: directoryCreationActions(drive.root, contextKey),
+      }));
+    const card = this.cardRenderer.renderDirectoryBrowserCard({
+      directory: "此电脑",
+      entries,
+      currentActions: [],
+      navigationActions: directoryPaginationActions(
+        WINDOWS_DRIVES_DIRECTORY,
+        page,
+        totalPages,
+        contextKey,
+      ),
+      footerLines: [
+        `第 ${page + 1}/${totalPages} 页 · ${drives.length} 个磁盘`,
+        "",
+        "> 点击磁盘名称进入；**New** 在磁盘根目录创建任务，**NewGroup** 在磁盘根目录创建新群和任务。",
+      ],
+    });
+    if (options.updateMessageId) {
+      await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+    } else {
+      await this.outbound.sendInteractiveCard(contextKey, card);
+    }
+  }
+
+  private async assertBrowsableDirectory(directory: string): Promise<void> {
+    let stats;
+    try {
+      stats = await fs.stat(directory);
+    } catch (error) {
+      throw new Error(`目录不存在或无法访问：${directory}（${runtimeErrorMessage(error)}）`);
+    }
+    if (!stats.isDirectory()) throw new Error(`这不是目录：${directory}`);
+  }
+
+  private async assertSendableFile(filePath: string): Promise<void> {
+    let stats;
+    try {
+      stats = await fs.stat(filePath);
+    } catch (error) {
+      throw new Error(`文件不存在或无法访问：${filePath}（${runtimeErrorMessage(error)}）`);
+    }
+    if (!stats.isFile()) throw new Error(`这不是普通文件：${filePath}`);
+  }
+
   private async listSessions(
     contextKey: string,
     searchTerm?: string,
@@ -3224,23 +4024,33 @@ export class ProxySessionController {
       ? `部分 Agent 的任务读取失败：${remoteErrors.join("；")}`
       : undefined;
 
-    const entries = mergeTaskList(localSessions, remoteSessions, context.currentSessionId)
-      .filter((entry) => !normalizedSearch
+    const entries = orderTaskListByProject(
+      mergeTaskList(localSessions, remoteSessions, context.currentSessionId)
+        .filter((entry) => !normalizedSearch
         || [entry.id, entry.title, entry.cwd, entry.agentName]
-          .some((value) => value.toLowerCase().includes(normalizedSearch)))
-      .sort((left, right) => Number(right.current) - Number(left.current)
-        || Number(right.active) - Number(left.active)
-        || right.updatedAt - left.updatedAt);
+          .some((value) => value.toLowerCase().includes(normalizedSearch))),
+    );
     const activeCount = entries.filter((entry) => entry.active).length;
     const lastKnownPage = Math.max(0, Math.ceil(entries.length / SESSION_PAGE_SIZE) - 1);
     const page = remoteHasMore ? requestedPage : Math.min(requestedPage, lastKnownPage);
     const offset = page * SESSION_PAGE_SIZE;
     const visibleEntries = entries.slice(offset, offset + SESSION_PAGE_SIZE);
+    const projectActionSources = new Map<string, UnifiedTaskListEntry>();
+    for (const entry of entries) {
+      const project = taskProjectInfo(entry);
+      if (!projectActionSources.has(project.key)) projectActionSources.set(project.key, entry);
+    }
     const hasPrevious = page > 0;
     const hasNext = remoteHasMore || entries.length > offset + SESSION_PAGE_SIZE;
     this.lastSessionListings.set(contextKey, entries.map((entry) => entry.reference));
-    const cardEntries = visibleEntries.map((entry, index) => {
-      const marker = entry.current ? "✅" : entry.active ? "🟢 **活跃**" : "•";
+    const cardEntries = visibleEntries.map((entry, index): {
+      project: TaskProjectInfo;
+      projectActions: TaskListCardAction[];
+      cardEntry: SessionTaskCardEntry;
+    } => {
+      const project = taskProjectInfo(entry);
+      const projectActionSource = projectActionSources.get(project.key) ?? entry;
+      const marker = entry.current ? "✅" : entry.active ? "🟢" : "•";
       const showStop = entry.status === "外部执行中"
         && entry.reference !== options.forceSwitchTaskId
         && entry.id !== options.forceSwitchTaskId;
@@ -3255,26 +4065,25 @@ export class ProxySessionController {
           contextKey,
         },
       }];
-      actions.push({
+      const projectActions: TaskListCardAction[] = [{
         text: "New",
         value: {
           action: "session_new",
-          sessionId: entry.reference,
+          sessionId: projectActionSource.reference,
           ...(searchTerm ? { searchTerm } : {}),
           page: String(page),
           contextKey,
         },
-      });
-      actions.push({
+      }, {
         text: "NewGroup",
         value: {
           action: "session_new_group",
-          sessionId: entry.reference,
+          sessionId: projectActionSource.reference,
           ...(searchTerm ? { searchTerm } : {}),
           page: String(page),
           contextKey,
         },
-      });
+      }];
       actions.push({
         text: "Fork",
         value: {
@@ -3303,24 +4112,48 @@ export class ProxySessionController {
           contextKey,
         },
       });
+      const title = truncateText(entry.title.replace(/\s+/gu, " ").trim() || "未命名任务", 56);
       return {
-        lines: [
-          `**${offset + index + 1}.**　${marker}　**${cardText(entry.title)}**　${cardText(entry.id)}`,
-          `${entry.status} · ${entry.updatedLabel} · ${cardText(entry.agentName)} · ${cardText(entry.cwd || "目录未知")}`,
-        ],
-        actions,
+        project,
+        projectActions,
+        cardEntry: {
+          reference: entry.reference,
+          summary: `${offset + index + 1}. ${marker} ${title} · ${entry.agentName}`,
+          detailLines: [
+            `**状态 / 更新时间**：${cardText(entry.status)} / ${cardText(entry.updatedLabel)}`,
+            `**Agent / 任务 ID**：${cardCode(entry.agentName)} / ${cardCode(entry.id)}`,
+            `**目录**：${cardCode(entry.cwd || "目录未知")}`,
+          ],
+          actions,
+          current: entry.current,
+        },
       };
     });
-    const card = this.cardRenderer.renderTaskListCard(
-      searchTerm ? `App Server 任务：${searchTerm}` : "App Server 任务",
+    const cardGroups: SessionTaskCardGroup[] = [];
+    let currentProjectKey: string | undefined;
+    for (const item of cardEntries) {
+      const currentGroup = cardGroups.at(-1);
+      if (currentGroup && currentProjectKey === item.project.key) {
+        currentGroup.entries.push(item.cardEntry);
+      } else {
+        currentProjectKey = item.project.key;
+        cardGroups.push({
+          title: item.project.title,
+          entries: [item.cardEntry],
+          actions: item.projectActions,
+        });
+      }
+    }
+    const card = this.cardRenderer.renderSessionTaskListCard(
+      searchTerm ? `任务列表：${searchTerm}` : "任务列表",
       activeCount > 0 ? `任务（${activeCount} 个活跃）` : "任务",
-      cardEntries,
+      cardGroups,
       [
         ...(remoteHint ? [remoteHint] : []),
         `第 ${page + 1} 页 · 每页 ${SESSION_PAGE_SIZE} 个任务${hasNext ? "" : ` · 当前共 ${entries.length} 个任务`}`,
         "",
-        "> **Switch** 切换任务；**Stop** 停止运行；**Status** 查看状态。",
-        "> **New** / **Fork** 新建 / 分支任务；**NewGroup** / **ForkGroup** 新建 / 分支群。",
+        "> 项目行：**New** 新建任务，**NewGroup** 新建群。",
+        "> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态。",
       ],
       [
         ...(hasPrevious ? [{
@@ -3839,6 +4672,21 @@ export class ProxySessionController {
     ));
   }
 
+  private async setGroupMute(contextKey: string, enabled: boolean): Promise<void> {
+    const chatContextKey = baseChatContextKey(contextKey);
+    const chat = this.store.getChatContext(chatContextKey);
+    if (chat?.chatType !== "group") {
+      throw new Error("/mute 仅适用于群聊。");
+    }
+    this.store.setChatRequiresMention(chatContextKey, enabled);
+    await this.outbound.sendText(
+      contextKey,
+      enabled
+        ? "已开启当前群的静音模式。之后只有 @ 机器人的消息会被处理；发送 @机器人 /mute off 可恢复自动响应。"
+        : "已关闭当前群的静音模式。机器人将恢复自动响应群消息。",
+    );
+  }
+
   private ensureAgent(agentName: string) {
     const agent = this.config.agents[agentName];
     if (!agent) throw new Error(`未知 agent：${agentName}`);
@@ -3903,6 +4751,11 @@ export class ProxySessionController {
   }
 }
 
+function threadForkAnchorMessageIds(message: IncomingMessage): string[] {
+  return [...new Set([message.rootMessageId, message.parentMessageId]
+    .filter((messageId): messageId is string => Boolean(messageId && messageId !== message.messageId)))];
+}
+
 function sessionStatusLabel(status: SessionRecord["status"], activeTurnId?: string): string {
   if (activeTurnId || status === "running") return "执行中";
   const labels: Record<SessionRecord["status"], string> = {
@@ -3955,6 +4808,55 @@ interface UnifiedTaskListEntry {
   current: boolean;
   updatedAt: number;
   updatedLabel: string;
+}
+
+interface TaskProjectInfo {
+  key: string;
+  title: string;
+}
+
+function orderTaskListByProject(entries: UnifiedTaskListEntry[]): UnifiedTaskListEntry[] {
+  const groups = new Map<string, { project: TaskProjectInfo; entries: UnifiedTaskListEntry[] }>();
+  for (const entry of entries) {
+    const project = taskProjectInfo(entry);
+    const group = groups.get(project.key);
+    if (group) group.entries.push(entry);
+    else groups.set(project.key, { project, entries: [entry] });
+  }
+  const orderedGroups = [...groups.values()]
+    .map((group) => ({
+      ...group,
+      current: group.entries.some((entry) => entry.current),
+      active: group.entries.some((entry) => entry.active),
+      updatedAt: Math.max(...group.entries.map((entry) => entry.updatedAt)),
+    }))
+    .sort((left, right) => Number(right.current) - Number(left.current)
+      || Number(right.active) - Number(left.active)
+      || right.updatedAt - left.updatedAt
+      || left.project.title.localeCompare(right.project.title, undefined, { sensitivity: "base" }));
+  return orderedGroups.flatMap((group) => group.entries.sort(compareTaskListEntries));
+}
+
+function compareTaskListEntries(left: UnifiedTaskListEntry, right: UnifiedTaskListEntry): number {
+  return Number(right.current) - Number(left.current)
+    || Number(right.active) - Number(left.active)
+    || right.updatedAt - left.updatedAt
+    || left.title.localeCompare(right.title, undefined, { sensitivity: "base" });
+}
+
+function taskProjectInfo(entry: UnifiedTaskListEntry): TaskProjectInfo {
+  if (!entry.cwd) return { key: "unknown", title: "📁 目录未知" };
+  if (detectProjectlessWorkspace(entry.cwd)) {
+    return { key: "projectless", title: "🗒️ 未指定项目" };
+  }
+  const windowsPath = /^[a-z]:[\\/]|^\\\\/iu.test(entry.cwd);
+  const normalized = windowsPath
+    ? path.win32.normalize(entry.cwd).toLowerCase()
+    : path.resolve(entry.cwd);
+  return {
+    key: `cwd:${normalized}`,
+    title: `📁 ${abbreviateHomeDirectory(entry.cwd)}`,
+  };
 }
 
 function mergeTaskList(
@@ -4053,6 +4955,14 @@ function turnViewSnapshot(value: unknown): TurnViewState | undefined {
   return typeof candidate.turnId === "string" && typeof candidate.status === "string"
     ? candidate as TurnViewState
     : undefined;
+}
+
+function isTerminalTurnViewStatus(status: TurnViewState["status"]): boolean {
+  return status === "completed" || status === "cancelled" || status === "failed";
+}
+
+function isIncompleteTurnAttemptStatus(status: TurnAttemptRecord["status"]): boolean {
+  return status === "accepted" || status === "running" || status === "recovering";
 }
 
 function executionDetailLines(
@@ -4336,7 +5246,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["stop", "status", "restart", "help", "sessions", "goal", "nosteer"].includes(command.type)) return true;
+  if (["stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (["model", "provider", "thinking", "permissions"].includes(command.type)) return true;
   return false;
@@ -4347,12 +5257,213 @@ function parseSessionPage(value: unknown): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+function directoryPageValue(value: unknown): number {
+  const page = Number(value);
+  if (!Number.isSafeInteger(page) || page < 0) throw new Error("文件浏览卡片页码无效，请重新发送 /dir。");
+  return page;
+}
+
+function isWindowsDriveRoot(directory: string): boolean {
+  return /^[a-z]:\\$/iu.test(path.win32.normalize(directory));
+}
+
+function directoryBrowserEntryKind(entry: Dirent): DirectoryBrowserCardEntry["kind"] {
+  if (entry.isDirectory()) return "directory";
+  const extension = path.extname(entry.name).toLowerCase();
+  if (IMAGE_FILE_EXTENSIONS.has(extension)) return "image";
+  if (BINARY_FILE_EXTENSIONS.has(extension)) return "binary";
+  return "file";
+}
+
+function directoryActionPath(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("文件浏览卡片中的目录无效，请重新发送 /dir。");
+  }
+  return value === WINDOWS_DRIVES_DIRECTORY ? value : path.resolve(value);
+}
+
+function directoryFileActionPath(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("文件浏览卡片中的文件无效，请重新发送 /dir。");
+  }
+  return path.resolve(value);
+}
+
+function directoryCreationActions(directory: string, contextKey: string): TaskListCardAction[] {
+  return [
+    {
+      text: "New",
+      value: {
+        action: "directory_new",
+        directory,
+        contextKey,
+      },
+    },
+    {
+      text: "NewGroup",
+      value: {
+        action: "directory_new_group",
+        directory,
+        contextKey,
+      },
+    },
+  ];
+}
+
+function directoryPaginationActions(
+  directory: string,
+  page: number,
+  totalPages: number,
+  contextKey: string,
+): TaskListCardAction[] {
+  return [
+    ...(page > 0 ? [{
+      text: "Previous",
+      value: {
+        action: "directory_page",
+        directory,
+        page: String(page - 1),
+        contextKey,
+      },
+    }] : []),
+    ...(page < totalPages - 1 ? [{
+      text: "Next",
+      value: {
+        action: "directory_page",
+        directory,
+        page: String(page + 1),
+        contextKey,
+      },
+    }] : []),
+  ];
+}
+
+function windowsDriveDisplayName(drive: WindowsDriveInfo): string {
+  const driveLetter = drive.root.slice(0, 2).toUpperCase();
+  const label = drive.label?.trim() || windowsDriveTypeLabel(drive.driveType);
+  return `${label} (${driveLetter})`;
+}
+
+function windowsDriveTypeLabel(driveType?: string): string {
+  switch (driveType?.toLowerCase()) {
+    case "fixed": return "本地磁盘";
+    case "network": return "网络驱动器";
+    case "removable": return "可移动磁盘";
+    case "cdrom": return "光驱";
+    case "ram": return "RAM 磁盘";
+    default: return "磁盘";
+  }
+}
+
+async function listWindowsDriveRoots(): Promise<WindowsDriveInfo[]> {
+  if (process.platform !== "win32") throw new Error("磁盘列表仅在 Windows 上可用。");
+  const result = await executeShellCommand(
+    "$drives = @([System.IO.DriveInfo]::GetDrives() | ForEach-Object { $label = ''; if ($_.IsReady) { try { $label = $_.VolumeLabel } catch {} }; [PSCustomObject]@{ root = $_.Name; label = $label; driveType = $_.DriveType.ToString() } }); ConvertTo-Json -Compress -InputObject $drives",
+    os.homedir(),
+    { timeoutMs: 10_000, maxOutputBytes: 16 * 1024, platform: "win32" },
+  );
+  if (result.timedOut || result.exitCode !== 0) {
+    const detail = result.stderr.trim() || `退出码 ${result.exitCode ?? "未知"}`;
+    throw new Error(`无法读取 Windows 磁盘列表：${detail}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout.trim().replace(/^\uFEFF/u, ""));
+  } catch (error) {
+    throw new Error(`无法解析 Windows 磁盘列表：${runtimeErrorMessage(error)}`);
+  }
+  const values = Array.isArray(parsed) ? parsed : [parsed];
+  const drives = values.flatMap((value): WindowsDriveInfo[] => {
+    if (typeof value !== "object" || value === null) return [];
+    const record = value as Record<string, unknown>;
+    if (typeof record.root !== "string") return [];
+    const root = path.win32.normalize(record.root.trim());
+    if (!isWindowsDriveRoot(root)) return [];
+    return [{
+      root,
+      ...(typeof record.label === "string" && record.label.trim() ? { label: record.label.trim() } : {}),
+      ...(typeof record.driveType === "string" ? { driveType: record.driveType } : {}),
+    }];
+  }).sort((left, right) => left.root.localeCompare(right.root, undefined, { sensitivity: "base" }));
+  if (drives.length === 0) throw new Error("没有检测到可用的 Windows 磁盘。");
+  return drives;
+}
+
 function isPromptCommand(command: Command): boolean {
   return command.type === "prompt" || command.type === "nosteer";
 }
 
 function runtimePrompt(text: string, localImagePaths?: string[]): RuntimePrompt {
   return localImagePaths?.length ? { text, localImagePaths } : text;
+}
+
+function recoveryCardPrompt(prompt: string): string {
+  return `恢复重启前的任务：${prompt}`;
+}
+
+function recoveryRuntimePrompt(prompt: string): string {
+  return [
+    "Agent Bot restarted while the previous turn was still running.",
+    "Continue the unfinished task in the current task and workspace.",
+    "Inspect the existing conversation, files, and completed tool effects first. Do not repeat completed or irreversible actions.",
+    "Finish the original request:",
+    "",
+    prompt,
+  ].join("\n");
+}
+
+function llmRetryCardPrompt(prompt: string, retryNumber: number): string {
+  return `自动重试 ${retryNumber}/${MAX_LLM_TURN_RETRIES}：${prompt}`;
+}
+
+function llmRetryRuntimePrompt(prompt: string, retryNumber: number): string {
+  return [
+    `Agent Bot is automatically retrying this request after a transient LLM service failure (${retryNumber}/${MAX_LLM_TURN_RETRIES}).`,
+    "Continue in the current task and workspace. Inspect the conversation, files, and completed tool effects before acting.",
+    "Do not repeat completed or irreversible actions. Finish the original request:",
+    "",
+    prompt,
+  ].join("\n");
+}
+
+function isRetryableLlmTurnFailure(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return false;
+  const permanentFailure = [
+    /auth(?:entication|orization)?\b|unauthorized|forbidden|invalid api key|incorrect api key/u,
+    /insufficient[_ -]?quota|quota (?:exceeded|exhausted)|usage limit|billing|credit balance/u,
+    /context (?:length|window)|maximum context|too many tokens|token limit/u,
+    /invalid request|bad request|invalid argument|malformed|unsupported|not supported/u,
+    /model (?:not found|does not exist)|unknown model/u,
+    /permission|approval|sandbox|policy violation|content policy/u,
+  ].some((pattern) => pattern.test(normalized));
+  if (permanentFailure) return false;
+
+  return [
+    /(?:^|\D)429(?:\D|$)|rate[_ -]?limit|too many requests/u,
+    /overload|high demand|at capacity|capacity limit|temporar(?:y|ily) unavailable/u,
+    /service unavailable|internal server error|bad gateway|gateway timeout/u,
+    /(?:^|\D)(?:500|502|503|504)(?:\D|$)|upstream (?:error|failure|timeout)/u,
+    /deadline exceeded|request timed out|request timeout|response timeout/u,
+    /connection (?:reset|closed|aborted)|network error|socket hang up/u,
+    /stream (?:closed|disconnected|interrupted|error)/u,
+    /\b(?:llm|model|provider|inference)\b.*\b(?:error|failed|failure|unavailable|timeout|timed out)\b/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function remoteTurnMatchesAttempt(remote: RemoteSessionSummary | undefined, attempt: TurnAttemptRecord): boolean {
+  if (!remote?.lastTurnId) return false;
+  if (attempt.turnId) return remote.lastTurnId === attempt.turnId;
+  const remoteUpdatedAt = remote.updatedAt === undefined ? undefined : normalizeRemoteTimestamp(remote.updatedAt);
+  const acceptedAt = Date.parse(attempt.createdAt);
+  return remoteUpdatedAt !== undefined
+    && Number.isFinite(acceptedAt)
+    && remoteUpdatedAt >= acceptedAt - 1_000;
+}
+
+function isRecoveryAttemptRecent(attempt: TurnAttemptRecord, cutoff: number): boolean {
+  const updatedAt = Date.parse(attempt.updatedAt);
+  return Number.isFinite(updatedAt) && updatedAt >= cutoff;
 }
 
 function formatGroupDateSuffix(date: Date): string {

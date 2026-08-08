@@ -2,11 +2,13 @@ import type { Command } from "./commandTypes.js";
 
 const COMMAND_NAMES = [
   "agent",
+  "dir",
   "fork",
   "forkgroup",
   "goal",
   "help",
   "model",
+  "mute",
   "new",
   "newgroup",
   "nosteer",
@@ -49,6 +51,8 @@ export class CommandRouter {
     const command = resolveCommandName(rawCommand);
 
     switch (command) {
+      case "dir":
+        return { type: "dir", directory: args.join(" ").trim() || undefined };
       case "new":
         return parseNewCommand(args);
       case "newgroup":
@@ -94,6 +98,15 @@ export class CommandRouter {
         if (args.length === 0) return { type: "restart" };
         if (args.length === 1 && args[0] === "--force") return { type: "restart", force: true };
         throw new Error("/restart 只接受一个可选的 --force 参数。");
+      case "mute": {
+        if (args.length === 0 || (args.length === 1 && args[0]!.toLowerCase() === "on")) {
+          return { type: "mute", enabled: true };
+        }
+        if (args.length === 1 && args[0]!.toLowerCase() === "off") {
+          return { type: "mute", enabled: false };
+        }
+        throw new Error("/mute 只接受 on 或 off；不传参数等同于 /mute on。");
+      }
       case "turns":
         if (args.length > 0) throw new Error("/turns 不接受参数，请在历史轮次卡片中选择 turn。");
         return { type: "turns" };

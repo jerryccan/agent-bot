@@ -104,6 +104,7 @@ export const migrations = [
   CREATE TABLE IF NOT EXISTS chat_contexts (
     context_key TEXT PRIMARY KEY,
     chat_type TEXT NOT NULL,
+    require_mention INTEGER NOT NULL DEFAULT 0,
     last_activity_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -145,5 +146,30 @@ export const migrations = [
   );
   CREATE INDEX IF NOT EXISTS idx_turn_parent_links_session
     ON turn_parent_links(local_session_id);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS turn_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    local_session_id TEXT NOT NULL,
+    context_key TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    local_image_paths_json TEXT NOT NULL DEFAULT '[]',
+    message_id TEXT,
+    reply_message_id TEXT,
+    pending_turn_id TEXT,
+    turn_id TEXT,
+    recovered_from_turn_id TEXT,
+    recovery_count INTEGER NOT NULL DEFAULT 0,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_turn_attempts_recovery
+    ON turn_attempts(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_turn_attempts_session
+    ON turn_attempts(local_session_id, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_turn_attempts_turn
+    ON turn_attempts(turn_id);
   `,
 ] as const;

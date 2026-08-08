@@ -770,11 +770,17 @@ export class CodexRuntime implements AgentRuntime {
     const activeTurnId = session.activeTurnId;
 
     if (!activeTurnId) {
-      if (latestInProgress) this.adoptTurn(session, latestInProgress.id, turnStartedAt(latestInProgress));
+      if (latestInProgress && thread.status?.type === "active") {
+        this.adoptTurn(session, latestInProgress.id, turnStartedAt(latestInProgress));
+      }
       return;
     }
 
-    if (latestInProgress?.id === activeTurnId) return;
+    if (latestInProgress?.id === activeTurnId) {
+      if (thread.status?.type === "active") return;
+      this.supersedeTurn(session, activeTurnId);
+      return;
+    }
     if (latestInProgress) {
       this.supersedeTurn(session, activeTurnId);
       this.adoptTurn(session, latestInProgress.id, turnStartedAt(latestInProgress));
@@ -1091,7 +1097,7 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
   // that owned it. Only the owning app-server's active thread status (or the
   // rollout activity detector applied below) is evidence that it is still live.
   const lastTurnStatus = lastTurn?.status === "inProgress" && status !== "active"
-    ? undefined
+    ? "interrupted"
     : lastTurn?.status;
   const lastText = [...(lastTurn?.items ?? [])]
     .reverse()

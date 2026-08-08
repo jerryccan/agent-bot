@@ -28,7 +28,9 @@ export const appConfigSchema = z.object({
     appId: z.string().optional(),
     appSecret: z.string().optional(),
     userOpenId: z.string().optional(),
+    respondToOwnerOnly: z.boolean().default(true),
     respondToAllGroupMessages: z.boolean().default(true),
+    thinkingCardLayout: z.enum(["grouped", "timeline"]).default("grouped"),
     useConsoleWhenMissingCredentials: z.boolean().default(false),
   }),
   agents: z.record(z.string().min(1), agentConfigSchema).refine(

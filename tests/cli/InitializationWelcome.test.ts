@@ -107,7 +107,9 @@ function config(userOpenId?: string): AppConfig {
       appId: "cli_app",
       appSecret: "secret",
       ...(userOpenId ? { userOpenId } : {}),
+      respondToOwnerOnly: true,
       respondToAllGroupMessages: true,
+      thinkingCardLayout: "grouped",
       useConsoleWhenMissingCredentials: false,
     },
     agents: {

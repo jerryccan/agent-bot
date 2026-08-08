@@ -18,6 +18,7 @@ export interface UserContextRecord {
 export interface ChatContextRecord {
   contextKey: string;
   chatType: "p2p" | "group";
+  requiresMention: boolean;
   lastActivityAt?: string;
   createdAt: string;
   updatedAt: string;
@@ -89,6 +90,41 @@ export interface QueuedPromptRecord {
   createdAt: string;
 }
 
+export type TurnAttemptStatus =
+  | "accepted"
+  | "running"
+  | "recovering"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface TurnAttemptRecord {
+  attemptId: string;
+  localSessionId: string;
+  contextKey: string;
+  promptText: string;
+  localImagePaths?: string[];
+  messageId?: string;
+  replyMessageId?: string;
+  pendingTurnId?: string;
+  turnId?: string;
+  recoveredFromTurnId?: string;
+  recoveryCount: number;
+  retryCount: number;
+  status: TurnAttemptStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PersistedTurnSnapshotRecord {
+  turnId: string;
+  localSessionId: string;
+  contextKey?: string;
+  snapshot: unknown;
+  updatedAt: string;
+}
+
 interface UserContextRow {
   context_key: string;
   default_agent: string;
@@ -102,6 +138,7 @@ interface UserContextRow {
 interface ChatContextRow {
   context_key: string;
   chat_type: "p2p" | "group";
+  require_mention: number;
   last_activity_at: string | null;
   created_at: string;
   updated_at: string;
@@ -150,6 +187,24 @@ interface QueuedPromptRow {
   created_at: string;
 }
 
+interface TurnAttemptRow {
+  attempt_id: string;
+  local_session_id: string;
+  context_key: string;
+  prompt_text: string;
+  local_image_paths_json: string;
+  message_id: string | null;
+  reply_message_id: string | null;
+  pending_turn_id: string | null;
+  turn_id: string | null;
+  recovered_from_turn_id: string | null;
+  recovery_count: number;
+  retry_count: number;
+  status: TurnAttemptStatus;
+  created_at: string;
+  updated_at: string;
+}
+
 export class StateStore {
   private readonly db: Database.Database;
 
@@ -165,6 +220,7 @@ export class StateStore {
     this.ensureSessionColumns();
     this.ensureTurnSnapshotColumns();
     this.ensureChatContextColumns();
+    this.ensureTurnAttemptColumns();
     this.initializeContextSessionMappings();
     this.db.exec("DROP INDEX IF EXISTS idx_sessions_remote_session_id_unique");
     this.reconcileDuplicateRemoteSessions();
@@ -235,6 +291,30 @@ export class StateStore {
     `).run(contextKey, chatType, now, now);
   }
 
+  getChatContext(contextKey: string): ChatContextRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM chat_contexts WHERE context_key = ?")
+      .get(contextKey) as ChatContextRow | undefined;
+    return row ? mapChatContext(row) : undefined;
+  }
+
+  setChatRequiresMention(contextKey: string, requiresMention: boolean): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE chat_contexts
+      SET require_mention = ?, updated_at = ?
+      WHERE context_key = ? AND chat_type = 'group'
+    `).run(requiresMention ? 1 : 0, now, contextKey);
+  }
+
+  chatRequiresMention(contextKey: string): boolean {
+    const row = this.db.prepare(`
+      SELECT require_mention
+      FROM chat_contexts
+      WHERE context_key = ? AND chat_type = 'group'
+    `).get(contextKey) as { require_mention: number } | undefined;
+    return row?.require_mention === 1;
+  }
+
   listChatContexts(chatType?: "p2p" | "group"): ChatContextRecord[] {
     const rows = chatType
       ? this.db.prepare(`
@@ -243,13 +323,7 @@ export class StateStore {
           ORDER BY updated_at DESC
         `).all(chatType) as ChatContextRow[]
       : this.db.prepare("SELECT * FROM chat_contexts ORDER BY updated_at DESC").all() as ChatContextRow[];
-    return rows.map((row) => ({
-      contextKey: row.context_key,
-      chatType: row.chat_type,
-      lastActivityAt: row.last_activity_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+    return rows.map(mapChatContext);
   }
 
   markChatActive(contextKey: string, activeAt = new Date()): void {
@@ -267,13 +341,7 @@ export class StateStore {
       WHERE last_activity_at >= ?
       ORDER BY last_activity_at DESC
     `).all(since.toISOString()) as ChatContextRow[];
-    return rows.map((row) => ({
-      contextKey: row.context_key,
-      chatType: row.chat_type,
-      lastActivityAt: row.last_activity_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+    return rows.map(mapChatContext);
   }
 
   enqueuePrompt(input: {
@@ -361,6 +429,199 @@ export class StateStore {
     return cancel();
   }
 
+  createTurnAttempt(input: {
+    attemptId: string;
+    localSessionId: string;
+    contextKey: string;
+    promptText: string;
+    localImagePaths?: string[];
+    messageId?: string;
+    replyMessageId?: string;
+    pendingTurnId?: string;
+    turnId?: string;
+    recoveredFromTurnId?: string;
+    recoveryCount?: number;
+    retryCount?: number;
+    status?: Extract<TurnAttemptStatus, "accepted" | "running" | "recovering">;
+    createdAt?: string;
+    updatedAt?: string;
+  }): TurnAttemptRecord {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const updatedAt = input.updatedAt ?? createdAt;
+    const status = input.status ?? (input.turnId ? "running" : "accepted");
+    this.db.prepare(`
+      INSERT INTO turn_attempts (
+        attempt_id, local_session_id, context_key, prompt_text, local_image_paths_json,
+        message_id, reply_message_id, pending_turn_id, turn_id, recovered_from_turn_id,
+        recovery_count, retry_count, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.attemptId,
+      input.localSessionId,
+      input.contextKey,
+      input.promptText,
+      JSON.stringify(input.localImagePaths ?? []),
+      input.messageId ?? null,
+      input.replyMessageId ?? null,
+      input.pendingTurnId ?? null,
+      input.turnId ?? null,
+      input.recoveredFromTurnId ?? null,
+      input.recoveryCount ?? 0,
+      input.retryCount ?? 0,
+      status,
+      createdAt,
+      updatedAt,
+    );
+    return this.getTurnAttempt(input.attemptId)!;
+  }
+
+  getTurnAttempt(attemptId: string): TurnAttemptRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM turn_attempts WHERE attempt_id = ?")
+      .get(attemptId) as TurnAttemptRow | undefined;
+    return row ? mapTurnAttempt(row) : undefined;
+  }
+
+  findIncompleteTurnAttemptForSession(localSessionId: string): TurnAttemptRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT * FROM turn_attempts
+      WHERE local_session_id = ?
+        AND status IN ('accepted', 'running', 'recovering')
+      ORDER BY updated_at DESC, rowid DESC
+      LIMIT 1
+    `).get(localSessionId) as TurnAttemptRow | undefined;
+    return row ? mapTurnAttempt(row) : undefined;
+  }
+
+  listIncompleteTurnAttempts(): TurnAttemptRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM turn_attempts
+      WHERE status IN ('accepted', 'running', 'recovering')
+      ORDER BY created_at ASC, rowid ASC
+    `).all() as TurnAttemptRow[];
+    return rows.map(mapTurnAttempt);
+  }
+
+  updateTurnAttempt(
+    attemptId: string,
+    patch: Partial<{
+      messageId: string | null;
+      replyMessageId: string | null;
+      pendingTurnId: string | null;
+      turnId: string | null;
+      recoveredFromTurnId: string | null;
+      recoveryCount: number;
+      retryCount: number;
+      status: TurnAttemptStatus;
+    }>,
+  ): void {
+    const existing = this.getTurnAttempt(attemptId);
+    if (!existing) return;
+    const value = <T>(candidate: T | null | undefined, fallback: T | undefined): T | null =>
+      candidate === undefined ? fallback ?? null : candidate;
+    this.db.prepare(`
+      UPDATE turn_attempts
+      SET message_id = ?, reply_message_id = ?, pending_turn_id = ?, turn_id = ?,
+          recovered_from_turn_id = ?, recovery_count = ?, retry_count = ?, status = ?, updated_at = ?
+      WHERE attempt_id = ?
+    `).run(
+      value(patch.messageId, existing.messageId),
+      value(patch.replyMessageId, existing.replyMessageId),
+      value(patch.pendingTurnId, existing.pendingTurnId),
+      value(patch.turnId, existing.turnId),
+      value(patch.recoveredFromTurnId, existing.recoveredFromTurnId),
+      patch.recoveryCount ?? existing.recoveryCount,
+      patch.retryCount ?? existing.retryCount,
+      patch.status ?? existing.status,
+      new Date().toISOString(),
+      attemptId,
+    );
+  }
+
+  bindTurnAttempt(localSessionId: string, turnId: string): TurnAttemptRecord | undefined {
+    const attempt = this.findIncompleteTurnAttemptForSession(localSessionId);
+    if (!attempt || (attempt.turnId && attempt.turnId !== turnId)) return undefined;
+    this.updateTurnAttempt(attempt.attemptId, { turnId, status: "running" });
+    return this.getTurnAttempt(attempt.attemptId);
+  }
+
+  markTurnAttemptTerminal(
+    turnId: string,
+    status: Extract<TurnAttemptStatus, "completed" | "failed" | "cancelled">,
+  ): void {
+    this.db.prepare(`
+      UPDATE turn_attempts
+      SET status = ?, updated_at = ?
+      WHERE turn_id = ?
+    `).run(status, new Date().toISOString(), turnId);
+  }
+
+  findIncompleteTurnAttemptByTurnId(turnId: string): TurnAttemptRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT * FROM turn_attempts
+      WHERE turn_id = ? AND status IN ('accepted', 'running', 'recovering')
+      ORDER BY updated_at DESC, rowid DESC
+      LIMIT 1
+    `).get(turnId) as TurnAttemptRow | undefined;
+    return row ? mapTurnAttempt(row) : undefined;
+  }
+
+  touchTurnAttempt(turnId: string, activityAt = new Date()): void {
+    const timestamp = activityAt.toISOString();
+    const throttleCutoff = new Date(activityAt.getTime() - 15_000).toISOString();
+    this.db.prepare(`
+      UPDATE turn_attempts
+      SET updated_at = ?
+      WHERE turn_id = ?
+        AND status IN ('accepted', 'running', 'recovering')
+        AND updated_at < ?
+    `).run(timestamp, turnId, throttleCutoff);
+  }
+
+  prepareTurnAttemptRecovery(attemptId: string, recoveredFromTurnId?: string): TurnAttemptRecord | undefined {
+    const existing = this.getTurnAttempt(attemptId);
+    if (!existing) return undefined;
+    this.updateTurnAttempt(attemptId, {
+      pendingTurnId: null,
+      turnId: null,
+      recoveredFromTurnId: recoveredFromTurnId ?? existing.turnId ?? existing.recoveredFromTurnId ?? null,
+      recoveryCount: existing.recoveryCount + 1,
+      status: "recovering",
+    });
+    return this.getTurnAttempt(attemptId);
+  }
+
+  prepareTurnAttemptRetry(attemptId: string, failedTurnId: string): TurnAttemptRecord | undefined {
+    const existing = this.getTurnAttempt(attemptId);
+    if (!existing || existing.turnId !== failedTurnId || !isIncompleteTurnAttemptStatus(existing.status)) {
+      return undefined;
+    }
+    this.updateTurnAttempt(attemptId, {
+      pendingTurnId: null,
+      turnId: null,
+      recoveredFromTurnId: failedTurnId,
+      retryCount: existing.retryCount + 1,
+      status: "recovering",
+    });
+    return this.getTurnAttempt(attemptId);
+  }
+
+  rebindPendingTurnMessages(localSessionId: string, sourceTurnId: string, targetTurnId: string): void {
+    const now = new Date().toISOString();
+    const rebind = this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE message_reactions
+        SET turn_id = ?, updated_at = ?
+        WHERE local_session_id = ? AND turn_id = ? AND status = 'pending'
+      `).run(targetTurnId, now, localSessionId, sourceTurnId);
+      this.db.prepare(`
+        UPDATE message_turn_bindings
+        SET turn_id = ?, updated_at = ?
+        WHERE local_session_id = ? AND turn_id = ?
+      `).run(targetTurnId, now, localSessionId, sourceTurnId);
+    });
+    rebind();
+  }
+
   nextForkTitle(sourceTitle?: string): string {
     const baseTitle = forkBaseTitle(sourceTitle);
     const allocate = this.db.transaction(() => {
@@ -376,57 +637,6 @@ export class StateStore {
       return nextSequence;
     });
     return formatForkTitle(baseTitle, allocate());
-  }
-
-  reconcileInterruptedAcpSessions(acpAgentNames: string[]): SessionRecord[] {
-    const agentClause = acpAgentNames.length
-      ? ` OR (runtime_kind IS NULL AND agent_name IN (${acpAgentNames.map(() => "?").join(", ")}))`
-      : "";
-    const rows = this.db
-      .prepare(`SELECT * FROM sessions WHERE status = 'running' AND (runtime_kind = 'acp'${agentClause})`)
-      .all(...acpAgentNames) as SessionRow[];
-    if (rows.length === 0) return [];
-
-    const now = new Date().toISOString();
-    const completedAt = Date.now();
-    const reconcile = this.db.transaction(() => {
-      for (const row of rows) {
-        this.db.prepare(`
-          UPDATE sessions
-          SET status = 'failed',
-              last_turn_status = CASE WHEN last_turn_id IS NULL THEN last_turn_status ELSE 'failed' END,
-              updated_at = ?
-          WHERE local_session_id = ?
-        `).run(now, row.local_session_id);
-
-        if (!row.last_turn_id) continue;
-        const snapshotRow = this.db
-          .prepare("SELECT snapshot_json FROM turn_snapshots WHERE turn_id = ?")
-          .get(row.last_turn_id) as { snapshot_json: string } | undefined;
-        if (!snapshotRow) continue;
-        try {
-          const snapshot = JSON.parse(snapshotRow.snapshot_json) as Record<string, unknown>;
-          if (!["starting", "running", "tool_running", "waiting_for_approval"].includes(String(snapshot.status))) continue;
-          const startedAt = typeof snapshot.startedAt === "number" ? snapshot.startedAt : undefined;
-          const failedSnapshot: Record<string, unknown> = {
-            ...snapshot,
-            status: "failed",
-            completedAt,
-            ...(startedAt === undefined ? {} : { durationMs: Math.max(0, completedAt - startedAt) }),
-            error: "Agent Bot 已重启，原 ACP 进程中的执行无法继续。",
-          };
-          delete failedSnapshot.activeTool;
-          delete failedSnapshot.approval;
-          this.db.prepare(`
-            UPDATE turn_snapshots SET snapshot_json = ?, updated_at = ? WHERE turn_id = ?
-          `).run(JSON.stringify(failedSnapshot), now, row.last_turn_id);
-        } catch {
-          // Keep an unreadable historical snapshot intact while still correcting the session state.
-        }
-      }
-    });
-    reconcile();
-    return rows.map(mapSession);
   }
 
   setDefaultAgent(contextKey: string, agentName: string): void {
@@ -618,6 +828,34 @@ export class StateStore {
       .prepare("SELECT snapshot_json FROM turn_snapshots WHERE turn_id = ?")
       .get(turnId) as { snapshot_json: string } | undefined;
     return row ? JSON.parse(row.snapshot_json) : undefined;
+  }
+
+  findLatestTurnSnapshotForSession(localSessionId: string): PersistedTurnSnapshotRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT turn_id, local_session_id, context_key, snapshot_json, updated_at
+      FROM turn_snapshots
+      WHERE local_session_id = ?
+      ORDER BY
+        coalesce(json_extract(snapshot_json, '$.startedAt'), 0) DESC,
+        updated_at DESC,
+        rowid DESC
+      LIMIT 1
+    `).get(localSessionId) as {
+      turn_id: string;
+      local_session_id: string;
+      context_key: string | null;
+      snapshot_json: string;
+      updated_at: string;
+    } | undefined;
+    return row
+      ? {
+          turnId: row.turn_id,
+          localSessionId: row.local_session_id,
+          contextKey: row.context_key ?? undefined,
+          snapshot: JSON.parse(row.snapshot_json),
+          updatedAt: row.updated_at,
+        }
+      : undefined;
   }
 
   saveTurnRuntimeOrigin(
@@ -981,6 +1219,46 @@ export class StateStore {
       .prepare("SELECT * FROM sessions ORDER BY updated_at DESC, created_at DESC")
       .all() as SessionRow[];
     return rows.map(mapSession);
+  }
+
+  listUndeliveredCompletedTurns(): TurnAnchorRecord[] {
+    const rows = this.db.prepare(`
+      SELECT snapshots.turn_id, snapshots.local_session_id, snapshots.context_key
+      FROM turn_snapshots AS snapshots
+      LEFT JOIN turn_deliveries AS deliveries ON deliveries.turn_id = snapshots.turn_id
+      WHERE json_extract(snapshots.snapshot_json, '$.status') = 'completed'
+        AND length(coalesce(json_extract(snapshots.snapshot_json, '$.finalResponse'), '')) > 0
+        AND deliveries.final_delivered_at IS NULL
+      ORDER BY snapshots.updated_at ASC
+    `).all() as Array<{
+      turn_id: string;
+      local_session_id: string;
+      context_key: string | null;
+    }>;
+    return rows.map((row) => ({
+      turnId: row.turn_id,
+      localSessionId: row.local_session_id,
+      contextKey: row.context_key ?? undefined,
+    }));
+  }
+
+  findMessageIdForTurn(turnId: string): string | undefined {
+    const binding = this.db.prepare(`
+      SELECT message_id
+      FROM message_turn_bindings
+      WHERE turn_id = ?
+      ORDER BY updated_at DESC, rowid DESC
+      LIMIT 1
+    `).get(turnId) as { message_id: string } | undefined;
+    if (binding) return binding.message_id;
+    const reaction = this.db.prepare(`
+      SELECT message_id
+      FROM message_reactions
+      WHERE turn_id = ?
+      ORDER BY updated_at DESC, rowid DESC
+      LIMIT 1
+    `).get(turnId) as { message_id: string } | undefined;
+    return reaction?.message_id;
   }
 
   findLatestMessageIdForSession(localSessionId: string, contextKey?: string): string | undefined {
@@ -1402,6 +1680,18 @@ export class StateStore {
     if (!existing.has("last_activity_at")) {
       this.db.exec("ALTER TABLE chat_contexts ADD COLUMN last_activity_at TEXT");
     }
+    if (!existing.has("require_mention")) {
+      this.db.exec("ALTER TABLE chat_contexts ADD COLUMN require_mention INTEGER NOT NULL DEFAULT 0");
+    }
+  }
+
+  private ensureTurnAttemptColumns(): void {
+    const existing = new Set(
+      (this.db.pragma("table_info(turn_attempts)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("retry_count")) {
+      this.db.exec("ALTER TABLE turn_attempts ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
+    }
   }
 }
 
@@ -1428,6 +1718,17 @@ function mapUserContext(row: UserContextRow): UserContextRecord {
     currentSessionId: row.current_session_id ?? undefined,
     previousSessionId: row.previous_session_id ?? undefined,
     boundProjectCwd: row.bound_project_cwd ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapChatContext(row: ChatContextRow): ChatContextRecord {
+  return {
+    contextKey: row.context_key,
+    chatType: row.chat_type,
+    requiresMention: row.require_mention === 1,
+    lastActivityAt: row.last_activity_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1484,4 +1785,32 @@ function mapQueuedPrompt(row: QueuedPromptRow): QueuedPromptRecord {
     replyMessageId: row.reply_message_id ?? undefined,
     createdAt: row.created_at,
   };
+}
+
+function mapTurnAttempt(row: TurnAttemptRow): TurnAttemptRecord {
+  const parsedPaths = JSON.parse(row.local_image_paths_json) as unknown;
+  const localImagePaths = Array.isArray(parsedPaths)
+    ? parsedPaths.filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    attemptId: row.attempt_id,
+    localSessionId: row.local_session_id,
+    contextKey: row.context_key,
+    promptText: row.prompt_text,
+    localImagePaths: localImagePaths.length > 0 ? localImagePaths : undefined,
+    messageId: row.message_id ?? undefined,
+    replyMessageId: row.reply_message_id ?? undefined,
+    pendingTurnId: row.pending_turn_id ?? undefined,
+    turnId: row.turn_id ?? undefined,
+    recoveredFromTurnId: row.recovered_from_turn_id ?? undefined,
+    recoveryCount: row.recovery_count,
+    retryCount: row.retry_count,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function isIncompleteTurnAttemptStatus(status: TurnAttemptStatus): boolean {
+  return status === "accepted" || status === "running" || status === "recovering";
 }

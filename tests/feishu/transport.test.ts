@@ -119,6 +119,79 @@ test("dispatches direct Feishu SDK message events", async () => {
   });
 });
 
+test("ignores non-owner messages before dispatch and accepts the configured owner", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      userOpenId: "ou_owner",
+      respondToOwnerOnly: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_non_owner",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "do not process" }),
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_owner",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "process this" }),
+    },
+    sender: { sender_id: { open_id: "ou_owner" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledOnce());
+  expect(handler.onMessage).toHaveBeenCalledWith(expect.objectContaining({
+    messageId: "om_owner",
+    userId: "ou_owner",
+  }));
+});
+
+test("ignores all Feishu messages when owner-only mode has no configured owner", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToOwnerOnly: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_no_owner",
+      chat_id: "oc_private",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "claim ownership" }),
+    },
+    sender: { sender_id: { open_id: "ou_unknown" } },
+  });
+
+  expect(handler.onMessage).not.toHaveBeenCalled();
+});
+
 test("dispatches Feishu chat name changes", async () => {
   const config = {
     feishu: {
@@ -438,6 +511,47 @@ test("reports the current bot Open ID for the safe Agent environment", async () 
   expect(onBotOpenId).toHaveBeenCalledWith("ou_current_bot");
 });
 
+test("marks current-bot mentions while all group messages remain enabled", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToAllGroupMessages: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(
+    config,
+    handler,
+    logger,
+    async () => "ou_current_bot",
+    vi.fn(),
+  );
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_all_messages_mention",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "@_user_1 /status" }),
+      mentions: [{ key: "@_user_1", id: "ou_current_bot", id_type: "open_id" }],
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledOnce());
+  expect(handler.onMessage).toHaveBeenCalledWith(expect.objectContaining({
+    messageId: "om_all_messages_mention",
+    mentionedBot: true,
+    text: "/status",
+  }));
+});
+
 test("keeps all-group-message startup available when bot Open ID lookup fails", async () => {
   const config = {
     feishu: {
@@ -514,6 +628,7 @@ test("requires a mention of the current bot when all group messages are disabled
   expect(resolveBotOpenId).toHaveBeenCalledWith("cli_app", "secret");
   expect(handler.onMessage).toHaveBeenCalledWith(expect.objectContaining({
     messageId: "om_bot_mention",
+    mentionedBot: true,
     text: "run this",
   }));
 });
@@ -626,6 +741,77 @@ test("dispatches direct Feishu SDK card action events", async () => {
     userId: "ou_1",
     messageId: "om_card_1",
     value: { action: "permission", permissionId: "perm_1", optionId: "allow" },
+  });
+});
+
+test("silently ignores card actions from users other than the configured owner", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      userOpenId: "ou_owner",
+      respondToOwnerOnly: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  const response = await larkSdkMock.handlers["card.action.trigger"]({
+    header: { event_id: "evt_non_owner" },
+    action: { value: { action: "session_switch" } },
+    operator: { open_id: "ou_other" },
+    context: { open_chat_id: "oc_1", open_message_id: "om_1" },
+  });
+
+  expect(response).toEqual({});
+  expect(handler.onCardAction).not.toHaveBeenCalled();
+});
+
+test("dispatches the selected sessions overflow action", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["card.action.trigger"]({
+    header: { event_id: "evt_session_overflow" },
+    action: {
+      tag: "overflow",
+      option: JSON.stringify({
+        action: "session_switch",
+        sessionId: "agent-runtime:codex:thr_1",
+        page: "0",
+      }),
+    },
+    operator: { open_id: "ou_1" },
+    context: {
+      open_chat_id: "oc_1",
+      open_message_id: "om_sessions",
+    },
+  });
+
+  expect(handler.onCardAction).toHaveBeenCalledWith({
+    actionId: "evt_session_overflow",
+    contextKey: "chat_id:oc_1",
+    userId: "ou_1",
+    messageId: "om_sessions",
+    value: {
+      action: "session_switch",
+      sessionId: "agent-runtime:codex:thr_1",
+      page: "0",
+    },
   });
 });
 

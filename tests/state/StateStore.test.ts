@@ -76,6 +76,30 @@ describe("StateStore runtime metadata", () => {
     ]);
   });
 
+  test("persists the group mention requirement across store restarts", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.recordChatContext("chat_id:group", "group");
+    first.setChatRequiresMention("chat_id:group", true);
+    expect(first.chatRequiresMention("chat_id:group")).toBe(true);
+    expect(first.getChatContext("chat_id:group")).toMatchObject({
+      chatType: "group",
+      requiresMention: true,
+    });
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.chatRequiresMention("chat_id:group")).toBe(true);
+    second.setChatRequiresMention("chat_id:group", false);
+    expect(second.chatRequiresMention("chat_id:group")).toBe(false);
+  });
+
   test("adds activity tracking to an existing chat context table", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
@@ -100,7 +124,11 @@ describe("StateStore runtime metadata", () => {
     store.markChatActive("chat_id:private", new Date("2026-07-20T12:00:00.000Z"));
 
     expect(store.listRecentlyActiveChatContexts(new Date("2026-07-20T00:00:00.000Z"))).toMatchObject([
-      { contextKey: "chat_id:private", lastActivityAt: "2026-07-20T12:00:00.000Z" },
+      {
+        contextKey: "chat_id:private",
+        requiresMention: false,
+        lastActivityAt: "2026-07-20T12:00:00.000Z",
+      },
     ]);
   });
 
@@ -625,39 +653,114 @@ describe("StateStore runtime metadata", () => {
     expect(store.findTurnAnchorByMessageId("om_unknown")).toBeUndefined();
   });
 
-  test("reconciles ACP turns left running by a previous process", () => {
+  test("persists unfinished turn attempts and rolls the same attempt forward for recovery", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+    first.createTurnAttempt({
+      attemptId: "attempt_1",
+      localSessionId: "session_1",
+      contextKey: "chat_id:c1:thread_id:t1",
+      promptText: "finish the task",
+      localImagePaths: ["D:\\images\\input.png"],
+      messageId: "om_user",
+      replyMessageId: "om_topic",
+      pendingTurnId: "pending_1",
+      retryCount: 2,
+    });
+    first.updateTurnAttempt("attempt_1", { turnId: "turn_1", pendingTurnId: null, status: "running" });
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.listIncompleteTurnAttempts()).toEqual([
+      expect.objectContaining({
+        attemptId: "attempt_1",
+        promptText: "finish the task",
+        localImagePaths: ["D:\\images\\input.png"],
+        messageId: "om_user",
+        replyMessageId: "om_topic",
+        turnId: "turn_1",
+        retryCount: 2,
+        status: "running",
+      }),
+    ]);
+
+    second.prepareTurnAttemptRecovery("attempt_1", "turn_1");
+    expect(second.getTurnAttempt("attempt_1")).toMatchObject({
+      turnId: undefined,
+      pendingTurnId: undefined,
+      recoveredFromTurnId: "turn_1",
+      recoveryCount: 1,
+      status: "recovering",
+    });
+    second.bindTurnAttempt("session_1", "turn_2");
+    second.markTurnAttemptTerminal("turn_2", "completed");
+    expect(second.listIncompleteTurnAttempts()).toEqual([]);
+    expect(second.getTurnAttempt("attempt_1")).toMatchObject({ turnId: "turn_2", status: "completed" });
+  });
+
+  test("refreshes unfinished turn activity while throttling frequent persistence writes", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
     stores.push(store);
-    store.createSession({
-      localSessionId: "acp_stale",
+    store.createTurnAttempt({
+      attemptId: "attempt_activity",
+      localSessionId: "session_activity",
       contextKey: "chat_id:c1",
-      agentName: "coco-yolo",
-      cwd: process.cwd(),
+      promptText: "long running work",
+      turnId: "turn_activity",
       status: "running",
-    });
-    store.updateRuntimeSession("acp_stale", {
-      runtimeKind: "acp",
-      remoteSessionId: "remote_acp",
-      lastTurnId: "turn_stale",
-      lastTurnStatus: "running",
-    });
-    store.saveTurnSnapshot("turn_stale", "acp_stale", {
-      sessionId: "acp_stale",
-      turnId: "turn_stale",
-      status: "tool_running",
-      startedAt: Date.now() - 1_000,
-      activeTool: { id: "tool", title: "bash", status: "running" },
+      createdAt: "2026-08-08T00:00:00.000Z",
+      updatedAt: "2026-08-08T00:00:00.000Z",
     });
 
-    expect(store.reconcileInterruptedAcpSessions(["coco-yolo"])).toHaveLength(1);
-    expect(store.getSession("acp_stale")).toMatchObject({ status: "failed", lastTurnStatus: "failed" });
-    expect(store.getTurnSnapshot("turn_stale")).toMatchObject({
-      status: "failed",
-      error: "Agent Bot 已重启，原 ACP 进程中的执行无法继续。",
+    store.touchTurnAttempt("turn_activity", new Date("2026-08-08T00:01:00.000Z"));
+    expect(store.getTurnAttempt("attempt_activity")?.updatedAt).toBe("2026-08-08T00:01:00.000Z");
+
+    store.touchTurnAttempt("turn_activity", new Date("2026-08-08T00:01:10.000Z"));
+    expect(store.getTurnAttempt("attempt_activity")?.updatedAt).toBe("2026-08-08T00:01:00.000Z");
+
+    store.touchTurnAttempt("turn_activity", new Date("2026-08-08T00:01:16.000Z"));
+    expect(store.getTurnAttempt("attempt_activity")?.updatedAt).toBe("2026-08-08T00:01:16.000Z");
+  });
+
+  test("persists LLM retry counts and rebinds pending messages to the retry turn", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.createTurnAttempt({
+      attemptId: "attempt_retry",
+      localSessionId: "session_retry",
+      contextKey: "chat_id:c1",
+      promptText: "finish the task",
+      turnId: "turn_1",
+      status: "running",
     });
-    expect(store.getTurnSnapshot("turn_stale")).not.toHaveProperty("activeTool");
+    for (const messageId of ["om_original", "om_steer"]) {
+      store.saveMessageReaction(messageId, "chat_id:c1", `reaction_${messageId}`, "OnIt");
+      store.bindMessageToTurn(messageId, "session_retry", "turn_1");
+      store.bindMessageReaction(messageId, "session_retry", "turn_1");
+    }
+
+    expect(store.prepareTurnAttemptRetry("attempt_retry", "turn_1")).toMatchObject({
+      turnId: undefined,
+      recoveredFromTurnId: "turn_1",
+      retryCount: 1,
+      status: "recovering",
+    });
+    store.bindTurnAttempt("session_retry", "turn_2");
+    store.rebindPendingTurnMessages("session_retry", "turn_1", "turn_2");
+
+    expect(store.getMessageReaction("om_original")).toMatchObject({ turnId: "turn_2", status: "pending" });
+    expect(store.getMessageReaction("om_steer")).toMatchObject({ turnId: "turn_2", status: "pending" });
+    expect(store.findTurnAnchorByMessageId("om_original")).toMatchObject({ turnId: "turn_2" });
+    expect(store.findTurnAnchorByMessageId("om_steer")).toMatchObject({ turnId: "turn_2" });
   });
 
   test("claims an inbound event only once across store restarts", () => {

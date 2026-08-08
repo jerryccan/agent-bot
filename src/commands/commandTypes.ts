@@ -2,6 +2,7 @@ export type Command =
   | { type: "shell"; command: string }
   | { type: "new"; title?: string; cwd?: string; projectless?: boolean }
   | { type: "newgroup"; title?: string; cwd?: string; projectless?: boolean }
+  | { type: "dir"; directory?: string }
   | { type: "forkgroup"; title?: string }
   | { type: "fork"; sessionId?: string }
   | { type: "title"; title: string }
@@ -15,6 +16,7 @@ export type Command =
   | { type: "goal"; action: "set" | "edit"; objective: string }
   | { type: "goal"; action: "pause" | "resume" | "clear" }
   | { type: "restart"; force?: boolean }
+  | { type: "mute"; enabled: boolean }
   | { type: "turns" }
   | { type: "model" }
   | { type: "provider" }

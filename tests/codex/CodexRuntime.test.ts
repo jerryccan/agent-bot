@@ -1348,7 +1348,7 @@ describe("CodexRuntime", () => {
         id: "stale_external",
         status: "not_loaded",
         lastTurnId: "stale_turn",
-        lastTurnStatus: undefined,
+        lastTurnStatus: "interrupted",
       })],
       nextCursor: undefined,
     });

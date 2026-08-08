@@ -118,6 +118,7 @@ describe("initializeAgentBot", () => {
       "feishu:",
       "  appId: \"${FEISHU_APP_ID}\"",
       "  appSecret: \"${FEISHU_APP_SECRET}\"",
+      "  respondToOwnerOnly: true",
       "  respondToAllGroupMessages: true",
       "console:",
       "  enabled: true",
@@ -177,6 +178,7 @@ describe("initializeAgentBot", () => {
     expect(parsed.feishu).toEqual({
       appId: "custom-app",
       appSecret: "${FEISHU_APP_SECRET}",
+      respondToOwnerOnly: true,
       respondToAllGroupMessages: false,
     });
     expect(parsed.console).toEqual({ enabled: true });

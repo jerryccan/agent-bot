@@ -15,7 +15,9 @@ const DEFAULT_CONFIG = `feishu:
   appId: "\${FEISHU_APP_ID}"
   appSecret: "\${FEISHU_APP_SECRET}"
   userOpenId: "\${FEISHU_USER_OPEN_ID}"
+  respondToOwnerOnly: true
   respondToAllGroupMessages: true
+  thinkingCardLayout: "grouped"
 
 console:
   enabled: true
