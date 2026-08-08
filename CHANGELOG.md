@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.14-alpha.1] - 2026-08-08
+
 - Add persistent group-level `/mute [on|off]` control so a muted group and all its topics respond only to messages that @ the current bot, filtering ordinary messages before reactions or other work.
 - Add `feishu.respondToOwnerOnly`, enabled by default, to ignore non-owner Feishu messages and card actions before processing acknowledgements, reactions, downloads, commands, or Agent work.
 - Automatically retry transient LLM turn failures up to three times in the same task, with a fresh thinking card for each retry and persisted retry counts and message-reaction bindings across Worker restarts; permanent request failures remain terminal immediately.
