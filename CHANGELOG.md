@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add persistent group-level `/mute [on|off]` control so a muted group and all its topics respond only to messages that @ the current bot, filtering ordinary messages before reactions or other work.
+- Add `feishu.respondToOwnerOnly`, enabled by default, to ignore non-owner Feishu messages and card actions before processing acknowledgements, reactions, downloads, commands, or Agent work.
+- Automatically retry transient LLM turn failures up to three times in the same task, with a fresh thinking card for each retry and persisted retry counts and message-reaction bindings across Worker restarts; permanent request failures remain terminal immediately.
+- Keep each pending safe-restart card bound to the reason supplied by its own requesting conversation, so a later request from another chat or topic cannot overwrite the earlier card with an unrelated reason.
+- Preserve exact Feishu topic routes and message anchors through Supervisor replacement so the post-restart startup card returns to the triggering topic instead of creating a new root topic in its parent group.
+- Persist every accepted turn before starting Agent work and automatically recover tasks active during the preceding five minutes after every Worker restart, notifying the original private chat, group, or topic and continuing interrupted work with a fresh thinking card while only redelivering turns already completed remotely; older unfinished history is expired instead of resumed.
+- Add a grouped thinking-card layout that keeps Commentary and user steering visible, shows only the latest native reasoning per execution group, defaults execution panels to collapsed while keeping stable component identities for client-side expansion, preserves complete expandable tool results, and paginates long tasks by rendered UTF-8 size and component count instead of fixed activity or tool counts, while retaining the original `timeline` layout as a configuration fallback.
+- Add a `/dir` file-browser card with a stable 16-row file area, Windows drive names and selection, directory navigation, distinct image and binary-file icons, clickable file delivery, and `New` / `NewGroup` actions for creating work in the selected directory.
+- Rename the `/sessions` card to `任务列表`, show five tasks per page, group tasks by project, place project-level `New` / `NewGroup` actions on each project row, and render each task as a compact bordered collapsed row with an action menu that stays well within Feishu's 200-element card limit.
+- Allow standalone Feishu topics, including replies to messages without a persisted turn binding, to show status or start a fresh task instead of failing automatic fork initialization.
+
 ## [0.1.14-alpha.0] - 2026-08-07
 
 - Split table-heavy final answers across multiple Feishu cards so the platform's per-card table limit cannot suppress a completed task result.

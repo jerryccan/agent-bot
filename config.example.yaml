@@ -2,8 +2,12 @@ feishu:
   appId: "${FEISHU_APP_ID}"
   appSecret: "${FEISHU_APP_SECRET}"
   userOpenId: "${FEISHU_USER_OPEN_ID}"
+  # Set to false to accept messages and card actions from users other than the bot owner.
+  respondToOwnerOnly: true
   # Set to false to require an @ mention before processing group messages.
   respondToAllGroupMessages: true
+  # Use "timeline" to temporarily restore the original thinking-card layout.
+  thinkingCardLayout: "grouped"
 
 console:
   enabled: true

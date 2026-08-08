@@ -17,6 +17,7 @@ Agent Bot runs on your computer and connects a Feishu bot to your local coding a
 - Reset the current conversation from any successfully completed progress card
 - Collaborate with text, images, group chats, and topics
 - Queue follow-up Prompts or add instructions while a task is running
+- Automatically retry temporary model-service failures
 - Continue existing work after Agent Bot restarts
 - Run through the local Console UI without Feishu
 
@@ -102,7 +103,7 @@ Safely restart the service:
 agentbot server restart
 ```
 
-It waits for currently running Agent tasks to finish before restarting, allowing every task to complete normally.
+It waits for currently running Agent tasks to finish before restarting, allowing every task to complete normally. When triggered from a Feishu topic, both restart status and the post-restart startup card return to that topic.
 
 ### Update Or Uninstall
 
@@ -182,48 +183,40 @@ agentbot task stop <task>
 
 ## Feishu Commands
 
-Enter a message beginning with `/` directly in the Feishu chat box to run a command.
+Send a message beginning with `/` to run a command. Use `/help` in Feishu for the latest command list.
 
-| Command                                  | Purpose                                     |
-| ---------------------------------------- | ------------------------------------------- |
-| `/new [title] [--dir <path> \| --nodir]` | Create a task                               |
-| `/sessions [keyword]`                    | Browse available App Server tasks           |
-| `/switch [task]`                         | Switch tasks or return to the previous task |
-| `/fork [task]`                           | Create and open a task branch               |
-| `/turns`                                 | Browse historical turns and reset the conversation |
-| `/status [task]`                         | View task progress and results              |
-| `/title <title>`                         | Rename the current task                     |
-| `/stop`                                  | Stop the current execution                  |
-| `/queue <prompt>`                        | Queue a separate follow-up Prompt           |
-| `/nosteer <prompt>`                      | Same as `/queue`                            |
-| `/goal [objective]`                      | View or manage a persistent Goal            |
-| `/provider`                              | Open execution settings on the Provider tab |
-| `/model`                                 | Open execution settings on the Model tab    |
-| `/thinking`                              | Open execution settings on the Thinking tab |
-| `/permissions`                           | Open execution settings on the Permission tab |
-| `/newgroup [title] [--dir <cwd> \| --nodir]` | Create a private group for a new task       |
-| `/forkgroup [title]`                     | Fork the current position into a private group |
-| `/agent [name]`                          | Open Agent settings or select the default Agent |
-| `/restart [--force]`                    | Restart safely, or immediately with `--force` |
-| `/help`                                 | Show in-chat help                           |
+| Command                                       | Purpose                              |
+| --------------------------------------------- | ------------------------------------ |
+| `/new [title] [--dir <path> \| --nodir]`      | Start a new task                     |
+| `/dir [path]`                                 | Browse files or start work in a directory |
+| `/sessions [keyword]`                         | Find and manage tasks                |
+| `/switch [task]`                              | Switch tasks or return to the previous task |
+| `/fork [task]`                                | Branch a task                        |
+| `/turns`                                      | Restore an earlier conversation turn |
+| `/status [task]`                              | View task status                     |
+| `/title <title>`                              | Rename the current task              |
+| `/stop`                                       | Stop the current execution           |
+| `/queue <prompt>`                             | Run a Prompt after the current turn  |
+| `/nosteer <prompt>`                           | Same as `/queue`                     |
+| `/goal [objective]`                           | Manage a long-running objective      |
+| `/provider`                                   | Choose a Provider                    |
+| `/model`                                      | Choose a model                       |
+| `/thinking`                                   | Set reasoning effort                 |
+| `/permissions`                                | Set execution permissions            |
+| `/agent [name]`                               | Choose the Agent for new tasks       |
+| `/newgroup [title] [--dir <path> \| --nodir]` | Start a task in a new private group  |
+| `/forkgroup [title]`                          | Branch a task into a new private group |
+| `/restart [--force]`                          | Restart safely, or interrupt with `--force` |
+| `/mute [on\|off]`                            | Require @ mentions in the current group |
+| `/help`                                       | Show command help                    |
 
-Slash commands accept any unique prefix, and compound commands accept registered initialisms: `/sess` runs `/sessions`, `/fg` runs `/forkgroup`, `/ng` runs `/newgroup`, and `/ns` runs `/nosteer`. Exact command names take priority. An ambiguous prefix such as `/s` or `/f` is rejected and lists every matching command.
+Private chats, group timelines, and topics keep separate current tasks. Ordinary messages sent while a task is running add instructions to that turn; use `/queue` when the message should run afterward as a separate turn.
 
-Private chats, group timelines, and topics maintain separate current tasks. You can send an image by itself or together with text. While a task is running, plain text adds instructions; use `/queue` (or `/nosteer`) when you need to guarantee a later turn.
+In a group, `/mute` and `/mute on` make the bot process only messages that mention it. Mention the bot and send `/mute off` to restore automatic responses. The setting applies to every topic in that group.
 
-The `/sessions` card shows five tasks per page and uses `Previous` and `Next` to update the card in place. Each task provides `NewGroup` and `ForkGroup` actions, so you can create a same-project group or fork the selected task directly into a new group.
+`/new` and `/newgroup` inherit the current Agent, project, and execution settings. Use `--dir` to choose another directory or `--nodir` to start without a project directory; `~` represents your home directory.
 
-`/turns` opens the current task's completed-turn history, with 10 turns per page. Each turn has its own numbered node and indented content. Graph lanes follow the actual parent turns, preserve Reset branches and merges across pages, and do not connect turns merely because their completion times are adjacent. The active conversation point is marked `Current`; every other entry has a `Reset` button that restores the conversation context to that completed turn and moves the marker there without reverting local files. The success notice shows the selected Prompt summary, completion time, and Turn ID. Turns completed after the selected point remain in history, and turns created on the new branch after Reset are shown as well. Reset is unavailable while the task is running.
-
-Inside a topic, `/forkgroup` forks from the topic's original turn until the topic task has completed a turn of its own. After that, it forks from the topic task's latest completed turn. A running turn is never used as a fork point.
-
-After `/forkgroup` creates a new group, its welcome message shows the forked task's current Provider, model, reasoning effort, and permission type.
-
-`/new` and `/newgroup` support the same project options. Use `--dir <cwd>` to override the inherited project directory, or `--nodir` to force a Projectless App Server task; the two options cannot be combined. In both commands, `~`, `~/...`, and `~\...` represent the current user's home directory. `/newgroup` immediately creates and binds the task in the new group while continuing to inherit the current task's Provider, model, reasoning effort, and permission mode without affecting the source task. If the source chat has no current task, Agent Bot uses the selected Agent and its Runtime defaults. An explicit title becomes both the group-name suffix and the task title.
-
-When `/newgroup` omits the title, the task title and the title portion of the group name both use `新任务 (mm-dd)`, producing `[agent] [project dir] 新任务 (mm-dd)`. Projectless groups omit the project segment entirely and use `[agent] title`. When `/forkgroup` omits the title, its task and group name use the same persistent `source title（分支 N）` sequence as `/fork`, without a date suffix. Feishu group names created by `/newgroup` and `/forkgroup` display at most 60 characters. If the generated name is too long, Agent Bot truncates only the title portion of the group name; the task title itself remains unchanged.
-
-Renaming a bound group to `[agent] [project dir] title` synchronizes only `title` to the current task. The Agent and project-directory prefixes remain group metadata and are never included in the task title. The older `[agent] title` format remains supported.
+`/fork` and `/forkgroup` branch from completed work without interrupting a running turn. `/sessions` manages tasks across projects, while `/turns` restores conversation context without reverting local files.
 
 ## Local Commands
 
@@ -246,7 +239,11 @@ Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yam
 
 Agent processes inherit ordinary parent-process variables and their explicit `agents.<name>.env` settings. Before starting an Agent, Agent Bot removes inherited `FEISHU_*` credentials and internal `AGENT_BOT_*` state, then provides only namespaced, non-secret Profile and Lark identity context. `FEISHU_APP_SECRET` is never forwarded to an Agent process.
 
-By default, Agent Bot responds to ordinary messages in groups containing the bot. Set `feishu.respondToAllGroupMessages` to `false` to require users to @ the bot in groups; private chats are unchanged. Initialization still requests the complete group-message permission set so changing this option later does not require another authorization.
+By default, `feishu.respondToOwnerOnly: true` accepts only messages and card actions from the bot owner identified by `feishu.userOpenId`; other users are ignored before any processing reaction is added. Set it to `false` to allow collaborators. When enabled without an owner Open ID, all Feishu user input is ignored until the owner is configured.
+
+Agent Bot responds to ordinary owner messages in groups containing the bot. Set `feishu.respondToAllGroupMessages` to `false` to additionally require the owner to @ the bot in groups; private chats are unchanged. Initialization still requests the complete group-message permission set so changing this option later does not require another authorization.
+
+Thinking cards use the grouped layout by default: auxiliary Commentary and user steering remain visible, while each execution group shows only its latest native reasoning and expands to reveal complete tool commands and results. Execution groups start collapsed and keep stable component identities so a group manually opened in Feishu stays open across card updates. On long turns, pagination measures the fully rendered card content instead of using fixed message or tool counts. Set `feishu.thinkingCardLayout` to `timeline` to temporarily restore the original layout.
 
 ## Troubleshooting
 
