@@ -3778,6 +3778,7 @@ describe("ProxySessionController", () => {
 
   test("groups compact session rows by project directory", async () => {
     const { controller, remoteSessions, outbound } = fixture();
+    vi.spyOn(os, "homedir").mockReturnValue("/home/runner");
     remoteSessions.push(
       {
         id: "same_new",

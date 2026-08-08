@@ -4849,7 +4849,7 @@ function taskProjectInfo(entry: UnifiedTaskListEntry): TaskProjectInfo {
   if (detectProjectlessWorkspace(entry.cwd)) {
     return { key: "projectless", title: "🗒️ 未指定项目" };
   }
-  const windowsPath = /^[a-z]:[\\/]|^\\\\/iu.test(entry.cwd);
+  const windowsPath = isWindowsAbsolutePath(entry.cwd);
   const normalized = windowsPath
     ? path.win32.normalize(entry.cwd).toLowerCase()
     : path.resolve(entry.cwd);
@@ -5506,10 +5506,19 @@ function formatGroupProjectDirectory(projectCwd: string): string {
 }
 
 function abbreviateHomeDirectory(value: string): string {
-  const relative = path.relative(os.homedir(), value);
+  const homeDirectory = os.homedir();
+  const valueIsWindows = isWindowsAbsolutePath(value);
+  const homeIsWindows = isWindowsAbsolutePath(homeDirectory);
+  if (valueIsWindows !== homeIsWindows && (valueIsWindows || path.posix.isAbsolute(value))) return value;
+  const pathApi = valueIsWindows ? path.win32 : path;
+  const relative = pathApi.relative(homeDirectory, value);
   if (relative === "") return "~";
-  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) return value;
-  return `~${path.sep}${relative}`;
+  if (pathApi.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${pathApi.sep}`)) return value;
+  return `~${pathApi.sep}${relative}`;
+}
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[a-z]:[\\/]|^\\\\/iu.test(value);
 }
 
 function fitTrailingPathLevels(levels: string[], maxLength: number, separator: string): string {
