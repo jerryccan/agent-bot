@@ -4,6 +4,7 @@ import { CardRenderer } from "../feishu/CardRenderer.js";
 import { baseChatContextKey, isThreadContextKey } from "../feishu/contextKey.js";
 import type { FeishuOutbound } from "../feishu/types.js";
 import type { SessionRecord, StateStore, UserContextRecord } from "../state/StateStore.js";
+import type { RestartNotificationTarget } from "../supervision/SafeRestartScheduler.js";
 
 export interface StartupNotificationOptions {
   agentBotVersion: string;
@@ -20,6 +21,7 @@ export interface StartupTaskMetadataHydrator {
 
 interface StartupNotificationTarget {
   contextKey: string;
+  replyMessageId?: string;
   context?: UserContextRecord;
 }
 
@@ -36,7 +38,7 @@ export class StartupNotifier {
   async notify(
     startedAt: Date,
     restartReason: string,
-    restartGroupContextKeys: string[] = [],
+    restartTargets: RestartNotificationTarget[] = [],
   ): Promise<void> {
     let targets: StartupNotificationTarget[];
     try {
@@ -46,21 +48,58 @@ export class StartupNotifier {
           .filter((chat) => !isThreadContextKey(chat.contextKey))
           .map((chat) => [chat.contextKey, chat]),
       );
-      const targetGroups = new Map(
-        this.store.listRecentlyActiveChatContexts(activeGroupSince)
-          .filter((chat) => chat.chatType === "group" && !isThreadContextKey(chat.contextKey))
-          .map((chat) => [chat.contextKey, chat]),
-      );
-      for (const contextKey of restartGroupContextKeys) {
-        const baseContextKey = baseChatContextKey(contextKey.trim());
-        const group = knownGroups.get(baseContextKey);
-        if (group) targetGroups.set(baseContextKey, group);
+      const targetsByContext = new Map<string, StartupNotificationTarget>();
+      for (const chat of this.store.listChatContexts("p2p")) {
+        targetsByContext.set(chat.contextKey, {
+          contextKey: chat.contextKey,
+          context: this.store.getUserContext(chat.contextKey),
+        });
       }
-      const chats = [...this.store.listChatContexts("p2p"), ...targetGroups.values()];
-      targets = chats.map((chat) => ({
-        contextKey: chat.contextKey,
-        context: this.store.getUserContext(chat.contextKey),
-      }));
+      const recentGroups = this.store.listRecentlyActiveChatContexts(activeGroupSince)
+        .filter((chat) => chat.chatType === "group" && !isThreadContextKey(chat.contextKey));
+      for (const chat of recentGroups) {
+        targetsByContext.set(chat.contextKey, {
+          contextKey: chat.contextKey,
+          context: this.store.getUserContext(chat.contextKey),
+        });
+      }
+      const explicitBaseContextKeys = new Set(restartTargets
+        .map((target) => target.contextKey.trim())
+        .filter((contextKey) => contextKey && !isThreadContextKey(contextKey)));
+      for (const target of restartTargets) {
+        const contextKey = target.contextKey.trim();
+        if (!contextKey) continue;
+        if (isThreadContextKey(contextKey)) {
+          const baseContextKey = baseChatContextKey(contextKey);
+          if (!knownGroups.has(baseContextKey)) continue;
+          const replyMessageId = target.replyMessageId?.trim();
+          if (replyMessageId) {
+            if (!explicitBaseContextKeys.has(baseContextKey)) {
+              targetsByContext.delete(baseContextKey);
+            }
+            targetsByContext.set(contextKey, {
+              contextKey,
+              replyMessageId,
+              context: this.store.getUserContext(contextKey),
+            });
+          } else {
+            const group = knownGroups.get(baseContextKey)!;
+            targetsByContext.set(baseContextKey, {
+              contextKey: baseContextKey,
+              context: this.store.getUserContext(baseContextKey),
+            });
+          }
+          continue;
+        }
+        const group = knownGroups.get(contextKey);
+        if (group) {
+          targetsByContext.set(contextKey, {
+            contextKey,
+            context: this.store.getUserContext(contextKey),
+          });
+        }
+      }
+      targets = [...targetsByContext.values()];
     } catch (error) {
       this.logger.warn({ error }, "Failed to load startup notification targets.");
       throw new Error("Failed to load startup notification targets.", { cause: error });
@@ -72,7 +111,7 @@ export class StartupNotifier {
       targets = [{ contextKey: `open_id:${defaultUserOpenId}` }];
     }
 
-    const deliveries = await Promise.all(targets.map(async ({ contextKey, context }) => {
+    const deliveries = await Promise.all(targets.map(async ({ contextKey, replyMessageId, context }) => {
       let session = context?.currentSessionId ? this.store.getSession(context.currentSessionId) : undefined;
       if (session && this.metadataHydrator) {
         try {
@@ -111,7 +150,18 @@ export class StartupNotifier {
           : undefined,
       });
       try {
-        await this.outbound.sendInteractiveCard(contextKey, card);
+        if (replyMessageId) {
+          if (!this.outbound.replyInteractiveCard) {
+            throw new Error("The outbound transport cannot preserve the safe-restart topic.");
+          }
+          await this.outbound.replyInteractiveCard(
+            contextKey,
+            { messageId: replyMessageId, replyInThread: true },
+            card,
+          );
+        } else {
+          await this.outbound.sendInteractiveCard(contextKey, card);
+        }
         return true;
       } catch (error) {
         this.logger.warn(

@@ -34,7 +34,7 @@ describe("SafeRestartScheduler", () => {
     expect(scheduler.scheduled).toBe(false);
   });
 
-  test("keeps the latest reason and collects every requesting conversation", async () => {
+  test("keeps the latest global reason and each requesting conversation's own reason", async () => {
     vi.useFakeTimers();
     const onReady = vi.fn();
     const scheduler = new SafeRestartScheduler({
@@ -66,10 +66,12 @@ describe("SafeRestartScheduler", () => {
       {
         contextKey: "chat_id:first:thread_id:topic",
         replyMessageId: "om_newer_anchor",
+        reason: "third",
       },
       {
         contextKey: "chat_id:second",
         replyMessageId: "om_second",
+        reason: "second",
       },
     ]);
     expect(scheduler.scheduled).toBe(false);

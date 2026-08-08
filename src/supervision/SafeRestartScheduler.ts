@@ -14,6 +14,7 @@ export type SafeRestartPhase =
 export interface RestartNotificationTarget {
   contextKey: string;
   replyMessageId?: string;
+  reason?: string;
 }
 
 export interface SafeRestartStatus {
@@ -60,7 +61,7 @@ export class SafeRestartScheduler {
       this.scheduleId += 1;
       this.notificationTargets = [];
     }
-    this.addNotificationTarget(notificationTarget);
+    this.addNotificationTarget(notificationTarget, reason);
     this.reason = reason;
     this.idleSince = undefined;
     this.idleInboundAt = undefined;
@@ -215,8 +216,8 @@ export class SafeRestartScheduler {
     });
   }
 
-  private addNotificationTarget(value: RestartNotificationTarget | undefined): void {
-    const target = normalizedNotificationTarget(value);
+  private addNotificationTarget(value: RestartNotificationTarget | undefined, reason: string): void {
+    const target = normalizedNotificationTarget(value, reason);
     if (!target) return;
     const existingIndex = this.notificationTargets.findIndex(
       (candidate) => candidate.contextKey === target.contextKey,
@@ -226,9 +227,13 @@ export class SafeRestartScheduler {
       return;
     }
     const existing = this.notificationTargets[existingIndex]!;
-    if (!existing.replyMessageId && target.replyMessageId) {
-      this.notificationTargets[existingIndex] = target;
-    }
+    this.notificationTargets[existingIndex] = {
+      ...existing,
+      reason: target.reason,
+      ...(!existing.replyMessageId && target.replyMessageId
+        ? { replyMessageId: target.replyMessageId }
+        : {}),
+    };
   }
 
   private notificationTargetsSnapshot(): RestartNotificationTarget[] {
@@ -238,6 +243,7 @@ export class SafeRestartScheduler {
 
 function normalizedNotificationTarget(
   value: RestartNotificationTarget | undefined,
+  reason: string,
 ): RestartNotificationTarget | undefined {
   const contextKey = value?.contextKey.trim();
   if (!contextKey) return undefined;
@@ -245,5 +251,6 @@ function normalizedNotificationTarget(
   return {
     contextKey,
     ...(replyMessageId ? { replyMessageId } : {}),
+    reason,
   };
 }

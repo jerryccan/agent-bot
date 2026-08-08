@@ -182,6 +182,74 @@ describe("SafeRestartNotifier", () => {
     expect(updateInteractiveCard).toHaveBeenCalledWith("om_group_restart", expect.any(Object));
   });
 
+  test("keeps restart reasons scoped to the conversation that requested them", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-reasons-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    const sendInteractiveCard = vi.fn(async (
+      contextKey: string,
+      _card: Record<string, unknown>,
+    ) => `om_${contextKey}`);
+    const updateInteractiveCard = vi.fn(async (
+      _messageId: string,
+      _card: Record<string, unknown>,
+    ) => undefined);
+    const notifier = new SafeRestartNotifier(
+      store,
+      {
+        sendText: vi.fn(async () => "text"),
+        sendMarkdown: vi.fn(async () => "markdown"),
+        sendInteractiveCard,
+        updateInteractiveCard,
+      },
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "first reason",
+      notificationTargets: [{ contextKey: "chat_id:first", reason: "first reason" }],
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+    await notifier.update({
+      scheduleId: 1,
+      reason: "second reason",
+      notificationTargets: [
+        { contextKey: "chat_id:first", reason: "first reason" },
+        { contextKey: "chat_id:second", reason: "second reason" },
+      ],
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    expect(sendInteractiveCard).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[0]?.[1])).toContain("first reason");
+    expect(JSON.stringify(sendInteractiveCard.mock.calls[1]?.[1])).toContain("second reason");
+    expect(updateInteractiveCard).not.toHaveBeenCalled();
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "updated first reason",
+      notificationTargets: [
+        { contextKey: "chat_id:first", reason: "updated first reason" },
+        { contextKey: "chat_id:second", reason: "second reason" },
+      ],
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    expect(updateInteractiveCard).toHaveBeenCalledOnce();
+    expect(updateInteractiveCard).toHaveBeenCalledWith(
+      "om_chat_id:first",
+      expect.any(Object),
+    );
+    expect(JSON.stringify(updateInteractiveCard.mock.calls[0]?.[1])).toContain("updated first reason");
+  });
+
   test("sends and updates one card only for an explicit requesting chat", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-notifier-"));
     directories.push(directory);

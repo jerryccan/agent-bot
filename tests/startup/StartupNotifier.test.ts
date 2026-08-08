@@ -23,11 +23,15 @@ function createStore(): StateStore {
   return store;
 }
 
-function createOutbound(sendInteractiveCard: FeishuOutbound["sendInteractiveCard"]): FeishuOutbound {
+function createOutbound(
+  sendInteractiveCard: FeishuOutbound["sendInteractiveCard"],
+  replyInteractiveCard?: FeishuOutbound["replyInteractiveCard"],
+): FeishuOutbound {
   return {
     sendText: vi.fn(async () => "text"),
     sendMarkdown: vi.fn(async () => "markdown"),
     sendInteractiveCard,
+    ...(replyInteractiveCard ? { replyInteractiveCard } : {}),
     updateInteractiveCard: vi.fn(async () => undefined),
   };
 }
@@ -66,7 +70,7 @@ describe("StartupNotifier", () => {
     markActive(store, "chat_id:boundary-group", "group", "2026-07-15T05:44:00.000Z");
     markActive(store, "chat_id:stale-group", "group", "2026-07-15T05:43:59.999Z");
     markActive(store, "chat_id:scheduled-group", "group", "2026-07-15T05:00:00.000Z");
-    markActive(store, "chat_id:topic-parent", "group", "2026-07-15T05:00:00.000Z");
+    markActive(store, "chat_id:topic-parent", "group", "2026-07-15T05:44:59.000Z");
     markActive(store, "chat_id:group:thread_id:topic", "group", "2026-07-15T05:44:59.000Z");
     store.createSession({
       localSessionId: "sess_1",
@@ -86,24 +90,43 @@ describe("StartupNotifier", () => {
     });
     store.setCurrentSession("chat_id:private", "sess_1");
     const sendInteractiveCard = vi.fn(async (_contextKey: string, _card: Record<string, unknown>) => "om_startup");
+    const replyInteractiveCard = vi.fn(async () => "om_topic_startup");
     const logger = { warn: vi.fn() };
-    const notifier = new StartupNotifier(store, createOutbound(sendInteractiveCard), new CardRenderer(), logger, options);
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard, replyInteractiveCard),
+      new CardRenderer(),
+      logger,
+      options,
+    );
 
     await notifier.notify(
       new Date("2026-07-15T05:45:00.000Z"),
       "用户执行 /restart 命令",
-      ["chat_id:scheduled-group", "chat_id:topic-parent:thread_id:topic"],
+      [
+        { contextKey: "chat_id:scheduled-group" },
+        {
+          contextKey: "chat_id:topic-parent:thread_id:topic",
+          replyMessageId: "om_topic_request",
+        },
+      ],
     );
 
-    expect(sendInteractiveCard).toHaveBeenCalledTimes(5);
+    expect(sendInteractiveCard).toHaveBeenCalledTimes(4);
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:private", expect.any(Object));
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:recent-group", expect.any(Object));
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:boundary-group", expect.any(Object));
     expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:stale-group", expect.any(Object));
     expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:scheduled-group", expect.any(Object));
-    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:topic-parent", expect.any(Object));
+    expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:topic-parent", expect.any(Object));
     expect(sendInteractiveCard).not.toHaveBeenCalledWith(
       "chat_id:topic-parent:thread_id:topic",
+      expect.any(Object),
+    );
+    expect(replyInteractiveCard).toHaveBeenCalledOnce();
+    expect(replyInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:topic-parent:thread_id:topic",
+      { messageId: "om_topic_request", replyInThread: true },
       expect.any(Object),
     );
     expect(sendInteractiveCard).not.toHaveBeenCalledWith("chat_id:group:thread_id:topic", expect.any(Object));
@@ -123,6 +146,38 @@ describe("StartupNotifier", () => {
     expect(JSON.stringify(privateCard)).toContain("用户执行 /restart 命令");
     expect(JSON.stringify(privateCard)).toContain("D:\\\\dev\\\\session-project");
     expect(JSON.stringify(privateCard)).not.toContain("未指定项目");
+  });
+
+  test("keeps a parent-group startup card when the parent also requested the restart", async () => {
+    const store = createStore();
+    markActive(store, "chat_id:parent", "group", "2026-07-15T05:44:59.000Z");
+    store.getOrCreateUserContext("chat_id:parent", "codex");
+    store.getOrCreateUserContext("chat_id:parent:thread_id:topic", "codex");
+    const sendInteractiveCard = vi.fn(async () => "om_group_startup");
+    const replyInteractiveCard = vi.fn(async () => "om_topic_startup");
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard, replyInteractiveCard),
+      new CardRenderer(),
+      { warn: vi.fn() },
+      options,
+    );
+
+    await notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "two requesters",
+      [
+        { contextKey: "chat_id:parent" },
+        {
+          contextKey: "chat_id:parent:thread_id:topic",
+          replyMessageId: "om_topic_request",
+        },
+      ],
+    );
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:parent", expect.any(Object));
+    expect(replyInteractiveCard).toHaveBeenCalledOnce();
   });
 
   test("renders a current projectless task from the session workspace instead of the global default", async () => {

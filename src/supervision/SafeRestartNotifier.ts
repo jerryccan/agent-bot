@@ -109,17 +109,16 @@ export class SafeRestartNotifier {
           id: session.remoteSessionId ?? session.localSessionId,
           title: session.title,
         }));
-    const card = this.renderer.renderSafeRestartStatus({
-      scheduleId: status.scheduleId,
-      reason: status.reason,
-      phase: status.phase,
-      remainingMs: status.remainingMs,
-      pendingFinalDeliveries: status.activity.pendingFinalDeliveries,
-      waitingTasks,
-    });
-    const cardHash = JSON.stringify(card);
-
-    await Promise.all(targets.map(async ({ contextKey, replyMessageId }) => {
+    await Promise.all(targets.map(async ({ contextKey, replyMessageId, reason }) => {
+      const card = this.renderer.renderSafeRestartStatus({
+        scheduleId: status.scheduleId,
+        reason: reason ?? status.reason,
+        phase: status.phase,
+        remainingMs: status.remainingMs,
+        pendingFinalDeliveries: status.activity.pendingFinalDeliveries,
+        waitingTasks,
+      });
+      const cardHash = JSON.stringify(card);
       const messageId = this.messageIds.get(contextKey);
       if (messageId) {
         if (this.cardHashes.get(contextKey) === cardHash) return;
@@ -165,12 +164,13 @@ export class SafeRestartNotifier {
       const contextKey = target.contextKey.trim();
       if (!contextKey) continue;
       const existing = this.notificationTargets.get(contextKey);
-      if (!existing || (!existing.replyMessageId && target.replyMessageId)) {
-        this.notificationTargets.set(contextKey, {
-          contextKey,
-          ...(target.replyMessageId?.trim() ? { replyMessageId: target.replyMessageId.trim() } : {}),
-        });
-      }
+      const replyMessageId = existing?.replyMessageId ?? target.replyMessageId?.trim();
+      const reason = target.reason?.trim() ?? existing?.reason;
+      this.notificationTargets.set(contextKey, {
+        contextKey,
+        ...(replyMessageId ? { replyMessageId } : {}),
+        ...(reason ? { reason } : {}),
+      });
     }
   }
 }

@@ -16,8 +16,11 @@ import { SupervisorDiagnostics, nodeDiagnosticReportArguments } from "./supervis
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 import {
   RESTART_GROUP_CONTEXTS_ENV,
+  RESTART_NOTIFICATION_TARGETS_ENV,
   restartGroupContextKeysFromEnvironment,
+  restartNotificationTargetsFromEnvironment,
 } from "./supervision/replacementSupervisor.js";
+import type { RestartNotificationTarget } from "./supervision/SafeRestartScheduler.js";
 
 const childEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const config = loadConfig();
@@ -28,12 +31,14 @@ const diagnostics = new SupervisorDiagnostics(config);
 diagnostics.initialize();
 let child: ChildProcess | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
-let restartGroupContextExpiryTimer: NodeJS.Timeout | undefined;
+let restartNotificationTargetExpiryTimer: NodeJS.Timeout | undefined;
 let stopping = false;
 let consecutiveFailures = 0;
 let nextStartReason = process.env.AGENT_BOT_RESTART_REASON?.trim() || "Supervisor 启动";
-let nextRestartGroupContextKeys = restartGroupContextKeysFromEnvironment(
-  process.env[RESTART_GROUP_CONTEXTS_ENV],
+let nextRestartNotificationTargets = mergeRestartNotificationTargets(
+  restartNotificationTargetsFromEnvironment(process.env[RESTART_NOTIFICATION_TARGETS_ENV]),
+  restartGroupContextKeysFromEnvironment(process.env[RESTART_GROUP_CONTEXTS_ENV])
+    .map((contextKey) => ({ contextKey })),
 );
 
 async function startChild(): Promise<void> {
@@ -45,7 +50,7 @@ async function startChild(): Promise<void> {
   }
   const startedAt = Date.now();
   const restartReason = nextStartReason;
-  const restartGroupContextKeys = nextRestartGroupContextKeys;
+  const restartNotificationTargets = nextRestartNotificationTargets;
   nextStartReason = "Supervisor 重新拉起进程";
   const workerStderr = diagnostics.openWorkerStderr();
   const environmentRefresh = refreshedSystemEnvironment();
@@ -64,7 +69,7 @@ async function startChild(): Promise<void> {
         ...environmentRefresh.environment,
         AGENT_BOT_SUPERVISED: "1",
         AGENT_BOT_RESTART_REASON: restartReason,
-      }, restartGroupContextKeys),
+      }, restartNotificationTargets),
       stdio: ["ignore", "ignore", workerStderr],
       windowsHide: true,
     });
@@ -75,7 +80,7 @@ async function startChild(): Promise<void> {
   writeSupervisorLog("started", {
     pid: child.pid,
     restartReason,
-    restartGroupContextKeys,
+    restartNotificationTargets,
     workerStderrPath: diagnostics.paths.workerStderrPath,
     crashReportDirectory: diagnostics.paths.crashReportDirectory,
   });
@@ -86,25 +91,26 @@ async function startChild(): Promise<void> {
   child.once("exit", (code, signal) => {
     void handleChildExit(code, signal, startedAt, workerPid);
   });
-  if (restartGroupContextKeys.length > 0) {
-    if (restartGroupContextExpiryTimer) clearTimeout(restartGroupContextExpiryTimer);
-    restartGroupContextExpiryTimer = setTimeout(() => {
-      nextRestartGroupContextKeys = [];
-      restartGroupContextExpiryTimer = undefined;
+  if (restartNotificationTargets.length > 0) {
+    if (restartNotificationTargetExpiryTimer) clearTimeout(restartNotificationTargetExpiryTimer);
+    restartNotificationTargetExpiryTimer = setTimeout(() => {
+      nextRestartNotificationTargets = [];
+      restartNotificationTargetExpiryTimer = undefined;
     }, STABLE_UPTIME_MS);
   }
 }
 
 function workerEnvironment(
   environment: NodeJS.ProcessEnv,
-  restartGroupContextKeys: readonly string[],
+  restartNotificationTargets: readonly RestartNotificationTarget[],
 ): NodeJS.ProcessEnv {
   const result = { ...environment };
-  if (restartGroupContextKeys.length > 0) {
-    result[RESTART_GROUP_CONTEXTS_ENV] = JSON.stringify(restartGroupContextKeys);
+  if (restartNotificationTargets.length > 0) {
+    result[RESTART_NOTIFICATION_TARGETS_ENV] = JSON.stringify(restartNotificationTargets);
   } else {
-    delete result[RESTART_GROUP_CONTEXTS_ENV];
+    delete result[RESTART_NOTIFICATION_TARGETS_ENV];
   }
+  delete result[RESTART_GROUP_CONTEXTS_ENV];
   return result;
 }
 
@@ -164,7 +170,7 @@ function stop(signal: NodeJS.Signals): void {
   if (stopping) return;
   stopping = true;
   if (restartTimer) clearTimeout(restartTimer);
-  if (restartGroupContextExpiryTimer) clearTimeout(restartGroupContextExpiryTimer);
+  if (restartNotificationTargetExpiryTimer) clearTimeout(restartNotificationTargetExpiryTimer);
   if (child && !child.killed) {
     child.kill(signal);
     return;
@@ -174,6 +180,19 @@ function stop(signal: NodeJS.Signals): void {
 
 function writeSupervisorLog(event: string, data: Record<string, unknown>): void {
   diagnostics.writeEvent(event, data);
+}
+
+function mergeRestartNotificationTargets(
+  ...targetGroups: RestartNotificationTarget[][]
+): RestartNotificationTarget[] {
+  const targets = new Map<string, RestartNotificationTarget>();
+  for (const target of targetGroups.flat()) {
+    const existing = targets.get(target.contextKey);
+    if (!existing || (!existing.replyMessageId && target.replyMessageId)) {
+      targets.set(target.contextKey, { ...target });
+    }
+  }
+  return [...targets.values()];
 }
 
 process.on("SIGINT", () => stop("SIGINT"));

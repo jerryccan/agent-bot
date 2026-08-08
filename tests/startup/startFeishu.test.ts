@@ -9,10 +9,10 @@ describe("startFeishu", () => {
     await startFeishu(
       { start: async () => { order.push("connector"); } },
       {
-        notify: async (received, reason, restartGroupContextKeys) => {
+        notify: async (received, reason, restartTargets) => {
           expect(received).toBe(startedAt);
           expect(reason).toBe("test restart");
-          expect(restartGroupContextKeys).toEqual(["chat_id:scheduled"]);
+          expect(restartTargets).toEqual([{ contextKey: "chat_id:scheduled" }]);
           order.push("notification");
         },
       },
@@ -20,7 +20,7 @@ describe("startFeishu", () => {
       "test restart",
       async () => { order.push("control"); },
       () => { order.push("ready"); },
-      ["chat_id:scheduled"],
+      [{ contextKey: "chat_id:scheduled" }],
     );
 
     expect(order).toEqual(["control", "connector", "notification", "ready"]);

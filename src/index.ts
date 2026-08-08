@@ -19,7 +19,7 @@ import { ConsoleFeishuClient } from "./feishu/ConsoleFeishuClient.js";
 import { FeishuConnector } from "./feishu/FeishuConnector.js";
 import { FeishuMessageClient } from "./feishu/FeishuMessageClient.js";
 import { FeishuTurnPresenter } from "./feishu/FeishuTurnPresenter.js";
-import { baseChatContextKey, isThreadContextKey } from "./feishu/contextKey.js";
+import { isThreadContextKey } from "./feishu/contextKey.js";
 import type { MessageReplyTarget } from "./feishu/types.js";
 import { requireServerFeishuTransport } from "./feishu/transport.js";
 import { createLogger } from "./logging/logger.js";
@@ -34,8 +34,10 @@ import { startFeishu } from "./startup/startFeishu.js";
 import { STOP_EXIT_CODE } from "./supervision/restartPolicy.js";
 import {
   RESTART_GROUP_CONTEXTS_ENV,
+  RESTART_NOTIFICATION_TARGETS_ENV,
   replacementSupervisorEnvironment,
   restartGroupContextKeysFromEnvironment,
+  restartNotificationTargetsFromEnvironment,
 } from "./supervision/replacementSupervisor.js";
 import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import type { RestartNotificationTarget } from "./supervision/SafeRestartScheduler.js";
@@ -52,8 +54,10 @@ const agentBotVersion = readPackageVersion();
 const supervised = process.env.AGENT_BOT_SUPERVISED === "1";
 const startupReason = process.env.AGENT_BOT_RESTART_REASON?.trim()
   || (supervised ? "Supervisor 启动" : "直接启动");
-const restartGroupContextKeys = restartGroupContextKeysFromEnvironment(
-  process.env[RESTART_GROUP_CONTEXTS_ENV],
+const restartNotificationTargets = mergeRestartNotificationTargets(
+  restartNotificationTargetsFromEnvironment(process.env[RESTART_NOTIFICATION_TARGETS_ENV]),
+  restartGroupContextKeysFromEnvironment(process.env[RESTART_GROUP_CONTEXTS_ENV])
+    .map((contextKey) => ({ contextKey })),
 );
 const consoleOnly = process.env.AGENT_BOT_CONSOLE_ONLY === "1";
 const config = loadConfig();
@@ -80,7 +84,7 @@ let serverReady = false;
 
 const feishuOutbound = transport === "sdk" ? new FeishuMessageClient(config, logger) : undefined;
 if (feishuOutbound) {
-  const renderer = new CardRenderer();
+  const renderer = new CardRenderer({ thinkingCardLayout: config.feishu.thinkingCardLayout });
   const presenter = new FeishuTurnPresenter(feishuOutbound, store, renderer, {
     normalIntervalMs: 2_000,
     criticalGapMs: 500,
@@ -170,13 +174,16 @@ if (feishuConnector && startupNotifier) {
     startupReason,
     startControlServer,
     () => { serverReady = true; },
-    restartGroupContextKeys,
+    restartNotificationTargets,
   );
 } else {
   await startControlServer();
   await feishuConnector?.start();
   serverReady = true;
 }
+await controller.recoverInterruptedTasks().catch((error: unknown) => {
+  logger.error({ error }, "Startup task recovery failed; the server will remain available.");
+});
 consoleConnector?.start();
 
 async function requestRestart(
@@ -222,7 +229,6 @@ async function initiateRestart(
     notificationTargets,
     safeRestartNotifier?.getNotificationTargets() ?? [],
   );
-  const restartGroupContextKeys = groupContextKeysForRestartTargets(allNotificationTargets);
   await sendRestartTexts(
     allNotificationTargets,
     "Agent Bot 正在重启，恢复在线后会发送启动状态通知。",
@@ -230,7 +236,7 @@ async function initiateRestart(
   setTimeout(() => void shutdown(
     supervised ? STOP_EXIT_CODE : 0,
     reason,
-    restartGroupContextKeys,
+    allNotificationTargets,
   ), 100);
 }
 
@@ -317,7 +323,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
 async function shutdown(
   exitCode: number,
   restartReason?: string,
-  restartGroupContextKeys: string[] = [],
+  restartNotificationTargets: RestartNotificationTarget[] = [],
 ): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -333,11 +339,14 @@ async function shutdown(
   runtimes.close();
   await controlServer?.close().catch((error: unknown) => logger.warn({ error }, "Failed to close local control endpoint."));
   store.close();
-  if (restartReason) startReplacementSupervisor(restartReason, restartGroupContextKeys);
+  if (restartReason) startReplacementSupervisor(restartReason, restartNotificationTargets);
   process.exit(exitCode);
 }
 
-function startReplacementSupervisor(restartReason: string, restartGroupContextKeys: string[]): void {
+function startReplacementSupervisor(
+  restartReason: string,
+  restartNotificationTargets: RestartNotificationTarget[],
+): void {
   const supervisorEntry = fileURLToPath(new URL("./supervisor.js", import.meta.url));
   const reportDirectory = resolveSupervisorDiagnosticsPaths(config).crashReportDirectory;
   prepareCrashReportDirectory(reportDirectory);
@@ -361,7 +370,7 @@ function startReplacementSupervisor(restartReason: string, restartGroupContextKe
     env: replacementSupervisorEnvironment(
       restartReason,
       environmentRefresh.environment,
-      restartGroupContextKeys,
+      restartNotificationTargets,
     ),
   });
   supervisor.unref();
@@ -428,15 +437,6 @@ async function sendRestartTexts(targets: RestartNotificationTarget[], text: stri
       );
     });
   }));
-}
-
-function groupContextKeysForRestartTargets(targets: RestartNotificationTarget[]): string[] {
-  const knownGroupContextKeys = new Set(
-    store.listChatContexts("group").map((chat) => chat.contextKey),
-  );
-  return [...new Set(targets
-    .map((target) => baseChatContextKey(target.contextKey))
-    .filter((contextKey) => knownGroupContextKeys.has(contextKey)))];
 }
 
 function mergeRestartNotificationTargets(

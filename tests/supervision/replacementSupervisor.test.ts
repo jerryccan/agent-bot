@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   RESTART_GROUP_CONTEXTS_ENV,
+  RESTART_NOTIFICATION_TARGETS_ENV,
   replacementSupervisorEnvironment,
   restartGroupContextKeysFromEnvironment,
+  restartNotificationTargetsFromEnvironment,
 } from "../../src/supervision/replacementSupervisor.js";
 
 describe("replacementSupervisorEnvironment", () => {
@@ -17,15 +19,31 @@ describe("replacementSupervisorEnvironment", () => {
     });
   });
 
-  test("passes each safe-restart group to the replacement worker once", () => {
+  test("passes each exact safe-restart notification target to the replacement worker once", () => {
     const environment = replacementSupervisorEnvironment(
       "group restart",
       {},
-      ["chat_id:first", " chat_id:first ", "", "chat_id:second"],
+      [
+        { contextKey: "chat_id:first" },
+        { contextKey: " chat_id:first ", replyMessageId: " om_topic " },
+        { contextKey: "" },
+        { contextKey: "chat_id:second" },
+      ],
     );
 
+    expect(restartNotificationTargetsFromEnvironment(
+      environment[RESTART_NOTIFICATION_TARGETS_ENV],
+    )).toEqual([
+      { contextKey: "chat_id:first", replyMessageId: "om_topic" },
+      { contextKey: "chat_id:second" },
+    ]);
+    expect(environment[RESTART_GROUP_CONTEXTS_ENV]).toBeUndefined();
+    expect(restartNotificationTargetsFromEnvironment("invalid-json")).toEqual([]);
+  });
+
+  test("still reads legacy restart group context lists", () => {
     expect(restartGroupContextKeysFromEnvironment(
-      environment[RESTART_GROUP_CONTEXTS_ENV],
+      '["chat_id:first", " chat_id:first ", "", "chat_id:second"]',
     )).toEqual(["chat_id:first", "chat_id:second"]);
     expect(restartGroupContextKeysFromEnvironment("invalid-json")).toEqual([]);
   });
