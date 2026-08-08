@@ -177,6 +177,43 @@ export interface TaskListCardEntry {
   current?: boolean;
 }
 
+export interface SessionTaskCardEntry {
+  reference: string;
+  summary: string;
+  detailLines: string[];
+  actions?: TaskListCardAction[];
+  current?: boolean;
+}
+
+export interface SessionTaskCardGroup {
+  title: string;
+  entries: SessionTaskCardEntry[];
+  actions?: TaskListCardAction[];
+}
+
+export interface DirectoryBrowserCardEntry {
+  name: string;
+  kind: "directory" | "drive" | "file" | "image" | "binary";
+  openAction?: TaskListCardAction;
+  actions?: TaskListCardAction[];
+}
+
+export interface DirectoryBrowserCardView {
+  directory: string;
+  entries: DirectoryBrowserCardEntry[];
+  currentActions: TaskListCardAction[];
+  navigationActions: TaskListCardAction[];
+  footerLines: string[];
+}
+
+const DIRECTORY_BROWSER_ROW_COUNT = 16;
+
+export type ThinkingCardLayout = "grouped" | "timeline";
+
+export interface CardRendererOptions {
+  thinkingCardLayout?: ThinkingCardLayout;
+}
+
 export interface ResetHistoryCardEntry extends TaskListCardEntry {
   sequence: number;
   graphNodeLine: string;
@@ -190,6 +227,12 @@ export interface ResetHistoryCardView {
 }
 
 export class CardRenderer {
+  private readonly thinkingCardLayout: ThinkingCardLayout;
+
+  constructor(options: CardRendererOptions = {}) {
+    this.thinkingCardLayout = options.thinkingCardLayout ?? "grouped";
+  }
+
   renderExecutionSettings(view: ExecutionSettingsCardView): Record<string, unknown> {
     const baseAction: Record<string, string> = {
       contextKey: view.contextKey,
@@ -807,7 +850,9 @@ export class CardRenderer {
   }
 
   renderTurn(state: TurnViewState): Record<string, unknown> {
-    const elements = renderTurnElements(state, "hidden");
+    const elements = this.thinkingCardLayout === "timeline"
+      ? renderTurnElements(state, "hidden")
+      : renderGroupedTurnElements(state, "hidden");
     if (isTurnStoppable(state.status)) {
       elements.push({ tag: "hr" }, taskActionRow([{
         text: "Stop",
@@ -843,7 +888,13 @@ export class CardRenderer {
   }
 
   renderActivityHistory(state: TurnViewState, requestedPage: number): Record<string, unknown> {
-    const pages = activityPages(turnActivities(state));
+    const grouped = this.thinkingCardLayout === "grouped";
+    const pages = grouped
+      ? groupedActivityPages(turnActivities(state), state.projectCwd, {
+        fullActivityText: true,
+        includeReasoningHistory: true,
+      })
+      : activityPages(turnActivities(state));
     if (pages.length === 0) {
       return this.renderSectionsCard("思考活动历史", [{ lines: ["没有保存到活动记录。"] }]);
     }
@@ -864,7 +915,12 @@ export class CardRenderer {
     ];
     const elements: Record<string, unknown>[] = [];
     if (actions.length > 0) elements.push(taskActionRow(actions), { tag: "hr" });
-    elements.push(...renderActivities(pages[page] ?? [], state.projectCwd, true));
+    elements.push(...(grouped
+      ? renderGroupedActivityGroups(pages[page] as GroupedTurnActivity[] | undefined ?? [], state.projectCwd, {
+        fullActivityText: true,
+        includeReasoningHistory: true,
+      })
+      : renderActivities(pages[page] as TurnActivity[] | undefined ?? [], state.projectCwd, true)));
     return sectionCard(`思考活动历史 · ${page + 1}/${pages.length}`, elements.length > 0 ? elements : [markdown("无")]);
   }
 
@@ -990,6 +1046,68 @@ export class CardRenderer {
     };
   }
 
+  renderSessionTaskListCard(
+    title: string,
+    sectionTitle: string,
+    groups: SessionTaskCardGroup[],
+    footerLines: string[],
+    footerActions: TaskListCardAction[] = [],
+  ): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [markdown(`**${sectionTitle}**`)];
+    if (groups.length === 0) {
+      elements.push(markdown("无"));
+    } else {
+      groups.forEach((group) => {
+        elements.push(sessionProjectRow(group));
+        elements.push(...group.entries.map(sessionTaskPanel));
+      });
+    }
+    if (footerActions.length > 0) {
+      elements.push(taskActionRow(footerActions));
+    }
+    if (footerLines.length > 0) {
+      elements.push(markdown(footerLines.join("\n")));
+    }
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        width_mode: "fill",
+      },
+      header: {
+        template: "blue",
+        title: {
+          tag: "plain_text",
+          content: title,
+        },
+      },
+      body: {
+        vertical_spacing: "4px",
+        elements,
+      },
+    };
+  }
+
+  renderDirectoryBrowserCard(view: DirectoryBrowserCardView): Record<string, unknown> {
+    const elements: Record<string, unknown>[] = [
+      markdown(`**当前目录**：${inlineCode(view.directory)}`),
+      taskActionRow(view.currentActions),
+      { tag: "hr" },
+    ];
+    const entryRows = view.entries.length === 0
+      ? [directoryBrowserEmptyRow()]
+      : view.entries.slice(0, DIRECTORY_BROWSER_ROW_COUNT).map(directoryBrowserEntryRow);
+    while (entryRows.length < DIRECTORY_BROWSER_ROW_COUNT) entryRows.push(directoryBrowserPlaceholderRow());
+    elements.push(...entryRows);
+    if (view.navigationActions.length > 0) {
+      elements.push({ tag: "hr" }, taskActionRow(view.navigationActions));
+    }
+    if (view.footerLines.length > 0) {
+      elements.push({ tag: "hr" }, markdown(view.footerLines.join("\n")));
+    }
+    return sectionCard("文件浏览", elements, "blue", "2px");
+  }
+
   renderResetHistoryCard(view: ResetHistoryCardView): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [
       {
@@ -1078,6 +1196,77 @@ function renderTurnElements(
   }
   if (state.activitiesTruncated || pages.length > 1) elements.push(markdown("…"));
   elements.push(...renderActivities(visibleActivities, state.projectCwd));
+  if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
+
+  if (state.approval) {
+    const request = state.approval;
+    elements.push(markdown([
+      `**${request.title}**`,
+      request.command ? codeBlock(request.command, 800) : undefined,
+      request.reason,
+    ].filter(Boolean).join("\n")));
+    elements.push({
+      tag: "column_set",
+      flex_mode: "flow",
+      horizontal_spacing: "8px",
+      vertical_spacing: "8px",
+      columns: request.options.map((option) => ({
+        tag: "column",
+        width: "auto",
+        elements: [{
+          tag: "button",
+          text: { tag: "plain_text", content: approvalDecisionLabel(option.id) },
+          type: option.id === "accept" || option.id === "acceptForSession" ? "primary" : option.id === "cancel" ? "danger" : "default",
+          behaviors: [{
+            type: "callback",
+            value: {
+              action: "approval",
+              sessionId: state.sessionId,
+              turnId: state.turnId,
+              requestId: request.id,
+              decision: option.id,
+            },
+          }],
+        }],
+      })),
+    });
+  }
+  if (state.error) elements.push(markdown(codeBlock(state.error, 2_000)));
+  const showAssistantText = state.assistantText && assistantTextMode === "always";
+  if (showAssistantText) {
+    if (elements.length > 0) elements.push({ tag: "hr" });
+    const heading = state.status === "completed" ? "回答" : "回答生成中";
+    elements.push(markdown(`**${heading}**\n${truncateText(state.assistantText, 3_000)}`));
+  }
+  if (elements.length === 0) elements.push(markdown(emptyTurnText(state.status, state.agentLabel)));
+  return elements;
+}
+
+function renderGroupedTurnElements(
+  state: TurnViewState,
+  assistantTextMode: "hidden" | "always",
+): Record<string, unknown>[] {
+  const elements: Record<string, unknown>[] = [];
+  const allActivities = turnActivities(state);
+  const livePages = groupedActivityPages(allActivities, state.projectCwd);
+  const historyPages = groupedActivityPages(allActivities, state.projectCwd, {
+    fullActivityText: true,
+    includeReasoningHistory: true,
+  });
+  const visibleGroups = livePages.at(-1) ?? [];
+  if (state.plan.length > 0) elements.push(planPanel(state.plan));
+  if (historyPages.length > 1) {
+    elements.push(taskActionRow([{
+      text: `查看历史思考（共 ${historyPages.length} 页）`,
+      value: {
+        action: "activity_history",
+        turnId: state.turnId,
+        page: String(historyPages.length - 2),
+      },
+    }]));
+  }
+  if (state.activitiesTruncated || livePages.length > 1 || historyPages.length > 1) elements.push(markdown("…"));
+  elements.push(...renderGroupedActivityGroups(visibleGroups, state.projectCwd));
   if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
 
   if (state.approval) {
@@ -1216,6 +1405,136 @@ function renderActivities(
   return elements;
 }
 
+type GroupedTurnActivity =
+  | { kind: "activity"; activity: TurnActivity }
+  | {
+      kind: "execution";
+      id: string;
+      latestReasoning?: Extract<TurnActivity, { kind: "reasoning" }>;
+      reasonings: Array<Extract<TurnActivity, { kind: "reasoning" }>>;
+      tools: ToolState[];
+    };
+
+function renderGroupedActivityGroups(
+  groups: GroupedTurnActivity[],
+  projectCwd?: string,
+  options: {
+    fullActivityText?: boolean;
+    includeReasoningHistory?: boolean;
+  } = {},
+): Record<string, unknown>[] {
+  return groups.flatMap((group) => {
+    if (group.kind === "activity") {
+      return renderActivity(group.activity, projectCwd, options.fullActivityText === true);
+    }
+    if (group.tools.length === 0) {
+      const reasonings = options.includeReasoningHistory
+        ? group.reasonings
+        : group.latestReasoning ? [group.latestReasoning] : [];
+      return renderReasoningGroup(reasonings);
+    }
+    return [executionActivityPanel(group, projectCwd, options.includeReasoningHistory === true)];
+  });
+}
+
+function groupTurnActivities(activities: TurnActivity[]): GroupedTurnActivity[] {
+  const groups: GroupedTurnActivity[] = [];
+  let segment: TurnActivity[] = [];
+  const flushSegment = (): void => {
+    if (segment.length === 0) return;
+    let execution: Extract<GroupedTurnActivity, { kind: "execution" }> | undefined;
+    let executionPosition = -1;
+    for (let index = 0; index < segment.length; index += 1) {
+      const activity = segment[index]!;
+      if (isRawReasoning(activity)) {
+        execution ??= { kind: "execution", id: activity.id, reasonings: [], tools: [] };
+        execution.reasonings.push(activity);
+        execution.latestReasoning = activity;
+        executionPosition = index;
+      } else if (activity.kind === "tool") {
+        execution ??= { kind: "execution", id: activity.id, reasonings: [], tools: [] };
+        execution.tools.push(activity.tool);
+        executionPosition = index;
+      }
+    }
+    for (let index = 0; index < segment.length; index += 1) {
+      const activity = segment[index]!;
+      if (index === executionPosition && execution) groups.push(execution);
+      if (!isRawReasoning(activity) && activity.kind !== "tool") {
+        groups.push({ kind: "activity", activity });
+      }
+    }
+    segment = [];
+  };
+
+  for (const activity of activities) {
+    if (!isCommentaryActivity(activity)) {
+      segment.push(activity);
+      continue;
+    }
+    flushSegment();
+    groups.push({ kind: "activity", activity });
+  }
+  flushSegment();
+  return groups;
+}
+
+function isCommentaryActivity(activity: TurnActivity): boolean {
+  return activity.kind === "assistant"
+    || (activity.kind === "reasoning" && activity.id.startsWith("commentary:"));
+}
+
+function executionActivityPanel(
+  group: Extract<GroupedTurnActivity, { kind: "execution" }>,
+  projectCwd: string | undefined,
+  includeReasoningHistory = false,
+): Record<string, unknown> {
+  const status = executionActivityStatus(group.tools);
+  const elements = [
+    ...(includeReasoningHistory ? renderReasoningGroup(group.reasonings) : []),
+    ...group.tools.map((tool) => toolPanel(tool, projectCwd)),
+  ];
+  return collapsiblePanel(
+    executionActivityTitle(group, status),
+    elements,
+    {
+      elementId: executionActivityPanelElementId(group.id),
+      expanded: false,
+      borderColor: status === "failed" ? "red" : status === "running" ? "blue" : "grey",
+      compact: true,
+    },
+  );
+}
+
+function executionActivityStatus(tools: ToolState[]): ToolState["status"] {
+  if (tools.some((tool) => tool.status === "running")) return "running";
+  if (tools.some((tool) => tool.status === "failed")) return "failed";
+  return "completed";
+}
+
+function executionActivityTitle(
+  group: Extract<GroupedTurnActivity, { kind: "execution" }>,
+  status: ToolState["status"],
+): string {
+  const icon = status === "running" ? "⏳" : status === "failed" ? "❌" : "💭";
+  const latestReasoning = group.latestReasoning?.text
+    ? removeMarkdownBold(group.latestReasoning.text).replace(/\s+/g, " ").trim()
+    : "";
+  const summary = latestReasoning
+    ? truncateText(latestReasoning, 90)
+    : status === "running"
+      ? "正在执行工具"
+      : status === "failed"
+        ? "工具执行失败"
+        : "已执行工具";
+  return `${icon} ${summary} · ${group.tools.length} 个工具`;
+}
+
+function executionActivityPanelElementId(activityId: string): string {
+  const digest = createHash("sha256").update(activityId).digest("hex").slice(0, 10);
+  return `turn_exec_${digest}`;
+}
+
 function renderReasoningGroup(
   activities: Array<Extract<TurnActivity, { kind: "reasoning" }>>,
 ): Record<string, unknown>[] {
@@ -1237,6 +1556,9 @@ function isRawReasoning(
 }
 
 const ACTIVITIES_PER_PAGE = 40;
+const GROUPED_TOOLS_PER_PANEL = 8;
+const GROUPED_PAGE_ACTIVITY_BYTES = 24 * 1024;
+const GROUPED_PAGE_ACTIVITY_COMPONENTS = 160;
 const MAX_LIVE_ASSISTANT_TEXT = 2_000;
 const ACTIVITY_TEXT_CHUNK = 2_500;
 
@@ -1250,6 +1572,72 @@ function activityPages(activities: TurnActivity[]): TurnActivity[][] {
     pages.push(activities.slice(index, index + ACTIVITIES_PER_PAGE));
   }
   return pages;
+}
+
+function groupedActivityPages(
+  activities: TurnActivity[],
+  projectCwd?: string,
+  renderOptions: {
+    fullActivityText?: boolean;
+    includeReasoningHistory?: boolean;
+  } = {},
+): GroupedTurnActivity[][] {
+  const groups = groupTurnActivities(activities).flatMap(splitGroupedExecutionActivity);
+  if (groups.length === 0) return [];
+
+  const newestFirst: GroupedTurnActivity[][] = [];
+  let page: GroupedTurnActivity[] = [];
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index]!;
+    const candidate = [group, ...page];
+    if (page.length > 0 && !groupedActivityPageFits(candidate, projectCwd, renderOptions)) {
+      newestFirst.push(page);
+      page = [];
+    }
+    page.unshift(group);
+  }
+  if (page.length > 0) newestFirst.push(page);
+  return newestFirst.reverse();
+}
+
+function groupedActivityPageFits(
+  groups: GroupedTurnActivity[],
+  projectCwd: string | undefined,
+  renderOptions: {
+    fullActivityText?: boolean;
+    includeReasoningHistory?: boolean;
+  },
+): boolean {
+  const elements = renderGroupedActivityGroups(groups, projectCwd, renderOptions);
+  return Buffer.byteLength(JSON.stringify(elements), "utf8") <= GROUPED_PAGE_ACTIVITY_BYTES
+    && countCardComponents(elements) <= GROUPED_PAGE_ACTIVITY_COMPONENTS;
+}
+
+function countCardComponents(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.reduce((total, entry) => total + countCardComponents(entry), 0);
+  }
+  if (!value || typeof value !== "object") return 0;
+  const record = value as Record<string, unknown>;
+  return (typeof record.tag === "string" ? 1 : 0)
+    + Object.values(record).reduce<number>((total, entry) => total + countCardComponents(entry), 0);
+}
+
+function splitGroupedExecutionActivity(group: GroupedTurnActivity): GroupedTurnActivity[] {
+  if (group.kind !== "execution" || group.tools.length <= GROUPED_TOOLS_PER_PANEL) return [group];
+  const chunks: Array<Extract<GroupedTurnActivity, { kind: "execution" }>> = [];
+  for (let index = 0; index < group.tools.length; index += GROUPED_TOOLS_PER_PANEL) {
+    const tools = group.tools.slice(index, index + GROUPED_TOOLS_PER_PANEL);
+    const isLast = index + GROUPED_TOOLS_PER_PANEL >= group.tools.length;
+    chunks.push({
+      kind: "execution",
+      id: index === 0 ? group.id : tools[0]?.id ?? `${group.id}:${index}`,
+      ...(isLast && group.latestReasoning ? { latestReasoning: group.latestReasoning } : {}),
+      reasonings: isLast ? group.reasonings : [],
+      tools,
+    });
+  }
+  return chunks;
 }
 
 function splitText(value: string, maxLength: number): string[] {
@@ -1302,26 +1690,94 @@ function toolPanelElementId(toolId: string): string {
 function collapsiblePanel(
   title: string,
   content: string | Record<string, unknown>[],
-  options: { expanded?: boolean; borderColor?: string; elementId?: string } = {},
+  options: {
+    expanded?: boolean;
+    borderColor?: string;
+    elementId?: string;
+    compact?: boolean;
+  } = {},
 ): Record<string, unknown> {
+  const compact = options.compact === true;
   return {
     tag: "collapsible_panel",
     ...(options.elementId ? { element_id: options.elementId } : {}),
     direction: "vertical",
-    vertical_spacing: "4px",
-    padding: "8px",
+    vertical_spacing: compact ? "2px" : "4px",
+    padding: compact ? "4px 6px" : "8px",
     margin: "0px",
     expanded: options.expanded ?? false,
     header: {
       title: { tag: "plain_text", content: title },
       vertical_align: "center",
-      padding: "4px 8px 4px 8px",
+      padding: compact ? "2px 4px 2px 4px" : "4px 8px 4px 8px",
     },
     border: {
       color: options.borderColor ?? "grey",
       corner_radius: "5px",
     },
     elements: typeof content === "string" ? [markdown(content)] : content,
+  };
+}
+
+function sessionTaskPanel(entry: SessionTaskCardEntry): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [markdown(entry.detailLines.join("\n"))];
+  if (entry.actions?.length) elements.push(sessionActionOverflow(entry.actions));
+  return collapsiblePanel(entry.summary, elements, {
+    elementId: sessionTaskPanelElementId(entry.reference),
+    borderColor: entry.current ? "green" : "grey",
+    compact: true,
+  });
+}
+
+function sessionProjectRow(group: SessionTaskCardGroup): Record<string, unknown> {
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "8px",
+    vertical_align: "center",
+    margin: "6px 0px 0px 0px",
+    columns: [
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "center",
+        elements: [markdown(`**${escapeCardActionText(group.title)}**`)],
+      },
+      ...(group.actions ?? []).map((action) => ({
+        tag: "column",
+        width: "auto",
+        vertical_align: "center",
+        elements: [sessionActionButton(action)],
+      })),
+    ],
+  };
+}
+
+function sessionTaskPanelElementId(reference: string): string {
+  return `session_task_${createHash("sha256").update(reference).digest("hex").slice(0, 16)}`;
+}
+
+function sessionActionOverflow(actions: TaskListCardAction[]): Record<string, unknown> {
+  return {
+    tag: "overflow",
+    options: actions.map((action) => ({
+      text: { tag: "plain_text", content: action.text },
+      value: JSON.stringify(action.value),
+    })),
+  };
+}
+
+function sessionActionButton(action: TaskListCardAction): Record<string, unknown> {
+  return {
+    tag: "button",
+    text: { tag: "plain_text", content: action.text },
+    type: action.type === "danger" ? "danger" : "default",
+    size: "tiny",
+    behaviors: [{
+      type: "callback",
+      value: action.value,
+    }],
   };
 }
 
@@ -1726,6 +2182,69 @@ function taskActionRow(actions: TaskListCardAction[]): Record<string, unknown> {
   };
 }
 
+function directoryBrowserEntryRow(entry: DirectoryBrowserCardEntry): Record<string, unknown> {
+  const label = `${directoryBrowserEntryIcon(entry.kind)} ${entry.name}`;
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "12px",
+    vertical_align: "center",
+    margin: "0px",
+    columns: [
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "center",
+        elements: entry.openAction
+          ? [taskActionElement({ ...entry.openAction, text: label })]
+          : [markdown(escapeCardHtml(label))],
+      },
+      ...(entry.actions ?? []).map((action) => ({
+        tag: "column",
+        width: "auto",
+        vertical_align: "center",
+        elements: [taskActionElement(action)],
+      })),
+    ],
+  };
+}
+
+function directoryBrowserEmptyRow(): Record<string, unknown> {
+  return directoryBrowserStaticRow("这个目录为空。");
+}
+
+function directoryBrowserPlaceholderRow(): Record<string, unknown> {
+  return directoryBrowserStaticRow("\u00a0");
+}
+
+function directoryBrowserStaticRow(content: string): Record<string, unknown> {
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "12px",
+    vertical_align: "center",
+    margin: "0px",
+    columns: [{
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      vertical_align: "center",
+      elements: [markdown(content)],
+    }],
+  };
+}
+
+function directoryBrowserEntryIcon(kind: DirectoryBrowserCardEntry["kind"]): string {
+  switch (kind) {
+    case "directory": return "📁";
+    case "drive": return "💽";
+    case "image": return "🖼️";
+    case "binary": return "📦";
+    case "file": return "📄";
+  }
+}
+
 function taskActionElement(action: TaskListCardAction): Record<string, unknown> {
   return {
     tag: "interactive_container",
@@ -1733,13 +2252,17 @@ function taskActionElement(action: TaskListCardAction): Record<string, unknown> 
     padding: "0px",
     has_border: false,
     elements: [markdown(
-      `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardHtml(action.text)}</font>`,
+      `<font color='${action.type === "danger" ? "red" : "blue"}'>${escapeCardActionText(action.text)}</font>`,
     )],
     behaviors: [{
       type: "callback",
       value: action.value,
     }],
   };
+}
+
+function escapeCardActionText(value: string): string {
+  return escapeCardHtml(value).replaceAll("\\", "&#92;");
 }
 
 function helpCommandRow(command: HelpCardCommand): Record<string, unknown> {
@@ -1812,6 +2335,7 @@ function sectionCard(
   title: string,
   elements: Record<string, unknown>[],
   template = "blue",
+  verticalSpacing = "8px",
 ): Record<string, unknown> {
   return {
     schema: "2.0",
@@ -1829,7 +2353,7 @@ function sectionCard(
     },
     body: {
       direction: "vertical",
-      vertical_spacing: "8px",
+      vertical_spacing: verticalSpacing,
       padding: "12px 12px 12px 12px",
       elements,
     },

@@ -116,7 +116,7 @@ export class FeishuTurnPresenter {
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
     prompt?: string,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const existing = this.pendingEntries.get(sessionId);
     if (existing) {
       await existing.initializing;
@@ -125,7 +125,7 @@ export class FeishuTurnPresenter {
         this.store.saveTurnSnapshot(existing.state.turnId, sessionId, existing.state, existing.contextKey);
         if (!existing.historySnapshot) existing.scheduler?.update(existing.state, "critical");
       }
-      return;
+      return existing.state.turnId;
     }
     this.sessionContexts.set(sessionId, contextKey);
     if (taskTitle) this.sessionTitles.set(sessionId, taskTitle);
@@ -146,6 +146,7 @@ export class FeishuTurnPresenter {
     entry.initializing = this.initializeEntry(entry);
     try {
       await entry.initializing;
+      return state.turnId;
     } catch (error) {
       if (this.pendingEntries.get(sessionId) === entry) this.pendingEntries.delete(sessionId);
       this.entries.delete(state.turnId);
@@ -167,6 +168,34 @@ export class FeishuTurnPresenter {
       return;
     }
     await this.syncThinkingCardReaction(entry);
+  }
+
+  async interruptTurnForRecovery(
+    sessionId: string,
+    contextKey: string,
+    turnId: string,
+    message: string,
+  ): Promise<void> {
+    const snapshot = this.store.getTurnSnapshot(turnId);
+    if (!isTurnViewState(snapshot) || snapshot.sessionId !== sessionId || isTerminalViewStatus(snapshot.status)) return;
+    const state: TurnViewState = {
+      ...snapshot,
+      status: "cancelled",
+      progressText: message,
+      activeTool: undefined,
+      approval: undefined,
+      completedAt: Date.now(),
+    };
+    this.store.saveTurnSnapshot(turnId, sessionId, state, contextKey);
+    const delivery = this.store.getTurnDelivery(turnId);
+    if (delivery?.progressMessageId) {
+      await this.outbound.updateInteractiveCard(delivery.progressMessageId, this.renderer.renderTurn(state));
+    }
+    const entry = this.entries.get(turnId);
+    if (entry) {
+      this.entries.delete(turnId);
+      if (this.pendingEntries.get(sessionId) === entry) this.pendingEntries.delete(sessionId);
+    }
   }
 
   async appendSteerMessage(
@@ -517,6 +546,10 @@ function eventPriority(event: AgentEvent): "normal" | "critical" {
 
 function isTerminalEvent(event: AgentEvent): boolean {
   return event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed";
+}
+
+function isTerminalViewStatus(status: TurnViewState["status"]): boolean {
+  return status === "completed" || status === "cancelled" || status === "failed";
 }
 
 function thinkingCardReactionForStatus(status: TurnViewState["status"]): string | undefined {

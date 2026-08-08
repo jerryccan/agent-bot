@@ -97,6 +97,58 @@ describe("FeishuMessageClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  test("uploads a local file and sends it as a Feishu file message", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-send-file-"));
+    temporaryDirectories.push(directory);
+    const filePath = path.join(directory, "report.txt");
+    fs.writeFileSync(filePath, "report contents");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { file_key: "file_report" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_file" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.sendFile("chat_id:c1", filePath)).resolves.toBe("om_file");
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://open.feishu.cn/open-apis/im/v1/files");
+    const form = fetchMock.mock.calls[1]?.[1]?.body as FormData;
+    expect(form.get("file_type")).toBe("stream");
+    expect(form.get("file_name")).toBe("report.txt");
+    expect(form.get("file")).toBeInstanceOf(Blob);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      receive_id: "c1",
+      msg_type: "file",
+      content: JSON.stringify({ file_key: "file_report" }),
+    });
+  });
+
+  test("uploads a selected file and replies inside the originating topic", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-reply-file-"));
+    temporaryDirectories.push(directory);
+    const filePath = path.join(directory, "topic.txt");
+    fs.writeFileSync(filePath, "topic contents");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { file_key: "file_topic" } }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_topic_file" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.replyFile(
+      "chat_id:c1:thread_id:omt_topic",
+      { messageId: "om_browser_card", replyInThread: true },
+      filePath,
+    )).resolves.toBe("om_topic_file");
+
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("/messages/om_browser_card/reply");
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      msg_type: "file",
+      content: JSON.stringify({ file_key: "file_topic" }),
+      reply_in_thread: true,
+    });
+  });
+
   test("adds an OnIt reaction to acknowledge an incoming message", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

@@ -9,6 +9,7 @@ export interface IncomingMessage {
   threadId?: string;
   rootMessageId?: string;
   parentMessageId?: string;
+  mentionedBot?: true;
   text: string;
   images?: IncomingImageReference[];
 }
@@ -53,6 +54,7 @@ export interface FeishuOutbound {
   deleteReaction?(messageId: string, reactionId: string): Promise<void>;
   downloadImage?(messageId: string, imageKey: string): Promise<string>;
   sendText(contextKey: string, text: string): Promise<string | undefined>;
+  sendFile?(contextKey: string, filePath: string): Promise<string | undefined>;
   sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined>;
   sendInteractiveCard(contextKey: string, card: Record<string, unknown>): Promise<string | undefined>;
   replyText?(
@@ -60,6 +62,11 @@ export interface FeishuOutbound {
     target: MessageReplyTarget,
     text: string,
     idempotencyKey?: string,
+  ): Promise<string | undefined>;
+  replyFile?(
+    contextKey: string,
+    target: MessageReplyTarget,
+    filePath: string,
   ): Promise<string | undefined>;
   replyMarkdown?(
     contextKey: string,

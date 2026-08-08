@@ -23,8 +23,9 @@ export interface TurnPresenter {
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
     prompt?: string,
-  ): Promise<void>;
+  ): Promise<string | undefined>;
   failPendingTurn(sessionId: string, message: string): Promise<void>;
+  interruptTurnForRecovery(sessionId: string, contextKey: string, turnId: string, message: string): Promise<void>;
   appendSteerMessage(sessionId: string, turnId: string, text: string, messageId?: string): Promise<void>;
   onEvent(event: AgentEvent): Promise<void>;
   showDetails(contextKey: string, turnId: string): Promise<void>;
@@ -75,6 +76,10 @@ export class OutboundRouter {
     return this.sessionReplyTargets.get(sessionId);
   }
 
+  canRoute(contextKey: string): boolean {
+    return this.routes.some((route) => route.matches(contextKey));
+  }
+
   updateSessionTitle(sessionId: string, taskTitle: string): void {
     this.sessionRoutes.get(sessionId)?.presenter.updateSessionTitle(sessionId, taskTitle);
   }
@@ -93,17 +98,26 @@ export class OutboundRouter {
     taskTitle?: string,
     replyTarget?: MessageReplyTarget,
     prompt?: string,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const route = this.route(contextKey);
     this.sessionRoutes.set(sessionId, route);
     this.sessionContextKeys.set(sessionId, contextKey);
     if (replyTarget) this.sessionReplyTargets.set(sessionId, replyTarget);
     else this.sessionReplyTargets.delete(sessionId);
-    await route.presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget, prompt);
+    return route.presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget, prompt);
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {
     await this.sessionRoutes.get(sessionId)?.presenter.failPendingTurn(sessionId, message);
+  }
+
+  async interruptTurnForRecovery(
+    sessionId: string,
+    contextKey: string,
+    turnId: string,
+    message: string,
+  ): Promise<void> {
+    await this.route(contextKey).presenter.interruptTurnForRecovery(sessionId, contextKey, turnId, message);
   }
 
   async appendSteerMessage(
@@ -173,6 +187,17 @@ export class OutboundRouter {
     return target && outbound.replyText
       ? outbound.replyText(contextKey, target, text)
       : outbound.sendText(contextKey, text);
+  }
+
+  sendFile(contextKey: string, filePath: string): Promise<string | undefined> {
+    const outbound = this.route(contextKey).outbound;
+    const target = this.currentReplyTarget(contextKey);
+    if (target) {
+      if (!outbound.replyFile) throw new Error("当前消息通道不支持在话题中发送文件。");
+      return outbound.replyFile(contextKey, target, filePath);
+    }
+    if (!outbound.sendFile) throw new Error("当前消息通道不支持发送文件。");
+    return outbound.sendFile(contextKey, filePath);
   }
 
   sendMarkdown(contextKey: string, markdown: string): Promise<string | undefined> {

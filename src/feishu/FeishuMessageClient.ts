@@ -48,6 +48,15 @@ interface UploadImageResponse {
   error?: unknown;
 }
 
+interface UploadFileResponse {
+  code: number;
+  msg: string;
+  data?: {
+    file_key?: string;
+  };
+  error?: unknown;
+}
+
 interface ReactionResponse {
   code: number;
   msg: string;
@@ -178,6 +187,11 @@ export class FeishuMessageClient implements FeishuOutbound {
     return this.sendMessage(contextKey, "text", { text });
   }
 
+  async sendFile(contextKey: string, filePath: string): Promise<string | undefined> {
+    const fileKey = await this.uploadFile(filePath);
+    return this.sendMessage(contextKey, "file", { file_key: fileKey });
+  }
+
   async sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined> {
     const normalizedMarkdown = normalizeFeishuMarkdown(markdown);
     const elements = await renderMarkdownWithLocalImages(
@@ -208,6 +222,15 @@ export class FeishuMessageClient implements FeishuOutbound {
     idempotencyKey?: string,
   ): Promise<string | undefined> {
     return this.replyMessage(contextKey, target, "text", { text }, idempotencyKey);
+  }
+
+  async replyFile(
+    contextKey: string,
+    target: MessageReplyTarget,
+    filePath: string,
+  ): Promise<string | undefined> {
+    const fileKey = await this.uploadFile(filePath);
+    return this.replyMessage(contextKey, target, "file", { file_key: fileKey });
   }
 
   async replyMarkdown(
@@ -554,6 +577,40 @@ export class FeishuMessageClient implements FeishuOutbound {
     }
   }
 
+  private async uploadFile(filePath: string): Promise<string> {
+    const fileName = path.basename(filePath);
+    try {
+      const fileStats = await stat(filePath);
+      if (!fileStats.isFile()) throw new Error(`Not a regular file: ${fileName}`);
+      if (fileStats.size === 0) throw new Error(`Feishu does not accept empty files: ${fileName}`);
+      if (fileStats.size > 30 * 1024 * 1024) {
+        throw new Error(`File exceeds Feishu's 30 MiB limit: ${fileName}`);
+      }
+
+      const contents = await readFile(filePath);
+      const token = await this.getTenantAccessToken();
+      const form = new FormData();
+      form.append("file_type", "stream");
+      form.append("file_name", fileName);
+      const bytes = new ArrayBuffer(contents.byteLength);
+      new Uint8Array(bytes).set(contents);
+      form.append("file", new Blob([bytes]), fileName);
+      const response = await fetch("https://open.feishu.cn/open-apis/im/v1/files", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const payload = (await response.json()) as UploadFileResponse;
+      const fileKey = payload.data?.file_key;
+      if (!response.ok || payload.code !== 0 || !fileKey) {
+        throw new FeishuApiError(payload.msg || response.statusText, payload.code, payload, "upload file", response.status);
+      }
+      return fileKey;
+    } catch (error) {
+      throw normalizeTransportError(error, "upload file");
+    }
+  }
+
   private async uploadImageBytes(
     contents: Uint8Array,
     imageType: "message" | "avatar",
@@ -675,6 +732,7 @@ export class FeishuApiError extends Error {
       | SendMessageResponse
       | CreateGroupResponse
       | UploadImageResponse
+      | UploadFileResponse
       | ReactionResponse
       | DownloadImageErrorResponse,
     operation = "send",

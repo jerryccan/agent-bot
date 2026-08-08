@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { CardRenderer } from "../../src/feishu/CardRenderer.js";
 import { FeishuTurnPresenter } from "../../src/feishu/FeishuTurnPresenter.js";
 import type { FeishuOutbound } from "../../src/feishu/types.js";
 import type { AgentEvent } from "../../src/runtime/types.js";
@@ -8,7 +9,7 @@ function completed(finalResponse = "answer"): AgentEvent {
   return { type: "turn_completed", sessionId: "s1", turnId: "turn_1", finalResponse, durationMs: 1_000 };
 }
 
-function createFixture(delivered = false) {
+function createFixture(delivered = false, renderer?: CardRenderer) {
   const outbound: FeishuOutbound = {
     sendText: vi.fn(async () => "text_1"),
     sendMarkdown: vi.fn(async () => "final_1"),
@@ -31,7 +32,7 @@ function createFixture(delivered = false) {
       ? { progressMessageId: undefined as string | undefined, finalDelivered: true, finalMessageIds: ["old"] }
       : undefined)),
   };
-  const presenter = new FeishuTurnPresenter(outbound, store, undefined, {
+  const presenter = new FeishuTurnPresenter(outbound, store, renderer, {
     normalIntervalMs: 1,
     criticalGapMs: 0,
   });
@@ -342,7 +343,7 @@ describe("FeishuTurnPresenter", () => {
   });
 
   test("freezes in-place history pages and resumes live updates on the latest page", async () => {
-    const { presenter, outbound } = createFixture();
+    const { presenter, outbound } = createFixture(false, new CardRenderer({ thinkingCardLayout: "timeline" }));
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
     for (let index = 1; index <= 45; index += 1) {
       await presenter.onEvent({
@@ -432,8 +433,40 @@ describe("FeishuTurnPresenter", () => {
       .mockRejectedValueOnce(new Error("network down"))
       .mockResolvedValueOnce("progress_2");
     await expect(presenter.startPendingTurn("s1", "chat_id:c1")).rejects.toThrow("network down");
-    await expect(presenter.startPendingTurn("s1", "chat_id:c1")).resolves.toBeUndefined();
+    await expect(presenter.startPendingTurn("s1", "chat_id:c1")).resolves.toMatch(/^pending_/);
     expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(2);
+  });
+
+  test("closes the interrupted card and creates a distinct thinking card for recovery", async () => {
+    const store = new MemoryStore();
+    const outbound = outboundWithMarkdown(vi.fn(async () => "final"));
+    (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce("progress_old")
+      .mockResolvedValueOnce("progress_recovered");
+    const presenter = new FeishuTurnPresenter(outbound, store, undefined, { criticalGapMs: 0 });
+    presenter.registerSession("s1", "chat_id:c1", "Task");
+
+    await presenter.startPendingTurn("s1", "chat_id:c1", "Task", undefined, "original prompt");
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: 1 });
+    await presenter.interruptTurnForRecovery("s1", "chat_id:c1", "turn_1", "continuing after restart");
+    const recoveredPendingId = await presenter.startPendingTurn(
+      "s1",
+      "chat_id:c1",
+      "Task",
+      undefined,
+      "restore original prompt",
+    );
+
+    expect(recoveredPendingId).toMatch(/^pending_/);
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(2);
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith(
+      "progress_old",
+      expect.any(Object),
+    );
+    expect(store.getTurnSnapshot("turn_1")).toMatchObject({
+      status: "cancelled",
+      progressText: "continuing after restart",
+    });
   });
 
   test("delivers a rehydrated turn failure to its persisted group instead of the latest session context", async () => {

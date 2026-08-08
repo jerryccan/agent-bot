@@ -27,14 +27,17 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     this.agentLabels.delete(sessionId);
   }
 
-  async startPendingTurn(sessionId: string, contextKey: string): Promise<void> {
+  async startPendingTurn(sessionId: string, contextKey: string): Promise<string | undefined> {
     await this.outbound.sendText(contextKey, `Connecting to ${this.agentLabel(sessionId)}...`);
+    return undefined;
   }
 
   async failPendingTurn(sessionId: string, message: string): Promise<void> {
     const contextKey = this.contexts.get(sessionId);
     if (contextKey) await this.outbound.sendText(contextKey, `${this.agentLabel(sessionId)} failed to start: ${message}`);
   }
+
+  async interruptTurnForRecovery(): Promise<void> {}
 
   async appendSteerMessage(): Promise<void> {}
 
