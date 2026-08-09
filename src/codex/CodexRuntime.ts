@@ -355,12 +355,18 @@ export class CodexRuntime implements AgentRuntime {
 
   async closeSession(sessionId: string): Promise<void> {
     const session = this.requireSession(sessionId);
+    await this.archiveRemoteSession(session.remoteSessionId);
+  }
+
+  async archiveRemoteSession(remoteSessionId: string): Promise<void> {
     await (await this.client()).request(
       "thread/archive",
-      { threadId: session.remoteSessionId },
+      { threadId: remoteSessionId },
       CONTROL_REQUEST_TIMEOUT_MS,
     );
-    this.sessions.delete(sessionId);
+    for (const [localSessionId, session] of this.sessions) {
+      if (session.remoteSessionId === remoteSessionId) this.sessions.delete(localSessionId);
+    }
   }
 
   async setTitle(sessionId: string, title: string): Promise<void> {

@@ -136,6 +136,25 @@ describe("CodexRuntime", () => {
     expect(client.timeouts).toContainEqual({ method: "thread/resume", timeoutMs: 60_000 });
   });
 
+  test("archives a remote App Server thread and releases its loaded session", async () => {
+    const client = new FakeAppServerClient();
+    const runtime = new CodexRuntime(provider(client), logger());
+    await runtime.createSession({
+      localSessionId: "archive-local",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+
+    await runtime.archiveRemoteSession("thr_1");
+
+    expect(client.requests).toContainEqual({
+      method: "thread/archive",
+      params: { threadId: "thr_1" },
+    });
+    expect(runtime.getSession("archive-local")).toBeUndefined();
+  });
+
   test("forks a thread through the requested completed turn", async () => {
     const client = new FakeAppServerClient();
     client.forkResult = {

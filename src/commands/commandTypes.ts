@@ -10,6 +10,7 @@ export type Command =
   | { type: "sessions"; searchTerm?: string }
   | { type: "switch"; sessionId?: string }
   | { type: "agent"; agent?: string }
+  | { type: "archive"; sessionId?: string }
   | { type: "stop" }
   | { type: "status"; sessionId?: string }
   | { type: "goal"; action: "show" }

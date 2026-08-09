@@ -1,7 +1,8 @@
 import type { Command } from "./commandTypes.js";
 
-const COMMAND_NAMES = [
+export const COMMAND_NAMES = [
   "agent",
+  "archive",
   "dir",
   "fork",
   "forkgroup",
@@ -76,6 +77,10 @@ export class CommandRouter {
         return args[0] ? { type: "switch", sessionId: args[0] } : { type: "switch" };
       case "agent":
         return args[0] ? { type: "agent", agent: args[0] } : { type: "agent" };
+      case "archive":
+        rejectOptions("/archive", args);
+        if (args.length > 1) throw new Error("/archive 只接受一个可选的任务序号或任务 ID。");
+        return args[0] ? { type: "archive", sessionId: args[0] } : { type: "archive" };
       case "stop":
         return { type: "stop" };
       case "status":

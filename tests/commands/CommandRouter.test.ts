@@ -68,6 +68,14 @@ describe("CommandRouter", () => {
     expect(router.parse("/status sess_1")).toEqual({ type: "status", sessionId: "sess_1" });
   });
 
+  test("parses archive with an optional task reference", () => {
+    expect(router.parse("/archive")).toEqual({ type: "archive" });
+    expect(router.parse("/archive 2")).toEqual({ type: "archive", sessionId: "2" });
+    expect(router.parse("/archive 019f-thread")).toEqual({ type: "archive", sessionId: "019f-thread" });
+    expect(() => router.parse("/archive 1 extra")).toThrow("只接受一个");
+    expect(() => router.parse("/archive --force")).toThrow("不支持参数");
+  });
+
   test("parses goal lifecycle commands", () => {
     expect(router.parse("/goal")).toEqual({ type: "goal", action: "show" });
     expect(router.parse("/goal 完成迁移并通过全部测试")).toEqual({

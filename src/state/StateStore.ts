@@ -743,6 +743,25 @@ export class StateStore {
       );
   }
 
+  archiveSession(localSessionId: string): void {
+    const now = new Date().toISOString();
+    const archive = this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE sessions
+        SET status = 'closed', updated_at = ?
+        WHERE local_session_id = ?
+      `).run(now, localSessionId);
+      this.db.prepare(`
+        UPDATE user_contexts
+        SET current_session_id = CASE WHEN current_session_id = ? THEN NULL ELSE current_session_id END,
+            previous_session_id = CASE WHEN previous_session_id = ? THEN NULL ELSE previous_session_id END,
+            updated_at = ?
+        WHERE current_session_id = ? OR previous_session_id = ?
+      `).run(localSessionId, localSessionId, now, localSessionId, localSessionId);
+    });
+    archive();
+  }
+
   updateRuntimeSession(
     localSessionId: string,
     patch: Partial<

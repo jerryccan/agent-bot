@@ -162,6 +162,43 @@ describe("StateStore runtime metadata", () => {
     });
   });
 
+  test("archives a task and clears every current or previous context reference", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.getOrCreateUserContext("chat_id:first", "codex");
+    store.getOrCreateUserContext("chat_id:second", "codex");
+    store.createSession({
+      localSessionId: "archived",
+      contextKey: "chat_id:first",
+      agentName: "codex",
+      cwd: directory,
+      status: "ready",
+    });
+    store.createSession({
+      localSessionId: "remaining",
+      contextKey: "chat_id:second",
+      agentName: "codex",
+      cwd: directory,
+      status: "ready",
+    });
+    store.setCurrentSession("chat_id:first", "archived");
+    store.attachSessionToContext("chat_id:second", "archived");
+    store.setCurrentSession("chat_id:second", "archived");
+    store.setCurrentSession("chat_id:second", "remaining");
+
+    store.archiveSession("archived");
+
+    expect(store.getSession("archived")?.status).toBe("closed");
+    expect(store.getUserContext("chat_id:first")?.currentSessionId).toBeUndefined();
+    expect(store.getUserContext("chat_id:second")).toMatchObject({
+      currentSessionId: "remaining",
+      previousSessionId: undefined,
+    });
+  });
+
   test("allocates persistent fork title sequences by root title", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
