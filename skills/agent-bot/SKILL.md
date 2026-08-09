@@ -1,262 +1,181 @@
 ---
 name: agent-bot
-description: Initialize Agent Bot, detect and work safely inside its runtime, and manage the local service and its App Server or ACP sessions through the agentbot CLI. Use when an agent needs to adapt its behavior while running under Agent Bot, or when a user asks to initialize, inspect, start, safely restart, immediately restart, or stop Agent Bot; open its console UI; list, inspect, stop, rename, or send a prompt to tasks; create or fork Lark groups from tasks; check a scheduled restart; or troubleshoot the bot without manually killing worker processes.
+description: Use the agentbot CLI to inspect and safely manage Agent Bot, its profiles, service, tasks, groups, settings, Goals, Turns, files, and restarts. Use when running inside Agent Bot or when the user asks to initialize, inspect, control, troubleshoot, or restart Agent Bot.
 ---
 
 # Agent Bot
 
-Use the `agentbot` command as the supported control surface for Agent Bot. The legacy `agent-bot` command is deprecated and should not be used in new instructions or automation. Prefer structured status and control operations over direct process manipulation or database edits.
+Use `agentbot` as the supported control surface. The legacy `agent-bot` command is deprecated.
 
-## Detect the Agent Bot runtime
+## What Agent Bot Is
 
-Agent Bot injects `AGENT_BOT=1` into every configured Agent process it starts. Test for the exact value `1`:
+Agent Bot connects Feishu conversations to local coding Agents such as Codex and TraeX. Each Agent Bot task keeps its own Agent, project directory, conversation context, and execution settings, so work can continue from Feishu without direct access to the host computer.
 
-```powershell
-if ($env:AGENT_BOT -eq "1") { "running in Agent Bot" }
-```
+Source code: https://github.com/keyou/agent-bot
 
-```sh
-if [ "${AGENT_BOT:-}" = "1" ]; then echo "running in Agent Bot"; fi
-```
+Use Agent Bot when the user wants to:
 
-```js
-const runningInAgentBot = process.env.AGENT_BOT === "1";
-```
+- Continue or monitor a local Agent task from Feishu.
+- Keep work for different projects or conversations separate.
+- Create a fresh task or fork completed context into parallel work.
+- Change an Agent, model, reasoning level, permission mode, Goal, or queued Prompt.
+- Browse task files, send a file to Feishu, or run a command in the task directory.
+- Inspect, restart, initialize, or troubleshoot the Agent Bot service.
 
-```python
-import os
+## Detect Agent Bot
 
-running_in_agent_bot = os.environ.get("AGENT_BOT") == "1"
-```
-
-Treat this environment marker as authoritative. Do not infer Agent Bot execution merely because the CLI is installed, `~/.agent-bot` exists, or an Agent Bot process is running elsewhere. Configured agent environment variables cannot override the marker. Child processes normally inherit it, so the marker identifies the Agent Bot-started process tree unless a child explicitly replaces its environment.
-
-Agent Bot preserves ordinary parent-process variables but removes inherited and Agent-configured `FEISHU_*` and `AGENT_BOT_*` variables before starting an Agent. It then exposes only this controlled, non-secret context when values are available:
-
-```text
-AGENT_BOT_HOME
-AGENT_BOT_CONFIG
-AGENT_BOT_AGENT_NAME
-AGENT_BOT_LARK_APP_ID
-AGENT_BOT_LARK_BOT_OPEN_ID
-AGENT_BOT_LARK_USER_OPEN_ID
-```
-
-`AGENT_BOT_HOME` is the active Profile root. Never expect `FEISHU_APP_SECRET`, Supervisor state, restart reasons, or restart notification routes in the Agent environment.
-
-## Behave safely inside Agent Bot
-
-When `AGENT_BOT=1`:
-
-- Do not kill Agent Bot, its supervisor, or agent workers directly. For code changes that must be loaded by the running service, finish verification first and schedule a safe restart; never use an immediate restart from an active hosted task unless the user explicitly accepts interruption.
-- Keep repository contents limited to source and examples. Read user configuration and runtime state from the root selected by `AGENT_BOT_HOME`, defaulting to `~/.agent-bot`.
-
-## Initialize after installation
-
-Run initialization once after installing or linking the CLI:
+Agent Bot sets `AGENT_BOT=1` for every Agent process it starts. Treat that exact value as authoritative:
 
 ```powershell
-agentbot init
+$env:AGENT_BOT -eq "1"
 ```
 
-Initialization detects the supported Codex and TraeX CLIs and reports each installed version. Missing or outdated Agents are presented in one numbered maintenance list with their exact commands. In an interactive terminal, the user may enter comma-separated action numbers, `all`, or press Enter to skip maintenance. A failed maintenance command or the absence of an interactive terminal does not block the remaining initialization. Do not select maintenance actions on the user's behalf without permission. Agent Bot uses the latest stable Codex release and the TraeX Alpha channel for these checks.
+Do not infer Agent Bot execution from an installed CLI, a running service, or the presence of `~/.agent-bot`.
 
-After the maintenance choice, a first fresh interactive initialization and every explicit `--reset` ask which detected installed Agents to configure. Missing supported Agents are omitted. The user may select one or more by number or standard name; `all` or an empty answer selects all. Relay the choices and let the user decide. Agent Bot removes unselected Agent definitions from the newly generated Profile. One selected Agent becomes the default automatically; multiple selected Agents produce a second number-or-name prompt for `defaults.agent`. Later upgrades and refreshes preserve the existing Agent list and default without either prompt, including custom configured Agents. A non-interactive first initialization or reset configures all detected installed Agents and chooses the template default when available, otherwise the first detected Agent. With `--json`, read the final list from `configuredAgents`, each supported inspection's `configured` flag, and `defaultAgent.name` plus `defaultAgent.status`.
+## Work Safely
 
-Initialization creates the Agent Bot home, `config.yaml`, `.env`, `data/`, and `logs/` from the bundled examples. If Feishu credentials are absent, it starts Feishu one-click app registration, prints a QR code followed by its authorization URL, waits for the user to approve the request, and stores the returned app ID and secret in `.env`. It then audits the app's currently published tenant permissions, event subscriptions, and callbacks. Core and optional missing items produce separate configuration challenges. Core configuration is polled until ready, except that the manually configured all-group-message permission may be explicitly skipped with `Y`. For optional configuration, the CLI prints the QR code followed by the authorization URL and immediately waits up to five minutes for activation. The only terminal choice is also `Y`, which skips optional authorization and continues initialization.
+When running inside Agent Bot:
 
-An existing app may have complete credentials but no `FEISHU_USER_OPEN_ID`. In that state, ask the user to send the bot a direct message. Agent Bot atomically persists the first valid private-chat sender to the Profile `.env`; group messages and later users cannot replace it. This identity is needed for startup-notification fallback and CLI-created group invitations.
+- Use `agentbot` commands instead of killing workers, supervisors, or child processes.
+- Prefer task IDs over titles. Use `task current --json` or `task list` before acting.
+- Use the same `--profile <directory>` on every command when managing an isolated profile.
+- Prefer `--json` when another tool or Agent will consume the output.
+- Do not edit the Agent Bot SQLite database or runtime files directly.
+- Verify code changes before scheduling a restart.
 
-Rerun `agentbot init` after upgrading Agent Bot. It non-destructively upgrades an existing `config.yaml` by adding settings missing from the current bundled template while preserving user values, comments, custom Agents, and intentionally omitted template Agents. It also appends active variables missing from the bundled `.env.example` without changing existing values, comments, line endings, or enabling commented optional variables. It repeats the Agent version checks and Feishu configuration audit. If the selected Profile server is already running, initialization schedules a safe restart so the current installed code and refreshed configuration take effect after active work finishes. Invalid YAML is left untouched and reported as an error. Use `init --reset` only for an explicitly requested full Profile reset.
-
-Core messaging configuration includes `im:message.group_msg`, not merely the narrower group-mention scope. Accept `im:message.group_msg:readonly` when an existing app version reports that alias. Feishu cannot add `im:message.group_msg` through the one-click launcher, so Agent Bot excludes it from `addons` and prints a QR code plus a direct filtered Developer Console permission-page URL. The user should add the permission manually, publish the app version, and complete tenant approval if required. Entering `Y` skips only this permission wait and continues with a partial configuration; the bot then cannot respond to ordinary group messages that do not mention it.
-
-Initialization always requests all-user group-message delivery. The runtime option `feishu.respondToOwnerOnly` defaults to `true` and accepts only messages and card actions whose user Open ID matches `feishu.userOpenId`; all other users are ignored before reactions or task processing. Set it to `false` only when the owner wants collaborators to use the bot. With owner-only mode enabled, a missing `FEISHU_USER_OPEN_ID` blocks all Feishu user input until the owner is configured. The separate `feishu.respondToAllGroupMessages` option defaults to `true`; setting it to `false` additionally requires the owner to mention the current bot in groups. Owner private messages are unaffected.
-
-After Feishu initialization succeeds, `init` releases its initialization lock and automatically starts the selected profile's server, waiting until it is ready. It does not create another supervisor when that profile is already running. `init --skip-feishu` is the exception: it prepares Console-only files and does not start the server. With `--json`, inspect `server.status` for `started`, `already-running`, or `skipped`.
-
-When running `init` on the user's behalf, relay every exact authorization, incremental-configuration, and manual permission-page URL and let the user complete it in their own browser. For `im:message.group_msg`, explicitly tell the user to add the filtered permission and publish the app version, or offer to enter `Y` when they intentionally accept mention-only group behavior. Optional polling starts automatically after the link is shown. Do not enter `Y` for either prompt unless the user explicitly asks to skip; there is no separate accept action. Optional capabilities such as group creation, group-title synchronization, reactions, images, and card actions never block initialization when skipped, timed out, or still unavailable; relay the final affected-feature warnings. In a non-interactive terminal, skip input is unavailable. None of the URLs contains the app secret, and the secret itself is never printed.
-
-Existing complete Feishu credentials are preserved but still audited and repaired when needed. Missing or incomplete credentials mean app creation did not complete, so a later `init` starts a new registration instead of resuming the previous device code. Once both credentials are durably saved, an interrupted permission audit resumes against the same remote app. `init` also holds a local lock to prevent concurrent registrations. Use `agentbot init --skip-feishu` only for console-only initialization because it skips both registration and configuration auditing. Use `agentbot init --reconfigure-feishu` only when the user explicitly wants to replace existing complete credentials. The command respects `AGENT_BOT_HOME`, `AGENT_BOT_CONFIG`, and `--config <path>`. Use `agentbot init --json` when structured final output helps.
-
-Use `agentbot --profile <directory> init --reset` only when the user explicitly requests a full Profile reset. `--profile` is mandatory even for the primary Profile, and its server must be stopped first. The command moves the active `config.yaml`, `.env`, `data/`, and `logs/` into a new timestamped `.reset-backups` directory, retains all older backups and unrelated files, then initializes a clean Profile. Relay the reported backup path. Do not delete `.reset-backups`; it may contain old credentials and task data. `--reset --skip-feishu` is valid for a clean Console-only Profile, but `--reset` cannot be combined with `--reconfigure-feishu`.
-
-For an isolated secondary bot, pass its profile directory explicitly on every command:
-
-```powershell
-agentbot --profile ~/.agent-bot-rescue init
-agentbot --profile ~/.agent-bot-rescue server status
-```
-
-No `--profile` selects the main profile at `~/.agent-bot` by default. `--profile <directory>` selects that directory's `config.yaml`, `.env`, data, logs, and local control endpoint and propagates the selection to the supervisor and worker. Alternative profiles are not registered by name. Do not combine `--profile` with `--config`.
-
-## Start with inspection
-
-Verify the CLI and current service state before changing anything:
+## Inspect First
 
 ```powershell
 agentbot --version
-agentbot --help
 agentbot server status
+agentbot task current --json
 agentbot task list
 ```
 
-Agent Bot CLI interface text follows the system locale: locales beginning with `zh` use Chinese, while English and unsupported locales use English. JSON output is not localized. `agentbot server status` reports the running profile's Lark App ID and each configured Agent process's PID and initialized version. With `--json`, read them from `feishuAppId` and `agents`; an Agent that has not started has `null` process fields.
+`task current` identifies the task invoking the CLI from an Agent Bot-started Codex or TraeX process. If it cannot resolve one task, use an explicit ID from `task list`.
 
-Add `--json` to status and list commands when machine-readable output helps. If `agentbot` is unavailable, report that the CLI is not installed or linked instead of guessing process state.
+Task references may be a list number, a full task ID, or an unambiguous ID prefix.
 
-By default Agent Bot stores user-owned configuration and runtime state in `~/.agent-bot`: config at `~/.agent-bot/config.yaml`, environment variables at `~/.agent-bot/.env`, SQLite state at `~/.agent-bot/data/agent-bot.sqlite`, logs at `~/.agent-bot/logs/agent-bot.log`, and inbound image cache next to the SQLite database. `AGENT_BOT_HOME` changes this root. Prefer `--profile <directory>` when controlling a complete isolated instance; use `--config <path>` only when selecting a non-default configuration without changing the whole profile.
+## Manage Tasks
 
-## Manage the service
+Use these common commands:
 
-Use these commands:
+```powershell
+agentbot task status <task>
+agentbot task prompt <task> "<prompt>"
+agentbot task queue <task> "<prompt>"
+agentbot task stop <task>
+agentbot task archive <task>
+agentbot task title <task> "<title>"
+```
+
+- `prompt` posts the Prompt to the task's Feishu conversation before submitting it.
+- `queue` creates a later turn instead of steering the active turn. `nosteer` is an alias.
+- `stop` requests an Agent interrupt; it does not kill the Agent process.
+
+Create or branch work in the same conversation:
+
+```powershell
+agentbot task new <task> [title] [--agent <name>] [--dir <cwd> | --nodir]
+agentbot task fork <task>
+agentbot task switch <task> [target-task]
+```
+
+Create a separate Feishu group:
+
+```powershell
+agentbot task newgroup <task> [title] [--agent <name>] [--dir <cwd> | --nodir]
+agentbot task forkgroup <task> [title]
+```
+
+Choose `new` or `newgroup` for fresh context. Choose `fork` or `forkgroup` when the new task must retain conversation history through the latest completed Turn. Forking must not interrupt an active source turn.
+
+## Change Settings
+
+```powershell
+agentbot task agent <task> [name]
+agentbot task provider <task> [provider]
+agentbot task model <task> [model]
+agentbot task thinking <task> [effort]
+agentbot task permissions <task> [auto|confirm]
+```
+
+Omit the value to inspect the current setting and available choices. `agent` changes the default Agent for future tasks in that conversation. The other settings affect the specified task from its next request.
+
+## Goals And Turns
+
+```powershell
+agentbot task goal <task>
+agentbot task goal <task> "<objective>"
+agentbot task goal <task> pause|resume|clear
+agentbot task goal <task> edit "<objective>"
+agentbot task turns <task>
+agentbot task reset <task> <turn-id>
+```
+
+Use `turns` to obtain a real Turn ID before `reset`. Reset changes conversation context only; it does not revert local files.
+
+## Files And Local Commands
+
+```powershell
+agentbot task dir <task> [directory]
+agentbot task file <task> <path>
+agentbot task shell <task> "<command>"
+```
+
+Paths are resolved from the selected task's working directory; `~` means the operating-system user's home directory. `file` sends the file to the task's Feishu conversation. `shell` runs in the task directory.
+
+For group mention-only mode:
+
+```powershell
+agentbot task mute <task> on|off
+```
+
+## Manage The Service
 
 ```powershell
 agentbot server start
 agentbot server status
-agentbot server restart --task <current-task-id> --reason "reason for restart"
+agentbot server autostart enable|status|disable
+agentbot update --task <task>
+agentbot server restart --task <task> --reason "<reason>"
 agentbot server stop
 ```
 
-Treat `server restart` as the normal restart path. It schedules a safe restart and waits for active tasks, pending final-message delivery, and a quiet inbound-message window. The first safe-restart status card is delayed by three seconds so the active task's final response can usually be delivered first; this presentation delay does not postpone scheduler polling. While the restart is pending, its status card has a bottom `Cancel` button that conditionally cancels that exact schedule and updates the card in place.
+`update` is only for npm-installed Agent Bot packages. It verifies the new package before waiting for a safe service stop and automatically restores the prior version if activation fails. It refuses source checkouts and `npm link` installations.
 
-When scheduling from an Agent Bot-hosted task, pass `--task <current-task-id>`. This adds the task's exact Lark conversation, including its topic, to the pending restart's notification set. Every conversation that triggers the same pending restart plus every conversation active during the previous minute receives its own status card and restarting acknowledgement. Once enrolled, a route remains in the set until that restart ends; repeated routes are deduplicated. Resolve the current ID with `agentbot task list --status running` when necessary. If `--task` is omitted, the Server infers a target only when all running tasks belong to one conversation and rejects the request when multiple running conversations make ownership ambiguous. Startup cards are service-wide notices: every known private chat receives one on every startup, groups receive one when active in the previous minute or enrolled for the current safe restart, and topic routes receive the card in their parent group rather than inside the topic.
+Autostart is Profile-specific. Use `server autostart enable` for login startup, `server autostart enable --linger` on Linux only when the user explicitly requests startup before login, and `server autostart disable` to remove registration without stopping the current Server. Disabling Agent Bot autostart must not disable Linux user lingering because other services may use it.
 
-On Windows, initial start, safe or immediate replacement, and every crash-driven Worker launch reload the latest Machine and User environment variables. After changing `PATH` or installing a CLI shim, finish the current work and use the normal restart path. Agent Bot keeps `AGENT_BOT_*` and `FEISHU_*` process-local so Profile selection and bot credentials do not leak between isolated instances.
+Use safe restart by default. Pass `--task` when calling from a hosted task so restart notifications return to the correct Feishu conversation. Use `--immediate` or `task restart <task> --force` only when the user explicitly accepts interruption.
 
-In Feishu, `/restart` schedules the same safe restart. Use `/restart --force` only when the user explicitly accepts interruption; the command accepts no other arguments.
+Never use `taskkill`, `Stop-Process`, or equivalent commands for routine restart management.
 
-Use `agentbot server restart --immediate` only when the user explicitly requests an immediate restart or accepts interruption. Never use `taskkill`, `Stop-Process`, or equivalent commands for routine Agent Bot restart management.
-
-`agentbot console` opens the console UI only when the service is stopped. Do not use `--force` while the service is live unless the user explicitly accepts concurrent state access.
-
-When a startup card says the Worker exited and the supervisor restarted it, inspect the selected profile's persisted crash evidence before guessing at a cause:
-
-- `data/last-crash.json` for PID, exit code, uptime, restart delay, and linked report paths
-- `logs/supervisor.log` for the restart timeline
-- `logs/worker.stderr.log` for Node/V8 fatal output
-- `data/crash-reports/report.*.json` for Node diagnostic reports
-
-Normal safe restarts and explicit stops do not overwrite the latest crash record. Every explicit profile keeps its own diagnostic files; use the same `--profile <directory>` selection when correlating service status with those paths.
-
-## Manage tasks
-
-List tasks before resolving a numeric reference because task numbers follow the current list order:
+## Initialize And Select Profiles
 
 ```powershell
-agentbot task list
-agentbot task current [--json]
-agentbot task chat <number-or-task-id> [--json]
-agentbot task status <number-or-task-id>
-agentbot task stop <number-or-task-id>
-agentbot task title <number-or-task-id> <new-title>
-agentbot task prompt <number-or-task-id> <prompt>
-agentbot task newgroup <number-or-task-id> [title] [--agent <standard-name>] [--dir <cwd> | --nodir] [--json]
-agentbot task forkgroup <number-or-task-id> [title] [--json]
+agentbot init
+agentbot --profile ~/.agent-bot-rescue init
+agentbot --profile ~/.agent-bot-rescue server status
 ```
 
-Task IDs may be supplied in full or as an unambiguous prefix. Use `task stop` to ask the running worker to send the App Server Interrupt signal; leave child-process lifecycle management to the selected Agent.
+Initialization prepares configuration, checks supported Agents, configures Feishu, and starts the server. Relay authorization links and wait for the user; never skip authorization or choose maintenance actions without permission.
 
-Read all task identity fields from `task list`: every entry shows its Agent and `AgentBot task ID`; App Server tasks also show `App Server thread ID`, while ACP tasks show `ACP session ID`. The status, title, conversation context, and update time remain visible. The CLI reads `CODEX_THREAD_ID` for Codex and `TRAECLI_THREAD_ID` for TraeX; when the available native Thread IDs identify one task, it marks that entry as `Current`. Use `task current` to print that task's details directly. Use any displayed full ID or an unambiguous prefix as a task reference. With `--json`, read the local and native values from `localSessionId`, `remoteSessionId`, and `acpSessionId`.
+Use `init --reset` only for an explicitly requested full reset and always with an explicit `--profile`. It preserves backups under `.reset-backups`.
 
-Use `task chat <number-or-task-id>` to read the Feishu chat ID associated with a task from local routing state. Plain output is only the chat ID for scripting. Add `--json` to include the stable task ID, complete context key, and the thread ID for a topic-bound task. This read-only command does not require the Agent Bot server to be running.
+## After Code Changes
 
-Use `task prompt` to send input to a specific task without changing any chat's current task. The bot first posts the Prompt text to the task's existing Feishu chat, thread, or private-chat route, then submits it to the task. If posting fails, the task is not started or steered. The thinking card and final response continue to the same route; the command line only reports whether the Prompt was accepted.
-
-### Create or fork a group from the CLI
-
-Choose by whether the new task needs the source conversation:
-
-- Use **New Group** for a fresh task in a separate private Lark group. Inherit the project and execution settings, but do not carry over prior turns. Use it for a separate assignment in the same codebase or for a different project or Agent.
-- Use **Fork Group** to continue or parallelize work with the source task's conversation through a completed turn. Preserve that context in a separate private Lark group.
-
-Both operations create and bind the destination task immediately. Neither interrupts the source task nor changes the source chat's current task.
-
-When creating or forking from the task that is currently running this Skill, run `agentbot task current --json` first and pass its `localSessionId` as `<number-or-task-id>`. The command resolves Codex through `CODEX_THREAD_ID` and TraeX through `TRAECLI_THREAD_ID`, while preferring the only running match when another Agent's variable was inherited from a parent process. If the command cannot identify one task, ask for an explicit AgentBot task ID instead of guessing from list order, title, or project directory.
-
-List tasks first, identify the intended source explicitly, then run one of these commands:
+Run the relevant checks, then build:
 
 ```powershell
-agentbot task list
-
-# Fresh task: inherit the source Agent, project, and execution settings.
-agentbot task newgroup <number-or-task-id> "Review"
-
-# Fresh task: override the inherited project directory.
-agentbot task newgroup <number-or-task-id> "Review" --dir ~/dev/project
-
-# Fresh task: use a Projectless App Server workspace.
-agentbot task newgroup <number-or-task-id> "Question" --nodir
-
-# Fresh task: use another configured Agent and that Agent's defaults.
-agentbot task newgroup <number-or-task-id> "Review" --agent traex
-
-# Context-preserving branch from the source task.
-agentbot task forkgroup <number-or-task-id> "Parallel review"
+npm run typecheck
+npm test
+npm run build
 ```
 
-Apply these New Group rules:
-
-- Treat `<number-or-task-id>` as the source context; never substitute the shell's current working directory for its project directory.
-- With neither `--dir` nor `--nodir`, inherit the source project. If it is Projectless, create a fresh Projectless workspace rather than reusing its generated directory.
-- Resolve `~`, `~/...`, and `~\...` in `--dir <cwd>` from the user's home directory. Reject combining `--dir` with `--nodir`.
-- Allow `--nodir` only for an App Server Agent.
-- With no `--agent`, inherit the source Agent, Provider, model, reasoning effort, and permission mode. With `--agent <standard-name>`, preserve the selected project shape but use the selected Agent's runtime defaults. `--agent` is a CLI-only New Group option.
-
-Apply these Fork Group rules:
-
-- Fork the latest available completed turn and preserve its conversation context. Never include or interrupt a newer active turn. Reject the request when no completed turn is available.
-- Keep the source Agent, project, Provider, model, reasoning effort, and permission mode. Fork Group does not accept Agent or project overrides; use New Group when those must change.
-- Use the optional title as the destination task title and group suffix.
-
-Require a running Server for either CLI command. Require `FEISHU_USER_OPEN_ID` so the Server can invite the saved authorizing user; the CLI has no Lark operator identity of its own. Add `--json` when the caller needs `group.chatId`, `group.contextKey`, or the created task IDs.
-
-Name a New Group without an explicit title as `[agent] [project directory] 新任务 (mm-dd)`, or `[agent] 新任务 (mm-dd)` when Projectless. Name an untitled Fork Group with the source task's persistent `source title（分支 N）` sequence, without a date suffix. Cap the displayed Lark group name at 60 characters by truncating only the group title portion; preserve the complete Agent Bot task title. Do not automatically send a Sessions or Status card to the destination group. Send a welcome message that reports Provider, model, reasoning effort, and permission mode.
-
-Give every created group a deterministic scheme-C Identicon avatar. Display the first word for Latin project names or up to four characters for Chinese names, and hash the normalized full project path into the palette and symmetric node pattern. Use the title as the stable seed for Projectless groups. Replace the user's home prefix with `~` in the group-name project segment. Limit that segment to 15 characters, preferring the final two directories, then the final directory, and only then tail truncation. Use `\` on Windows and `/` on macOS/Linux.
-
-Use `/queue <prompt>` in Feishu to persist a separate follow-up Prompt instead of steering the active turn. Queued Prompts run in FIFO order after the current turn completes and survive Agent Bot restarts. `/nosteer <prompt>` is an equivalent compatibility spelling.
-
-Topics created from a persisted Agent Bot user message, thinking card, or final response automatically fork that source turn on first use. A topic whose root or parent cannot be mapped to a persisted Agent Bot turn starts independently, including topics that quote ordinary messages, command replies, or error messages: its first ordinary Prompt creates a fresh task, `/new` explicitly creates one, and `/status` reports the empty topic without requiring a fork anchor. Explicit `/forkgroup` still requires a valid source turn when the topic has no bound task.
-
-For a long-running objective in the active Feishu task, use `/goal <objective>`. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control automatic continuation, `/goal edit <objective>` to revise it, and `/goal clear` to remove it. Stopping a Goal turn through Agent Bot also pauses the Goal before sending Interrupt so it does not immediately continue.
-
-Use `/agent` in Feishu to open the unified execution-settings card on its Agent tab and `/agent <name>` to directly select the default agent. The Agent tab is present only when multiple agents are configured and remains usable before the chat has a current task. When only one Agent is configured, `/agent` reports that current Agent directly instead of sending a card. Agent selection affects future tasks and does not replace the Agent of an existing task; use `/new` after selecting when a new task is needed.
-
-Use `/new [title] --nodir` to force a new App Server Projectless task even when the current task belongs to a project. `--nodir` and `--dir <cwd>` are mutually exclusive; omitting both preserves the normal project-shape inheritance behavior.
-
-Use `/dir [path]` in Feishu to open the local file browser with 15 entries per page. Without a path it starts in the current task directory; resolve relative paths from that directory and `~` from the operating-system user's home directory. Directory names navigate within the same card, while file names upload and send the selected file to the current conversation. On Windows, selecting `..` at a drive root opens the virtual drive list. Every visible directory, including the current directory, has `New` and `NewGroup` actions: `New` behaves like `/new --dir <selected-directory>`, while `NewGroup` behaves like `/newgroup --dir <selected-directory>`, including Agent and execution-setting inheritance. `Previous` and `Next` update the existing card instead of sending another browser card.
-
-The Feishu `/sessions` card is titled `任务列表`, groups tasks by project, and shows ten compact, collapsed task rows per page. Each project row has `New` and `NewGroup`; they inherit the current, active, or most recent task in that project and create work in the same project directory. Click a task row to expand its status, Agent, task ID, directory, and task-level actions. `Previous` and `Next` update the same card; they never expand earlier pages into one long card. `Fork` switches the current chat to a branch, while `ForkGroup` binds the branch to a newly created private group; both fork actions use the selected task's latest available completed turn without interrupting an active turn.
-
-Use `/fork [number-or-task-id]` in Feishu to branch from the current or specified App Server task and switch to the new branch. If the source task is running, Agent Bot forks from its latest completed turn and leaves the active turn running; it rejects only when the task has no completed turn yet. Every fork request sends `excludeTurns: true` to the App Server so the response omits populated turns without removing turns from the forked history. Older App Servers that explicitly reject this experimental field are retried once without it; ambiguous failures such as timeouts or disconnects are not retried.
-
-Successfully completed Feishu thinking cards include a bottom `Reset` action followed by its compact warning. `/turns` opens the current task's completed-turn history with the Reset-effect warning at the top and 10 turns per page. It renders each entry as an indented numbered node in a commit graph whose lanes follow persisted parent turns, including Reset branches and merges across page boundaries. A successful Reset refreshes that card in place, moves the current marker to the selected turn, and sends a confirmation containing the target Prompt summary, completion time, and Turn ID. Reset forks the selected turn's original App Server thread through that turn and replaces the current task's remote thread binding in place, preserving the local task ID, title, Agent, project directory, execution settings, and chat route. Completed snapshots after the selected point remain visible together with later turns from the new branch. Reset is available only when the card still belongs to the current task and the task is idle. It restores conversation context only and never reverts local files.
-
-Feishu thinking cards use `feishu.thinkingCardLayout: grouped` by default. The grouped layout keeps Commentary and user steering visible and groups native reasoning and tools until the next Commentary. Execution panels default to collapsed and retain stable component IDs so Feishu can preserve a user's manual expansion across updates. Long turns paginate complete rendered tool panels from the newest end according to their UTF-8 JSON size and component count, not fixed message or tool counts; grouped history retains all stored native reasoning, commands, results, and images. Use `timeline` only as a temporary rollback to the unchanged original layout and its 40-activity pages.
-
-Status cards include a `Refresh` action that reads the latest task state and updates the same card in place without switching tasks or sending another card.
-
-Use `/agent`, `/provider`, `/model`, `/thinking`, or `/permissions` in Feishu to open the same interactive Card 2.0 execution-settings card with the corresponding tab active. The card exposes Provider, Model, Thinking, and Permission tabs whenever a current task exists, plus an Agent tab when multiple agents are configured. Each non-current option has an English `Switch` action. Selecting an option refreshes the same card in place. Agent changes affect future tasks; the other settings apply from the next request. Model changes automatically choose a compatible reasoning effort when necessary.
-
-If the current runtime has no alternative Provider, `/provider` reports the current Provider directly instead of opening the settings card. Apply the same rule to `/agent` when only one Agent is configured.
-
-These four settings commands do not accept arguments. Never instruct a user to send a Provider, model, reasoning effort, or permission value after the command; direct them to the card callbacks instead.
-
-Keep action labels placed to the right of card content or at the bottom of a card in English. Buttons above the main card content, such as activity-history navigation, may remain in Chinese.
-
-Messages whose trimmed text starts with `/` are always parsed as Agent Bot commands. Command names accept unique prefixes, such as `/sess` for `/sessions`. Compound commands also accept registered initialisms: `/fg` for `/forkgroup`, `/ng` for `/newgroup`, and `/ns` for `/nosteer`. Exact command names take priority; ambiguous matches are rejected and list every matching command. Unknown slash commands are reported to the user with a `/help` hint and must never fall through to the model, including slash-prefixed messages that also contain images.
-
-When a group body has a current task, renaming the Feishu group to `[agent-name] [project directory] new title` also renames that current task if the Agent prefix matches the task's configured agent. Only `new title` is written to the task; the Agent and project-directory prefixes remain group metadata. The older `[agent-name] new title` shape remains supported. Malformed names, agent mismatches, empty groups, and thread-specific tasks are ignored.
-
-Use `--context <key>` or `--status <status>` to narrow `task list`. Use `--profile <directory>` before the command when controlling an isolated Agent Bot instance, or `--config <path>` for only a non-default configuration.
-
-## Apply code changes safely
-
-After changing Agent Bot code, run the relevant tests, typecheck, and build. If a running service must pick up the result, schedule:
+If the running service must load the changes, schedule a safe restart only after verification:
 
 ```powershell
-agentbot server restart --task <current-task-id> --reason "brief description of the completed change"
+agentbot server restart --task <current-task-id> --reason "<brief reason>"
 ```
 
-Do not replace the worker immediately while a task is active. A later incoming task must not cancel the pending safe restart; allow the scheduler to wait until the service becomes safely idle again.
+Use `agentbot --help` for less common options and command details.
