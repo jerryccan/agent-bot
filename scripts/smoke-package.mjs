@@ -143,6 +143,39 @@ try {
     }
   }
 
+  const globalPrefix = path.join(temporaryRoot, "global-prefix");
+  const globalEnvironment = {
+    ...process.env,
+    AGENT_BOT_HOME: path.join(temporaryRoot, "global-home"),
+    NPM_CONFIG_PREFIX: globalPrefix,
+    npm_config_prefix: globalPrefix,
+  };
+  delete globalEnvironment.AGENT_BOT_CONFIG;
+  delete globalEnvironment.AGENT_BOT_EXPLICIT_PROFILE;
+  runNpm([
+    "install",
+    "--global",
+    "--no-audit",
+    "--no-fund",
+    path.join(temporaryRoot, tarballName),
+  ], temporaryRoot, globalEnvironment);
+  const globalModulesRoot = runNpm(["root", "--global"], temporaryRoot, globalEnvironment).stdout.trim();
+  const globalPackageRoot = path.join(globalModulesRoot, ...packageJson.name.split("/"));
+  const globalUpdateResult = run(
+    process.execPath,
+    [path.join(globalPackageRoot, "dist", "cli.js"), "update", "--version", packageJson.version, "--json"],
+    temporaryRoot,
+    globalEnvironment,
+  );
+  const globalUpdate = JSON.parse(globalUpdateResult.stdout);
+  if (
+    globalUpdate.status !== "current"
+    || globalUpdate.currentVersion !== packageJson.version
+    || globalUpdate.targetVersion !== packageJson.version
+  ) {
+    throw new Error(`Installed self-update check returned an unexpected result: ${globalUpdateResult.stdout}`);
+  }
+
   process.stdout.write(
     `Installed and initialized ${packageJson.name}@${packageJson.version} successfully.\n`,
   );
@@ -150,11 +183,11 @@ try {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
-function runNpm(args, cwd) {
+function runNpm(args, cwd, env = process.env) {
   const npmExecutable = process.env.npm_execpath;
   return npmExecutable
-    ? run(process.execPath, [npmExecutable, ...args], cwd)
-    : run("npm", args, cwd, process.env, process.platform === "win32");
+    ? run(process.execPath, [npmExecutable, ...args], cwd, env)
+    : run("npm", args, cwd, env, process.platform === "win32");
 }
 
 function installMockCodex(directory) {

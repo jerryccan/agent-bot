@@ -8,8 +8,16 @@ import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.
 import {
   controlEndpoint,
   type ControlResponse,
+  type TaskAgentControlData,
+  type TaskDirectoryControlData,
+  type TaskForkControlData,
+  type TaskGoalControlData,
   type TaskGroupControlData,
+  type TaskMuteControlData,
+  type TaskSettingsControlData,
+  type TaskShellControlData,
   type TaskStatusControlData,
+  type TaskTurnsControlData,
 } from "./cli/controlProtocol.js";
 import {
   acquireInitializationLock,
@@ -78,12 +86,14 @@ import {
   currentAppServerThreadIds,
   formatTaskList,
   resolveCurrentTask,
+  taskCurrentExternalInvocationMessage,
   taskStateLabel,
 } from "./cli/taskListOutput.js";
 import { isThreadContextKey } from "./feishu/contextKey.js";
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 import {
   parseTaskForkGroupOptions,
+  parseTaskNewOptions,
   parseTaskNewGroupOptions,
 } from "./cli/taskGroupOptions.js";
 import { StateStore, type SessionRecord } from "./state/StateStore.js";
@@ -93,6 +103,20 @@ import {
   resolveSupervisorDiagnosticsPaths,
 } from "./supervision/SupervisorDiagnostics.js";
 import { agentBotHome, defaultSqlitePath } from "./config/paths.js";
+import {
+  finalizeSelfUpdatePlan,
+  launchSelfUpdateRunner,
+  parseSelfUpdateOptions,
+  prepareSelfUpdate,
+  releaseSelfUpdatePlan,
+  requireNpmSelfUpdateInstallation,
+} from "./cli/SelfUpdater.js";
+import { createCurrentAutostartManager } from "./cli/AutostartManager.js";
+import {
+  formatAutostartStatus,
+  type AutostartServerStatus,
+  type CombinedAutostartStatus,
+} from "./cli/autostartOutput.js";
 
 const args = process.argv.slice(2);
 
@@ -119,6 +143,10 @@ async function main(input: string[]): Promise<void> {
     await initCommand(rest, parsed.configPath, Boolean(parsed.profilePath));
     return;
   }
+  if (command === "update") {
+    await updateCommand(rest);
+    return;
+  }
   if (command === "console") {
     await consoleCommand(rest);
     return;
@@ -139,6 +167,88 @@ async function main(input: string[]): Promise<void> {
     `Unknown command: ${command}. Run agentbot --help for usage.`,
     `未知命令：${command}。运行 agentbot --help 查看用法。`,
   ));
+}
+
+async function updateCommand(input: string[]): Promise<void> {
+  const options = parseSelfUpdateOptions(input);
+  requireNpmSelfUpdateInstallation();
+  const config = loadConfig();
+  const endpoint = controlEndpoint(config.storage.sqlitePath);
+  const serverRunning = await isServerReachable(endpoint);
+  if (!options.json) process.stdout.write(cliText(
+    "Checking the installed Agent Bot package and npm release channel...\n",
+    "正在检查已安装的 Agent Bot 包和 npm 发布通道……\n",
+  ));
+  const prepared = await prepareSelfUpdate({
+    channel: options.channel,
+    version: options.version,
+    allowDowngrade: options.allowDowngrade,
+  });
+  if (prepared.status === "current") {
+    if (options.json) printJson(prepared);
+    else process.stdout.write(cliText(
+      `Agent Bot ${prepared.currentVersion} is already current on the ${prepared.channel} channel.\n`,
+      `Agent Bot ${prepared.currentVersion} 已是 ${prepared.channel} 通道的当前版本。\n`,
+    ));
+    return;
+  }
+
+  const reason = cliText(
+    `Update Agent Bot from ${prepared.currentVersion} to ${prepared.targetVersion}`,
+    `将 Agent Bot 从 ${prepared.currentVersion} 更新到 ${prepared.targetVersion}`,
+  );
+  try {
+    const notificationSessionId = serverRunning
+      ? resolveRestartNotificationSessionId(
+          config.storage.sqlitePath,
+          options.taskReference ? ["--task", options.taskReference] : [],
+        )
+      : undefined;
+    finalizeSelfUpdatePlan(prepared.planPath, {
+      controlEndpoint: endpoint,
+      databasePath: config.storage.sqlitePath,
+      restartService: serverRunning,
+      workingDirectory: process.cwd(),
+      reason,
+      notificationSessionId,
+    });
+    if (serverRunning) {
+      ensureOk(await sendControlRequest(endpoint, {
+        action: "server_update",
+        planPath: prepared.planPath,
+        reason,
+        notificationSessionId,
+      }, 15_000));
+    } else {
+      launchSelfUpdateRunner(prepared.planPath, { waitPids: [process.pid] });
+    }
+  } catch (error) {
+    releaseSelfUpdatePlan(prepared.planPath);
+    throw error;
+  }
+
+  const result = {
+    status: serverRunning ? "scheduled" : "started",
+    fromVersion: prepared.currentVersion,
+    toVersion: prepared.targetVersion,
+    channel: prepared.channel,
+    serviceWasRunning: serverRunning,
+    logPath: prepared.logPath,
+    resultPath: prepared.resultPath,
+  };
+  if (options.json) printJson(result);
+  else {
+    process.stdout.write(serverRunning
+      ? cliText(
+          `Agent Bot ${prepared.targetVersion} is verified and ready. The update will run after active tasks finish and the server becomes idle.\n`,
+          `Agent Bot ${prepared.targetVersion} 已通过预检。更新将在活动任务完成且服务空闲后执行。\n`,
+        )
+      : cliText(
+          `Agent Bot ${prepared.targetVersion} is verified. Installation will continue after this command exits.\n`,
+          `Agent Bot ${prepared.targetVersion} 已通过预检。本命令退出后将继续安装。\n`,
+        ));
+    process.stdout.write(`${cliText("Update log: ", "更新日志：")}${prepared.logPath}\n`);
+  }
 }
 
 type FeishuInitializationStatus = "created" | "existing" | "skipped";
@@ -791,6 +901,10 @@ async function serverCommand(input: string[]): Promise<void> {
     printServerStartResult(await startServer(config));
     return;
   }
+  if (action === "autostart") {
+    await serverAutostartCommand(config, endpoint, rest);
+    return;
+  }
   if (action === "stop") {
     ensureOk(await sendControlRequest(endpoint, { action: "server_stop" }));
     process.stdout.write(cliText("Agent Bot server stop requested.\n", "已请求停止 Agent Bot 服务。\n"));
@@ -813,6 +927,64 @@ async function serverCommand(input: string[]): Promise<void> {
     return;
   }
   throw new Error(cliText(`Unknown server command: ${action}`, `未知的 server 命令：${action}`));
+}
+
+async function serverAutostartCommand(
+  config: ReturnType<typeof loadConfig>,
+  endpoint: string,
+  input: string[],
+): Promise<void> {
+  const actionIndex = input.findIndex((value) => !value.startsWith("--"));
+  const action = actionIndex < 0 ? "status" : input[actionIndex]!;
+  const rest = input.filter((_value, index) => index !== actionIndex);
+  const json = rest.includes("--json");
+  const linger = rest.includes("--linger");
+  const unsupported = rest.filter((value) => value !== "--json" && value !== "--linger");
+  if (unsupported.length > 0) throw new Error(cliText(
+    `Unsupported server autostart options: ${unsupported.join(" ")}`,
+    `不支持这些 server autostart 参数：${unsupported.join(" ")}`,
+  ));
+  if (action !== "enable" && linger) {
+    throw new Error(cliText(
+      "--linger can be used only with server autostart enable.",
+      "--linger 只能与 server autostart enable 一起使用。",
+    ));
+  }
+
+  const manager = createCurrentAutostartManager(config);
+  let registration;
+  if (action === "enable") {
+    registration = manager.enable({ linger });
+  } else if (action === "disable") {
+    registration = manager.disable();
+  } else if (action === "status") {
+    registration = manager.status();
+  } else {
+    throw new Error(cliText(
+      `Unknown server autostart command: ${action}`,
+      `未知的 server autostart 命令：${action}`,
+    ));
+  }
+
+  const result: CombinedAutostartStatus = {
+    registration,
+    server: await readAutostartServerStatus(endpoint),
+  };
+  if (json) printJson(result);
+  else process.stdout.write(formatAutostartStatus(result));
+}
+
+async function readAutostartServerStatus(endpoint: string): Promise<AutostartServerStatus> {
+  try {
+    const response = await sendControlRequest(endpoint, { action: "health" }, 1_500);
+    if (!response.ok) return { running: true, ready: false };
+    const data = response.data && typeof response.data === "object"
+      ? response.data as Record<string, unknown>
+      : {};
+    return { running: true, ready: data.ready !== false };
+  } catch {
+    return { running: false, ready: false };
+  }
 }
 
 function resolveRestartNotificationSessionId(sqlitePath: string, args: string[]): string | undefined {
@@ -857,6 +1029,10 @@ async function taskCommand(input: string[]): Promise<void> {
   const store = new StateStore(config.storage.sqlitePath);
   try {
     const allSessions = store.listAllSessions();
+    if (action === "help" || action === "--help" || action === "-h") {
+      printHelp();
+      return;
+    }
     if (action === "current") {
       const unsupported = rest.filter((value) => value !== "--json");
       if (unsupported.length > 0) throw new Error(cliText(
@@ -886,6 +1062,292 @@ async function taskCommand(input: string[]): Promise<void> {
         text,
       }, 60_000));
       process.stdout.write(cliText("Prompt submitted.\n", "提示词已提交。\n"));
+      return;
+    }
+    if (action === "new") {
+      const options = parseTaskNewOptions(rest);
+      const source = resolveTask(allSessions, options.reference);
+      const targetAgent = options.agentName ? config.agents[options.agentName] : undefined;
+      if (options.agentName && !targetAgent) throw new Error(cliText(
+        `Unknown Agent standard name: ${options.agentName}.`,
+        `未知的 Agent 标准名：${options.agentName}。`,
+      ));
+      if (options.projectless && targetAgent && targetAgent.kind !== "app-server") throw new Error(cliText(
+        "task new --nodir is only available for App Server agents.",
+        "task new --nodir 仅适用于 App Server Agent。",
+      ));
+      const created = controlData<SessionRecord>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_new",
+        localSessionId: source.localSessionId,
+        ...(options.title ? { title: options.title } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        ...(options.agentName ? { agentName: options.agentName } : {}),
+        ...(options.projectless ? { projectless: true } : {}),
+      }, 120_000));
+      if (options.json) printJson(created);
+      else printCreatedTask(created, "Task created");
+      return;
+    }
+    if (action === "fork") {
+      const [reference, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, options, ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task fork accepts only one task reference.",
+        "task fork 只接受一个任务引用。",
+      ));
+      const source = resolveTask(allSessions, reference);
+      const result = controlData<TaskForkControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_fork",
+        localSessionId: source.localSessionId,
+      }, 120_000));
+      if (options.includes("--json")) printJson(result);
+      else {
+        printCreatedTask(result.task, "Fork created");
+        process.stdout.write(`${cliText("Source turn: ", "来源 Turn：")}${result.sourceTurnId}\n`);
+      }
+      return;
+    }
+    if (action === "archive") {
+      const [reference, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, options, ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task archive accepts only one task reference.",
+        "task archive 只接受一个任务引用。",
+      ));
+      const session = resolveTask(allSessions, reference);
+      const archived = controlData<{
+        localSessionId: string;
+        remoteSessionId: string;
+        title: string;
+      }>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_archive",
+        localSessionId: session.localSessionId,
+      }, 60_000));
+      if (options.includes("--json")) printJson(archived);
+      else process.stdout.write(cliText(
+        `Task archived: ${archived.title} (${archived.remoteSessionId})\n`,
+        `任务已归档：${archived.title}（${archived.remoteSessionId}）\n`,
+      ));
+      return;
+    }
+    if (action === "switch") {
+      const [reference, ...switchArgs] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, switchArgs, ["--json", "--previous"]);
+      const previous = switchArgs.includes("--previous");
+      const targetReferences = switchArgs.filter((value) => !value.startsWith("--"));
+      if (targetReferences.length > 1) throw new Error(cliText(
+        "task switch accepts at most one target task.",
+        "task switch 最多接受一个目标任务。",
+      ));
+      const targetReference = targetReferences[0];
+      if (previous && targetReference) throw new Error(cliText(
+        "task switch cannot combine a target task with --previous.",
+        "task switch 不能同时指定目标任务和 --previous。",
+      ));
+      const anchor = resolveTask(allSessions, reference);
+      const target = targetReference ? resolveTask(allSessions, targetReference) : undefined;
+      const switched = controlData<SessionRecord>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_switch",
+        localSessionId: anchor.localSessionId,
+        ...(target ? { targetLocalSessionId: target.localSessionId } : {}),
+        ...(previous ? { previous: true } : {}),
+      }));
+      if (switchArgs.includes("--json")) printJson(switched);
+      else printCreatedTask(switched, "Current task");
+      return;
+    }
+    if (action === "queue" || action === "nosteer") {
+      const [reference, ...promptParts] = rest;
+      requireTaskCommandReference(action, reference);
+      const text = promptParts.join(" ").trim();
+      if (!text) throw new Error(cliText(
+        `task ${action} requires a Prompt.`,
+        `task ${action} 需要提示词。`,
+      ));
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<{ promptId: string; queued: number }>(await sendControlRequest(
+        controlEndpoint(config.storage.sqlitePath),
+        { action: "task_queue", localSessionId: session.localSessionId, text },
+      ));
+      process.stdout.write(cliText(
+        `Prompt queued (${result.queued} waiting): ${result.promptId}\n`,
+        `提示词已排队（当前 ${result.queued} 条）：${result.promptId}\n`,
+      ));
+      return;
+    }
+    if (action === "agent") {
+      const [reference, agentName, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, [agentName, ...options].filter((value): value is string => value !== undefined), ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task agent accepts at most one Agent name.",
+        "task agent 最多接受一个 Agent 名称。",
+      ));
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<TaskAgentControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_agent",
+        localSessionId: session.localSessionId,
+        ...(agentName && !agentName.startsWith("--") ? { agentName } : {}),
+      }));
+      const json = options.includes("--json") || agentName === "--json";
+      if (json) printJson(result);
+      else printTaskAgentSettings(result);
+      return;
+    }
+    if (["provider", "model", "thinking", "permissions"].includes(action)) {
+      const [reference, rawValue, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, [rawValue, ...options].filter((value): value is string => value !== undefined), ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        `task ${action} accepts at most one value.`,
+        `task ${action} 最多接受一个值。`,
+      ));
+      const value = rawValue && !rawValue.startsWith("--") ? rawValue : undefined;
+      const json = options.includes("--json") || rawValue === "--json";
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<TaskSettingsControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_settings",
+        localSessionId: session.localSessionId,
+        ...(value ? { setting: action as "provider" | "model" | "thinking" | "permissions", value } : {}),
+      }, 60_000));
+      if (json) printJson(result);
+      else printTaskSettings(result, action as "provider" | "model" | "thinking" | "permissions");
+      return;
+    }
+    if (action === "goal") {
+      const [reference, ...goalArgs] = rest;
+      requireTaskCommandReference(action, reference);
+      const json = goalArgs.includes("--json");
+      const args = goalArgs.filter((value) => value !== "--json");
+      rejectUnsupportedTaskOptions(action, goalArgs, ["--json"]);
+      const parsedGoal = parseTaskGoal(args);
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<TaskGoalControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_goal",
+        localSessionId: session.localSessionId,
+        goalAction: parsedGoal.action,
+        ...(parsedGoal.objective ? { objective: parsedGoal.objective } : {}),
+      }));
+      if (json) printJson(result);
+      else printTaskGoal(result);
+      return;
+    }
+    if (action === "turns") {
+      const [reference, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, options, ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task turns accepts only one task reference.",
+        "task turns 只接受一个任务引用。",
+      ));
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<TaskTurnsControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_turns",
+        localSessionId: session.localSessionId,
+      }, 60_000));
+      if (options.includes("--json")) printJson(result);
+      else printTaskTurns(result);
+      return;
+    }
+    if (action === "reset") {
+      const [reference, turnId, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      if (!turnId || turnId.startsWith("--")) throw new Error(cliText(
+        "task reset requires a Turn ID.",
+        "task reset 需要 Turn ID。",
+      ));
+      rejectUnsupportedTaskOptions(action, options, ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task reset accepts one task reference and one Turn ID.",
+        "task reset 只接受一个任务引用和一个 Turn ID。",
+      ));
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<SessionRecord>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_reset",
+        localSessionId: session.localSessionId,
+        turnId,
+      }, 120_000));
+      if (options.includes("--json")) printJson(result);
+      else process.stdout.write(cliText(`Task reset to turn ${turnId}.\n`, `任务已 Reset 到 Turn ${turnId}。\n`));
+      return;
+    }
+    if (action === "mute") {
+      const [reference, rawMode, ...options] = rest;
+      requireTaskCommandReference(action, reference);
+      rejectUnsupportedTaskOptions(action, [rawMode, ...options].filter((value): value is string => value !== undefined), ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task mute accepts at most one mode.",
+        "task mute 最多接受一个模式。",
+      ));
+      const mode = rawMode && !rawMode.startsWith("--") ? rawMode.toLowerCase() : "on";
+      if (mode && mode !== "on" && mode !== "off") throw new Error(cliText(
+        "task mute accepts on or off.",
+        "task mute 只接受 on 或 off。",
+      ));
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<TaskMuteControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_mute",
+        localSessionId: session.localSessionId,
+        enabled: mode === "on",
+      }));
+      const json = options.includes("--json") || rawMode === "--json";
+      if (json) printJson(result);
+      else process.stdout.write(cliText(
+        `Mention-only mode: ${result.enabled ? "on" : "off"}\n`,
+        `仅 @ 响应模式：${result.enabled ? "开启" : "关闭"}\n`,
+      ));
+      return;
+    }
+    if (action === "shell") {
+      const [reference, ...commandParts] = rest;
+      requireTaskCommandReference(action, reference);
+      const command = commandParts.join(" ").trim();
+      if (!command) throw new Error(cliText("task shell requires a command.", "task shell 需要命令。"));
+      const session = resolveTask(allSessions, reference);
+      const result = controlData<TaskShellControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_shell",
+        localSessionId: session.localSessionId,
+        command,
+      }, 130_000));
+      printTaskShellResult(result);
+      if (result.exitCode && result.exitCode !== 0) process.exitCode = result.exitCode;
+      return;
+    }
+    if (action === "dir") {
+      const parsedDirectory = parseTaskDirectoryArgs(rest);
+      const session = resolveTask(allSessions, parsedDirectory.reference);
+      const result = controlData<TaskDirectoryControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_directory",
+        localSessionId: session.localSessionId,
+        ...(parsedDirectory.directory ? { directory: parsedDirectory.directory } : {}),
+        ...(parsedDirectory.page !== undefined ? { page: parsedDirectory.page } : {}),
+      }, 60_000));
+      if (parsedDirectory.json) printJson(result);
+      else printTaskDirectory(result);
+      return;
+    }
+    if (action === "file") {
+      const [reference, ...fileParts] = rest;
+      requireTaskCommandReference(action, reference);
+      const filePath = fileParts.join(" ").trim();
+      if (!filePath) throw new Error(cliText("task file requires a path.", "task file 需要文件路径。"));
+      const session = resolveTask(allSessions, reference);
+      ensureOk(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
+        action: "task_send_file",
+        localSessionId: session.localSessionId,
+        filePath,
+      }, 120_000));
+      process.stdout.write(cliText("File sent to the task conversation.\n", "文件已发送到任务会话。\n"));
+      return;
+    }
+    if (action === "restart") {
+      const [reference, ...restartArgs] = rest;
+      requireTaskCommandReference(action, reference);
+      const translated = restartArgs.flatMap((value) => value === "--force" ? ["--immediate"] : [value]);
+      await serverCommand(["restart", "--task", reference, ...translated]);
       return;
     }
     if (action === "newgroup") {
@@ -933,8 +1395,12 @@ async function taskCommand(input: string[]): Promise<void> {
       else printTaskGroupResult(result, "forkgroup");
       return;
     }
-    const sessions = filterSessions(allSessions, rest);
-    if (action === "list") {
+    const sessions = filterSessions(
+      allSessions,
+      rest,
+      action === "sessions" ? taskSessionsSearchTerm(rest) : undefined,
+    );
+    if (action === "list" || action === "sessions") {
       if (rest.includes("--json")) printJson(sessions);
       else printTaskList(sessions);
       return;
@@ -984,12 +1450,189 @@ async function taskCommand(input: string[]): Promise<void> {
   }
 }
 
+function requireTaskCommandReference(action: string, reference: string | undefined): asserts reference is string {
+  if (reference && !reference.startsWith("--")) return;
+  throw new Error(cliText(
+    `task ${action} requires a task number or task ID.`,
+    `task ${action} 需要任务序号或任务 ID。`,
+  ));
+}
+
+function rejectUnsupportedTaskOptions(action: string, args: string[], supported: string[]): void {
+  const unsupported = args.find((value) => value.startsWith("--") && !supported.includes(value));
+  if (!unsupported) return;
+  throw new Error(cliText(
+    `task ${action} does not support option: ${unsupported}.`,
+    `task ${action} 不支持参数：${unsupported}。`,
+  ));
+}
+
+function parseTaskGoal(args: string[]): {
+  action: "show" | "set" | "edit" | "pause" | "resume" | "clear";
+  objective?: string;
+} {
+  if (args.length === 0 || args[0]?.toLowerCase() === "show") return { action: "show" };
+  const first = args[0]!.toLowerCase();
+  if (first === "pause" || first === "resume" || first === "clear") {
+    if (args.length > 1) throw new Error(cliText(
+      `task goal ${first} does not accept extra arguments.`,
+      `task goal ${first} 不接受额外参数。`,
+    ));
+    return { action: first };
+  }
+  const action = first === "set" || first === "edit" ? first : "set";
+  const objective = (action === "set" && first !== "set" ? args : args.slice(1)).join(" ").trim();
+  if (!objective) throw new Error(cliText(
+    `task goal ${action} requires an objective.`,
+    `task goal ${action} 需要目标。`,
+  ));
+  return { action, objective };
+}
+
+function parseTaskDirectoryArgs(args: string[]): {
+  reference: string;
+  directory?: string;
+  page?: number;
+  json: boolean;
+} {
+  const positionals: string[] = [];
+  let page: number | undefined;
+  let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (value === "--json") {
+      json = true;
+      continue;
+    }
+    if (value === "--page") {
+      const rawPage = args[index + 1];
+      const parsedPage = rawPage === undefined ? Number.NaN : Number(rawPage);
+      if (!Number.isSafeInteger(parsedPage) || parsedPage < 1) throw new Error(cliText(
+        "task dir --page requires a positive page number.",
+        "task dir --page 需要正整数页码。",
+      ));
+      page = parsedPage - 1;
+      index += 1;
+      continue;
+    }
+    if (value.startsWith("--")) throw new Error(cliText(
+      `task dir does not support option: ${value}.`,
+      `task dir 不支持参数：${value}。`,
+    ));
+    positionals.push(value);
+  }
+  const [reference, ...directoryParts] = positionals;
+  requireTaskCommandReference("dir", reference);
+  return {
+    reference,
+    directory: directoryParts.join(" ").trim() || undefined,
+    page,
+    json,
+  };
+}
+
+function controlData<T>(response: ControlResponse): T {
+  ensureOk(response);
+  if (response.data === undefined) throw new Error(cliText(
+    "Agent Bot returned no control result.",
+    "Agent Bot 没有返回控制结果。",
+  ));
+  return response.data as T;
+}
+
+function printCreatedTask(session: SessionRecord, label: string): void {
+  process.stdout.write(`${cliText(`${label}: `, `${label === "Current task" ? "当前任务" : label === "Fork created" ? "分支任务已创建" : "任务已创建"}：`)}${session.title ?? "-"}\n`);
+  process.stdout.write(`${cliText("Local ID: ", "本地 ID：")}${session.localSessionId}\n`);
+  if (session.remoteSessionId) process.stdout.write(`${cliText("Agent task ID: ", "Agent 任务 ID：")}${session.remoteSessionId}\n`);
+  process.stdout.write(`${cliText("Agent: ", "Agent：")}${session.agentName}\n`);
+  process.stdout.write(`${cliText("Directory: ", "目录：")}${session.cwd}\n`);
+}
+
+function printTaskAgentSettings(result: TaskAgentControlData): void {
+  process.stdout.write(`${cliText("Default Agent: ", "默认 Agent：")}${result.current}\n`);
+  process.stdout.write(`${cliText("Available Agents: ", "可用 Agent：")}${result.agents.map((agent) => `${agent.name} (${agent.title})`).join(", ")}\n`);
+}
+
+function printTaskSettings(
+  result: TaskSettingsControlData,
+  setting: "provider" | "model" | "thinking" | "permissions",
+): void {
+  const session = result.session;
+  process.stdout.write(`${cliText("Provider: ", "Provider：")}${session.modelProvider ?? cliText("Agent default", "Agent 默认")}\n`);
+  process.stdout.write(`${cliText("Model: ", "模型：")}${session.model ?? cliText("default", "默认")}\n`);
+  process.stdout.write(`${cliText("Thinking: ", "思考强度：")}${session.reasoningEffort ?? cliText("automatic", "自动")}\n`);
+  process.stdout.write(`${cliText("Permissions: ", "权限：")}${session.permissionMode ?? "auto"}\n`);
+  if (setting === "provider") {
+    process.stdout.write(`${cliText("Available Providers: ", "可用 Provider：")}${result.providers.map((item) => item.id).join(", ") || "-"}\n`);
+  } else if (setting === "model") {
+    process.stdout.write(`${cliText("Available Models: ", "可用模型：")}${result.models.map((item) => item.id).join(", ") || "-"}\n`);
+  } else if (setting === "thinking") {
+    process.stdout.write(`${cliText("Available Thinking Levels: ", "可用思考强度：")}${result.reasoningOptions.map((item) => item.value).join(", ") || "-"}\n`);
+  } else {
+    process.stdout.write(`${cliText("Available Permission Modes: ", "可用权限模式：")}${result.permissionModes.join(", ")}\n`);
+  }
+}
+
+function printTaskGoal(result: TaskGoalControlData): void {
+  if (!result.goal) {
+    process.stdout.write(result.cleared
+      ? cliText("Goal cleared.\n", "Goal 已清除。\n")
+      : cliText("No Goal is configured.\n", "当前没有 Goal。\n"));
+    return;
+  }
+  process.stdout.write(`${cliText("Goal: ", "Goal：")}${result.goal.objective}\n`);
+  process.stdout.write(`${cliText("Status: ", "状态：")}${result.goal.status}\n`);
+  process.stdout.write(`${cliText("Tokens used: ", "已用 Tokens：")}${result.goal.tokensUsed}\n`);
+  process.stdout.write(`${cliText("Time used: ", "已用时间：")}${result.goal.timeUsedSeconds}s\n`);
+}
+
+function printTaskTurns(result: TaskTurnsControlData): void {
+  process.stdout.write(`${cliText("Task: ", "任务：")}${result.session.title ?? result.session.localSessionId}\n`);
+  if (result.turns.length === 0) {
+    process.stdout.write(cliText("No completed turns.\n", "没有已完成的 Turn。\n"));
+    return;
+  }
+  for (const turn of result.turns) {
+    const marker = turn.current ? "*" : " ";
+    const parent = turn.parentTurnId ? ` <- ${turn.parentTurnId}` : "";
+    process.stdout.write(`${marker} ${turn.sequence}. ${turn.prompt?.replace(/\s+/g, " ").trim() || "-"}\n`);
+    process.stdout.write(`    ${turn.turnId}${parent}\n`);
+  }
+}
+
+function printTaskShellResult(result: TaskShellControlData): void {
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (!result.stdout && !result.stderr) process.stdout.write(cliText("(no output)\n", "（无输出）\n"));
+  if (result.timedOut) process.stderr.write(cliText("Command timed out after 120 seconds.\n", "命令在 120 秒后超时。\n"));
+}
+
+function printTaskDirectory(result: TaskDirectoryControlData): void {
+  process.stdout.write(`${cliText("Directory: ", "目录：")}${result.directory}\n`);
+  if (result.parentDirectory) process.stdout.write(`  [D] .. -> ${result.parentDirectory}\n`);
+  for (const entry of result.entries) {
+    const marker = entry.kind === "directory" || entry.kind === "drive"
+      ? "D"
+      : entry.kind === "image"
+        ? "I"
+        : entry.kind === "binary"
+          ? "B"
+          : "F";
+    process.stdout.write(`  [${marker}] ${entry.name}\n`);
+  }
+  process.stdout.write(cliText(
+    `Page ${result.page + 1}/${result.totalPages}; ${result.totalEntries} entries.\n`,
+    `第 ${result.page + 1}/${result.totalPages} 页；共 ${result.totalEntries} 项。\n`,
+  ));
+}
+
 function resolveCurrentTaskFromEnvironment(sessions: SessionRecord[]): SessionRecord {
+  if (process.env.AGENT_BOT !== "1") throw new Error(taskCurrentExternalInvocationMessage());
   const resolution = resolveCurrentTask(sessions, currentAppServerThreadIds(process.env));
   if (resolution.status === "found") return resolution.session;
   if (resolution.status === "missing-thread-id") throw new Error(cliText(
-    "The current task cannot be detected because neither CODEX_THREAD_ID nor TRAECLI_THREAD_ID is set. Run this command from a Codex or TraeX task.",
-    "无法检测当前任务：CODEX_THREAD_ID 和 TRAECLI_THREAD_ID 均未设置。请从 Codex 或 TraeX 任务中运行此命令。",
+    "Agent Bot detected an Agent process, but neither CODEX_THREAD_ID nor TRAECLI_THREAD_ID is available, so the current task cannot be identified. Use agentbot task list and pass an explicit task ID.",
+    "已检测到 Agent Bot 中的 Agent 进程，但 CODEX_THREAD_ID 和 TRAECLI_THREAD_ID 均不可用，因此无法识别当前任务。请使用 agentbot task list，并显式指定任务 ID。",
   ));
   if (resolution.status === "not-found") throw new Error(cliText(
     `No AgentBot task matches the current App Server Thread ID (${resolution.threadIds.join(", ")}). Check that the correct Profile is selected.`,
@@ -1031,12 +1674,35 @@ async function outputTaskStatus(
   else printTaskStatus(statusSession, snapshot, live?.remote);
 }
 
-function filterSessions(sessions: SessionRecord[], args: string[]): SessionRecord[] {
+function filterSessions(sessions: SessionRecord[], args: string[], aliasSearchTerm?: string): SessionRecord[] {
   const context = optionValue(args, "--context");
   const status = optionValue(args, "--status");
+  const search = (optionValue(args, "--search") ?? aliasSearchTerm)?.trim().toLowerCase();
   return sessions.filter((session) =>
     (!context || session.contextKey === context)
-    && (!status || session.status === status || session.lastTurnStatus === status));
+    && (!status || session.status === status || session.lastTurnStatus === status)
+    && (!search || [
+      session.localSessionId,
+      session.remoteSessionId,
+      session.acpSessionId,
+      session.title,
+      session.agentName,
+      session.cwd,
+    ].some((value) => value?.toLowerCase().includes(search))));
+}
+
+function taskSessionsSearchTerm(args: string[]): string | undefined {
+  const positionals: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (value === "--json") continue;
+    if (value === "--context" || value === "--status" || value === "--search") {
+      index += 1;
+      continue;
+    }
+    if (!value.startsWith("--")) positionals.push(value);
+  }
+  return positionals.join(" ").trim() || undefined;
 }
 
 function resolveTask(sessions: SessionRecord[], reference: string): SessionRecord {

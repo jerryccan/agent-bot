@@ -37,6 +37,16 @@ export function currentAppServerThreadIds(env: NodeJS.ProcessEnv): string[] {
   ].filter((value): value is string => Boolean(value)))];
 }
 
+export function taskCurrentExternalInvocationMessage(
+  language: CliLanguage = cliLanguage,
+): string {
+  return cliText(
+    "agentbot task current is designed for an Agent running inside Agent Bot. A regular terminal has no current Agent task. Use agentbot task list to find a task, then run agentbot task status <task>.",
+    "agentbot task current 是为 Agent Bot 中运行的 Agent 调用设计的。普通终端没有可自动识别的当前 Agent 任务；请先使用 agentbot task list 查找任务，再运行 agentbot task status <任务>。",
+    language,
+  );
+}
+
 export function resolveCurrentTask(
   sessions: SessionRecord[],
   currentThreadIds: readonly string[],

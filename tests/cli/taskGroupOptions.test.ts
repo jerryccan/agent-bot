@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   parseTaskForkGroupOptions,
+  parseTaskNewOptions,
   parseTaskNewGroupOptions,
 } from "../../src/cli/taskGroupOptions.js";
 
@@ -20,6 +21,28 @@ describe("task group CLI options", () => {
       projectless: false,
       json: true,
     });
+  });
+
+  test("reuses the task creation options for task new", () => {
+    expect(parseTaskNewOptions([
+      "task_1",
+      "Investigate",
+      "timeout",
+      "--agent",
+      "traex",
+      "--dir",
+      "~/dev/project",
+      "--json",
+    ], "new", "en")).toEqual({
+      reference: "task_1",
+      title: "Investigate timeout",
+      cwd: "~/dev/project",
+      agentName: "traex",
+      projectless: false,
+      json: true,
+    });
+    expect(() => parseTaskNewOptions(["task_1", "--dir", "x", "--nodir"], "new", "en"))
+      .toThrow("task new cannot combine --dir and --nodir");
   });
 
   test("parses a Projectless newgroup and rejects conflicting project options", () => {

@@ -4,6 +4,7 @@ import {
   currentAppServerThreadIds,
   formatTaskList,
   resolveCurrentTask,
+  taskCurrentExternalInvocationMessage,
 } from "../../src/cli/taskListOutput.js";
 
 describe("formatTaskList", () => {
@@ -112,6 +113,15 @@ describe("formatTaskList", () => {
       sessions: [first, second],
       threadIds: ["thread-first", "thread-second"],
     });
+  });
+
+  test("explains that task current is intended for Agent calls", () => {
+    expect(taskCurrentExternalInvocationMessage("en")).toContain(
+      "designed for an Agent running inside Agent Bot",
+    );
+    expect(taskCurrentExternalInvocationMessage("en")).toContain("agentbot task list");
+    expect(taskCurrentExternalInvocationMessage("zh")).toContain("为 Agent Bot 中运行的 Agent 调用设计");
+    expect(taskCurrentExternalInvocationMessage("zh")).toContain("agentbot task status <任务>");
   });
 });
 

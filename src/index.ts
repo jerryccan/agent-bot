@@ -48,6 +48,12 @@ import {
   resolveSupervisorDiagnosticsPaths,
 } from "./supervision/SupervisorDiagnostics.js";
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
+import {
+  assertSelfUpdatePlanPath,
+  launchSelfUpdateRunner,
+  readPendingSelfUpdate,
+  releaseSelfUpdatePlan,
+} from "./cli/SelfUpdater.js";
 
 const processStartedAt = new Date();
 const agentBotVersion = readPackageVersion();
@@ -119,16 +125,26 @@ if (routes.length === 0) throw new Error("Neither Feishu nor console input is en
 const outbound = new OutboundRouter(routes);
 let shuttingDown = false;
 let restartRequested = false;
+let pendingSelfUpdatePlanPath: string | undefined;
 const safeRestart = new SafeRestartScheduler({
   readActivity: () => store.getServerActivityState(),
-  onReady: (reason, notificationTargets) => initiateRestart(reason, notificationTargets),
+  onReady: (reason, notificationTargets) => pendingSelfUpdatePlanPath
+    ? initiateSelfUpdate(reason, notificationTargets)
+    : initiateRestart(reason, notificationTargets),
   onStatus: (status) => safeRestartNotifier?.update(status),
   onStatusError: (error) => logger.warn({ error }, "Failed to publish safe restart status."),
 });
 const controller = new ProxySessionController(config, store, runtimes, outbound, logger, {
   supervised,
   restart: requestRestart,
-  cancelSafeRestart: (scheduleId) => safeRestart.cancelScheduled(scheduleId),
+  cancelSafeRestart: async (scheduleId) => {
+    const cancelled = await safeRestart.cancelScheduled(scheduleId);
+    if (cancelled && pendingSelfUpdatePlanPath) {
+      releaseSelfUpdatePlan(pendingSelfUpdatePlanPath);
+      pendingSelfUpdatePlanPath = undefined;
+    }
+    return cancelled;
+  },
   rememberFeishuUserOpenId: (userOpenId) => {
     if (config.feishu.userOpenId?.startsWith("ou_")) return;
     const persisted = persistFeishuUserOpenIdIfMissing(defaultDotEnvPath(), userOpenId);
@@ -185,6 +201,27 @@ await controller.recoverInterruptedTasks().catch((error: unknown) => {
   logger.error({ error }, "Startup task recovery failed; the server will remain available.");
 });
 consoleConnector?.start();
+recoverPendingSelfUpdate();
+
+function recoverPendingSelfUpdate(): void {
+  const pending = readPendingSelfUpdate(agentBotHome());
+  if (!pending || pendingSelfUpdatePlanPath || restartRequested || safeRestart.scheduled) return;
+  let notificationTarget: RestartNotificationTarget | undefined;
+  try {
+    notificationTarget = inferControlRestartTarget(pending.plan.notificationSessionId);
+  } catch (error) {
+    logger.warn({ error }, "Could not restore the self-update notification target; update recovery will continue.");
+  }
+  pendingSelfUpdatePlanPath = pending.planPath;
+  safeRestart.schedule(
+    pending.plan.reason ?? `Resume Agent Bot update to ${pending.plan.toVersion}`,
+    notificationTarget,
+  );
+  logger.warn(
+    { planPath: pending.planPath, toVersion: pending.plan.toVersion },
+    "Recovered a prepared Agent Bot self-update after Worker restart.",
+  );
+}
 
 async function requestRestart(
   contextKey: string,
@@ -197,6 +234,10 @@ async function requestRestart(
   };
   if (restartRequested) {
     await outbound.sendText(contextKey, "Agent Bot 已在重启中，请稍候。").catch(() => undefined);
+    return;
+  }
+  if (pendingSelfUpdatePlanPath) {
+    await outbound.sendText(contextKey, "Agent Bot 更新已在等待中；更新完成后服务会自动恢复。").catch(() => undefined);
     return;
   }
   if (force) {
@@ -223,6 +264,7 @@ async function initiateRestart(
     return;
   }
   restartRequested = true;
+  pendingSelfUpdatePlanPath = undefined;
   await safeRestart.cancelCurrent();
   await safeRestartNotifier?.flush();
   const allNotificationTargets = mergeRestartNotificationTargets(
@@ -238,6 +280,55 @@ async function initiateRestart(
     reason,
     allNotificationTargets,
   ), 100);
+}
+
+async function initiateSelfUpdate(
+  reason: string,
+  notificationTargets: RestartNotificationTarget[] = [],
+): Promise<void> {
+  if (restartRequested) {
+    await sendRestartTexts(notificationTargets, "Agent Bot 已在重启或更新中，请稍候。");
+    return;
+  }
+  const planPath = pendingSelfUpdatePlanPath;
+  if (!planPath) return;
+  restartRequested = true;
+  await safeRestartNotifier?.flush();
+  const allNotificationTargets = mergeRestartNotificationTargets(
+    notificationTargets,
+    safeRestartNotifier?.getNotificationTargets() ?? [],
+  );
+  await sendRestartTexts(
+    allNotificationTargets,
+    "Agent Bot 正在更新，完成或回滚后会自动恢复服务并发送启动状态通知。",
+  );
+  const environmentRefresh = refreshedSystemEnvironment();
+  if (environmentRefresh.error) {
+    logger.warn({ error: environmentRefresh.error }, "Failed to refresh the environment for Agent Bot update.");
+  }
+  try {
+    assertSelfUpdatePlanPath(planPath, agentBotHome());
+    launchSelfUpdateRunner(planPath, {
+      waitPids: [process.pid, ...(supervised ? [process.ppid] : [])],
+      environment: replacementSupervisorEnvironment(
+        reason,
+        environmentRefresh.environment,
+        allNotificationTargets,
+      ),
+    });
+  } catch (error) {
+    restartRequested = false;
+    releaseSelfUpdatePlan(planPath);
+    pendingSelfUpdatePlanPath = undefined;
+    logger.error({ error, planPath }, "Failed to launch Agent Bot self-update; keeping the current service online.");
+    await sendRestartTexts(
+      allNotificationTargets,
+      `Agent Bot 更新未启动，当前服务保持在线：${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  pendingSelfUpdatePlanPath = undefined;
+  setTimeout(() => void shutdown(STOP_EXIT_CODE), 100);
 }
 
 async function handleControlRequest(request: ControlRequest): Promise<ControlResponse> {
@@ -268,6 +359,9 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
         },
       };
     case "server_restart": {
+      if (pendingSelfUpdatePlanPath) {
+        return { ok: false, message: "An Agent Bot update is already pending." };
+      }
       const notificationTarget = inferControlRestartTarget(request.notificationSessionId);
       if (request.mode === "safe") {
         const newlyScheduled = safeRestart.schedule(request.reason, notificationTarget);
@@ -284,18 +378,90 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       ), 25);
       return { ok: true, message: "Immediate restart requested." };
     }
+    case "server_update": {
+      if (restartRequested || pendingSelfUpdatePlanPath || safeRestart.scheduled) {
+        return { ok: false, message: "A restart or update is already pending." };
+      }
+      assertSelfUpdatePlanPath(request.planPath, agentBotHome());
+      const notificationTarget = inferControlRestartTarget(request.notificationSessionId);
+      pendingSelfUpdatePlanPath = request.planPath;
+      safeRestart.schedule(request.reason, notificationTarget);
+      return {
+        ok: true,
+        message: "Agent Bot update scheduled after active tasks finish and the server becomes idle.",
+      };
+    }
     case "server_stop":
       safeRestart.cancel();
+      if (pendingSelfUpdatePlanPath) releaseSelfUpdatePlan(pendingSelfUpdatePlanPath);
+      pendingSelfUpdatePlanPath = undefined;
       setTimeout(() => void shutdown(STOP_EXIT_CODE), 25);
       return { ok: true, message: "Agent Bot server stop requested." };
     case "task_status":
       return { ok: true, data: await controller.controlGetTaskStatus(request.localSessionId) };
     case "task_stop":
       return { ok: true, message: await controller.controlStopTask(request.localSessionId) };
+    case "task_archive":
+      return { ok: true, data: await controller.controlArchiveTask(request.localSessionId) };
     case "task_title":
       return { ok: true, message: await controller.controlSetTaskTitle(request.localSessionId, request.title) };
     case "task_prompt":
       return { ok: true, message: await controller.controlSendTaskPrompt(request.localSessionId, request.text) };
+    case "task_new":
+      return {
+        ok: true,
+        data: await controller.controlCreateTask(
+          request.localSessionId,
+          request.title,
+          request.cwd,
+          request.projectless === true,
+          request.agentName,
+        ),
+      };
+    case "task_fork":
+      return { ok: true, data: await controller.controlForkTask(request.localSessionId) };
+    case "task_switch":
+      return {
+        ok: true,
+        data: await controller.controlSwitchTask(
+          request.localSessionId,
+          request.targetLocalSessionId,
+          request.previous === true,
+        ),
+      };
+    case "task_queue":
+      return { ok: true, data: await controller.controlQueueTaskPrompt(request.localSessionId, request.text) };
+    case "task_agent":
+      return { ok: true, data: controller.controlTaskAgent(request.localSessionId, request.agentName) };
+    case "task_settings":
+      return {
+        ok: true,
+        data: await controller.controlTaskSettings(request.localSessionId, request.setting, request.value),
+      };
+    case "task_goal":
+      return {
+        ok: true,
+        data: await controller.controlTaskGoal(
+          request.localSessionId,
+          request.goalAction,
+          request.objective,
+        ),
+      };
+    case "task_turns":
+      return { ok: true, data: controller.controlListTaskTurns(request.localSessionId) };
+    case "task_reset":
+      return { ok: true, data: await controller.controlResetTaskToTurn(request.localSessionId, request.turnId) };
+    case "task_mute":
+      return { ok: true, data: controller.controlTaskMute(request.localSessionId, request.enabled) };
+    case "task_shell":
+      return { ok: true, data: await controller.controlRunTaskShell(request.localSessionId, request.command) };
+    case "task_directory":
+      return {
+        ok: true,
+        data: await controller.controlListTaskDirectory(request.localSessionId, request.directory, request.page),
+      };
+    case "task_send_file":
+      return { ok: true, data: { messageId: await controller.controlSendTaskFile(request.localSessionId, request.filePath) } };
     case "task_new_group":
       return {
         ok: true,
@@ -327,6 +493,10 @@ async function shutdown(
 ): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (pendingSelfUpdatePlanPath) {
+    releaseSelfUpdatePlan(pendingSelfUpdatePlanPath);
+    pendingSelfUpdatePlanPath = undefined;
+  }
   logger.info({ exitCode }, "Shutting down Agent Bot.");
   safeRestart.cancel();
   feishuConnector?.stop();

@@ -46,6 +46,7 @@ const requiredFiles = [
   "config.example.yaml",
   "dist/cli.js",
   "dist/deprecated-cli.js",
+  "dist/cli/SelfUpdateRunner.js",
   "dist/index.js",
   "dist/supervisor.js",
   "docs/technical-reference.md",

@@ -196,6 +196,13 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     steerTurn: vi.fn(async () => undefined),
     cancelTurn: vi.fn(async () => undefined),
     interruptRemoteTurn: vi.fn(async () => undefined),
+    archiveRemoteSession: vi.fn(async (remoteSessionId) => {
+      const index = remoteSessions.findIndex((candidate) => candidate.id === remoteSessionId);
+      if (index >= 0) remoteSessions.splice(index, 1);
+      for (const [localSessionId, session] of sessions) {
+        if (session.remoteSessionId === remoteSessionId) sessions.delete(localSessionId);
+      }
+    }),
     closeSession: vi.fn(async () => undefined),
     setTitle: vi.fn(async (sessionId, title) => {
       sessions.get(sessionId)!.title = title;
@@ -3941,6 +3948,95 @@ describe("ProxySessionController", () => {
     }));
   });
 
+  test("archives an idle task from the sessions card and clears the current binding", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "archive_local",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: "D:\\work\\archive",
+      status: "ready",
+    });
+    store.updateRuntimeSession("archive_local", {
+      runtimeKind: "codex",
+      remoteSessionId: "archive_remote",
+      title: "Archive me",
+    });
+    store.setCurrentSession("chat_id:c1", "archive_local");
+    remoteSessions.push({
+      id: "archive_remote",
+      title: "Archive me",
+      cwd: "D:\\work\\archive",
+      source: "agent-bot",
+      status: "idle",
+    });
+
+    await controller.onMessage(message("/sessions"));
+    const initialCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    expect(sessionOverflowActions(initialCard)).toContainEqual(expect.objectContaining({
+      action: "session_archive",
+      sessionId: "agent-runtime:codex:archive_remote",
+    }));
+
+    await controller.onCardAction({
+      actionId: "archive-card-task",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: {
+        action: "session_archive",
+        sessionId: "agent-runtime:codex:archive_remote",
+        page: "0",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(runtime.archiveRemoteSession).toHaveBeenCalledWith("archive_remote");
+    expect(store.getSession("archive_local")?.status).toBe("closed");
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "已归档任务：Archive me\n当前会话已没有绑定任务，直接发送消息即可创建新任务。",
+    );
+    const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    expect(JSON.stringify(updatedCard)).not.toContain("Archive me");
+  });
+
+  test("archives the current task with the archive command", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "archive_command_local",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: "D:\\work\\archive-command",
+      status: "ready",
+    });
+    store.updateRuntimeSession("archive_command_local", {
+      runtimeKind: "codex",
+      remoteSessionId: "archive_command_remote",
+      title: "Archive command",
+    });
+    store.setCurrentSession("chat_id:c1", "archive_command_local");
+    remoteSessions.push({
+      id: "archive_command_remote",
+      title: "Archive command",
+      cwd: "D:\\work\\archive-command",
+      source: "agent-bot",
+      status: "idle",
+    });
+
+    await controller.onMessage(message("/archive"));
+
+    expect(runtime.archiveRemoteSession).toHaveBeenCalledWith("archive_command_remote");
+    expect(store.getSession("archive_command_local")?.status).toBe("closed");
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBeUndefined();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "已归档任务：Archive command\n当前会话已没有绑定任务，直接发送消息即可创建新任务。",
+    );
+  });
+
   test("forks a completed task from the sessions card and refreshes the current task", async () => {
     const { controller, remoteSessions, runtime, outbound, store } = fixture();
     remoteSessions.push({
@@ -4270,7 +4366,7 @@ describe("ProxySessionController", () => {
     expect(initial).toContain('"action":"session_page","page":"1"');
     expect(initial).not.toContain("<font color='blue'>Previous</font>");
     expect(initial).toContain("> 项目行：**New** 新建任务，**NewGroup** 新建群。");
-    expect(initial).toContain("> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态。");
+    expect(initial).toContain("> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态，**Archive** 归档。");
     expect(initial.indexOf("<font color='blue'>Next</font>")).toBeLessThan(
       initial.indexOf("> 项目行：**New** 新建任务"),
     );
@@ -5408,6 +5504,122 @@ describe("ProxySessionController", () => {
       .toBe(created.task.localSessionId);
   });
 
+  test("supports targeted CLI new, queue, fork, and switch controls", async () => {
+    const { controller, runtime, sessions, remoteSessions, store, listeners } = fixture();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-task-project-"));
+    tempDirs.push(project);
+    await controller.onMessage(groupMessage("origin", `/new Source --dir "${project}"`));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+
+    const created = await controller.controlCreateTask(sourceSessionId, "CLI child");
+    expect(created).toMatchObject({ contextKey: "chat_id:origin", cwd: project, title: "CLI child" });
+    expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(created.localSessionId);
+
+    const queued = await controller.controlQueueTaskPrompt(created.localSessionId, "run after this turn");
+    expect(queued.queued).toBeGreaterThanOrEqual(0);
+    expect(runtime.startTurn).toHaveBeenCalledWith(created.localSessionId, "run after this turn");
+
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: created.localSessionId,
+        turnId: "turn_1",
+        finalResponse: "done",
+      });
+    }
+    sessions.get(created.localSessionId)!.activeTurnId = undefined;
+    const remote = remoteSessions.find((candidate) => candidate.id === created.remoteSessionId)!;
+    Object.assign(remote, { status: "idle", lastTurnId: "turn_1", lastTurnStatus: "completed" });
+
+    const forked = await controller.controlForkTask(created.localSessionId);
+    expect(forked.sourceTurnId).toBe("turn_1");
+    expect(forked.task.localSessionId).not.toBe(created.localSessionId);
+    expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(forked.task.localSessionId);
+
+    await controller.controlSwitchTask(forked.task.localSessionId, created.localSessionId);
+    expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(created.localSessionId);
+  });
+
+  test("supports targeted CLI Agent, execution setting, Goal, mute, shell, and directory controls", async () => {
+    const { controller, runtime, outbound, shellCommandExecutor, store } = fixture();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-controls-"));
+    fs.mkdirSync(path.join(project, "src"));
+    fs.writeFileSync(path.join(project, "logo.png"), "png");
+    tempDirs.push(project);
+    await controller.onMessage(groupMessage("origin", `/new Source --dir "${project}"`));
+    const sessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+
+    expect(controller.controlTaskAgent(sessionId, "acp")).toMatchObject({ current: "acp" });
+    expect(controller.controlTaskAgent(sessionId).agents.map((agent) => agent.name)).toEqual(["codex", "acp"]);
+
+    const model = await controller.controlTaskSettings(sessionId, "model", "gpt-next");
+    expect(model.session).toMatchObject({ model: "gpt-next", reasoningEffort: "medium" });
+    const permissions = await controller.controlTaskSettings(sessionId, "permissions", "confirm");
+    expect(permissions.session.permissionMode).toBe("confirm");
+    const provider = await controller.controlTaskSettings(sessionId, "provider", "azure");
+    expect(provider.session.modelProvider).toBe("azure");
+    expect(runtime.setExecutionSettings).toHaveBeenCalled();
+
+    const goal = await controller.controlTaskGoal(sessionId, "set", "finish the migration");
+    expect(goal.goal).toMatchObject({ objective: "finish the migration", status: "active" });
+    await expect(controller.controlTaskGoal(sessionId, "pause")).resolves.toMatchObject({
+      goal: { status: "paused" },
+    });
+
+    expect(controller.controlTaskMute(sessionId, true)).toMatchObject({ enabled: true });
+    expect(store.getChatContext("chat_id:origin")?.requiresMention).toBe(true);
+
+    const shell = await controller.controlRunTaskShell(sessionId, "git status");
+    expect(shell).toMatchObject({ cwd: project, command: "git status", exitCode: 0 });
+    expect(shellCommandExecutor).toHaveBeenCalledWith("git status", project);
+
+    const directory = await controller.controlListTaskDirectory(sessionId);
+    expect(directory.directory).toBe(project);
+    expect(directory.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "src", kind: "directory" }),
+      expect.objectContaining({ name: "logo.png", kind: "image" }),
+    ]));
+    await expect(controller.controlSendTaskFile(sessionId, "logo.png")).resolves.toBe("file");
+    expect(outbound.sendFile).toHaveBeenCalledWith("chat_id:origin", path.join(project, "logo.png"));
+
+    const nextTask = await controller.controlCreateTask(sessionId, "Uses default Agent");
+    expect(nextTask.agentName).toBe("acp");
+  });
+
+  test("lists and resets completed turns through targeted CLI controls", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "/new Resettable"));
+    const sessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    store.saveTurnSnapshot("turn_old", sessionId, {
+      sessionId,
+      turnId: "turn_old",
+      status: "completed",
+      prompt: "old state",
+      startedAt: 100,
+      completedAt: 200,
+    }, "chat_id:origin");
+    store.saveTurnSnapshot("turn_new", sessionId, {
+      sessionId,
+      turnId: "turn_new",
+      status: "completed",
+      prompt: "new state",
+      startedAt: 300,
+      completedAt: 400,
+    }, "chat_id:origin");
+    store.updateRuntimeSession(sessionId, { lastTurnId: "turn_new", lastTurnStatus: "completed" });
+
+    const turns = controller.controlListTaskTurns(sessionId);
+    expect(turns.turns).toHaveLength(2);
+    expect(turns.turns.find((turn) => turn.turnId === "turn_new")?.current).toBe(true);
+
+    const reset = await controller.controlResetTaskToTurn(sessionId, "turn_old");
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      localSessionId: sessionId,
+      lastTurnId: "turn_old",
+    }));
+    expect(reset).toMatchObject({ lastTurnId: "turn_old", lastTurnStatus: "completed" });
+  });
+
   test("opens the unified settings card on the Model tab", async () => {
     const { controller, runtime, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
@@ -6176,6 +6388,7 @@ describe("ProxySessionController", () => {
       "/fork",
       "/turns",
       "/sessions",
+      "/archive",
       "/switch",
       "/stop",
       "/provider",

@@ -142,6 +142,11 @@ const HELP_COMMAND_SECTIONS: Array<{
       },
       { command: "/sessions", usage: "[关键词]", description: "查找本机任务" },
       {
+        command: "/archive",
+        usage: "[序号或任务 ID]",
+        description: "归档当前或指定任务",
+      },
+      {
         command: "/switch",
         usage: "[序号或任务 ID]",
         description: "切换任务；不填参数切回上一个任务",
@@ -655,6 +660,13 @@ export class ProxySessionController {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.createFeishuGroupFromReference(contextKey, sessionId, scopedAction.userId);
           await this.refreshSessionsCardFromAction(scopedAction);
+        } else if (kind === "session_archive") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          await this.archiveSessionReference(contextKey, sessionId, {
+            announce: true,
+            source: "sessions_card",
+          });
+          await this.refreshSessionsCardFromAction(scopedAction);
         } else if (kind === "session_stop") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.stopSessionReference(contextKey, sessionId);
@@ -801,6 +813,18 @@ export class ProxySessionController {
     if (!record || record.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
     await this.cancelSession(record);
     return `Task stop requested: ${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+  }
+
+  async controlArchiveTask(localSessionId: string): Promise<{
+    localSessionId: string;
+    remoteSessionId: string;
+    title: string;
+  }> {
+    const record = this.requireControlSession(localSessionId);
+    return this.archiveSessionReference(this.controlSessionContextKey(record), localSessionId, {
+      announce: false,
+      source: "cli",
+    });
   }
 
   async controlGetTaskStatus(localSessionId: string): Promise<{
@@ -984,6 +1008,387 @@ export class ProxySessionController {
     };
   }
 
+  async controlCreateTask(
+    localSessionId: string,
+    requestedTitle?: string,
+    requestedProjectCwd?: string,
+    forceProjectless = false,
+    requestedAgentName?: string,
+  ): Promise<SessionRecord> {
+    const source = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(source);
+    const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
+    const agentName = requestedAgentName?.trim() || context.defaultAgent;
+    const agent = this.ensureAgent(agentName);
+    if (forceProjectless && agent.kind !== "app-server") {
+      throw new Error("task new --nodir is only available for App Server agents.");
+    }
+    const replyTarget = this.controlSessionReplyTarget(source);
+    const cwd = forceProjectless
+      ? undefined
+      : requestedProjectCwd === undefined
+        ? detectProjectlessWorkspace(source.cwd)
+          ? agent.kind === "app-server" ? undefined : createProjectlessWorkspace().cwd
+          : source.cwd
+        : resolveUserPath(requestedProjectCwd, source.cwd);
+    const settings: SessionExecutionSettings = source.agentName === agentName
+      ? {
+          modelProvider: source.modelProvider,
+          model: source.model,
+          reasoningEffort: source.reasoningEffort,
+          permissionMode: source.permissionMode,
+        }
+      : {};
+    return this.outbound.withReplyTarget(contextKey, replyTarget, () =>
+      this.createSession(
+        contextKey,
+        agentName,
+        cwd,
+        true,
+        false,
+        undefined,
+        undefined,
+        requestedTitle,
+        settings,
+      ));
+  }
+
+  async controlForkTask(localSessionId: string): Promise<{
+    sourceLocalSessionId: string;
+    sourceTurnId: string;
+    task: SessionRecord;
+  }> {
+    const source = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(source);
+    const replyTarget = this.controlSessionReplyTarget(source);
+    const plan = await this.prepareForkSession(contextKey, source.localSessionId);
+    const forked = await this.outbound.withReplyTarget(contextKey, replyTarget, async () => {
+      const result = await this.forkSessionIntoContext(contextKey, plan);
+      await this.outbound.sendText(
+        contextKey,
+        `已从指定任务${plan.forkedFromHistoricalTurn ? "最近已完成轮次" : ""}创建分支并切换到新任务：${
+          result.session.title
+            ? `${result.session.title}（${result.session.remoteSessionId}）`
+            : result.session.remoteSessionId
+        }`,
+      );
+      return result;
+    });
+    return {
+      sourceLocalSessionId: source.localSessionId,
+      sourceTurnId: plan.lastTurnId,
+      task: this.store.getSession(forked.record.localSessionId) ?? forked.record,
+    };
+  }
+
+  async controlSwitchTask(
+    localSessionId: string,
+    targetLocalSessionId?: string,
+    previous = false,
+  ): Promise<SessionRecord> {
+    const anchor = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(anchor);
+    const replyTarget = this.controlSessionReplyTarget(anchor);
+    const target = previous ? undefined : targetLocalSessionId ?? anchor.localSessionId;
+    await this.outbound.withReplyTarget(contextKey, replyTarget, () => this.switchSession(contextKey, target));
+    return this.requireCurrentSession(contextKey);
+  }
+
+  async controlQueueTaskPrompt(localSessionId: string, text: string): Promise<{ promptId: string; queued: number }> {
+    const promptText = text.trim();
+    if (!promptText) throw new Error("The queued Prompt cannot be empty.");
+    const record = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(record);
+    const replyTarget = this.controlSessionReplyTarget(record);
+    const queued = this.persistQueuedPrompt(record.localSessionId, contextKey, promptText, { replyTarget });
+    this.store.audit(contextKey, "queued_prompt_added", {
+      promptId: queued.promptId,
+      localSessionId: record.localSessionId,
+      source: "cli",
+    });
+    const queuedCount = this.store.countQueuedPrompts(record.localSessionId);
+    await this.scheduleNextQueuedPrompt(record.localSessionId);
+    return { promptId: queued.promptId, queued: queuedCount };
+  }
+
+  controlTaskAgent(localSessionId: string, agentName?: string): {
+    current: string;
+    agents: Array<{ name: string; title: string }>;
+  } {
+    const record = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(record);
+    const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
+    if (agentName) {
+      this.ensureAgent(agentName);
+      this.store.setDefaultAgent(contextKey, agentName);
+    }
+    return {
+      current: agentName ?? context.defaultAgent,
+      agents: Object.entries(this.config.agents).map(([name, agent]) => ({ name, title: agent.title })),
+    };
+  }
+
+  async controlTaskSettings(
+    localSessionId: string,
+    setting?: "provider" | "model" | "thinking" | "permissions",
+    value?: string,
+  ): Promise<{
+    session: SessionRecord;
+    providers: Awaited<ReturnType<NonNullable<AgentRuntime["listModelProviders"]>>>;
+    models: Awaited<ReturnType<AgentRuntime["listModels"]>>;
+    reasoningOptions: Awaited<ReturnType<AgentRuntime["listModels"]>>[number]["supportedReasoningEfforts"];
+    permissionModes: PermissionMode[];
+  }> {
+    const record = this.requireControlSession(localSessionId);
+    const loaded = await this.loadSession(record);
+    if (setting && !value?.trim()) throw new Error(`task ${setting} requires a value.`);
+    const nextValue = value?.trim();
+    if (setting === "provider" && nextValue) {
+      await this.assertModelProvider(loaded, nextValue);
+      const models = await loaded.runtime.listModels();
+      const model = models.find((candidate) => candidate.id === loaded.session.model)
+        ?? models.find((candidate) => candidate.isDefault);
+      if (!model) throw new Error("The current runtime has no model available for a Provider change.");
+      const effort = model.supportedReasoningEfforts.some(
+        (candidate) => candidate.value === loaded.session.reasoningEffort,
+      )
+        ? loaded.session.reasoningEffort
+        : model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0]?.value;
+      if (!effort) throw new Error(`Model ${model.id} has no reasoning effort available for a Provider change.`);
+      if (!loaded.runtime.setExecutionSettings) throw new Error("The current runtime does not support Provider settings.");
+      const updated = await loaded.runtime.setExecutionSettings(record.localSessionId, {
+        modelProvider: nextValue,
+        model: model.id,
+        reasoningEffort: effort,
+        permissionMode: loaded.session.permissionMode,
+      });
+      this.store.updateRuntimeSession(record.localSessionId, {
+        modelProvider: updated.modelProvider ?? nextValue,
+        model: updated.model ?? model.id,
+        reasoningEffort: updated.reasoningEffort ?? effort,
+        permissionMode: updated.permissionMode,
+      });
+    } else if (setting === "model" && nextValue) {
+      const models = await loaded.runtime.listModels();
+      const selected = models.find((candidate) => candidate.id === nextValue);
+      if (!selected) throw new Error(`Unknown model: ${nextValue}`);
+      const currentEffort = loaded.session.reasoningEffort;
+      const nextEffort = currentEffort && selected.supportedReasoningEfforts.some(
+        (candidate) => candidate.value === currentEffort,
+      )
+        ? currentEffort
+        : selected.defaultReasoningEffort;
+      await loaded.runtime.setModel(record.localSessionId, nextValue);
+      if (nextEffort && nextEffort !== currentEffort) {
+        await loaded.runtime.setReasoningEffort(record.localSessionId, nextEffort);
+      }
+      this.store.updateRuntimeSession(record.localSessionId, { model: nextValue, reasoningEffort: nextEffort });
+    } else if (setting === "thinking" && nextValue) {
+      const models = await loaded.runtime.listModels();
+      const currentModel = models.find((candidate) => candidate.id === loaded.session.model)
+        ?? models.find((candidate) => candidate.isDefault);
+      if (!currentModel) throw new Error("The current runtime has no model with configurable reasoning effort.");
+      if (!currentModel.supportedReasoningEfforts.some((candidate) => candidate.value === nextValue)) {
+        const supported = currentModel.supportedReasoningEfforts.map((candidate) => candidate.value).join(", ") || "none";
+        throw new Error(`Unsupported reasoning effort: ${nextValue}. Supported values: ${supported}.`);
+      }
+      await loaded.runtime.setReasoningEffort(record.localSessionId, nextValue);
+      this.store.updateRuntimeSession(record.localSessionId, { reasoningEffort: nextValue });
+    } else if (setting === "permissions" && nextValue) {
+      if (nextValue !== "auto" && nextValue !== "confirm") {
+        throw new Error("task permissions accepts auto or confirm.");
+      }
+      await loaded.runtime.setPermissionMode(record.localSessionId, nextValue);
+      this.store.updateRuntimeSession(record.localSessionId, { permissionMode: nextValue });
+    }
+    const session = this.store.getSession(record.localSessionId) ?? record;
+    const models = await loaded.runtime.listModels();
+    const currentModel = models.find((candidate) => candidate.id === session.model)
+      ?? models.find((candidate) => candidate.isDefault);
+    const providers = loaded.runtime.listModelProviders
+      ? await loaded.runtime.listModelProviders()
+      : [];
+    return {
+      session,
+      providers,
+      models,
+      reasoningOptions: currentModel?.supportedReasoningEfforts ?? [],
+      permissionModes: ["auto", "confirm"],
+    };
+  }
+
+  async controlTaskGoal(
+    localSessionId: string,
+    action: "show" | "set" | "edit" | "pause" | "resume" | "clear",
+    objective?: string,
+  ): Promise<{ goal?: RuntimeGoal; cleared?: boolean }> {
+    const record = this.requireControlSession(localSessionId);
+    const loaded = await this.loadSession(record);
+    if (loaded.runtime.kind !== "codex" || !loaded.runtime.getGoal || !loaded.runtime.setGoal || !loaded.runtime.clearGoal) {
+      throw new Error("The current Agent does not support Goal mode.");
+    }
+    if (action === "show") return { goal: await loaded.runtime.getGoal(record.localSessionId) };
+    if (action === "clear") return { cleared: await loaded.runtime.clearGoal(record.localSessionId) };
+    const current = await loaded.runtime.getGoal(record.localSessionId);
+    if (action === "pause" || action === "resume") {
+      if (!current) throw new Error("The task has no Goal.");
+      return { goal: await loaded.runtime.setGoal(record.localSessionId, { status: action === "pause" ? "paused" : "active" }) };
+    }
+    const nextObjective = objective?.trim();
+    if (!nextObjective) throw new Error(`task goal ${action} requires an objective.`);
+    validateGoalObjective(nextObjective);
+    if (action === "set" && current && current.status !== "complete") {
+      throw new Error("The task already has an unfinished Goal. Use task goal <task> edit <objective>, or clear it first.");
+    }
+    if (action === "edit" && !current) throw new Error("The task has no Goal to edit.");
+    return {
+      goal: await loaded.runtime.setGoal(record.localSessionId, {
+        objective: nextObjective,
+        status: action === "edit" ? current!.status : "active",
+        ...(action === "edit" ? { tokenBudget: current!.tokenBudget } : {}),
+      }),
+    };
+  }
+
+  controlListTaskTurns(localSessionId: string): {
+    session: SessionRecord;
+    turns: Array<{
+      sequence: number;
+      turnId: string;
+      parentTurnId?: string;
+      prompt?: string;
+      startedAt?: number;
+      completedAt?: number;
+      current: boolean;
+    }>;
+  } {
+    const session = this.requireControlSession(localSessionId);
+    if (!session.remoteSessionId || !this.isCodexSession(session)) {
+      throw new Error("The task is not an App Server task that can be reset.");
+    }
+    const contextKey = this.controlSessionContextKey(session);
+    const rows = this.store.listCompletedTurnGraph(session.localSessionId, contextKey);
+    const graph = buildTurnGraphRows(rows.map((turn) => ({ turnId: turn.turnId, parentTurnId: turn.parentTurnId })));
+    return {
+      session,
+      turns: rows.flatMap((turn, index) => {
+        const snapshot = turnViewSnapshot(turn.snapshot);
+        if (!snapshot) return [];
+        return [{
+          sequence: graph[index]!.sequence,
+          turnId: turn.turnId,
+          parentTurnId: turn.parentTurnId,
+          prompt: snapshot.prompt ?? snapshot.taskTitle,
+          startedAt: snapshot.startedAt,
+          completedAt: snapshot.completedAt,
+          current: session.lastTurnId === turn.turnId && session.lastTurnStatus === "completed",
+        }];
+      }),
+    };
+  }
+
+  async controlResetTaskToTurn(localSessionId: string, turnId: string): Promise<SessionRecord> {
+    const record = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(record);
+    const previous = this.sessionResets.get(record.localSessionId) ?? Promise.resolve();
+    const reset = previous.catch(() => undefined).then(() =>
+      this.performSessionReset(contextKey, record, turnId, false));
+    this.sessionResets.set(record.localSessionId, reset);
+    try {
+      await reset;
+    } finally {
+      if (this.sessionResets.get(record.localSessionId) === reset) this.sessionResets.delete(record.localSessionId);
+    }
+    return this.store.getSession(record.localSessionId) ?? record;
+  }
+
+  controlTaskMute(localSessionId: string, enabled?: boolean): { contextKey: string; enabled: boolean } {
+    const record = this.requireControlSession(localSessionId);
+    const contextKey = baseChatContextKey(this.controlSessionContextKey(record));
+    const chat = this.store.getChatContext(contextKey);
+    if (chat?.chatType !== "group") throw new Error("task mute is only available for group chats.");
+    const next = enabled ?? Boolean(chat.requiresMention);
+    if (enabled !== undefined) this.store.setChatRequiresMention(contextKey, enabled);
+    return { contextKey, enabled: next };
+  }
+
+  async controlRunTaskShell(localSessionId: string, command: string): Promise<ShellCommandResult & {
+    cwd: string;
+    command: string;
+  }> {
+    const record = this.requireControlSession(localSessionId);
+    const normalized = command.trim();
+    if (!normalized) throw new Error("task shell requires a command.");
+    return { ...await this.shellCommandExecutor(normalized, record.cwd), cwd: record.cwd, command: normalized };
+  }
+
+  async controlListTaskDirectory(
+    localSessionId: string,
+    requestedDirectory?: string,
+    requestedPage = 0,
+  ): Promise<{
+    directory: string;
+    parentDirectory?: string;
+    page: number;
+    totalPages: number;
+    totalEntries: number;
+    entries: Array<{
+      name: string;
+      path: string;
+      kind: "directory" | "image" | "binary" | "file" | "drive";
+    }>;
+  }> {
+    const record = this.requireControlSession(localSessionId);
+    if (requestedDirectory === WINDOWS_DRIVES_DIRECTORY) {
+      const drives = await this.windowsDriveLister();
+      const totalPages = Math.max(1, Math.ceil(drives.length / DIRECTORY_PAGE_SIZE));
+      const page = Math.min(Math.max(0, Math.trunc(requestedPage)), totalPages - 1);
+      return {
+        directory: WINDOWS_DRIVES_DIRECTORY,
+        page,
+        totalPages,
+        totalEntries: drives.length,
+        entries: drives.slice(page * DIRECTORY_PAGE_SIZE, (page + 1) * DIRECTORY_PAGE_SIZE).map((drive) => ({
+          name: windowsDriveDisplayName(drive),
+          path: drive.root,
+          kind: "drive" as const,
+        })),
+      };
+    }
+    const directory = requestedDirectory === undefined
+      ? path.resolve(record.cwd)
+      : resolveUserPath(requestedDirectory, record.cwd);
+    await this.assertBrowsableDirectory(directory);
+    const entries = (await fs.readdir(directory, { withFileTypes: true }))
+      .map((entry) => ({
+        name: entry.name,
+        path: path.join(directory, entry.name),
+        kind: directoryBrowserEntryKind(entry),
+      }))
+      .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory")
+        || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
+    const totalPages = Math.max(1, Math.ceil(entries.length / DIRECTORY_PAGE_SIZE));
+    const page = Math.min(Math.max(0, Math.trunc(requestedPage)), totalPages - 1);
+    const parentDirectory = isWindowsDriveRoot(directory) ? WINDOWS_DRIVES_DIRECTORY : path.dirname(directory);
+    return {
+      directory,
+      ...(parentDirectory !== directory ? { parentDirectory } : {}),
+      page,
+      totalPages,
+      totalEntries: entries.length,
+      entries: entries.slice(page * DIRECTORY_PAGE_SIZE, (page + 1) * DIRECTORY_PAGE_SIZE),
+    };
+  }
+
+  async controlSendTaskFile(localSessionId: string, requestedFilePath: string): Promise<string | undefined> {
+    const record = this.requireControlSession(localSessionId);
+    const filePath = resolveUserPath(requestedFilePath, record.cwd);
+    await this.assertSendableFile(filePath);
+    const contextKey = this.controlSessionContextKey(record);
+    const replyTarget = this.controlSessionReplyTarget(record);
+    return this.outbound.withReplyTarget(contextKey, replyTarget, () => this.outbound.sendFile(contextKey, filePath));
+  }
+
   private cardActionContextKey(action: CardAction): string {
     const explicit = typeof action.value.contextKey === "string" ? action.value.contextKey : undefined;
     if (explicit && baseChatContextKey(explicit) === baseChatContextKey(action.contextKey)) return explicit;
@@ -1079,6 +1484,15 @@ export class ProxySessionController {
         if (command.agent) await this.setDefaultAgent(contextKey, command.agent);
         else await this.openAgentSettings(contextKey);
         return;
+      case "archive": {
+        const sessionId = command.sessionId ?? context.currentSessionId;
+        if (!sessionId) throw new Error("当前会话没有可归档的任务。请使用 /sessions 查找任务。");
+        await this.archiveSessionReference(contextKey, sessionId, {
+          announce: true,
+          source: "command",
+        });
+        return;
+      }
       case "status":
         await this.status(contextKey, command.sessionId);
         return;
@@ -3107,16 +3521,25 @@ export class ProxySessionController {
     if (current.localSessionId !== sessionId) {
       throw new Error("这张思考卡片不属于当前任务。请先切换回对应任务，再点击 Reset。");
     }
+    await this.performSessionReset(contextKey, current, turnId, true);
+  }
+
+  private async performSessionReset(
+    contextKey: string,
+    current: SessionRecord,
+    turnId: string,
+    announce: boolean,
+  ): Promise<void> {
     if (!current.remoteSessionId || !this.isCodexSession(current)) {
       throw new Error("当前任务不是可 Reset 的 App Server 任务。");
     }
 
     const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(turnId));
-    if (!snapshot || snapshot.sessionId !== sessionId || snapshot.status !== "completed") {
+    if (!snapshot || snapshot.sessionId !== current.localSessionId || snapshot.status !== "completed") {
       throw new Error("只能将当前任务 Reset 到已成功完成的轮次。");
     }
     if (current.lastTurnId === turnId && current.lastTurnStatus === "completed") {
-      await this.outbound.sendText(contextKey, "当前任务已经处于本轮完成后的对话状态，无需 Reset。");
+      if (announce) await this.outbound.sendText(contextKey, "当前任务已经处于本轮完成后的对话状态，无需 Reset。");
       return;
     }
 
@@ -3133,7 +3556,7 @@ export class ProxySessionController {
     }
 
     const origin = this.store.getTurnRuntimeOrigin(turnId);
-    if (origin && (origin.localSessionId !== sessionId || origin.agentName !== current.agentName)) {
+    if (origin && (origin.localSessionId !== current.localSessionId || origin.agentName !== current.agentName)) {
       throw new Error("这张思考卡片与当前任务不匹配，已拒绝 Reset。");
     }
     const sourceRemoteSessionId = origin?.remoteSessionId ?? current.remoteSessionId;
@@ -3174,16 +3597,18 @@ export class ProxySessionController {
       100,
     ) || "未记录对话内容";
     const targetTime = snapshot.completedAt ?? snapshot.startedAt;
-    await this.outbound.sendText(
-      contextKey,
-      [
-        "已将当前任务重置到：",
-        targetSummary,
-        `完成时间：${targetTime === undefined ? "未知" : formatResetTurnTime(targetTime)}`,
-        `Turn ID：${turnId}`,
-        "后续对话将从该轮完成后的状态继续；本地文件没有回退。",
-      ].join("\n"),
-    );
+    if (announce) {
+      await this.outbound.sendText(
+        contextKey,
+        [
+          "已将当前任务重置到：",
+          targetSummary,
+          `完成时间：${targetTime === undefined ? "未知" : formatResetTurnTime(targetTime)}`,
+          `Turn ID：${turnId}`,
+          "后续对话将从该轮完成后的状态继续；本地文件没有回退。",
+        ].join("\n"),
+      );
+    }
   }
 
   private async resolveApproval(action: CardAction): Promise<void> {
@@ -4112,6 +4537,16 @@ export class ProxySessionController {
           contextKey,
         },
       });
+      actions.push({
+        text: "Archive",
+        value: {
+          action: "session_archive",
+          sessionId: entry.reference,
+          ...(searchTerm ? { searchTerm } : {}),
+          page: String(page),
+          contextKey,
+        },
+      });
       const title = truncateText(entry.title.replace(/\s+/gu, " ").trim() || "未命名任务", 56);
       return {
         project,
@@ -4153,7 +4588,7 @@ export class ProxySessionController {
         `第 ${page + 1} 页 · 每页 ${SESSION_PAGE_SIZE} 个任务${hasNext ? "" : ` · 当前共 ${entries.length} 个任务`}`,
         "",
         "> 项目行：**New** 新建任务，**NewGroup** 新建群。",
-        "> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态。",
+        "> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态，**Archive** 归档。",
       ],
       [
         ...(hasPrevious ? [{
@@ -4340,6 +4775,67 @@ export class ProxySessionController {
       source: "sessions_card",
     });
     await this.outbound.sendText(contextKey, `已向 Agent 发送 Interrupt 请求：${turnId}`);
+  }
+
+  private async archiveSessionReference(
+    contextKey: string,
+    reference: string,
+    options: { announce: boolean; source: "cli" | "command" | "sessions_card" },
+  ): Promise<{ localSessionId: string; remoteSessionId: string; title: string }> {
+    const taskId = this.resolveSessionReference(contextKey, reference);
+    const direct = this.store.getSession(taskId);
+    if (direct?.status === "closed") throw new Error(`任务已经归档：${direct.title ?? taskId}`);
+    const local = direct ?? this.findStoredSessionByReference(taskId);
+    if (local && (!local.remoteSessionId || !this.isCodexSession(local))) {
+      throw new Error("当前 Agent 不支持归档任务。");
+    }
+    if (local && (
+      local.status === "running"
+      || Boolean(this.runtimes.forAgent(local.agentName).getSession(local.localSessionId)?.activeTurnId)
+    )) {
+      throw new Error("任务正在执行，无法归档。请先停止任务或等待本轮完成。");
+    }
+    if (local && this.store.countQueuedPrompts(local.localSessionId) > 0) {
+      throw new Error("任务仍有排队消息，无法归档。请先处理或取消排队消息。");
+    }
+
+    const remoteReference = local
+      ? remoteSessionReference(local.agentName, local.remoteSessionId!)
+      : taskId;
+    const { agentName, runtime, remote } = await this.resolveRemoteCodexSession(remoteReference);
+    if (isRemoteSessionActive(remote)) {
+      throw new Error("任务正在执行，无法归档。请先停止任务或等待本轮完成。");
+    }
+    if (!runtime.archiveRemoteSession) {
+      throw new Error(`Agent ${agentName} 不支持归档任务。`);
+    }
+
+    const wasCurrent = Boolean(local && this.store.getUserContext(contextKey)?.currentSessionId === local.localSessionId);
+    await runtime.archiveRemoteSession(remote.id);
+    const title = local?.title ?? remote.title ?? remote.preview ?? remote.id;
+    if (local) {
+      this.store.archiveSession(local.localSessionId);
+      this.outbound.unregisterSession(local.localSessionId);
+    }
+    this.store.audit(contextKey, "session_archived", {
+      ...(local ? { localSessionId: local.localSessionId } : {}),
+      remoteSessionId: remote.id,
+      agentName,
+      source: options.source,
+    });
+    if (options.announce) {
+      await this.outbound.sendText(
+        contextKey,
+        wasCurrent
+          ? `已归档任务：${title}\n当前会话已没有绑定任务，直接发送消息即可创建新任务。`
+          : `已归档任务：${title}`,
+      );
+    }
+    return {
+      localSessionId: local?.localSessionId ?? "",
+      remoteSessionId: remote.id,
+      title,
+    };
   }
 
   private resolveSessionReference(contextKey: string, reference?: string): string {
@@ -4685,6 +5181,27 @@ export class ProxySessionController {
         ? "已开启当前群的静音模式。之后只有 @ 机器人的消息会被处理；发送 @机器人 /mute off 可恢复自动响应。"
         : "已关闭当前群的静音模式。机器人将恢复自动响应群消息。",
     );
+  }
+
+  private requireControlSession(localSessionId: string): SessionRecord {
+    const record = this.store.getSession(localSessionId);
+    if (!record || record.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
+    return record;
+  }
+
+  private controlSessionContextKey(record: SessionRecord): string {
+    return this.outbound.getSessionContextKey(record.localSessionId)
+      ?? (record.lastTurnId ? this.store.getTurnContextKey(record.lastTurnId) : undefined)
+      ?? record.contextKey;
+  }
+
+  private controlSessionReplyTarget(record: SessionRecord): MessageReplyTarget | undefined {
+    const routed = this.outbound.getSessionReplyTarget(record.localSessionId);
+    if (routed) return routed;
+    const snapshot = record.lastTurnId
+      ? turnViewSnapshot(this.store.getTurnSnapshot(record.lastTurnId))
+      : undefined;
+    return snapshot?.replyTarget;
   }
 
   private ensureAgent(agentName: string) {
@@ -5246,7 +5763,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer"].includes(command.type)) return true;
+  if (["archive", "stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (["model", "provider", "thinking", "permissions"].includes(command.type)) return true;
   return false;

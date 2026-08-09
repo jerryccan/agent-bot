@@ -9,6 +9,8 @@ export interface TaskNewGroupOptions {
   json: boolean;
 }
 
+export type TaskNewOptions = TaskNewGroupOptions;
+
 export interface TaskForkGroupOptions {
   reference: string;
   title?: string;
@@ -19,6 +21,14 @@ export function parseTaskNewGroupOptions(
   input: string[],
   language: CliLanguage = cliLanguage,
 ): TaskNewGroupOptions {
+  return parseTaskNewOptions(input, "newgroup", language);
+}
+
+export function parseTaskNewOptions(
+  input: string[],
+  action: "new" | "newgroup" = "new",
+  language: CliLanguage = cliLanguage,
+): TaskNewOptions {
   const positionals: string[] = [];
   let cwd: string | undefined;
   let agentName: string | undefined;
@@ -31,19 +41,19 @@ export function parseTaskNewGroupOptions(
       continue;
     }
     if (argument === "--nodir") {
-      if (projectless) throw optionError("newgroup", "--nodir", language);
-      if (cwd !== undefined) throw conflictingProjectOptions(language);
+      if (projectless) throw optionError(action, "--nodir", language);
+      if (cwd !== undefined) throw conflictingProjectOptions(action, language);
       projectless = true;
       continue;
     }
     if (argument === "--dir") {
-      if (projectless) throw conflictingProjectOptions(language);
-      if (cwd !== undefined) throw optionError("newgroup", "--dir", language);
+      if (projectless) throw conflictingProjectOptions(action, language);
+      if (cwd !== undefined) throw optionError(action, "--dir", language);
       const directory = input[index + 1];
       if (!directory || directory.startsWith("--")) {
         throw new Error(cliText(
-          "task newgroup requires a project directory after --dir.",
-          "task newgroup 需要在 --dir 后指定项目目录。",
+          `task ${action} requires a project directory after --dir.`,
+          `task ${action} 需要在 --dir 后指定项目目录。`,
           language,
         ));
       }
@@ -52,12 +62,12 @@ export function parseTaskNewGroupOptions(
       continue;
     }
     if (argument === "--agent") {
-      if (agentName !== undefined) throw optionError("newgroup", "--agent", language);
+      if (agentName !== undefined) throw optionError(action, "--agent", language);
       const name = input[index + 1];
       if (!name?.trim() || name.startsWith("--")) {
         throw new Error(cliText(
-          "task newgroup requires an Agent standard name after --agent.",
-          "task newgroup 需要在 --agent 后指定 Agent 标准名。",
+          `task ${action} requires an Agent standard name after --agent.`,
+          `task ${action} 需要在 --agent 后指定 Agent 标准名。`,
           language,
         ));
       }
@@ -65,11 +75,11 @@ export function parseTaskNewGroupOptions(
       index += 1;
       continue;
     }
-    if (argument.startsWith("--")) throw unsupportedOption("newgroup", argument, language);
+    if (argument.startsWith("--")) throw unsupportedOption(action, argument, language);
     positionals.push(argument);
   }
   const [reference, ...titleParts] = positionals;
-  requireTaskReference("newgroup", reference, language);
+  requireTaskReference(action, reference, language);
   return {
     reference,
     title: titleParts.join(" ").trim() || undefined,
@@ -104,7 +114,7 @@ export function parseTaskForkGroupOptions(
 }
 
 function requireTaskReference(
-  action: "newgroup" | "forkgroup",
+  action: "new" | "newgroup" | "forkgroup",
   reference: string | undefined,
   language: CliLanguage,
 ): asserts reference is string {
@@ -117,7 +127,7 @@ function requireTaskReference(
 }
 
 function optionError(
-  action: "newgroup",
+  action: "new" | "newgroup",
   option: "--agent" | "--dir" | "--nodir",
   language: CliLanguage,
 ): Error {
@@ -128,16 +138,16 @@ function optionError(
   ));
 }
 
-function conflictingProjectOptions(language: CliLanguage): Error {
+function conflictingProjectOptions(action: "new" | "newgroup", language: CliLanguage): Error {
   return new Error(cliText(
-    "task newgroup cannot combine --dir and --nodir.",
-    "task newgroup 的 --dir 和 --nodir 不能同时使用。",
+    `task ${action} cannot combine --dir and --nodir.`,
+    `task ${action} 的 --dir 和 --nodir 不能同时使用。`,
     language,
   ));
 }
 
 function unsupportedOption(
-  action: "newgroup" | "forkgroup",
+  action: "new" | "newgroup" | "forkgroup",
   option: string,
   language: CliLanguage,
 ): Error {
