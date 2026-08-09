@@ -903,6 +903,42 @@ describe("CardRenderer", () => {
     expect(details).not.toMatch(/powershell|pwsh/i);
   });
 
+  test.each([
+    ["macOS zsh", "/bin/zsh -lc 'npm run typecheck && npm test'", "npm run typecheck && npm test"],
+    ["Linux bash", "/bin/bash -c \"git status --short\"", "git status --short"],
+    ["POSIX sh", "sh -c 'pwd && ls -la'", "pwd && ls -la"],
+    ["env zsh", "/usr/bin/env zsh -lc 'npm run build'", "npm run build"],
+  ])("unwraps %s launchers in tool titles and expanded command details", (_name, command, expected) => {
+    const running = state();
+    const tool = { id: "posix-shell", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes(expected));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(panelTitle(panel ?? {})).toBe(`⏳ ${expected}`);
+    expect(panelTitle(panel ?? {})).not.toMatch(/(?:^|\s)(?:zsh|bash|sh)\b|\/bin\/|\/usr\/bin\/env|\s-l?c\b/i);
+    expect(details).toContain(`$ ${expected}`);
+    expect(details).not.toContain(command);
+  });
+
+  test("keeps POSIX shell invocations without a command-string flag intact", () => {
+    const running = state();
+    const command = "/bin/bash scripts/check.sh";
+    const tool = { id: "shell-script", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes(command));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(panelTitle(panel ?? {})).toBe(`⏳ ${command}`);
+    expect(details).toContain(`$ ${command}`);
+  });
+
   test("uses the useful web-search action title while keeping full details expandable", () => {
     const running = state();
     const tool = {

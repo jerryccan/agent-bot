@@ -1791,7 +1791,7 @@ function renderToolDetails(tool: ToolState, projectCwd?: string): string {
   const result = tool.error ?? tool.output ?? fileSummary;
   const normalizedCommand = stripAnsi(command).trim();
   const displayCommand = tool.kind === "command"
-    ? unwrapPowerShellCommand(normalizedCommand) ?? normalizedCommand
+    ? unwrapShellCommand(normalizedCommand) ?? normalizedCommand
     : normalizedCommand;
   const commandText = truncateText(displayCommand, 800);
   const resultText = result ? truncateMiddle(stripAnsi(result).trim(), 1_200) : undefined;
@@ -1826,7 +1826,7 @@ function toolPanelTitle(tool: ToolState): string {
   const command = stripAnsi(tool.command ?? tool.title).trim();
   const meaningfulCommand = tool.kind === "web_search"
     ? tool.title
-    : unwrapPowerShellCommand(command) ?? tool.title;
+    : unwrapShellCommand(command) ?? tool.title;
   const duration = toolDuration(tool);
   const prefix = `${icon} `;
   const suffix = duration ? ` · ${duration}` : "";
@@ -1875,6 +1875,10 @@ function formatTurnDuration(durationMs: number): string {
   return `${seconds}s`;
 }
 
+function unwrapShellCommand(command: string): string | undefined {
+  return unwrapPowerShellCommand(command) ?? unwrapPosixShellCommand(command);
+}
+
 function unwrapPowerShellCommand(command: string): string | undefined {
   const executable = command.match(
     /^(?:"[^"]*(?:pwsh|powershell)\.exe"|(?:\S*[\\/])?(?:pwsh|powershell)(?:\.exe)?)(?=\s|$)/i,
@@ -1885,6 +1889,71 @@ function unwrapPowerShellCommand(command: string): string | undefined {
   if (!commandFlag) return undefined;
   const payload = args.slice(commandFlag.index + commandFlag[0].length).trim();
   if (!payload) return undefined;
+  return unwrapQuotedPayload(payload);
+}
+
+function unwrapPosixShellCommand(command: string): string | undefined {
+  let executable = readCommandWord(command, 0);
+  if (!executable) return undefined;
+
+  if (posixExecutableName(executable.value) === "env") {
+    let cursor = executable.end;
+    while (true) {
+      const candidate = readCommandWord(command, cursor);
+      if (!candidate) return undefined;
+      const name = posixExecutableName(candidate.value);
+      if (isPosixShell(name)) {
+        executable = candidate;
+        break;
+      }
+      if (!candidate.value.startsWith("-") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(candidate.value)) {
+        return undefined;
+      }
+      cursor = candidate.end;
+    }
+  } else if (!isPosixShell(posixExecutableName(executable.value))) {
+    return undefined;
+  }
+
+  const args = command.slice(executable.end);
+  const commandFlag = /(?:^|\s)(?:-[A-Za-z]*c[A-Za-z]*|--command)(?:\s+|=)/.exec(args);
+  if (!commandFlag) return undefined;
+  const payload = args.slice(commandFlag.index + commandFlag[0].length).trim();
+  if (!payload) return undefined;
+  return unwrapQuotedPayload(payload);
+}
+
+function readCommandWord(command: string, start: number): { value: string; end: number } | undefined {
+  let cursor = start;
+  while (cursor < command.length && /\s/.test(command[cursor] ?? "")) cursor += 1;
+  if (cursor >= command.length) return undefined;
+
+  const quote = command[cursor];
+  if (quote === "\"" || quote === "'") {
+    const endQuote = command.indexOf(quote, cursor + 1);
+    if (endQuote < 0) return undefined;
+    return { value: command.slice(cursor + 1, endQuote), end: endQuote + 1 };
+  }
+
+  const word = /^\S+/.exec(command.slice(cursor));
+  if (!word) return undefined;
+  return { value: word[0], end: cursor + word[0].length };
+}
+
+function posixExecutableName(executable: string): string {
+  return executable.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+}
+
+function isPosixShell(executable: string): boolean {
+  return executable === "sh"
+    || executable === "bash"
+    || executable === "zsh"
+    || executable === "dash"
+    || executable === "ksh"
+    || executable === "fish";
+}
+
+function unwrapQuotedPayload(payload: string): string {
   const quote = payload[0];
   if ((quote === "\"" || quote === "'") && payload.at(-1) === quote) return payload.slice(1, -1).trim();
   return payload;
