@@ -53,6 +53,14 @@ agentbot --help
 
 See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
+### Update
+
+```bash
+agentbot update
+```
+
+Stable installations check the stable channel by default; Alpha installations stay on the Alpha channel. Use `--stable`, `--alpha`, or `--version <version>` to choose explicitly. When the service is running, Agent Bot waits for active tasks to finish, updates, and restores the service automatically. Source checkouts and `npm link` installations are never modified by self-update.
+
 ### Initialize
 
 ```bash
@@ -72,7 +80,7 @@ A fresh initialization normally presents three QR-code or link steps in the term
     | Event | `im.chat.updated_v1` | Detect group renames and synchronize them to Agent task titles. |
     | Callback | `card.action.trigger` | Enable card button interactions. |
 
-After these steps, the `~/.agent-bot` directory is initialized and Agent Bot starts automatically. Every successful `agentbot init` sends a private welcome card containing the Agent Bot logo. The first card introduces the main capabilities; after an upgrade it highlights the new version, while a same-version rerun confirms that the Profile was refreshed.
+After these steps, the `~/.agent-bot` directory is initialized and Agent Bot starts immediately. Every successful `agentbot init` sends a private welcome card containing the Agent Bot logo. The first card introduces the main capabilities; after an upgrade it highlights the new version, while a same-version rerun confirms that the Profile was refreshed.
 
 Agent Bot includes a keepalive mechanism that automatically reconnects after Agent Bot, Codex, or TraeX crashes.
 
@@ -105,6 +113,15 @@ agentbot server restart
 
 It waits for currently running Agent tasks to finish before restarting, allowing every task to complete normally. When triggered from a Feishu topic, both restart status and the post-restart startup card return to that topic.
 
+Enable startup at the next user login:
+
+```bash
+agentbot server autostart enable
+agentbot server autostart status
+```
+
+This creates a separate OS registration for the selected Profile: Task Scheduler on Windows, a LaunchAgent on macOS, or a systemd user unit on Linux. If Windows policy denies creating a scheduled task, Agent Bot automatically uses the current user's Startup folder instead, without requiring administrator access. Linux users who need startup before login can run `agentbot server autostart enable --linger`; this enables user lingering and may require system authorization. `server autostart disable` removes only the startup registration and leaves the currently running Server untouched. It intentionally does not disable Linux linger because other user services may depend on it.
+
 ### Update Or Uninstall
 
 Stop the running service before replacing or removing the global package:
@@ -118,6 +135,7 @@ agentbot init # Update the Profile and start the Server
 To uninstall:
 
 ```bash
+agentbot server autostart disable
 agentbot server stop
 npm uninstall --global @keyou007/agent-bot
 ```
@@ -135,6 +153,7 @@ Create a new Profile with:
 agentbot --profile ~/.agent-bot-rescue init
 agentbot --profile ~/.agent-bot-rescue server start
 agentbot --profile ~/.agent-bot-rescue server status
+agentbot --profile ~/.agent-bot-rescue server autostart enable
 ```
 
 Commands without `--profile` use the main Profile at `~/.agent-bot`.
@@ -171,13 +190,23 @@ agentbot task list
 agentbot task current [--json]
 agentbot task status <task>
 agentbot task prompt <task> "<prompt>"
+agentbot task new <task> [title] [--agent <standard-name>] [--dir <path> | --nodir]
 agentbot task newgroup <task> [title] [--agent <standard-name>] [--dir <path> | --nodir]
+agentbot task fork <task>
 agentbot task forkgroup <task> [title]
+agentbot task queue <task> "<prompt>"
+agentbot task model <task> [model]
+agentbot task goal <task> [action-or-objective]
+agentbot task turns <task>
+agentbot task reset <task> <Turn ID>
+agentbot task dir <task> [directory]
+agentbot task file <task> <path>
 agentbot task title <task> "<title>"
 agentbot task stop <task>
+agentbot task archive <task>
 ```
 
-`task current` shows details for the Codex or TraeX task currently invoking the CLI. Its JSON output includes Agent Bot's `localSessionId` and the native `remoteSessionId`. `<task>` can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Run `agentbot --help` for all CLI options.
+`task current` shows details for the Codex or TraeX task currently invoking the CLI. Its JSON output includes Agent Bot's `localSessionId` and the native `remoteSessionId`. `<task>` can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
 
 `task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
 
@@ -190,6 +219,7 @@ Send a message beginning with `/` to run a command. Use `/help` in Feishu for th
 | `/new [title] [--dir <path> \| --nodir]`      | Start a new task                     |
 | `/dir [path]`                                 | Browse files or start work in a directory |
 | `/sessions [keyword]`                         | Find and manage tasks                |
+| `/archive [task]`                             | Archive the current or selected task |
 | `/switch [task]`                              | Switch tasks or return to the previous task |
 | `/fork [task]`                                | Branch a task                        |
 | `/turns`                                      | Restore an earlier conversation turn |
@@ -243,7 +273,7 @@ By default, `feishu.respondToOwnerOnly: true` accepts only messages and card act
 
 Agent Bot responds to ordinary owner messages in groups containing the bot. Set `feishu.respondToAllGroupMessages` to `false` to additionally require the owner to @ the bot in groups; private chats are unchanged. Initialization still requests the complete group-message permission set so changing this option later does not require another authorization.
 
-Thinking cards use the grouped layout by default: auxiliary Commentary and user steering remain visible, while each execution group shows only its latest native reasoning and expands to reveal complete tool commands and results. Execution groups start collapsed and keep stable component identities so a group manually opened in Feishu stays open across card updates. On long turns, pagination measures the fully rendered card content instead of using fixed message or tool counts. Set `feishu.thinkingCardLayout` to `timeline` to temporarily restore the original layout.
+Thinking cards use the grouped layout by default: auxiliary Commentary and user steering remain visible, while each execution group shows only its latest native reasoning and expands to reveal complete tool commands and results. Common PowerShell, zsh, bash, and sh launcher prefixes are omitted from the displayed commands. Execution groups start collapsed and keep stable component identities so a group manually opened in Feishu stays open across card updates. On long turns, pagination measures the fully rendered card content instead of using fixed message or tool counts. Set `feishu.thinkingCardLayout` to `timeline` to temporarily restore the original layout.
 
 ## Troubleshooting
 

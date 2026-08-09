@@ -53,6 +53,14 @@ agentbot --help
 
 从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
 
+### 更新
+
+```bash
+agentbot update
+```
+
+正式版默认检查稳定通道，Alpha 版默认检查 Alpha 通道。也可以使用 `--stable`、`--alpha` 或 `--version <版本>` 明确选择。服务正在运行时，Agent Bot 会等待当前任务完成后更新并自动恢复服务；源码目录和 `npm link` 安装不会被自更新命令修改。
+
 ### 初始化
 
 ```bash
@@ -72,7 +80,7 @@ agentbot init
     | 事件 | `im.chat.updated_v1` | 检测群改名，把群名同步到 agent 任务标题。 |
     | 回调 | `card.action.trigger` | 卡片按钮交互。 |
 
-完成这些步骤后，即完成了 `~/.agent-bot` 目录的初始化，Agent Bot 会自动启动。每次 `agentbot init` 成功后，机器人都会向授权用户私聊发送一张包含 Agent Bot Logo 的欢迎卡片：首次初始化会介绍主要能力，升级后初始化会展示新版亮点，同版本再次初始化则会确认 Profile 已刷新。
+完成这些步骤后，即完成了 `~/.agent-bot` 目录的初始化，Agent Bot 会立即启动。每次 `agentbot init` 成功后，机器人都会向授权用户私聊发送一张包含 Agent Bot Logo 的欢迎卡片：首次初始化会介绍主要能力，升级后初始化会展示新版亮点，同版本再次初始化则会确认 Profile 已刷新。
 
 Agent Bot 自带保活机制，确保在 Agent Bot，Codex 或 TraeX 崩溃后能够自动重新连接。
 
@@ -105,6 +113,15 @@ agentbot server restart
 
 它会等待当前运行中的 Agent 任务完成后自动重启，确保所有任务都能正常执行。在飞书话题中触发时，重启状态和重启后的启动卡都会返回原话题。
 
+启用下次用户登录时自动启动：
+
+```bash
+agentbot server autostart enable
+agentbot server autostart status
+```
+
+每个 Profile 都会创建独立的操作系统启动项：Windows 使用任务计划程序，macOS 使用 LaunchAgent，Linux 使用 systemd 用户单元。如果 Windows 策略拒绝创建计划任务，Agent Bot 会自动改用当前用户的启动文件夹，无需管理员权限。Linux 如需在用户尚未登录时启动，可执行 `agentbot server autostart enable --linger`；该命令会启用用户 linger，可能需要系统授权。`server autostart disable` 只移除启动项，不停止当前正在运行的 Server；它也不会关闭 Linux linger，因为其他用户服务可能依赖 linger。
+
 ### 更新或卸载
 
 替换或移除全局包前，先停止正在运行的服务：
@@ -118,6 +135,7 @@ agentbot init # 更新 Profile 并启动 Server
 卸载：
 
 ```bash
+agentbot server autostart disable
 agentbot server stop
 npm uninstall --global @keyou007/agent-bot
 ```
@@ -135,6 +153,7 @@ npm uninstall --global @keyou007/agent-bot
 agentbot --profile ~/.agent-bot-rescue init
 agentbot --profile ~/.agent-bot-rescue server start
 agentbot --profile ~/.agent-bot-rescue server status
+agentbot --profile ~/.agent-bot-rescue server autostart enable
 ```
 
 不指定 `--profile` 时使用位于 `~/.agent-bot` 的主 Profile。
@@ -171,13 +190,23 @@ agentbot task list
 agentbot task current [--json]
 agentbot task status <任务>
 agentbot task prompt <任务> "<prompt>"
+agentbot task new <任务> [标题] [--agent <标准名>] [--dir <路径> | --nodir]
 agentbot task newgroup <任务> [标题] [--agent <标准名>] [--dir <路径> | --nodir]
+agentbot task fork <任务>
 agentbot task forkgroup <任务> [标题]
+agentbot task queue <任务> "<prompt>"
+agentbot task model <任务> [模型]
+agentbot task goal <任务> [操作或目标]
+agentbot task turns <任务>
+agentbot task reset <任务> <Turn ID>
+agentbot task dir <任务> [目录]
+agentbot task file <任务> <路径>
 agentbot task title <任务> "<标题>"
 agentbot task stop <任务>
+agentbot task archive <任务>
 ```
 
-`task current` 会显示当前调用 CLI 的 Codex 或 TraeX 任务详情；JSON 输出包含 Agent Bot 的 `localSessionId` 和原生 `remoteSessionId`。`<任务>` 可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。运行 `agentbot --help` 可查看完整 CLI 参数。
+`task current` 会显示当前调用 CLI 的 Codex 或 TraeX 任务详情；JSON 输出包含 Agent Bot 的 `localSessionId` 和原生 `remoteSessionId`。`<任务>` 可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
 
 `task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
 
@@ -190,6 +219,7 @@ agentbot task stop <任务>
 | `/new [标题] [--dir <路径> \| --nodir]`       | 开始新任务                   |
 | `/dir [路径]`                                 | 浏览文件，或在指定目录开始任务 |
 | `/sessions [关键词]`                          | 查找和管理任务               |
+| `/archive [任务]`                             | 归档当前或指定任务           |
 | `/switch [任务]`                              | 切换任务，或返回上一个任务   |
 | `/fork [任务]`                                | 创建任务分支                 |
 | `/turns`                                      | 恢复到更早的对话轮次         |
@@ -243,7 +273,7 @@ Agent 进程会继承普通父进程变量及其显式配置的 `agents.<name>.e
 
 Agent Bot 会响应机器人所在群内拥有者发送的普通消息。将 `feishu.respondToAllGroupMessages` 设为 `false` 后，还会要求拥有者在群消息中 @ 当前机器人；私聊不受这一项影响。初始化仍会申请完整的群消息权限，因此以后切换该配置无需重新授权。
 
-思考卡片默认使用分组布局：辅助 Commentary 和用户追加消息保持直接显示，每个执行组只显示最新一段原生思考，点击后可展开完整的工具命令和结果。执行组默认折叠，并使用稳定的组件标识，使用户在飞书中手动打开的面板在卡片更新后继续保持展开。长任务会根据完整渲染后的卡片内容大小翻页，不再使用固定的消息数或工具数。将 `feishu.thinkingCardLayout` 设为 `timeline` 可临时恢复原版布局。
+思考卡片默认使用分组布局：辅助 Commentary 和用户追加消息保持直接显示，每个执行组只显示最新一段原生思考，点击后可展开完整的工具命令和结果。显示命令时会省略常见的 PowerShell、zsh、bash 和 sh 启动包装前缀。执行组默认折叠，并使用稳定的组件标识，使用户在飞书中手动打开的面板在卡片更新后继续保持展开。长任务会根据完整渲染后的卡片内容大小翻页，不再使用固定的消息数或工具数。将 `feishu.thinkingCardLayout` 设为 `timeline` 可临时恢复原版布局。
 
 ## 常见问题
 

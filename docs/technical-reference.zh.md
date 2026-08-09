@@ -105,6 +105,8 @@ https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi
 
 Server 成功启动或安全重启成功安排后，`init` 会直接向 `feishu.userOpenId` 发送 Card 2.0 私聊欢迎卡。无论 CLI 使用什么系统语言，欢迎卡都固定显示中文；卡片会上传随包提供的 `assets/agent-bot-logo.png`，并显示当前安装版本、默认 Agent 和已配置 Agent。如果安全重启仍在等待，卡片会明确说明刷新后的版本将在重启完成后生效，而不会声称新版已经接管。`<profile>/data/initialization.json` 会记录上次成功初始化的包版本，用于区分首次初始化、版本升级和同版本配置刷新。JSON 输出通过 `welcome` 对象报告发送结果。缺少用户 Open ID 或卡片发送失败时会明确警告，但不会撤销已完成的配置，也不会停止已经就绪的 Server；`--skip-feishu` 会记录欢迎卡已跳过。
 
+`agentbot server autostart enable|status|disable` 管理每个 Profile 独立的操作系统启动项。Windows 会先创建 `ONLOGON` 任务计划；如果系统拒绝创建任务，则自动回退到隐藏窗口启动的当前用户启动文件夹脚本。macOS 写入 `RunAtLoad` LaunchAgent，Linux 启用 systemd 用户单元。启动项通过 `<profile>/autostart/supervisor-bootstrap.mjs` 直接启动 Supervisor；bootstrap 只保存 Node 可执行文件、已安装 Supervisor、Profile、配置文件路径和安全的可执行文件搜索路径，会清除继承的飞书凭据变量，再由目标 Profile 自己的 `.env` 加载密钥。LaunchAgent 的 `KeepAlive` 和 systemd 的 `Restart` 均保持关闭，因为 Worker 恢复已经由 Supervisor 负责，同时必须保证 `server stop` 后直到下次登录或开机前不会被立刻拉起。Linux 的 `--linger` 会执行 `loginctl enable-linger`，让用户单元可在登录前启动；禁用 Agent Bot 自启动时不会关闭这个用户级全局设置。禁用自启动也不会停止当前 Server。状态命令会同时显示操作系统注册/加载状态和 Agent Bot 实际就绪状态。不支持的平台可以查看状态，但不能启用启动项。
+
 ## 飞书应用要求
 
 基础消息能力依赖以下核心配置：
@@ -180,7 +182,7 @@ logging:
 
 `/mute` 或 `/mute on` 会为当前基础群聊持久化仅 @ 响应模式，`/mute off` 会关闭。群正文及其所有话题共享该状态；静音期间未 @ 当前机器人的消息会在事件去重、reaction、活跃时间、图片下载、命令解析和 Agent 调用之前被忽略。关闭静音的命令本身也必须 @ 机器人。私聊不支持 `/mute`。
 
-`feishu.thinkingCardLayout` 默认为 `grouped`。分组渲染器保持 Commentary 和用户追加消息可见，只把 Commentary 作为执行组边界；每个执行组只用最新原生思考作为标题，展开后仍可查看组内全部工具。所有执行面板都以折叠状态作为默认值，并使用稳定的 `element_id`；Agent Bot 不再根据工具状态、用户追加或后续 Commentary 改写展开属性，让飞书客户端能够在整卡更新时保留用户手动展开的状态。分组分页会先完整渲染工具面板，再根据生成内容的 UTF-8 JSON 大小和组件数量从最新端向前装页。活动区上限为 24KB 和 160 个组件，为飞书建议的 30KB 卡片大小及 200 个组件硬限制预留标题、计划、文件变更和操作按钮空间。超过 8 个工具的单个执行组会拆成标识稳定的子面板，但每个工具都继续保留可展开的命令、结果和图片内容。历史页会包含完整原生思考并独立测量。新版布局完善期间，可将该配置设为 `timeline` 使用保持不变的原版渲染器及其每页 40 条活动规则。
+`feishu.thinkingCardLayout` 默认为 `grouped`。分组渲染器保持 Commentary 和用户追加消息可见，只把 Commentary 作为执行组边界；每个执行组只用最新原生思考作为标题，展开后仍可查看组内全部工具。命令面板会从标题和展开后的命令正文中去掉 PowerShell 启动器，以及 `/bin/zsh -lc`、`/bin/bash -c`、`/usr/bin/env sh -c` 等 POSIX 命令字符串启动器，但不会修改实际执行的命令。所有执行面板都以折叠状态作为默认值，并使用稳定的 `element_id`；Agent Bot 不再根据工具状态、用户追加或后续 Commentary 改写展开属性，让飞书客户端能够在整卡更新时保留用户手动展开的状态。分组分页会先完整渲染工具面板，再根据生成内容的 UTF-8 JSON 大小和组件数量从最新端向前装页。活动区上限为 24KB 和 160 个组件，为飞书建议的 30KB 卡片大小及 200 个组件硬限制预留标题、计划、文件变更和操作按钮空间。超过 8 个工具的单个执行组会拆成标识稳定的子面板，但每个工具都继续保留可展开的命令、结果和图片内容。历史页会包含完整原生思考并独立测量。新版布局完善期间，可将该配置设为 `timeline` 使用保持不变的原版渲染器及其每页 40 条活动规则。
 
 `agentbot server start` 要求同时配置飞书 `appId` 和 `appSecret`。Worker 启动 SDK 长连接时不读取 SDK 日志或私有连接状态，随后通过发送启动状态卡片检查出站能力。每张启动卡片都会显示从已安装包元数据读取的 Agent Bot 版本。每次启动都会向所有已知私聊发送卡片，不受最近活跃时间影响；同时向本次 Worker 启动前 1 分钟内活跃的非话题群聊发送卡片。安全重启后，还会向所有已加入本次重启通知范围的会话发送，不受活跃时间限制；话题路由及其原始消息锚点会完整经过替换 Supervisor，启动卡以回复形式返回原话题，不会在父群创建新的根话题。安全重启进度卡的范围更窄：只有明确触发本次安全重启的会话会收到并持续更新，最近活跃会话不会被自动加入。数据库里尚无符合条件的会话时，启动卡改用 `feishu.userOpenId`，按 `open_id` 私聊发送。存在启动通知目标时，至少一张卡片发送成功后 Server 才报告就绪，单个目标发送失败仍相互隔离。如果既没有已知会话，也没有 `feishu.userOpenId`，启动会跳过出站检查并继续；仅当 `respondToOwnerOnly: false` 时，之后收到的第一条私聊消息可以补全用户 Open ID，供后续启动通知和 CLI 建群使用。默认的仅拥有者模式要求先配置拥有者 Open ID。缺少凭据时仍会启动失败并提示先初始化。`agentbot console` 是明确的纯本地入口，不需要飞书凭据。
 
@@ -378,6 +380,12 @@ npm Trusted Publisher 配置为：
 - 允许操作：`npm publish`
 
 发布 workflow 使用 GitHub OIDC，不保存长期 npm token，并从 GitHub 托管的 Node.js 24 runner 发布。
+
+### npm 安装包自更新
+
+`agentbot update` 只接受包目录与 `npm root --global` 一致的真实 npm 全局安装。源码 checkout、npm link、使用符号链接的全局包以及其他包管理器布局都会被拒绝。预发布版本默认跟随 npm 的 `alpha` 标签，稳定版默认跟随 `latest`；可用 `--alpha`、`--stable` 或 `--version` 显式选择，降级还必须传入 `--allow-downgrade`。
+
+修改当前安装前，CLI 会下载精确版本的 npm tarball，在当前 Profile 的 `updates` 目录中独立安装候选包，验证包身份以及 CLI 的版本和帮助输出，并同时保存当前包的完整副本与 npm 回滚 tarball。服务运行时会复用安全重启调度，等待活动任务、最终结果投递和静默窗口。随后，复制到安装目录外的独立执行器等待 Worker 和 Supervisor 退出，备份 SQLite 主文件及 WAL/SHM 文件，再安装已经验证的 tarball、复验全局安装并启动服务。安装或启动失败时会恢复数据库并重新安装旧 tarball；如果 npm 回滚仍不能恢复可用服务，则直接从完整包备份启动旧版。`update.log`、`result.json`、包备份和数据库备份都会保留在 Profile 中用于排查。
 
 ## 开发与源码安装
 
