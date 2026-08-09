@@ -487,8 +487,14 @@ describe("CardRenderer", () => {
     expect(executionPanels).toHaveLength(2);
     expect(panelTitle(executionPanels[0]!)).toContain("第二段原生思考 · 2 个工具");
     expect(panelTitle(executionPanels[0]!)).not.toContain("第一段原生思考");
-    expect(executionPanels[0]).toMatchObject({ expanded: false, border: { color: "red" } });
+    expect(executionPanels[0]).toMatchObject({ expanded: false, border: { color: "grey" } });
+    expect(panelTitle(executionPanels[0]!)).toMatch(/^💭 /);
+    expect(panelTitle(executionPanels[0]!)).not.toContain("❌");
     expect((executionPanels[0]!.elements as unknown[])).toHaveLength(2);
+    const failedToolPanel = collectObjects(executionPanels[0]).find((item) =>
+      item.tag === "collapsible_panel" && String(item.element_id ?? "").startsWith("turn_tool_")
+      && panelTitle(item).startsWith("❌"));
+    expect(failedToolPanel).toBeDefined();
     expect(panelTitle(executionPanels[1]!)).toContain("运行完整测试 · 1 个工具");
     expect(executionPanels[1]).toMatchObject({ expanded: false, border: { color: "blue" } });
     expect(executionPanels.every((panel) => String(panel.element_id).length <= 20)).toBe(true);

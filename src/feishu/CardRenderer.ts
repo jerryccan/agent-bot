@@ -1500,7 +1500,7 @@ function executionActivityPanel(
     {
       elementId: executionActivityPanelElementId(group.id),
       expanded: false,
-      borderColor: status === "failed" ? "red" : status === "running" ? "blue" : "grey",
+      borderColor: status === "running" ? "blue" : "grey",
       compact: true,
     },
   );
@@ -1508,7 +1508,6 @@ function executionActivityPanel(
 
 function executionActivityStatus(tools: ToolState[]): ToolState["status"] {
   if (tools.some((tool) => tool.status === "running")) return "running";
-  if (tools.some((tool) => tool.status === "failed")) return "failed";
   return "completed";
 }
 
@@ -1516,7 +1515,7 @@ function executionActivityTitle(
   group: Extract<GroupedTurnActivity, { kind: "execution" }>,
   status: ToolState["status"],
 ): string {
-  const icon = status === "running" ? "⏳" : status === "failed" ? "❌" : "💭";
+  const icon = status === "running" ? "⏳" : "💭";
   const latestReasoning = group.latestReasoning?.text
     ? removeMarkdownBold(group.latestReasoning.text).replace(/\s+/g, " ").trim()
     : "";
@@ -1524,9 +1523,7 @@ function executionActivityTitle(
     ? truncateText(latestReasoning, 90)
     : status === "running"
       ? "正在执行工具"
-      : status === "failed"
-        ? "工具执行失败"
-        : "已执行工具";
+      : "已执行工具";
   return `${icon} ${summary} · ${group.tools.length} 个工具`;
 }
 
