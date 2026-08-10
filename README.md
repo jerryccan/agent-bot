@@ -6,7 +6,7 @@
 
 Use local Codex, TraeX, and compatible ACP agents through Feishu.
 
-English | [简体中文](README.zh.md)
+[Website](https://keyou.github.io/agent-bot/) | English | [简体中文](README.zh.md)
 
 Agent Bot runs on your computer and connects a Feishu bot to your local coding agents. Send a message to start working; the bot updates a progress card while the agent runs and sends the final answer as Markdown.
 
@@ -69,10 +69,10 @@ agentbot init
 
 Initialization detects Codex and TraeX and reports their installed versions. Missing or outdated Agents are listed with the appropriate install or upgrade commands. Agent Bot saves its configuration to `~/.agent-bot/config.yaml`.
 
-A fresh initialization normally presents three QR-code or link steps in the terminal.
+A fresh initialization first asks how group messages should be handled: receive every group message, or respond only when the bot is explicitly @ mentioned. It then presents two or three QR-code or link steps, depending on that choice.
 
 1. **Create the bot.** This creates a Feishu app with the standard basic messaging configuration and saves its App ID, App Secret, and authorizing user. This step cannot be skipped because Agent Bot cannot connect to Feishu without it. Permissions already provided during creation are not repeated below.
-2. **Add the all-group-message permission.** The only additional core permission needed after bot creation is `im:message.group_msg`. It lets Agent Bot receive ordinary group messages that do not @ the bot. Feishu requires this permission to be added manually in the Developer Console. Enter `Y` to skip waiting; private chats still work without it, but group users must @ the bot.
+2. **Optionally add the all-group-message permission.** This step appears only after choosing to receive all group messages. The `im:message.group_msg` permission lets Agent Bot receive ordinary group messages that do not @ the bot, and Feishu requires it to be added manually in the Developer Console. Mention-only mode does not request this permission. When this step is shown, entering `Y` skips waiting and leaves group conversations in mention-only mode.
 3. **Add the remaining event and callback.** The bot-creation template already provides the other permissions Agent Bot needs. The third step adds only:
 
     | Type | Event or callback | Purpose |
