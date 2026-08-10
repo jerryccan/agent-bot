@@ -1,0 +1,17 @@
+{
+  "name": "Agent Bot",
+  "short_name": "Agent Bot",
+  "description": "Use local coding agents from Lark and Feishu.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#071a47",
+  "icons": [
+    {
+      "src": "assets/agent-bot-logo.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

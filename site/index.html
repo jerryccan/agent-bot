@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071a47" />
+    <meta
+      name="description"
+      content="Agent Bot connects Lark and Feishu to local coding agents such as Codex and TraeX."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Agent Bot" />
+    <meta
+      property="og:description"
+      content="Your local coding agents, available from Lark and Feishu."
+    />
+    <meta property="og:url" content="https://keyou.github.io/agent-bot/" />
+    <meta
+      property="og:image"
+      content="https://keyou.github.io/agent-bot/assets/agent-bot-hero.png"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href="https://keyou.github.io/agent-bot/" />
+    <link rel="icon" type="image/png" href="assets/agent-bot-logo.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>Agent Bot | Local coding agents in Lark</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
+
+    <header class="site-header" data-header>
+      <div class="nav-shell">
+        <a class="brand" href="#top" aria-label="Agent Bot home">
+          <span class="brand-mark" aria-hidden="true">
+            <img src="assets/agent-bot-logo.png" alt="" />
+          </span>
+          <span>Agent Bot</span>
+        </a>
+
+        <nav class="desktop-nav" aria-label="Primary navigation">
+          <a href="#workflow" data-i18n="navWorkflow">How it works</a>
+          <a href="#capabilities" data-i18n="navCapabilities">Capabilities</a>
+          <a href="#reliability" data-i18n="navReliability">Reliability</a>
+          <a href="#install" data-i18n="navInstall">Install</a>
+        </nav>
+
+        <div class="nav-actions">
+          <div class="language-switch" role="group" aria-label="Language">
+            <button
+              type="button"
+              class="language-option is-active"
+              data-language="en"
+              aria-pressed="true"
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              class="language-option"
+              data-language="zh"
+              aria-pressed="false"
+            >
+              中文
+            </button>
+          </div>
+          <a
+            class="github-link"
+            href="https://github.com/keyou/agent-bot"
+            target="_blank"
+            rel="noreferrer"
+          >
+            GitHub <span aria-hidden="true">↗</span>
+          </a>
+          <button
+            class="menu-button"
+            type="button"
+            aria-expanded="false"
+            aria-controls="mobile-navigation"
+            data-menu-button
+          >
+            <span class="menu-lines" aria-hidden="true"></span>
+            <span class="sr-only" data-i18n="menu">Menu</span>
+          </button>
+        </div>
+      </div>
+
+      <nav
+        class="mobile-nav"
+        id="mobile-navigation"
+        aria-label="Mobile navigation"
+        data-mobile-nav
+      >
+        <a href="#workflow" data-i18n="navWorkflow">How it works</a>
+        <a href="#capabilities" data-i18n="navCapabilities">Capabilities</a>
+        <a href="#reliability" data-i18n="navReliability">Reliability</a>
+        <a href="#install" data-i18n="navInstall">Install</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div
+          class="hero-backdrop"
+          role="img"
+          aria-label="Agent Bot connecting chat, terminal, and completed tasks"
+        ></div>
+        <div class="hero-inner">
+          <p class="eyebrow" data-i18n="heroEyebrow">
+            Open source · Runs on your machine
+          </p>
+          <h1 id="hero-title">Agent Bot</h1>
+          <p class="hero-lead" data-i18n="heroLead">
+            Your local coding agents, available wherever your Lark conversations
+            happen.
+          </p>
+          <p class="hero-copy" data-i18n="heroCopy">
+            Connect Codex, TraeX, and compatible agents to Lark or Feishu. Start
+            work, follow progress, and keep projects moving without being at
+            your desk.
+          </p>
+
+          <div class="hero-actions">
+            <a
+              class="button button-primary"
+              href="#install"
+              data-i18n="getStarted"
+              >Get started</a
+            >
+            <a
+              class="button button-secondary"
+              href="https://github.com/keyou/agent-bot"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <span data-i18n="viewGithub">View on GitHub</span
+              ><span aria-hidden="true">↗</span>
+            </a>
+          </div>
+
+          <div class="hero-command" data-copy-surface>
+            <span class="terminal-prompt" aria-hidden="true">$</span>
+            <code>npm install --global @keyou007/agent-bot</code>
+            <button
+              class="copy-button"
+              type="button"
+              data-copy="npm install --global @keyou007/agent-bot"
+              title="Copy install command"
+              aria-label="Copy install command"
+            >
+              <span aria-hidden="true">⧉</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="hero-compatibility" aria-label="Supported runtimes">
+          <span data-i18n="worksWith">Works with</span>
+          <strong>Codex</strong>
+          <i aria-hidden="true"></i>
+          <strong>TraeX</strong>
+          <i aria-hidden="true"></i>
+          <strong>ACP</strong>
+        </div>
+      </section>
+
+      <section
+        class="statement section-shell"
+        aria-labelledby="statement-title"
+      >
+        <p class="section-kicker" data-i18n="statementKicker">
+          The missing connection
+        </p>
+        <h2 id="statement-title" data-i18n="statementTitle">
+          The agent stays local. The conversation goes with you.
+        </h2>
+        <p data-i18n="statementCopy">
+          Agent Bot is the durable bridge between Lark and the coding tools
+          already authenticated on your computer. Your source, credentials, and
+          agent processes stay on the host you control.
+        </p>
+      </section>
+
+      <section
+        class="workflow section-band"
+        id="workflow"
+        aria-labelledby="workflow-title"
+      >
+        <div class="section-shell">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker" data-i18n="workflowKicker">
+                One continuous loop
+              </p>
+              <h2 id="workflow-title" data-i18n="workflowTitle">
+                From message to merged work
+              </h2>
+            </div>
+            <p data-i18n="workflowIntro">
+              A focused workflow that feels native in chat and remains faithful
+              to the agent running locally.
+            </p>
+          </div>
+
+          <ol class="workflow-steps">
+            <li>
+              <span class="step-number">01</span>
+              <div>
+                <h3 data-i18n="stepOneTitle">Ask from Lark</h3>
+                <p data-i18n="stepOneCopy">
+                  Send a message, image, command, or follow-up from a private
+                  chat, group, or topic.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="step-number">02</span>
+              <div>
+                <h3 data-i18n="stepTwoTitle">Work locally</h3>
+                <p data-i18n="stepTwoCopy">
+                  The selected agent runs inside its own process with the
+                  project, model, and permission settings for that task.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="step-number">03</span>
+              <div>
+                <h3 data-i18n="stepThreeTitle">Stay in the loop</h3>
+                <p data-i18n="stepThreeCopy">
+                  Follow live reasoning and tools, steer when needed, then
+                  receive the final answer in the original conversation.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="product-section" aria-labelledby="product-title">
+        <div class="section-shell product-heading">
+          <p
+            class="section-kicker section-kicker-light"
+            data-i18n="productKicker"
+          >
+            Made for active work
+          </p>
+          <h2 id="product-title" data-i18n="productTitle">
+            Progress you can read. Controls where you need them.
+          </h2>
+          <p data-i18n="productCopy">
+            A single turn stays coherent from reaction to progress card to final
+            response, with the task controls close at hand.
+          </p>
+        </div>
+
+        <div class="product-stage" aria-label="Agent Bot conversation preview">
+          <div class="conversation-window">
+            <div class="conversation-topbar">
+              <div class="conversation-identity">
+                <img src="assets/agent-bot-logo.png" alt="" />
+                <div>
+                  <strong>Agent Bot</strong>
+                  <span data-i18n="previewSubtitle"
+                    >Local agent · connected</span
+                  >
+                </div>
+              </div>
+              <span class="online-badge"
+                ><i aria-hidden="true"></i
+                ><span data-i18n="online">Online</span></span
+              >
+            </div>
+
+            <div class="conversation-body">
+              <div class="user-message">
+                <p data-i18n="previewPrompt">
+                  Review the release workflow and fix the failing publish step.
+                </p>
+                <span class="message-reaction">⏳ AgentBot</span>
+              </div>
+
+              <article class="thinking-card">
+                <header>
+                  <div>
+                    <strong
+                      ><span aria-hidden="true">⏳</span>
+                      <span data-i18n="processing"
+                        >Processing: release workflow</span
+                      ></strong
+                    >
+                    <span data-i18n="processingMeta">18s · 3 tools</span>
+                  </div>
+                  <span class="stop-control" data-i18n="stop">Stop</span>
+                </header>
+                <div class="thinking-content">
+                  <div class="activity-line is-complete">
+                    <span aria-hidden="true">✓</span>
+                    <p>
+                      <strong data-i18n="activityOne"
+                        >Inspecting workflow configuration</strong
+                      ><small>.github/workflows/publish.yml</small>
+                    </p>
+                  </div>
+                  <div class="activity-line is-complete">
+                    <span aria-hidden="true">✓</span>
+                    <p>
+                      <strong data-i18n="activityTwo"
+                        >Verifying package release settings</strong
+                      ><small>npm run verify</small>
+                    </p>
+                  </div>
+                  <div class="activity-line is-running">
+                    <span aria-hidden="true">●</span>
+                    <p>
+                      <strong data-i18n="activityThree"
+                        >Applying the workflow fix</strong
+                      ><small data-i18n="running">Running now</small>
+                    </p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="result-card">
+                <header>
+                  <strong
+                    ><span aria-hidden="true">✓</span>
+                    <span data-i18n="completed"
+                      >Completed: release workflow</span
+                    ></strong
+                  >
+                  <span data-i18n="completedMeta">42s · 5 tools</span>
+                </header>
+                <p data-i18n="resultCopy">
+                  Fixed the publish job and verified the package. The release
+                  workflow is ready to run.
+                </p>
+                <div class="result-actions">
+                  <span>Reset</span>
+                  <span>ForkGroup</span>
+                </div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section
+        class="capabilities section-shell"
+        id="capabilities"
+        aria-labelledby="capabilities-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker" data-i18n="capabilitiesKicker">
+              More than remote prompts
+            </p>
+            <h2 id="capabilities-title" data-i18n="capabilitiesTitle">
+              A complete task workspace in chat
+            </h2>
+          </div>
+          <p data-i18n="capabilitiesIntro">
+            The everyday controls required for parallel, long-running coding
+            work are already part of the conversation.
+          </p>
+        </div>
+
+        <div class="capability-grid">
+          <article class="capability-card capability-featured">
+            <span class="capability-index">01</span>
+            <h3 data-i18n="capOneTitle">Tasks that keep their context</h3>
+            <p data-i18n="capOneCopy">
+              Create, switch, queue, fork, reset, archive, and resume tasks
+              without losing the project or runtime settings behind them.
+            </p>
+            <div class="task-rail" aria-hidden="true">
+              <span class="is-selected">Release workflow</span>
+              <span>API refactor</span>
+              <span>Mobile layout</span>
+            </div>
+          </article>
+          <article class="capability-card">
+            <span class="capability-index">02</span>
+            <h3 data-i18n="capTwoTitle">One process per agent</h3>
+            <p data-i18n="capTwoCopy">
+              Codex, TraeX, and compatible agents stay isolated, so different
+              tasks can use different products without sharing process state.
+            </p>
+          </article>
+          <article class="capability-card">
+            <span class="capability-index">03</span>
+            <h3 data-i18n="capThreeTitle">Controls that match the moment</h3>
+            <p data-i18n="capThreeCopy">
+              Change model, thinking level, permissions, provider, agent, Goal,
+              title, or project directory from cards or the CLI.
+            </p>
+          </article>
+          <article class="capability-card">
+            <span class="capability-index">04</span>
+            <h3 data-i18n="capFourTitle">Files move with the work</h3>
+            <p data-i18n="capFourCopy">
+              Browse project directories, open images, and send generated files
+              directly back to the conversation that requested them.
+            </p>
+          </article>
+          <article class="capability-card">
+            <span class="capability-index">05</span>
+            <h3 data-i18n="capFiveTitle">Groups for parallel work</h3>
+            <p data-i18n="capFiveCopy">
+              Turn a new task or a completed point in history into a dedicated
+              Lark group with the right project and agent already attached.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="agents-band" aria-labelledby="agents-title">
+        <div class="section-shell agents-layout">
+          <div>
+            <p class="section-kicker" data-i18n="agentsKicker">
+              Bring the tools you trust
+            </p>
+            <h2 id="agents-title" data-i18n="agentsTitle">
+              One bridge. Independent agents.
+            </h2>
+          </div>
+          <div class="agent-list">
+            <div class="agent-wordmark">
+              <span class="agent-symbol agent-symbol-blue">&gt;_</span>
+              <div>
+                <strong>Codex</strong
+                ><small data-i18n="appServer">App Server</small>
+              </div>
+            </div>
+            <div class="agent-wordmark">
+              <span class="agent-symbol agent-symbol-orange">&lt;✦&gt;</span>
+              <div>
+                <strong>TraeX</strong
+                ><small data-i18n="appServer">App Server</small>
+              </div>
+            </div>
+            <div class="agent-wordmark">
+              <span class="agent-symbol agent-symbol-teal">ACP</span>
+              <div>
+                <strong data-i18n="compatibleAgents">Compatible agents</strong
+                ><small data-i18n="processProtocol">Process protocol</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section
+        class="reliability section-band"
+        id="reliability"
+        aria-labelledby="reliability-title"
+      >
+        <div class="section-shell reliability-layout">
+          <div class="reliability-intro">
+            <p class="section-kicker" data-i18n="reliabilityKicker">
+              Built to stay reachable
+            </p>
+            <h2 id="reliability-title" data-i18n="reliabilityTitle">
+              Remote access is only useful when it recovers.
+            </h2>
+            <p data-i18n="reliabilityCopy">
+              Agent Bot treats continuity as product behavior, not an
+              operational afterthought.
+            </p>
+          </div>
+          <div class="reliability-list">
+            <article>
+              <span aria-hidden="true">01</span>
+              <div>
+                <h3 data-i18n="reliableOneTitle">Supervised processes</h3>
+                <p data-i18n="reliableOneCopy">
+                  Worker and agent failures are detected, recorded, and
+                  restarted without sharing state between agents.
+                </p>
+              </div>
+            </article>
+            <article>
+              <span aria-hidden="true">02</span>
+              <div>
+                <h3 data-i18n="reliableTwoTitle">Recent task recovery</h3>
+                <p data-i18n="reliableTwoCopy">
+                  Interrupted active work is restored after restart with a fresh
+                  progress card in the original conversation.
+                </p>
+              </div>
+            </article>
+            <article>
+              <span aria-hidden="true">03</span>
+              <div>
+                <h3 data-i18n="reliableThreeTitle">
+                  Safe restarts and updates
+                </h3>
+                <p data-i18n="reliableThreeCopy">
+                  Active turns finish before replacement, with rollback
+                  protection for installed-package updates.
+                </p>
+              </div>
+            </article>
+            <article>
+              <span aria-hidden="true">04</span>
+              <div>
+                <h3 data-i18n="reliableFourTitle">Isolated profiles</h3>
+                <p data-i18n="reliableFourCopy">
+                  Run primary and rescue bots with separate credentials, data,
+                  processes, and startup registrations.
+                </p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section
+        class="install-section"
+        id="install"
+        aria-labelledby="install-title"
+      >
+        <div class="section-shell install-layout">
+          <div class="install-copy">
+            <p
+              class="section-kicker section-kicker-light"
+              data-i18n="installKicker"
+            >
+              Ready when your machine is
+            </p>
+            <h2 id="install-title" data-i18n="installTitle">
+              Install Agent Bot
+            </h2>
+            <p data-i18n="installCopy">
+              Requires Node.js 22 or newer and at least one supported local
+              agent. Initialization guides you through creating and authorizing
+              the Lark or Feishu bot.
+            </p>
+            <div class="install-links">
+              <a
+                href="https://github.com/keyou/agent-bot/blob/master/README.md"
+                target="_blank"
+                rel="noreferrer"
+                ><span data-i18n="readGuide">Read the setup guide</span> ↗</a
+              >
+              <a
+                href="https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md"
+                target="_blank"
+                rel="noreferrer"
+                ><span data-i18n="viewChangelog">View changelog</span> ↗</a
+              >
+            </div>
+          </div>
+
+          <div class="install-terminal">
+            <div
+              class="install-tabs"
+              role="tablist"
+              aria-label="Release channel"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected="true"
+                class="is-active"
+                data-channel="stable"
+                data-i18n="stable"
+              >
+                Stable
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-channel="alpha"
+              >
+                Alpha
+              </button>
+            </div>
+            <div class="terminal-window">
+              <div class="terminal-toolbar">
+                <i></i><i></i><i></i><span>agentbot</span>
+              </div>
+              <div class="terminal-lines">
+                <div>
+                  <span>$</span
+                  ><code data-install-command
+                    >npm install --global @keyou007/agent-bot</code
+                  >
+                </div>
+                <div><span>$</span><code>agentbot init</code></div>
+              </div>
+              <button
+                class="terminal-copy"
+                type="button"
+                data-copy="npm install --global @keyou007/agent-bot&#10;agentbot init"
+                title="Copy commands"
+                aria-label="Copy commands"
+              >
+                <span aria-hidden="true">⧉</span>
+              </button>
+            </div>
+            <p class="install-note">
+              <span aria-hidden="true">●</span>
+              <span data-i18n="installNote"
+                >Configuration and runtime data stay under ~/.agent-bot.</span
+              >
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="section-shell footer-layout">
+        <div class="footer-brand">
+          <img src="assets/agent-bot-logo.png" alt="Agent Bot" />
+          <div>
+            <strong>Agent Bot</strong
+            ><span data-i18n="footerTagline"
+              >Local agents. Reachable work.</span
+            >
+          </div>
+        </div>
+        <div class="footer-links">
+          <a
+            href="https://github.com/keyou/agent-bot"
+            target="_blank"
+            rel="noreferrer"
+            >GitHub</a
+          >
+          <a
+            href="https://www.npmjs.com/package/@keyou007/agent-bot"
+            target="_blank"
+            rel="noreferrer"
+            >npm</a
+          >
+          <a
+            href="https://github.com/keyou/agent-bot/issues"
+            target="_blank"
+            rel="noreferrer"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/keyou/agent-bot/blob/master/LICENSE"
+            target="_blank"
+            rel="noreferrer"
+            >GPL-3.0</a
+          >
+        </div>
+        <p class="footer-meta">
+          <span data-i18n="footerOpen">Open source on GitHub</span> ·
+          <span data-year></span>
+        </p>
+      </div>
+    </footer>
+
+    <div
+      class="copy-toast"
+      role="status"
+      aria-live="polite"
+      data-copy-toast
+      data-i18n="copied"
+    >
+      Copied to clipboard
+    </div>
+    <script src="script.js" defer></script>
+  </body>
+</html>

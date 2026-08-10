@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://keyou.github.io/agent-bot/sitemap.xml
