@@ -25,10 +25,14 @@ import {
   initializeAgentBot,
   readConfiguredAgentSelection,
   readFeishuCredentials,
+  readGroupMessageResponseMode,
   shouldCreateFeishuApp,
   shouldConfigureAgentsDuringInitialization,
+  shouldConfigureGroupMessagesDuringInitialization,
   writeConfiguredAgentSelection,
   writeFeishuCredentials,
+  writeGroupMessageResponseMode,
+  type GroupMessageResponseMode,
   type InitializationResult,
   type InitializationStatus,
 } from "./cli/Initializer.js";
@@ -260,6 +264,10 @@ interface InitCommandResult extends InitializationResult {
     name: string;
     status: "selected" | "existing";
   };
+  groupMessages: {
+    mode: GroupMessageResponseMode;
+    status: "selected" | "existing";
+  };
   feishu: {
     status: FeishuInitializationStatus;
     appId?: string;
@@ -302,6 +310,11 @@ async function initCommand(
       options.json,
       shouldConfigureAgentsDuringInitialization(paths.config.status),
     );
+    const groupMessages = await configureGroupMessageResponse(
+      paths.config.path,
+      options.json,
+      shouldConfigureGroupMessagesDuringInitialization(paths.config.status),
+    );
     const configuredAgents = readConfiguredAgentSelection(paths.config.path).agents.map((agent) => agent.name);
     const configuredAgentNames = new Set(configuredAgents);
     const agents = inspectedAgents.map((agent) => ({
@@ -313,8 +326,9 @@ async function initCommand(
     const feishu = await initializeFeishu(
       paths,
       options,
+      groupMessages.mode === "all",
     );
-    initialized = { ...paths, agents, configuredAgents, defaultAgent, feishu };
+    initialized = { ...paths, agents, configuredAgents, defaultAgent, groupMessages, feishu };
   } finally {
     initializationLock?.release();
   }
@@ -525,6 +539,76 @@ async function configureAgentsAndDefault(
   return { name: selectedDefault.name, status: updated ? "selected" : "existing" };
 }
 
+async function configureGroupMessageResponse(
+  configPath: string,
+  json: boolean,
+  configure: boolean,
+): Promise<InitCommandResult["groupMessages"]> {
+  const output = json ? process.stderr : process.stdout;
+  if (!configure) {
+    return { mode: readGroupMessageResponseMode(configPath), status: "existing" };
+  }
+
+  let mode: GroupMessageResponseMode = "mention-only";
+  if (process.stdin.isTTY) {
+    output.write(cliText(
+      "\nChoose how Agent Bot responds to group messages:\n  1. Receive all group messages\n     The bot can respond without an @ mention. This requires an additional Lark permission.\n  2. Require an explicit @ mention\n     The additional all-group-message permission will not be requested.\n",
+      "\n请选择 Agent Bot 响应群消息的方式：\n  1. 接收所有群消息\n     无需 @ 机器人即可响应，需要额外开通飞书权限。\n  2. 明确 @ 机器人才能接收消息\n     不会申请“免 @ 机器人”所需的额外权限。\n",
+    ));
+    mode = await promptForGroupMessageResponseMode();
+  } else {
+    output.write(cliText(
+      "No interactive terminal is available. Group messages will require an explicit @ mention, and the all-group-message permission will not be requested.\n",
+      "当前没有交互式终端。群消息将要求明确 @ 机器人，并且不会申请接收所有群消息的额外权限。\n",
+    ));
+  }
+
+  writeGroupMessageResponseMode(configPath, mode);
+  output.write(cliText(
+    `Group message response: ${mode === "all" ? "receive all group messages" : "require an explicit @ mention"}\n`,
+    `群消息响应方式：${mode === "all" ? "接收所有群消息" : "必须明确 @ 机器人"}\n`,
+  ));
+  return { mode, status: "selected" };
+}
+
+function promptForGroupMessageResponseMode(): Promise<GroupMessageResponseMode> {
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (mode: GroupMessageResponseMode): void => {
+      settled = true;
+      readline.close();
+      resolve(mode);
+    };
+    const ask = (): void => {
+      readline.question(cliText(
+        "Select 1 or 2 [2]: ",
+        "请选择 1 或 2 [2]：",
+      ), (answer) => {
+        const normalized = answer.trim().toLowerCase();
+        if (normalized === "1") {
+          finish("all");
+          return;
+        }
+        if (normalized === "" || normalized === "2") {
+          finish("mention-only");
+          return;
+        }
+        process.stderr.write(cliText(
+          "Enter 1 to receive all group messages, or 2 to require an @ mention.\n",
+          "请输入 1 接收所有群消息，或输入 2 要求明确 @ 机器人。\n",
+        ));
+        ask();
+      });
+    };
+    listenForPromptCancellation(readline, () => {
+      settled = true;
+      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
+    }, () => settled);
+    ask();
+  });
+}
+
 function promptForAgentMaintenance(choiceCount: number): Promise<number[]> {
   const readline = createInterface({ input: process.stdin, output: process.stderr });
   return new Promise((resolve, reject) => {
@@ -687,6 +771,7 @@ function refreshCurrentProcessPath(): void {
 async function initializeFeishu(
   paths: InitializationResult,
   options: InitCommandOptions,
+  respondToAllGroupMessages: boolean,
 ): Promise<InitCommandResult["feishu"]> {
   const existing = readFeishuCredentials(paths.env.path);
   if (options.skipFeishu) {
@@ -744,6 +829,7 @@ async function initializeFeishu(
     const optionalSkip = new AbortController();
     let skipListener: OptionalAuthorizationSkipListener | undefined;
     const configuration = await ensureFeishuAppConfiguration(credentials, {
+      respondToAllGroupMessages,
       signal: controller.signal,
       manualPermissionSkipSignal: manualPermissionSkip.signal,
       optionalSkipSignal: optionalSkip.signal,
@@ -1802,6 +1888,10 @@ function printInitializationResult(result: Omit<InitCommandResult, "server" | "w
   ));
   process.stdout.write(`${cliText("Configured Agents: ", "已配置 Agent：")}${result.configuredAgents.join(", ")}\n`);
   process.stdout.write(`${cliText("Default Agent: ", "默认 Agent：")}${result.defaultAgent.name}\n`);
+  process.stdout.write(cliText(
+    `Group message response: ${result.groupMessages.mode === "all" ? "receive all group messages" : "require an explicit @ mention"}\n`,
+    `群消息响应方式：${result.groupMessages.mode === "all" ? "接收所有群消息" : "必须明确 @ 机器人"}\n`,
+  ));
   if (result.feishu.status === "created") {
     process.stdout.write(cliText(
       `Lark app: created and credentials saved (${result.feishu.appId})\n`,

@@ -43,6 +43,12 @@ export function shouldConfigureAgentsDuringInitialization(status: Initialization
   return status === "created" || status === "reset";
 }
 
+export function shouldConfigureGroupMessagesDuringInitialization(status: InitializationStatus): boolean {
+  return status === "created" || status === "reset";
+}
+
+export type GroupMessageResponseMode = "all" | "mention-only";
+
 export interface ConfiguredAgentOption {
   name: string;
   title: string;
@@ -235,6 +241,57 @@ export function writeConfiguredAgentSelection(
   const updated = document.toString();
   if (updated === original) return false;
   writeFileAtomically(configPath, updated);
+  return true;
+}
+
+export function readGroupMessageResponseMode(configPath: string): GroupMessageResponseMode {
+  const document = parseConfigurationDocument(fs.readFileSync(configPath, "utf8"), configPath);
+  if (!isMap(document.contents)) {
+    throw new Error(cliText(
+      `Configuration file must contain a YAML mapping: ${configPath}`,
+      `配置文件必须包含 YAML 映射：${configPath}`,
+    ));
+  }
+  const feishu = document.contents.get("feishu", true);
+  if (!isMap(feishu)) {
+    throw new Error(cliText(
+      `Configuration feishu must contain a YAML mapping: ${configPath}`,
+      `配置文件的 feishu 必须是 YAML 映射：${configPath}`,
+    ));
+  }
+  const enabled = document.getIn(["feishu", "respondToAllGroupMessages"]);
+  if (typeof enabled !== "boolean") {
+    throw new Error(cliText(
+      `Configuration feishu.respondToAllGroupMessages must be a boolean: ${configPath}`,
+      `配置项 feishu.respondToAllGroupMessages 必须是布尔值：${configPath}`,
+    ));
+  }
+  return enabled ? "all" : "mention-only";
+}
+
+export function writeGroupMessageResponseMode(
+  configPath: string,
+  mode: GroupMessageResponseMode,
+): boolean {
+  const original = fs.readFileSync(configPath, "utf8");
+  const document = parseConfigurationDocument(original, configPath);
+  if (!isMap(document.contents)) {
+    throw new Error(cliText(
+      `Configuration file must contain a YAML mapping: ${configPath}`,
+      `配置文件必须包含 YAML 映射：${configPath}`,
+    ));
+  }
+  const feishu = document.contents.get("feishu", true);
+  if (!isMap(feishu)) {
+    throw new Error(cliText(
+      `Configuration feishu must contain a YAML mapping: ${configPath}`,
+      `配置文件的 feishu 必须是 YAML 映射：${configPath}`,
+    ));
+  }
+  const enabled = mode === "all";
+  if (document.getIn(["feishu", "respondToAllGroupMessages"]) === enabled) return false;
+  feishu.set("respondToAllGroupMessages", enabled);
+  writeFileAtomically(configPath, document.toString());
   return true;
 }
 

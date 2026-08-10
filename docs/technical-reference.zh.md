@@ -60,6 +60,8 @@ CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Local
 
 初始化开始阶段，`agentbot init` 会并行检查目前支持的 Codex 和 TraeX CLI，并显示各自已安装的版本。Codex 与最新稳定版 `@openai/codex` 比较，TraeX 与 Alpha 通道比较。未安装或版本较旧的 Agent 会汇总到一个编号列表，并显示准确的安装或升级命令。交互式用户可以输入用逗号或空格分隔的操作编号、输入 `all`，或直接回车跳过维护；所选命令按顺序执行并继承终端输入输出，跳过或失败的操作都会记录结果，初始化继续。非交互式终端只显示供手动执行的命令。使用 `--json` 时，进度与询问写入 stderr，最终 `agents` 数组记录检测和辅助执行结果。Codex 升级会先执行 `codex update`，旧版 updater 失败时回退到当前 npm 包安装命令。
 
+第一次全新交互式 `init` 和每次显式 `--reset` 还会询问群消息响应方式。选择接收所有群消息会写入 `feishu.respondToAllGroupMessages: true`，并把 `im:message.group_msg` 纳入配置审计；选择明确 @ 机器人会写入 `false`，该权限不会出现在授权链接、轮询或缺失功能警告中。第一次非交互式初始化或 reset 默认选择仅 @ 响应。后续初始化保留已有配置，不再询问。
+
 版本与维护检查完成后，第一次全新交互式 `init` 和每次显式 `--reset` 都会根据实际检测到安装版本的受支持 Agent 生成 Profile 的 Agent 配置；仍未安装的 Codex 或 TraeX 不会进入候选列表。检测到多个 Agent 时，用户可以通过编号或标准名选择一个或多个，输入 `all` 或直接回车选择全部。未选择的 Agent 定义会通过保留注释的 YAML 原子更新从新配置中移除。只选择一个 Agent 时自动将其设为默认值；选择多个时再显示一次默认 Agent 选择，可输入编号或标准名写入 `defaults.agent`。后续升级和同版本刷新直接保留已配置 Agent 列表与默认值，不再显示这两类选择器，已有自定义 Agent 也会保留。第一次非交互式初始化或 reset 会配置所有检测到且已安装的 Agent；模板默认值在所选列表中时继续使用，否则选择第一个检测结果。已有 Profile 没有有效默认值时会失败，并提示在 `config.yaml` 中设置 `defaults.agent`。JSON 输出通过 `configuredAgents` 报告最终列表，在每个受支持 Agent 的检测结果中增加 `configured`，并通过 `defaultAgent.name` 和 `defaultAgent.status`（`selected` 或 `existing`）报告默认值。
 
 目标文件不存在时，`agentbot init` 会复制随包提供的 `config.example.yaml` 和 `.env.example`，创建数据和日志目录，并在平台支持时把 `.env` 权限限制为 POSIX `0600`。
@@ -84,10 +86,10 @@ CLI 通过 Node.js 国际化能力读取系统 Locale。以 `zh` 开头的 Local
 
 缺失配置分两阶段处理：
 
-1. 请求核心配置并轮询，直到基础能力生效；需要手动配置的全部群消息权限允许用户输入 `Y` 显式跳过
+1. 请求核心配置并轮询，直到基础能力生效。选择接收所有群消息时会包含需要手动配置的 `im:message.group_msg`，并允许输入 `Y` 显式跳过；仅 @ 响应模式会完全排除该权限
 2. 请求其余可选配置。CLI 会先显示二维码，随后显示授权链接，然后立即开始最多 5 分钟的轮询。交互式终端只提供 `Y` 选项，用于跳过可选授权并继续；否则用户直接在浏览器中完成授权，轮询会持续进行
 
-一键配置支持的内容会编码到 launcher 的 `addons` 清单中。核心权限 `im:message.group_msg` 不会放入该清单，因为飞书无法通过一键配置新增它。CLI 会改为显示二维码，以及当前应用已筛选该权限的开发者后台直达链接：
+一键配置支持的内容会编码到 launcher 的 `addons` 清单中。选择接收所有群消息时，核心权限 `im:message.group_msg` 不会放入该清单，因为飞书无法通过一键配置新增它。CLI 会改为显示二维码，以及当前应用已筛选该权限的开发者后台直达链接：
 
 ```text
 https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi&token_type=tenant
@@ -114,7 +116,7 @@ Server 成功启动或安全重启成功安排后，`init` 会直接向 `feishu.
 - 机器人能力
 - 长连接事件接收
 - `im.message.receive_v1`
-- `im:message.group_msg`，用于接收机器人所在群内的全部用户消息
+- `im:message.group_msg`，仅在选择接收所有群消息时申请，用于接收机器人所在群内的全部用户消息
 - 接收私聊消息所需的租户权限
 - `im:message:send_as_bot` 或覆盖它的更大权限
 - `application:application:self_manage`，供初始化检查已发布版本
@@ -178,7 +180,7 @@ logging:
 
 `feishu.respondToOwnerOnly` 默认为 `true`。每条消息的发送者及卡片操作人的 Open ID 都会与 `feishu.userOpenId` 比较；非拥有者输入会在持久化事件、添加 reaction、下载图片、执行命令或启动 Agent 前被忽略。设为 `false` 可允许其他用户。开启后若未配置拥有者 Open ID，所有飞书消息和卡片操作都会被忽略；需先配置 `FEISHU_USER_OPEN_ID`，或临时关闭限制后通过私聊完成补全。
 
-`feishu.respondToAllGroupMessages` 默认为 `true`。设为 `false` 后，拥有者未 @ 当前机器人的群消息也会被忽略；Worker 启动时会解析机器人的 Open ID，因此 @ 其他成员不会误触发。拥有者私聊不受影响。无论该运行时配置如何，初始化都会申请接收全部群消息的权限，之后切换配置无需再次授权。
+`feishu.respondToAllGroupMessages` 在模板中默认为 `true`，第一次初始化和 `init --reset` 会按用户选择写入实际值。设为 `false` 后，拥有者未 @ 当前机器人的群消息也会被忽略；Worker 启动时会解析机器人的 Open ID，因此 @ 其他成员不会误触发。拥有者私聊不受影响。初始化只在该值为 `true` 时申请接收全部群消息的权限；仅 @ 响应的 Profile 后续改为 `true` 时，需要重新运行 `agentbot init` 补充权限。
 
 `/mute` 或 `/mute on` 会为当前基础群聊持久化仅 @ 响应模式，`/mute off` 会关闭。群正文及其所有话题共享该状态；静音期间未 @ 当前机器人的消息会在事件去重、reaction、活跃时间、图片下载、命令解析和 Agent 调用之前被忽略。关闭静音的命令本身也必须 @ 机器人。私聊不支持 `/mute`。
 

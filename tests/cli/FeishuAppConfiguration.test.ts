@@ -45,6 +45,51 @@ describe("ensureFeishuAppConfiguration", () => {
     expect(onVerification).not.toHaveBeenCalled();
   });
 
+  test("does not request all-group-message permission in mention-only mode", async () => {
+    const fetchMock = configurationFetch(() => ({
+      ...completeConfiguration(),
+      scopes: REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:message.group_msg"),
+    }));
+    const onVerification = vi.fn();
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      respondToAllGroupMessages: false,
+      onVerification,
+    });
+
+    expect(result.status).toBe("ready");
+    expect(result.remaining).toEqual({ scopes: [], events: [], callbacks: [] });
+    expect(onVerification).not.toHaveBeenCalled();
+  });
+
+  test("keeps all-group-message permission out of other authorization links in mention-only mode", async () => {
+    const optionalSkip = new AbortController();
+    const fetchMock = configurationFetch(() => {
+      const configuration = configurationWithoutOptionalCapabilities();
+      return {
+        ...configuration,
+        scopes: configuration.scopes.filter((scope) => scope !== "im:message.group_msg"),
+      };
+    });
+    const challenges: FeishuConfigurationChallenge[] = [];
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      respondToAllGroupMessages: false,
+      optionalSkipSignal: optionalSkip.signal,
+      onVerification: (challenge) => {
+        challenges.push(challenge);
+        optionalSkip.abort();
+      },
+    });
+
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0]).toMatchObject({ kind: "launcher", blocking: false });
+    expect(challenges[0]?.missing.scopes).not.toContain("im:message.group_msg");
+    expect(result.remaining.scopes).not.toContain("im:message.group_msg");
+  });
+
   test("builds an incremental launcher link and continues when optional configuration is skipped", async () => {
     const fetchMock = configurationFetch(() => ({
       scopes: REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:chat:create"),

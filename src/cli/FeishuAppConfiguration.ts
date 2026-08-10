@@ -72,7 +72,8 @@ const CORE_FEISHU_SCOPES = new Set([
   "im:message:send_as_bot",
 ]);
 const CORE_FEISHU_EVENTS = new Set<string>(["im.message.receive_v1"]);
-const MANUAL_FEISHU_SCOPES = new Set(["im:message.group_msg"]);
+const ALL_GROUP_MESSAGE_SCOPES = new Set(["im:message.group_msg"]);
+const MANUAL_FEISHU_SCOPES = ALL_GROUP_MESSAGE_SCOPES;
 
 export interface FeishuAppConfiguration {
   scopes: string[];
@@ -96,6 +97,7 @@ export interface FeishuConfigurationChallenge {
 export interface EnsureFeishuAppConfigurationOptions {
   fetch?: typeof globalThis.fetch;
   sleep?: (milliseconds: number) => Promise<void>;
+  respondToAllGroupMessages?: boolean;
   signal?: AbortSignal;
   manualPermissionSkipSignal?: AbortSignal;
   optionalSkipSignal?: AbortSignal;
@@ -124,6 +126,9 @@ export async function ensureFeishuAppConfiguration(
   const timeoutMs = positiveInteger(options.timeoutMs) ?? DEFAULT_COMPLETION_TIMEOUT_MS;
   const optionalTimeoutMs = positiveInteger(options.optionalTimeoutMs)
     ?? DEFAULT_OPTIONAL_COMPLETION_TIMEOUT_MS;
+  const excludedScopes = options.respondToAllGroupMessages === false
+    ? ALL_GROUP_MESSAGE_SCOPES
+    : new Set<string>();
 
   let configuration: FeishuAppConfiguration;
   try {
@@ -133,7 +138,7 @@ export async function ensureFeishuAppConfiguration(
     configuration = emptyConfiguration();
   }
 
-  const missing = missingFeishuAppConfiguration(configuration);
+  const missing = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
   if (!hasMissingConfiguration(missing)) {
     return {
       status: "ready",
@@ -154,6 +159,8 @@ export async function ensureFeishuAppConfiguration(
       pollIntervalMs,
       optionalTimeoutMs,
       options,
+      new Set(),
+      excludedScopes,
     );
   }
 
@@ -179,7 +186,7 @@ export async function ensureFeishuAppConfiguration(
 
     try {
       configuration = await readFeishuAppConfiguration(credentials, fetchImpl, options.signal);
-      const remaining = missingFeishuAppConfiguration(configuration);
+      const remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
       const unresolvedCore = coreMissingFeishuAppConfiguration(remaining);
       if (!hasBlockingCoreConfiguration(unresolvedCore, options.manualPermissionSkipSignal)) {
         return completeOptionalFeishuConfiguration(
@@ -192,12 +199,16 @@ export async function ensureFeishuAppConfiguration(
           optionalTimeoutMs,
           options,
           skippedManualScopes(coreMissing, options.manualPermissionSkipSignal),
+          excludedScopes,
         );
       }
       lastError = undefined;
     } catch (error) {
       if (options.signal?.aborted) throw abortError(options.signal);
-      const knownRemaining = missingFeishuAppConfiguration(configuration);
+      const knownRemaining = withoutIgnoredScopes(
+        missingFeishuAppConfiguration(configuration),
+        excludedScopes,
+      );
       if (!hasBlockingCoreConfiguration(
         coreMissingFeishuAppConfiguration(knownRemaining),
         options.manualPermissionSkipSignal,
@@ -212,6 +223,7 @@ export async function ensureFeishuAppConfiguration(
           optionalTimeoutMs,
           options,
           skippedManualScopes(coreMissing, options.manualPermissionSkipSignal),
+          excludedScopes,
         );
       }
       lastError = error;
@@ -267,9 +279,10 @@ async function completeOptionalFeishuConfiguration(
   timeoutMs: number,
   options: EnsureFeishuAppConfigurationOptions,
   ignoredScopes: ReadonlySet<string> = new Set(),
+  excludedScopes: ReadonlySet<string> = new Set(),
 ): Promise<EnsureFeishuAppConfigurationResult> {
   let configuration = initialConfiguration;
-  let remaining = missingFeishuAppConfiguration(configuration);
+  let remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
   const requested = withoutIgnoredScopes(remaining, ignoredScopes);
   if (hasMissingConfiguration(requested)) {
     await requestMissingFeishuConfiguration(
@@ -289,6 +302,7 @@ async function completeOptionalFeishuConfiguration(
         options.signal,
         options.optionalSkipSignal,
         ignoredScopes,
+        excludedScopes,
       );
       configuration = completed.configuration;
       remaining = completed.remaining;
@@ -312,12 +326,13 @@ async function waitForOptionalFeishuConfiguration(
   signal?: AbortSignal,
   optionalSkipSignal?: AbortSignal,
   ignoredScopes: ReadonlySet<string> = new Set(),
+  excludedScopes: ReadonlySet<string> = new Set(),
 ): Promise<{
   configuration: FeishuAppConfiguration;
   remaining: MissingFeishuAppConfiguration;
 }> {
   let configuration = initialConfiguration;
-  let remaining = missingFeishuAppConfiguration(configuration);
+  let remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
   let remainingMs = timeoutMs;
   while (remainingMs > 0 && hasMissingConfiguration(withoutIgnoredScopes(remaining, ignoredScopes))) {
     if (optionalSkipSignal?.aborted) break;
@@ -332,7 +347,7 @@ async function waitForOptionalFeishuConfiguration(
     remainingMs -= waitMs;
     try {
       configuration = await readFeishuAppConfiguration(credentials, fetchImpl, signal);
-      remaining = missingFeishuAppConfiguration(configuration);
+      remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
     } catch (error) {
       if (signal?.aborted) throw abortError(signal);
     }

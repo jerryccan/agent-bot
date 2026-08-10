@@ -9,11 +9,14 @@ import {
   initializeAgentBot,
   readConfiguredAgentSelection,
   readFeishuCredentials,
+  readGroupMessageResponseMode,
   shouldCreateFeishuApp,
   shouldConfigureAgentsDuringInitialization,
+  shouldConfigureGroupMessagesDuringInitialization,
   writeConfiguredAgentSelection,
   writeDefaultAgent,
   writeFeishuCredentials,
+  writeGroupMessageResponseMode,
 } from "../../src/cli/Initializer.js";
 
 const directories: string[] = [];
@@ -37,6 +40,35 @@ describe("shouldConfigureAgentsDuringInitialization", () => {
     expect(shouldConfigureAgentsDuringInitialization("existing")).toBe(false);
     expect(shouldConfigureAgentsDuringInitialization("updated")).toBe(false);
     expect(shouldConfigureAgentsDuringInitialization("reset")).toBe(true);
+  });
+});
+
+describe("group message response initialization", () => {
+  test("asks for a selection only on first initialization or reset", () => {
+    expect(shouldConfigureGroupMessagesDuringInitialization("created")).toBe(true);
+    expect(shouldConfigureGroupMessagesDuringInitialization("existing")).toBe(false);
+    expect(shouldConfigureGroupMessagesDuringInitialization("updated")).toBe(false);
+    expect(shouldConfigureGroupMessagesDuringInitialization("reset")).toBe(true);
+  });
+
+  test("persists the selected response mode while preserving YAML comments", () => {
+    const fixture = createFixture();
+    fs.mkdirSync(fixture.home, { recursive: true });
+    const configPath = path.join(fixture.home, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "feishu:",
+      "  # keep this explanation",
+      "  respondToAllGroupMessages: true",
+      "agents: {}",
+      "",
+    ].join("\n"), "utf8");
+
+    expect(readGroupMessageResponseMode(configPath)).toBe("all");
+    expect(writeGroupMessageResponseMode(configPath, "mention-only")).toBe(true);
+    expect(writeGroupMessageResponseMode(configPath, "mention-only")).toBe(false);
+    expect(readGroupMessageResponseMode(configPath)).toBe("mention-only");
+    expect(fs.readFileSync(configPath, "utf8")).toContain("# keep this explanation");
+    expect(fs.readFileSync(configPath, "utf8")).toContain("respondToAllGroupMessages: false");
   });
 });
 

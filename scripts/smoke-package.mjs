@@ -130,6 +130,15 @@ try {
       })}`,
     );
   }
+  if (
+    initialized.groupMessages?.mode !== "mention-only"
+    || initialized.groupMessages?.status !== "selected"
+    || !fs.readFileSync(initialized.config.path, "utf8").includes("respondToAllGroupMessages: false")
+  ) {
+    throw new Error(
+      `Packaged non-interactive initialization did not select mention-only group messages: ${JSON.stringify(initialized.groupMessages)}`,
+    );
+  }
 
   const installedResources = [
     ".env.example",

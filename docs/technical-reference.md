@@ -60,6 +60,8 @@ Relative `storage.sqlitePath` and `logging.path` values resolve against the dire
 
 Early in initialization, `agentbot init` checks the supported Codex and TraeX CLIs in parallel and reports each installed version. Codex is compared with the latest stable `@openai/codex` package, while TraeX is compared with its Alpha channel. Missing or outdated Agents are gathered into one numbered list containing their exact install or upgrade commands. An interactive user can enter comma- or space-separated action numbers, `all`, or an empty answer to skip maintenance. Selected commands run sequentially with inherited stdio; skipped and failed actions are recorded and initialization continues. In a non-interactive terminal, commands are printed for manual use. With `--json`, progress and prompts use stderr and the final `agents` array records detection and assistance results. Codex upgrades first use `codex update` and fall back to the current npm package command when an older updater fails.
 
+The first fresh interactive `init` and every explicit `--reset` also ask how group messages should be handled. Selecting all group messages writes `feishu.respondToAllGroupMessages: true` and makes `im:message.group_msg` part of the configuration audit. Selecting explicit @ mentions writes `false` and excludes that permission from authorization links, polling, and missing-feature warnings. A non-interactive first initialization or reset selects mention-only mode. Later initialization runs preserve the configured value without prompting.
+
 After version and maintenance checks, a first fresh interactive `init` and every explicit `--reset` build the Profile's Agent configuration from the supported Agents that were actually detected with an installed version. Missing Codex or TraeX entries are not selectable. When multiple Agents are available, the user may select one or more by number or standard name; `all` or an empty answer selects all. Unselected Agent definitions are removed from the new configuration through a comment-preserving atomic YAML update. One selected Agent becomes the default automatically. When multiple Agents are selected, a second prompt chooses `defaults.agent` by number or standard name. Later upgrades and refreshes preserve both the configured Agent list and default without showing either selector, including custom Agents already present in the Profile. A non-interactive first initialization or reset configures every detected installed Agent and keeps the template default when selected, otherwise the first detected Agent. An existing Profile without a valid configured default fails with an instruction to set `defaults.agent` in `config.yaml`. JSON output reports the final names in `configuredAgents`, adds `configured` to each supported-Agent inspection, and returns `defaultAgent.name` plus `defaultAgent.status` (`selected` or `existing`).
 
 `agentbot init` copies the packaged `config.example.yaml` and `.env.example` when their target files do not exist, creates the data and log directories, and restricts `.env` permissions where the platform supports POSIX modes.
@@ -84,10 +86,10 @@ When complete credentials are absent, initialization uses Feishu one-click regis
 
 Missing app configuration is handled in two stages:
 
-1. Core configuration is requested and polled until it becomes available. The manually configured all-group-message scope may be explicitly skipped with `Y`.
+1. Core configuration is requested and polled until it becomes available. When all-group-message mode was selected, the manually configured `im:message.group_msg` scope is included and may be explicitly skipped with `Y`; mention-only mode excludes it entirely.
 2. Remaining optional configuration is requested. The CLI prints its QR code followed by the authorization URL, then immediately polls for up to five minutes. An interactive terminal offers only `Y` to skip optional authorization and continue; otherwise the user completes authorization in the browser while polling continues.
 
-Configuration supported by the one-click launcher is encoded in its `addons` manifest. The core `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints a QR code and this app-specific, pre-filtered Developer Console URL:
+Configuration supported by the one-click launcher is encoded in its `addons` manifest. When all-group-message mode is selected, the core `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints a QR code and this app-specific, pre-filtered Developer Console URL:
 
 ```text
 https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi&token_type=tenant
@@ -114,7 +116,7 @@ Core configuration required for basic messaging:
 - Bot capability
 - Persistent-connection event delivery
 - `im.message.receive_v1`
-- `im:message.group_msg` for all user messages in groups containing the bot
+- `im:message.group_msg` for all user messages in groups containing the bot, only when all-group-message mode is selected
 - Tenant permission for private messages
 - `im:message:send_as_bot` or a broader equivalent
 - `application:application:self_manage` so initialization can inspect the published version
@@ -178,7 +180,7 @@ logging:
 
 `feishu.respondToOwnerOnly` defaults to `true`. It compares each message sender and card-action operator Open ID with `feishu.userOpenId`, ignoring non-owner input before durable event claims, reactions, downloads, commands, or Agent work. Set it to `false` to allow other users. If it is enabled without a configured owner Open ID, all Feishu messages and card actions are ignored; configure `FEISHU_USER_OPEN_ID` or temporarily disable the restriction to bootstrap from a private message.
 
-`feishu.respondToAllGroupMessages` defaults to `true`. Set it to `false` to additionally ignore owner group messages unless they mention the current bot. The worker resolves the bot's Open ID at startup so mentioning another member does not trigger it. Owner private messages are unaffected. Initialization requests all-user group-message delivery regardless of this runtime option, allowing it to be changed later without another authorization.
+`feishu.respondToAllGroupMessages` defaults to `true` in the template, while first initialization and `init --reset` write the user's selected mode. Set it to `false` to ignore owner group messages unless they mention the current bot. The worker resolves the bot's Open ID at startup so mentioning another member does not trigger it. Owner private messages are unaffected. Initialization requests all-user group-message delivery only when this value is `true`; changing a mention-only Profile to `true` later requires rerunning `agentbot init` to add the permission.
 
 `/mute` and `/mute on` persist mention-only response mode for the current base group; `/mute off` disables it. The group timeline and every topic share this state. While muted, messages that do not mention the current bot are ignored before event claims, reactions, activity tracking, image downloads, command parsing, or Agent calls. The command that disables mute must itself mention the bot. Private chats do not support `/mute`.
 
