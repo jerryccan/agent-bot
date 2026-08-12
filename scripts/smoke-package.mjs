@@ -96,6 +96,7 @@ try {
   const initializationEnvironment = {
     ...process.env,
     AGENT_BOT_HOME: homeRoot,
+    AGENT_BOT_SKILLS_DIR: path.join(temporaryRoot, "agent-skills"),
     NO_COLOR: "1",
     PATH: [mockBinRoot, path.dirname(process.execPath)].join(path.delimiter),
   };
@@ -116,6 +117,15 @@ try {
   }
   if (initialized.server?.status !== "skipped") {
     throw new Error("Console-only initialization unexpectedly started the server.");
+  }
+  const installedSkillPath = initialized.skill?.status?.targetPath;
+  if (
+    initialized.skill?.updated !== true
+    || initialized.skill?.status?.upToDate !== true
+    || !installedSkillPath
+    || !fs.existsSync(path.join(installedSkillPath, "SKILL.md"))
+  ) {
+    throw new Error(`Packaged initialization did not install the managed Skill: ${JSON.stringify(initialized.skill)}`);
   }
   if (
     initialized.defaultAgent?.name !== "codex"
@@ -150,6 +160,23 @@ try {
     if (!fs.existsSync(path.join(installedPackageRoot, resource))) {
       throw new Error(`Installed package is missing ${resource}.`);
     }
+  }
+
+  fs.appendFileSync(path.join(installedSkillPath, "SKILL.md"), "\nstale managed copy\n", "utf8");
+  const refreshedInitialization = JSON.parse(run(
+    process.execPath,
+    [cliEntry, "init", "--skip-feishu", "--json"],
+    installRoot,
+    initializationEnvironment,
+  ).stdout);
+  if (
+    refreshedInitialization.skill?.updated !== true
+    || refreshedInitialization.skill?.status?.upToDate !== true
+    || fs.readFileSync(path.join(installedSkillPath, "SKILL.md"), "utf8").includes("stale managed copy")
+  ) {
+    throw new Error(
+      `Packaged initialization did not refresh the managed Skill: ${JSON.stringify(refreshedInitialization.skill)}`,
+    );
   }
 
   const globalPrefix = path.join(temporaryRoot, "global-prefix");

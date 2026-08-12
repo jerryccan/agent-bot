@@ -274,6 +274,7 @@ interface InitCommandResult extends InitializationResult {
     userOpenIdStatus?: "configured" | "pending";
     configuration?: EnsureFeishuAppConfigurationResult;
   };
+  skill: ReturnType<SkillRegistry["install"]>;
   server: InitializationServerResult;
   welcome: InitializationWelcomeResult;
 }
@@ -328,7 +329,8 @@ async function initCommand(
       options,
       groupMessages.mode === "all",
     );
-    initialized = { ...paths, agents, configuredAgents, defaultAgent, groupMessages, feishu };
+    const skill = bundledSkillRegistry().install();
+    initialized = { ...paths, agents, configuredAgents, defaultAgent, groupMessages, feishu, skill };
   } finally {
     initializationLock?.release();
   }
@@ -882,9 +884,8 @@ async function assertResetProfileServerStopped(configPath?: string): Promise<voi
 
 function skillsCommand(input: string[]): void {
   const [action = "status", ...rest] = input;
-  const sourcePath = fileURLToPath(new URL("../skills/agent-bot/", import.meta.url));
   const targetRoot = optionValue(rest, "--target") ?? resolveSystemSkillsRoot();
-  const registry = new SkillRegistry(sourcePath, targetRoot);
+  const registry = bundledSkillRegistry(targetRoot);
   const json = rest.includes("--json");
 
   if (action === "install" || action === "register") {
@@ -932,6 +933,11 @@ function skillsCommand(input: string[]): void {
     return;
   }
   throw new Error(cliText(`Unknown skills command: ${action}`, `未知的 skills 命令：${action}`));
+}
+
+function bundledSkillRegistry(targetRoot = resolveSystemSkillsRoot()): SkillRegistry {
+  const sourcePath = fileURLToPath(new URL("../skills/agent-bot/", import.meta.url));
+  return new SkillRegistry(sourcePath, targetRoot);
 }
 
 async function consoleCommand(input: string[]): Promise<void> {
@@ -1892,6 +1898,9 @@ function printInitializationResult(result: Omit<InitCommandResult, "server" | "w
     `Group message response: ${result.groupMessages.mode === "all" ? "receive all group messages" : "require an explicit @ mention"}\n`,
     `群消息响应方式：${result.groupMessages.mode === "all" ? "接收所有群消息" : "必须明确 @ 机器人"}\n`,
   ));
+  process.stdout.write(result.skill.updated
+    ? `${cliText("Agent Bot Skill: installed or updated at ", "Agent Bot Skill：已安装或更新至 ")}${result.skill.status.targetPath}\n`
+    : `${cliText("Agent Bot Skill: already up to date at ", "Agent Bot Skill：已是最新版本，位于 ")}${result.skill.status.targetPath}\n`);
   if (result.feishu.status === "created") {
     process.stdout.write(cliText(
       `Lark app: created and credentials saved (${result.feishu.appId})\n`,
