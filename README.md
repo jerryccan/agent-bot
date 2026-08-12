@@ -188,25 +188,25 @@ The Console UI does not require Feishu credentials. It does not share task state
 ```bash
 agentbot task list
 agentbot task current [--json]
-agentbot task status <task>
-agentbot task prompt <task> "<prompt>"
-agentbot task new <task> [title] [--agent <standard-name>] [--dir <path> | --nodir]
-agentbot task newgroup <task> [title] [--agent <standard-name>] [--dir <path> | --nodir]
-agentbot task fork <task>
-agentbot task forkgroup <task> [title]
-agentbot task queue <task> "<prompt>"
-agentbot task model <task> [model]
-agentbot task goal <task> [action-or-objective]
-agentbot task turns <task>
-agentbot task reset <task> <Turn ID>
-agentbot task dir <task> [directory]
-agentbot task file <task> <path>
-agentbot task title <task> "<title>"
-agentbot task stop <task>
-agentbot task archive <task>
+agentbot task status [task]
+agentbot task prompt [task] "<prompt>"
+agentbot task new [task] [title] [--agent <standard-name>] [--dir <path> | --nodir]
+agentbot task newgroup [task] [title] [--agent <standard-name>] [--dir <path> | --nodir]
+agentbot task fork [task]
+agentbot task forkgroup [task] [title]
+agentbot task queue [task] "<prompt>"
+agentbot task model [task] [model]
+agentbot task goal [task] [action-or-objective]
+agentbot task turns [task]
+agentbot task reset [task] <Turn ID>
+agentbot task dir [task] [directory]
+agentbot task file [task] <path>
+agentbot task title [task] "<title>"
+agentbot task stop [task]
+agentbot task archive [task]
 ```
 
-`task current` shows details for the Codex or TraeX task currently invoking the CLI. Its JSON output includes Agent Bot's `localSessionId` and the native `remoteSessionId`. `<task>` can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
+Inside an Agent started by Agent Bot, `[task]` defaults to the current task; use `--task <task>` to target another task explicitly. A regular terminal must supply a task. `task current` shows the automatically detected task details. A task reference can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
 
 `task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
 

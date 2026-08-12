@@ -37,7 +37,7 @@ Do not infer Agent Bot execution from an installed CLI, a running service, or th
 When running inside Agent Bot:
 
 - Use `agentbot` commands instead of killing workers, supervisors, or child processes.
-- Prefer task IDs over titles. Use `task current --json` or `task list` before acting.
+- When hosted by Agent Bot, omit the task target to act on the current task. Use `--task <task>` only to target another task explicitly.
 - Use the same `--profile <directory>` on every command when managing an isolated profile.
 - Prefer `--json` when another tool or Agent will consume the output.
 - Do not edit the Agent Bot SQLite database or runtime files directly.
@@ -52,7 +52,7 @@ agentbot task current --json
 agentbot task list
 ```
 
-`task current` identifies the task invoking the CLI from an Agent Bot-started Codex or TraeX process. If it cannot resolve one task, use an explicit ID from `task list`.
+`task current` shows details, but other `task` commands resolve the invoking task automatically. If automatic resolution fails, use an explicit ID from `task list` with `--task <task>`.
 
 Task references may be a list number, a full task ID, or an unambiguous ID prefix.
 
@@ -61,12 +61,12 @@ Task references may be a list number, a full task ID, or an unambiguous ID prefi
 Use these common commands:
 
 ```powershell
-agentbot task status <task>
-agentbot task prompt <task> "<prompt>"
-agentbot task queue <task> "<prompt>"
-agentbot task stop <task>
-agentbot task archive <task>
-agentbot task title <task> "<title>"
+agentbot task status
+agentbot task prompt "<prompt>"
+agentbot task queue "<prompt>"
+agentbot task stop
+agentbot task archive
+agentbot task title "<title>"
 ```
 
 - `prompt` posts the Prompt to the task's Feishu conversation before submitting it.
@@ -76,16 +76,16 @@ agentbot task title <task> "<title>"
 Create or branch work in the same conversation:
 
 ```powershell
-agentbot task new <task> [title] [--agent <name>] [--dir <cwd> | --nodir]
-agentbot task fork <task>
-agentbot task switch <task> [target-task]
+agentbot task new [title] [--agent <name>] [--dir <cwd> | --nodir]
+agentbot task fork
+agentbot task switch [target-task]
 ```
 
 Create a separate Feishu group:
 
 ```powershell
-agentbot task newgroup <task> [title] [--agent <name>] [--dir <cwd> | --nodir]
-agentbot task forkgroup <task> [title]
+agentbot task newgroup [title] [--agent <name>] [--dir <cwd> | --nodir]
+agentbot task forkgroup [title]
 ```
 
 Choose `new` or `newgroup` for fresh context. Choose `fork` or `forkgroup` when the new task must retain conversation history through the latest completed Turn. Forking must not interrupt an active source turn.
@@ -93,11 +93,11 @@ Choose `new` or `newgroup` for fresh context. Choose `fork` or `forkgroup` when 
 ## Change Settings
 
 ```powershell
-agentbot task agent <task> [name]
-agentbot task provider <task> [provider]
-agentbot task model <task> [model]
-agentbot task thinking <task> [effort]
-agentbot task permissions <task> [auto|confirm]
+agentbot task agent [name]
+agentbot task provider [provider]
+agentbot task model [model]
+agentbot task thinking [effort]
+agentbot task permissions [auto|confirm]
 ```
 
 Omit the value to inspect the current setting and available choices. `agent` changes the default Agent for future tasks in that conversation. The other settings affect the specified task from its next request.
@@ -105,12 +105,12 @@ Omit the value to inspect the current setting and available choices. `agent` cha
 ## Goals And Turns
 
 ```powershell
-agentbot task goal <task>
-agentbot task goal <task> "<objective>"
-agentbot task goal <task> pause|resume|clear
-agentbot task goal <task> edit "<objective>"
-agentbot task turns <task>
-agentbot task reset <task> <turn-id>
+agentbot task goal
+agentbot task goal "<objective>"
+agentbot task goal pause|resume|clear
+agentbot task goal edit "<objective>"
+agentbot task turns
+agentbot task reset <turn-id>
 ```
 
 Use `turns` to obtain a real Turn ID before `reset`. Reset changes conversation context only; it does not revert local files.
@@ -118,9 +118,9 @@ Use `turns` to obtain a real Turn ID before `reset`. Reset changes conversation 
 ## Files And Local Commands
 
 ```powershell
-agentbot task dir <task> [directory]
-agentbot task file <task> <path>
-agentbot task shell <task> "<command>"
+agentbot task dir [directory]
+agentbot task file <path>
+agentbot task shell "<command>"
 ```
 
 Paths are resolved from the selected task's working directory; `~` means the operating-system user's home directory. `file` sends the file to the task's Feishu conversation. `shell` runs in the task directory.
@@ -128,7 +128,7 @@ Paths are resolved from the selected task's working directory; `~` means the ope
 For group mention-only mode:
 
 ```powershell
-agentbot task mute <task> on|off
+agentbot task mute on|off
 ```
 
 ## Manage The Service
@@ -146,7 +146,7 @@ agentbot server stop
 
 Autostart is Profile-specific. Use `server autostart enable` for login startup, `server autostart enable --linger` on Linux only when the user explicitly requests startup before login, and `server autostart disable` to remove registration without stopping the current Server. Disabling Agent Bot autostart must not disable Linux user lingering because other services may use it.
 
-Use safe restart by default. Pass `--task` when calling from a hosted task so restart notifications return to the correct Feishu conversation. Use `--immediate` or `task restart <task> --force` only when the user explicitly accepts interruption.
+Use safe restart by default. Prefer `agentbot task restart` when hosted so the current task is resolved automatically. Use `--immediate` or `task restart --force` only when the user explicitly accepts interruption.
 
 Never use `taskkill`, `Stop-Process`, or equivalent commands for routine restart management.
 
@@ -175,7 +175,7 @@ npm run build
 If the running service must load the changes, schedule a safe restart only after verification:
 
 ```powershell
-agentbot server restart --task <current-task-id> --reason "<brief reason>"
+agentbot task restart --reason "<brief reason>"
 ```
 
 Use `agentbot --help` for less common options and command details.

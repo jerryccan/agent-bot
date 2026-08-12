@@ -188,25 +188,25 @@ Console UI 不需要飞书凭据。除非传入 `--force`，否则不会与正�
 ```bash
 agentbot task list
 agentbot task current [--json]
-agentbot task status <任务>
-agentbot task prompt <任务> "<prompt>"
-agentbot task new <任务> [标题] [--agent <标准名>] [--dir <路径> | --nodir]
-agentbot task newgroup <任务> [标题] [--agent <标准名>] [--dir <路径> | --nodir]
-agentbot task fork <任务>
-agentbot task forkgroup <任务> [标题]
-agentbot task queue <任务> "<prompt>"
-agentbot task model <任务> [模型]
-agentbot task goal <任务> [操作或目标]
-agentbot task turns <任务>
-agentbot task reset <任务> <Turn ID>
-agentbot task dir <任务> [目录]
-agentbot task file <任务> <路径>
-agentbot task title <任务> "<标题>"
-agentbot task stop <任务>
-agentbot task archive <任务>
+agentbot task status [任务]
+agentbot task prompt [任务] "<prompt>"
+agentbot task new [任务] [标题] [--agent <标准名>] [--dir <路径> | --nodir]
+agentbot task newgroup [任务] [标题] [--agent <标准名>] [--dir <路径> | --nodir]
+agentbot task fork [任务]
+agentbot task forkgroup [任务] [标题]
+agentbot task queue [任务] "<prompt>"
+agentbot task model [任务] [模型]
+agentbot task goal [任务] [操作或目标]
+agentbot task turns [任务]
+agentbot task reset [任务] <Turn ID>
+agentbot task dir [任务] [目录]
+agentbot task file [任务] <路径>
+agentbot task title [任务] "<标题>"
+agentbot task stop [任务]
+agentbot task archive [任务]
 ```
 
-`task current` 会显示当前调用 CLI 的 Codex 或 TraeX 任务详情；JSON 输出包含 Agent Bot 的 `localSessionId` 和原生 `remoteSessionId`。`<任务>` 可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
+在 Agent Bot 启动的 Agent 中，省略 `[任务]` 会自动使用当前任务；需要操作其他任务时可传入 `--task <任务>`。普通终端仍必须指定任务。`task current` 用于查看自动识别出的任务详情。任务引用可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
 
 `task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
 

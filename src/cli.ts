@@ -89,10 +89,13 @@ import { taskChatRoute } from "./cli/taskChatRoute.js";
 import {
   currentAppServerThreadIds,
   formatTaskList,
-  resolveCurrentTask,
-  taskCurrentExternalInvocationMessage,
   taskStateLabel,
 } from "./cli/taskListOutput.js";
+import {
+  resolveCurrentTaskFromEnvironment,
+  resolveTask,
+  resolveTaskCommandTarget,
+} from "./cli/taskTarget.js";
 import { isThreadContextKey } from "./feishu/contextKey.js";
 import { refreshedSystemEnvironment } from "./supervision/systemEnvironment.js";
 import {
@@ -1136,29 +1139,25 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "prompt" || action === "send") {
-      const [reference, ...promptParts] = rest;
-      if (!reference) throw new Error(cliText(
-        `task ${action} requires a task number or task ID.`,
-        `task ${action} 需要任务序号或任务 ID。`,
-      ));
-      const text = promptParts.join(" ").trim();
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const text = target.args.join(" ").trim();
       if (!text) throw new Error(cliText(
         `task ${action} requires a Prompt.`,
         `task ${action} 需要提示词。`,
       ));
-      const session = resolveTask(allSessions, reference);
       const endpoint = controlEndpoint(config.storage.sqlitePath);
       ensureOk(await sendControlRequest(endpoint, {
         action: "task_prompt",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         text,
       }, 60_000));
       process.stdout.write(cliText("Prompt submitted.\n", "提示词已提交。\n"));
       return;
     }
     if (action === "new") {
-      const options = parseTaskNewOptions(rest);
-      const source = resolveTask(allSessions, options.reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = parseTaskNewOptions([target.session.localSessionId, ...target.args]);
+      const source = target.session;
       const targetAgent = options.agentName ? config.agents[options.agentName] : undefined;
       if (options.agentName && !targetAgent) throw new Error(cliText(
         `Unknown Agent standard name: ${options.agentName}.`,
@@ -1181,17 +1180,16 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "fork") {
-      const [reference, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = target.args;
       rejectUnsupportedTaskOptions(action, options, ["--json"]);
       if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
         "task fork accepts only one task reference.",
         "task fork 只接受一个任务引用。",
       ));
-      const source = resolveTask(allSessions, reference);
       const result = controlData<TaskForkControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_fork",
-        localSessionId: source.localSessionId,
+        localSessionId: target.session.localSessionId,
       }, 120_000));
       if (options.includes("--json")) printJson(result);
       else {
@@ -1201,21 +1199,20 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "archive") {
-      const [reference, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = target.args;
       rejectUnsupportedTaskOptions(action, options, ["--json"]);
       if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
         "task archive accepts only one task reference.",
         "task archive 只接受一个任务引用。",
       ));
-      const session = resolveTask(allSessions, reference);
       const archived = controlData<{
         localSessionId: string;
         remoteSessionId: string;
         title: string;
       }>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_archive",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
       }, 60_000));
       if (options.includes("--json")) printJson(archived);
       else process.stdout.write(cliText(
@@ -1225,8 +1222,8 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "switch") {
-      const [reference, ...switchArgs] = rest;
-      requireTaskCommandReference(action, reference);
+      const targetSelection = resolveTaskCommandTarget(allSessions, rest, action, { preferCurrent: true });
+      const switchArgs = targetSelection.args;
       rejectUnsupportedTaskOptions(action, switchArgs, ["--json", "--previous"]);
       const previous = switchArgs.includes("--previous");
       const targetReferences = switchArgs.filter((value) => !value.startsWith("--"));
@@ -1239,11 +1236,10 @@ async function taskCommand(input: string[]): Promise<void> {
         "task switch cannot combine a target task with --previous.",
         "task switch 不能同时指定目标任务和 --previous。",
       ));
-      const anchor = resolveTask(allSessions, reference);
       const target = targetReference ? resolveTask(allSessions, targetReference) : undefined;
       const switched = controlData<SessionRecord>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_switch",
-        localSessionId: anchor.localSessionId,
+        localSessionId: targetSelection.session.localSessionId,
         ...(target ? { targetLocalSessionId: target.localSessionId } : {}),
         ...(previous ? { previous: true } : {}),
       }));
@@ -1252,17 +1248,15 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "queue" || action === "nosteer") {
-      const [reference, ...promptParts] = rest;
-      requireTaskCommandReference(action, reference);
-      const text = promptParts.join(" ").trim();
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const text = target.args.join(" ").trim();
       if (!text) throw new Error(cliText(
         `task ${action} requires a Prompt.`,
         `task ${action} 需要提示词。`,
       ));
-      const session = resolveTask(allSessions, reference);
       const result = controlData<{ promptId: string; queued: number }>(await sendControlRequest(
         controlEndpoint(config.storage.sqlitePath),
-        { action: "task_queue", localSessionId: session.localSessionId, text },
+        { action: "task_queue", localSessionId: target.session.localSessionId, text },
       ));
       process.stdout.write(cliText(
         `Prompt queued (${result.queued} waiting): ${result.promptId}\n`,
@@ -1271,17 +1265,16 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "agent") {
-      const [reference, agentName, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const [agentName, ...options] = target.args;
       rejectUnsupportedTaskOptions(action, [agentName, ...options].filter((value): value is string => value !== undefined), ["--json"]);
       if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
         "task agent accepts at most one Agent name.",
         "task agent 最多接受一个 Agent 名称。",
       ));
-      const session = resolveTask(allSessions, reference);
       const result = controlData<TaskAgentControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_agent",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         ...(agentName && !agentName.startsWith("--") ? { agentName } : {}),
       }));
       const json = options.includes("--json") || agentName === "--json";
@@ -1290,8 +1283,8 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (["provider", "model", "thinking", "permissions"].includes(action)) {
-      const [reference, rawValue, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const [rawValue, ...options] = target.args;
       rejectUnsupportedTaskOptions(action, [rawValue, ...options].filter((value): value is string => value !== undefined), ["--json"]);
       if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
         `task ${action} accepts at most one value.`,
@@ -1299,10 +1292,9 @@ async function taskCommand(input: string[]): Promise<void> {
       ));
       const value = rawValue && !rawValue.startsWith("--") ? rawValue : undefined;
       const json = options.includes("--json") || rawValue === "--json";
-      const session = resolveTask(allSessions, reference);
       const result = controlData<TaskSettingsControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_settings",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         ...(value ? { setting: action as "provider" | "model" | "thinking" | "permissions", value } : {}),
       }, 60_000));
       if (json) printJson(result);
@@ -1310,16 +1302,15 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "goal") {
-      const [reference, ...goalArgs] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const goalArgs = target.args;
       const json = goalArgs.includes("--json");
       const args = goalArgs.filter((value) => value !== "--json");
       rejectUnsupportedTaskOptions(action, goalArgs, ["--json"]);
       const parsedGoal = parseTaskGoal(args);
-      const session = resolveTask(allSessions, reference);
       const result = controlData<TaskGoalControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_goal",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         goalAction: parsedGoal.action,
         ...(parsedGoal.objective ? { objective: parsedGoal.objective } : {}),
       }));
@@ -1328,25 +1319,24 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "turns") {
-      const [reference, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = target.args;
       rejectUnsupportedTaskOptions(action, options, ["--json"]);
       if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
         "task turns accepts only one task reference.",
         "task turns 只接受一个任务引用。",
       ));
-      const session = resolveTask(allSessions, reference);
       const result = controlData<TaskTurnsControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_turns",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
       }, 60_000));
       if (options.includes("--json")) printJson(result);
       else printTaskTurns(result);
       return;
     }
     if (action === "reset") {
-      const [reference, turnId, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const [turnId, ...options] = target.args;
       if (!turnId || turnId.startsWith("--")) throw new Error(cliText(
         "task reset requires a Turn ID.",
         "task reset 需要 Turn ID。",
@@ -1356,10 +1346,9 @@ async function taskCommand(input: string[]): Promise<void> {
         "task reset accepts one task reference and one Turn ID.",
         "task reset 只接受一个任务引用和一个 Turn ID。",
       ));
-      const session = resolveTask(allSessions, reference);
       const result = controlData<SessionRecord>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_reset",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         turnId,
       }, 120_000));
       if (options.includes("--json")) printJson(result);
@@ -1367,8 +1356,8 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "mute") {
-      const [reference, rawMode, ...options] = rest;
-      requireTaskCommandReference(action, reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const [rawMode, ...options] = target.args;
       rejectUnsupportedTaskOptions(action, [rawMode, ...options].filter((value): value is string => value !== undefined), ["--json"]);
       if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
         "task mute accepts at most one mode.",
@@ -1379,10 +1368,9 @@ async function taskCommand(input: string[]): Promise<void> {
         "task mute accepts on or off.",
         "task mute 只接受 on 或 off。",
       ));
-      const session = resolveTask(allSessions, reference);
       const result = controlData<TaskMuteControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_mute",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         enabled: mode === "on",
       }));
       const json = options.includes("--json") || rawMode === "--json";
@@ -1394,14 +1382,12 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "shell") {
-      const [reference, ...commandParts] = rest;
-      requireTaskCommandReference(action, reference);
-      const command = commandParts.join(" ").trim();
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const command = target.args.join(" ").trim();
       if (!command) throw new Error(cliText("task shell requires a command.", "task shell 需要命令。"));
-      const session = resolveTask(allSessions, reference);
       const result = controlData<TaskShellControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_shell",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         command,
       }, 130_000));
       printTaskShellResult(result);
@@ -1409,11 +1395,11 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "dir") {
-      const parsedDirectory = parseTaskDirectoryArgs(rest);
-      const session = resolveTask(allSessions, parsedDirectory.reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const parsedDirectory = parseTaskDirectoryArgs([target.session.localSessionId, ...target.args]);
       const result = controlData<TaskDirectoryControlData>(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_directory",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         ...(parsedDirectory.directory ? { directory: parsedDirectory.directory } : {}),
         ...(parsedDirectory.page !== undefined ? { page: parsedDirectory.page } : {}),
       }, 60_000));
@@ -1422,29 +1408,27 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "file") {
-      const [reference, ...fileParts] = rest;
-      requireTaskCommandReference(action, reference);
-      const filePath = fileParts.join(" ").trim();
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const filePath = target.args.join(" ").trim();
       if (!filePath) throw new Error(cliText("task file requires a path.", "task file 需要文件路径。"));
-      const session = resolveTask(allSessions, reference);
       ensureOk(await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_send_file",
-        localSessionId: session.localSessionId,
+        localSessionId: target.session.localSessionId,
         filePath,
       }, 120_000));
       process.stdout.write(cliText("File sent to the task conversation.\n", "文件已发送到任务会话。\n"));
       return;
     }
     if (action === "restart") {
-      const [reference, ...restartArgs] = rest;
-      requireTaskCommandReference(action, reference);
-      const translated = restartArgs.flatMap((value) => value === "--force" ? ["--immediate"] : [value]);
-      await serverCommand(["restart", "--task", reference, ...translated]);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const translated = target.args.flatMap((value) => value === "--force" ? ["--immediate"] : [value]);
+      await serverCommand(["restart", "--task", target.session.localSessionId, ...translated]);
       return;
     }
     if (action === "newgroup") {
-      const options = parseTaskNewGroupOptions(rest);
-      const session = resolveTask(allSessions, options.reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = parseTaskNewGroupOptions([target.session.localSessionId, ...target.args]);
+      const session = target.session;
       const targetAgentName = options.agentName ?? session.agentName;
       const targetAgent = config.agents[targetAgentName];
       if (!targetAgent) {
@@ -1474,8 +1458,9 @@ async function taskCommand(input: string[]): Promise<void> {
       return;
     }
     if (action === "forkgroup") {
-      const options = parseTaskForkGroupOptions(rest);
-      const session = resolveTask(allSessions, options.reference);
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = parseTaskForkGroupOptions([target.session.localSessionId, ...target.args]);
+      const session = target.session;
       requireCliGroupUser(config.feishu.userOpenId);
       const response = await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
         action: "task_fork_group",
@@ -1497,31 +1482,40 @@ async function taskCommand(input: string[]): Promise<void> {
       else printTaskList(sessions);
       return;
     }
-    const reference = rest.find((value) => !value.startsWith("--"));
-    if (!reference) throw new Error(cliText(
-      `task ${action} requires a task number or task ID.`,
-      `task ${action} 需要任务序号或任务 ID。`,
-    ));
-    const session = resolveTask(sessions, reference);
+    const target = resolveTaskCommandTarget(allSessions, rest, action);
+    const session = target.session;
     if (action === "chat") {
+      rejectUnsupportedTaskOptions(action, target.args, ["--json"]);
+      if (target.args.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task chat accepts only one task reference.",
+        "task chat 只接受一个任务引用。",
+      ));
       const route = taskChatRoute(session);
-      if (rest.includes("--json")) printJson(route);
+      if (target.args.includes("--json")) printJson(route);
       else process.stdout.write(`${route.chatId}\n`);
       return;
     }
     if (action === "status") {
-      await outputTaskStatus(config.storage.sqlitePath, store, session, rest.includes("--json"));
+      rejectUnsupportedTaskOptions(action, target.args, ["--json"]);
+      if (target.args.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task status accepts only one task reference.",
+        "task status 只接受一个任务引用。",
+      ));
+      await outputTaskStatus(config.storage.sqlitePath, store, session, target.args.includes("--json"));
       return;
     }
     const endpoint = controlEndpoint(config.storage.sqlitePath);
     if (action === "stop") {
+      if (target.args.length > 0) throw new Error(cliText(
+        "task stop accepts only one task reference.",
+        "task stop 只接受一个任务引用。",
+      ));
       ensureOk(await sendControlRequest(endpoint, { action: "task_stop", localSessionId: session.localSessionId }));
       process.stdout.write(cliText("Task stop requested.\n", "已请求停止任务。\n"));
       return;
     }
     if (action === "title") {
-      const referenceIndex = rest.indexOf(reference);
-      const titleArgs = rest.slice(referenceIndex + 1);
+      const titleArgs = target.args;
       const optionIndex = titleArgs.findIndex((value) => value.startsWith("--"));
       const title = titleArgs.slice(0, optionIndex < 0 ? undefined : optionIndex).join(" ").trim();
       if (!title) throw new Error(cliText(
@@ -1718,24 +1712,6 @@ function printTaskDirectory(result: TaskDirectoryControlData): void {
   ));
 }
 
-function resolveCurrentTaskFromEnvironment(sessions: SessionRecord[]): SessionRecord {
-  if (process.env.AGENT_BOT !== "1") throw new Error(taskCurrentExternalInvocationMessage());
-  const resolution = resolveCurrentTask(sessions, currentAppServerThreadIds(process.env));
-  if (resolution.status === "found") return resolution.session;
-  if (resolution.status === "missing-thread-id") throw new Error(cliText(
-    "Agent Bot detected an Agent process, but neither CODEX_THREAD_ID nor TRAECLI_THREAD_ID is available, so the current task cannot be identified. Use agentbot task list and pass an explicit task ID.",
-    "已检测到 Agent Bot 中的 Agent 进程，但 CODEX_THREAD_ID 和 TRAECLI_THREAD_ID 均不可用，因此无法识别当前任务。请使用 agentbot task list，并显式指定任务 ID。",
-  ));
-  if (resolution.status === "not-found") throw new Error(cliText(
-    `No AgentBot task matches the current App Server Thread ID (${resolution.threadIds.join(", ")}). Check that the correct Profile is selected.`,
-    `没有 AgentBot 任务匹配当前 App Server Thread ID（${resolution.threadIds.join("，")}）。请检查是否选择了正确的 Profile。`,
-  ));
-  throw new Error(cliText(
-    "The current task is ambiguous because multiple injected Thread IDs match AgentBot tasks. Use task status <task> with an explicit AgentBot task ID.",
-    "当前任务存在歧义：多个注入的 Thread ID 匹配到了 AgentBot 任务。请使用明确的 AgentBot 任务 ID 执行 task status <任务>。",
-  ));
-}
-
 async function outputTaskStatus(
   sqlitePath: string,
   store: StateStore,
@@ -1795,31 +1771,6 @@ function taskSessionsSearchTerm(args: string[]): string | undefined {
     if (!value.startsWith("--")) positionals.push(value);
   }
   return positionals.join(" ").trim() || undefined;
-}
-
-function resolveTask(sessions: SessionRecord[], reference: string): SessionRecord {
-  if (/^\d+$/.test(reference)) {
-    const index = Number(reference) - 1;
-    const session = sessions[index];
-    if (!session) throw new Error(cliText(
-      `Task number is out of range: ${reference}`,
-      `任务序号超出范围：${reference}`,
-    ));
-    return session;
-  }
-  const exact = sessions.find((session) =>
-    session.localSessionId === reference || session.remoteSessionId === reference || session.acpSessionId === reference);
-  if (exact) return exact;
-  const matches = sessions.filter((session) =>
-    session.localSessionId.startsWith(reference)
-    || session.remoteSessionId?.startsWith(reference)
-    || session.acpSessionId?.startsWith(reference));
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(cliText(
-    `Task ID prefix is ambiguous: ${reference}`,
-    `任务 ID 前缀不唯一：${reference}`,
-  ));
-  throw new Error(cliText(`Task not found: ${reference}`, `未找到任务：${reference}`));
 }
 
 function printTaskList(sessions: SessionRecord[]): void {
