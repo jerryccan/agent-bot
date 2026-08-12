@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Promote the validated 0.1.14 Alpha series to the stable release channel.
+
 ## [0.1.14-alpha.3] - 2026-08-12
 
 - Refresh elapsed time in the Feishu thinking-card header at least every three seconds, and freeze it when a turn completes or stops unexpectedly.
