@@ -869,7 +869,7 @@ export class CardRenderer {
       });
       elements.push(
         { tag: "hr" },
-        taskActionRow(footerActions),
+        taskActionRow(footerActions, renderTurnDuration(state)),
       );
     } else if (state.status === "completed") {
       footerActions.push({
@@ -879,6 +879,11 @@ export class CardRenderer {
       elements.push(
         { tag: "hr" },
         taskActionRow(footerActions),
+      );
+    } else if (state.status === "starting") {
+      elements.push(
+        { tag: "hr" },
+        taskActionRow([], renderTurnDuration(state)),
       );
     }
     if (state.status === "completed") {
@@ -2415,18 +2420,29 @@ function resetHistoryEntryRow(
   };
 }
 
-function taskActionRow(actions: TaskListCardAction[]): Record<string, unknown> {
+function taskActionRow(actions: TaskListCardAction[], trailingText?: string): Record<string, unknown> {
+  const columns = actions.map((action) => ({
+    tag: "column",
+    width: "auto",
+    vertical_align: "center",
+    elements: [taskActionElement(action)],
+  }));
+  if (trailingText) {
+    columns.push({
+      tag: "column",
+      width: "auto",
+      vertical_align: "center",
+      elements: [markdown(
+        `<font color='grey'>${actions.length > 0 ? "· " : ""}${escapeCardHtml(trailingText)}</font>`,
+      )],
+    });
+  }
   return {
     tag: "column_set",
     flex_mode: "flow",
     horizontal_spacing: "8px",
     margin: "2px 0 0 0",
-    columns: actions.map((action) => ({
-      tag: "column",
-      width: "auto",
-      vertical_align: "center",
-      elements: [taskActionElement(action)],
-    })),
+    columns,
   };
 }
 

@@ -447,7 +447,7 @@ describe("CardRenderer", () => {
     expect(serialized).not.toContain("turn_details");
     expect(serialized).not.toContain("查看详情");
     expect(serialized).toContain("<font color='red'>Stop</font>");
-    expect(serialized).not.toContain("<font color='grey'>· 52s</font>");
+    expect(serialized).toContain("<font color='grey'>· 52s</font>");
     expect(serialized).toContain('"action":"turn_cancel","sessionId":"s1","turnId":"turn_1"');
     expect(serialized).not.toContain('"action":"turn_reset"');
     expect(serialized).not.toContain("已完成的工具（");
@@ -909,7 +909,7 @@ describe("CardRenderer", () => {
     const card = new CardRenderer().renderTurn(current) as { header: { subtitle: { content: string } } };
 
     expect(card.header.subtitle.content).toBe(`耗时 ${expectedDuration} · 12.3K tokens · 2 个工具 · 1 个文件`);
-    expect(JSON.stringify(card)).not.toContain(`<font color='grey'>· ${expectedDuration}</font>`);
+    expect(JSON.stringify(card)).toContain(`<font color='grey'>· ${expectedDuration}</font>`);
   });
 
   test("uses a terminal timestamp to freeze elapsed time for legacy snapshots without durationMs", () => {
@@ -1372,7 +1372,8 @@ describe("CardRenderer", () => {
     };
 
     expect(card.schema).toBe("2.0");
-    expect(card.body.elements).toEqual([{ tag: "markdown", content: "正在连接 Codex…" }]);
+    expect(card.body.elements[0]).toEqual({ tag: "markdown", content: "正在连接 Codex…" });
+    expect(JSON.stringify(card.body.elements.at(-1))).toContain("<font color='grey'>52s</font>");
   });
 
   test("uses the current Agent label in empty progress states", () => {
@@ -1391,7 +1392,8 @@ describe("CardRenderer", () => {
       body: { elements: Array<{ tag: string; content: string }> };
     };
 
-    expect(card.body.elements).toEqual([{ tag: "markdown", content: "正在连接 TraeX…" }]);
+    expect(card.body.elements[0]).toEqual({ tag: "markdown", content: "正在连接 TraeX…" });
+    expect(JSON.stringify(card.body.elements.at(-1))).toContain("<font color='grey'>52s</font>");
 
     starting.status = "running";
     const waitingCard = new CardRenderer().renderTurn(starting) as {

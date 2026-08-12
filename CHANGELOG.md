@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Refresh elapsed time in both the header and active footer of Feishu thinking cards at least every three seconds, then freeze it in the header and remove the footer duplicate when a turn ends.
+
 ## [0.1.14] - 2026-08-12
 
 - Promote the validated 0.1.14 Alpha series to the stable release channel.

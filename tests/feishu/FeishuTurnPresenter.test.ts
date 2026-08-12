@@ -362,7 +362,7 @@ describe("FeishuTurnPresenter", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
       expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]))
-        .toContain("耗时 3.0s");
+        .toContain("<font color='grey'>· 3.0s</font>");
     } finally {
       vi.useRealTimers();
     }
