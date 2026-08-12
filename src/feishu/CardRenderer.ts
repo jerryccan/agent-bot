@@ -11,7 +11,7 @@ import type {
   ToolState,
 } from "../runtime/types.js";
 import type { TurnActivity, TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
-import { truncateMiddle, truncateText } from "../utils/markdown.js";
+import { truncateText } from "../utils/markdown.js";
 import { localCardImage } from "./LocalCardImage.js";
 
 export interface StartupStatusView {
@@ -889,15 +889,26 @@ export class CardRenderer {
 
   renderActivityHistory(state: TurnViewState, requestedPage: number): Record<string, unknown> {
     const grouped = this.thinkingCardLayout === "grouped";
+    const activities = turnActivities(state);
+    const allGroups = grouped ? groupTurnActivities(activities).flatMap(splitGroupedExecutionActivity) : [];
+    const historyGroups = grouped
+      ? groupedLiveActivityPage(groupedActivityPagesFromGroups(allGroups, state.projectCwd), state.projectCwd).historyGroups
+      : [];
+    const usesHistoricalPrefixPages = historyGroups.length > 0;
     const pages = grouped
-      ? groupedActivityPages(turnActivities(state), state.projectCwd, {
+      ? groupedActivityPagesFromGroups(
+        usesHistoricalPrefixPages ? historyGroups : allGroups,
+        state.projectCwd,
+        {
         fullActivityText: true,
         includeReasoningHistory: true,
-      })
-      : activityPages(turnActivities(state));
+        },
+      )
+      : activityPages(activities);
     if (pages.length === 0) {
       return this.renderSectionsCard("思考活动历史", [{ lines: ["没有保存到活动记录。"] }]);
     }
+    const totalPages = usesHistoricalPrefixPages ? pages.length + 1 : pages.length;
     const page = Math.max(0, Math.min(Math.trunc(requestedPage), pages.length - 1));
     const actions: TaskListCardAction[] = [
       ...(pages.length > 1 ? [{
@@ -908,7 +919,7 @@ export class CardRenderer {
         text: "上一页",
         value: { action: "activity_history", turnId: state.turnId, page: String(page - 1) },
       }] : []),
-      ...(page < pages.length - 2 ? [{
+      ...(page < pages.length - (usesHistoricalPrefixPages ? 1 : 2) ? [{
         text: "下一页",
         value: { action: "activity_history", turnId: state.turnId, page: String(page + 1) },
       }] : []),
@@ -921,7 +932,7 @@ export class CardRenderer {
         includeReasoningHistory: true,
       })
       : renderActivities(pages[page] as TurnActivity[] | undefined ?? [], state.projectCwd, true)));
-    return sectionCard(`思考活动历史 · ${page + 1}/${pages.length}`, elements.length > 0 ? elements : [markdown("无")]);
+    return sectionCard(`思考活动历史 · ${page + 1}/${totalPages}`, elements.length > 0 ? elements : [markdown("无")]);
   }
 
   renderSessionStarted(session: RuntimeSession): Record<string, unknown> {
@@ -1249,24 +1260,24 @@ function renderGroupedTurnElements(
   const elements: Record<string, unknown>[] = [];
   const allActivities = turnActivities(state);
   const livePages = groupedActivityPages(allActivities, state.projectCwd);
-  const historyPages = groupedActivityPages(allActivities, state.projectCwd, {
+  const visible = groupedLiveActivityPage(livePages, state.projectCwd);
+  const historyPages = groupedActivityPagesFromGroups(visible.historyGroups, state.projectCwd, {
     fullActivityText: true,
     includeReasoningHistory: true,
   });
-  const visibleGroups = livePages.at(-1) ?? [];
   if (state.plan.length > 0) elements.push(planPanel(state.plan));
-  if (historyPages.length > 1) {
+  if (historyPages.length > 0) {
     elements.push(taskActionRow([{
-      text: `查看历史思考（共 ${historyPages.length} 页）`,
+      text: `查看历史思考（共 ${historyPages.length + 1} 页）`,
       value: {
         action: "activity_history",
         turnId: state.turnId,
-        page: String(historyPages.length - 2),
+        page: String(historyPages.length - 1),
       },
     }]));
   }
-  if (state.activitiesTruncated || livePages.length > 1 || historyPages.length > 1) elements.push(markdown("…"));
-  elements.push(...renderGroupedActivityGroups(visibleGroups, state.projectCwd));
+  if (state.activitiesTruncated && visible.groups[0]?.kind !== "gap") elements.push(markdown("…"));
+  elements.push(...renderGroupedActivityGroups(visible.groups, state.projectCwd));
   if (state.fileSummary.length > 0) elements.push(fileSummaryPanel(state));
 
   if (state.approval) {
@@ -1407,6 +1418,7 @@ function renderActivities(
 
 type GroupedTurnActivity =
   | { kind: "activity"; activity: TurnActivity }
+  | { kind: "gap"; id: string }
   | {
       kind: "execution";
       id: string;
@@ -1424,6 +1436,7 @@ function renderGroupedActivityGroups(
   } = {},
 ): Record<string, unknown>[] {
   return groups.flatMap((group) => {
+    if (group.kind === "gap") return [markdown("…")];
     if (group.kind === "activity") {
       return renderActivity(group.activity, projectCwd, options.fullActivityText === true);
     }
@@ -1556,6 +1569,7 @@ const ACTIVITIES_PER_PAGE = 40;
 const GROUPED_TOOLS_PER_PANEL = 8;
 const GROUPED_PAGE_ACTIVITY_BYTES = 24 * 1024;
 const GROUPED_PAGE_ACTIVITY_COMPONENTS = 160;
+const PINNED_LIVE_COMMENTARIES = 3;
 const MAX_LIVE_ASSISTANT_TEXT = 2_000;
 const ACTIVITY_TEXT_CHUNK = 2_500;
 
@@ -1580,6 +1594,17 @@ function groupedActivityPages(
   } = {},
 ): GroupedTurnActivity[][] {
   const groups = groupTurnActivities(activities).flatMap(splitGroupedExecutionActivity);
+  return groupedActivityPagesFromGroups(groups, projectCwd, renderOptions);
+}
+
+function groupedActivityPagesFromGroups(
+  groups: GroupedTurnActivity[],
+  projectCwd?: string,
+  renderOptions: {
+    fullActivityText?: boolean;
+    includeReasoningHistory?: boolean;
+  } = {},
+): GroupedTurnActivity[][] {
   if (groups.length === 0) return [];
 
   const newestFirst: GroupedTurnActivity[][] = [];
@@ -1608,6 +1633,82 @@ function groupedActivityPageFits(
   const elements = renderGroupedActivityGroups(groups, projectCwd, renderOptions);
   return Buffer.byteLength(JSON.stringify(elements), "utf8") <= GROUPED_PAGE_ACTIVITY_BYTES
     && countCardComponents(elements) <= GROUPED_PAGE_ACTIVITY_COMPONENTS;
+}
+
+interface LiveGroupedActivityPage {
+  groups: GroupedTurnActivity[];
+  historyGroups: GroupedTurnActivity[];
+}
+
+function groupedLiveActivityPage(
+  pages: GroupedTurnActivity[][],
+  projectCwd?: string,
+): LiveGroupedActivityPage {
+  const latest = pages.at(-1) ?? [];
+  if (pages.length <= 1) return { groups: latest, historyGroups: [] };
+
+  const groups = pages.flat();
+  const latestStart = groups.length - latest.length;
+  const commentaryIndexes = groups
+    .map((group, index) => isCommentaryGroup(group) ? index : -1)
+    .filter((index) => index >= 0);
+  if (commentaryIndexes.length === 0) {
+    return { groups: latest, historyGroups: groups.slice(0, latestStart) };
+  }
+
+  const selected = new Set<number>();
+  const pinnedCommentaries = commentaryIndexes.slice(0, PINNED_LIVE_COMMENTARIES);
+  for (const index of pinnedCommentaries) selected.add(index);
+  const latestCommentary = commentaryIndexes.at(-1)!;
+  for (let index = latestCommentary; index < groups.length; index += 1) selected.add(index);
+
+  const renderSelection = (selection: ReadonlySet<number>): LiveGroupedActivityPage => ({
+    groups: groupsWithGaps(groups, selection),
+    historyGroups: groups.filter((_group, index) => index < latestCommentary || !selection.has(index)),
+  });
+  const fits = (selection: ReadonlySet<number>): boolean => {
+    const view = renderSelection(selection);
+    return groupedActivityPageFits(view.groups, projectCwd, {});
+  };
+
+  if (!fits(selected)) {
+    const latestExecutions = [...selected]
+      .filter((index) => index > latestCommentary && groups[index]?.kind === "execution")
+      .sort((left, right) => left - right);
+    const newestExecution = latestExecutions.at(-1);
+    for (const index of latestExecutions) {
+      if (fits(selected) || index === newestExecution) break;
+      selected.delete(index);
+    }
+  }
+
+  return renderSelection(selected);
+}
+
+function isCommentaryGroup(group: GroupedTurnActivity): boolean {
+  return group.kind === "activity" && isCommentaryActivity(group.activity);
+}
+
+function groupsWithGaps(
+  groups: GroupedTurnActivity[],
+  selected: ReadonlySet<number>,
+): GroupedTurnActivity[] {
+  const indexes = [...selected].sort((left, right) => left - right);
+  const visible: GroupedTurnActivity[] = [];
+  const append = (group: GroupedTurnActivity): void => {
+    if (group.kind === "gap" && visible.at(-1)?.kind === "gap") return;
+    visible.push(group);
+  };
+  let previous = -1;
+  for (const index of indexes) {
+    if (previous >= 0 && index > previous + 1) {
+      append({ kind: "gap", id: `gap:${previous}:${index}` });
+    }
+    const group = groups[index];
+    if (group) append(group);
+    previous = index;
+  }
+  return visible;
 }
 
 function countCardComponents(value: unknown): number {
@@ -1790,9 +1891,18 @@ function renderToolDetails(tool: ToolState, projectCwd?: string): string {
   const displayCommand = tool.kind === "command"
     ? unwrapShellCommand(normalizedCommand) ?? normalizedCommand
     : normalizedCommand;
-  const commandText = truncateText(displayCommand, 800);
-  const resultText = result ? truncateMiddle(stripAnsi(result).trim(), 1_200) : undefined;
+  const commandText = truncateText(displayCommand, 600);
+  const resultText = result ? truncateToolResult(stripAnsi(result).trim()) : undefined;
   return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
+}
+
+function truncateToolResult(result: string): string {
+  const maxLength = 900;
+  const marker = "\n...\n";
+  const tailLength = 600;
+  if (result.length <= maxLength) return result;
+  const headLength = maxLength - marker.length - tailLength;
+  return `${result.slice(0, headLength)}${marker}${result.slice(-tailLength)}`;
 }
 
 function displayFilePath(filePath: string, projectCwd?: string): string {

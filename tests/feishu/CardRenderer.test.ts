@@ -643,6 +643,96 @@ describe("CardRenderer", () => {
     expect(Buffer.byteLength(verboseSerialized, "utf8")).toBeLessThanOrEqual(30 * 1024);
   });
 
+  test("pins the first three commentaries and replaces all older reasoning and tools with ellipses", () => {
+    const running = state();
+    running.plan = [];
+    running.fileSummary = [];
+    const segment = (position: number) => {
+      const commentary = {
+        kind: "assistant" as const,
+        id: `commentary:${position}`,
+        text: `Commentary ${position}`,
+      };
+      const tools = Array.from({ length: 6 }, (_value, toolIndex) => {
+        const toolPosition = toolIndex + 1;
+        const tool = {
+          ...running.completedTools[0]!,
+          id: `segment-${position}-tool-${toolPosition}`,
+          title: `Segment ${position} tool ${toolPosition}`,
+          command: `segment-${position}-tool-${toolPosition}`,
+          output: `SEGMENT_${position}_RESULT_${toolPosition}\n${"result-data-".repeat(140)}`,
+        };
+        return { kind: "tool" as const, id: tool.id, tool };
+      });
+      return [
+        commentary,
+        {
+          kind: "reasoning" as const,
+          id: `reasoning:${position}`,
+          text: `Native reasoning ${position}`,
+        },
+        ...tools,
+      ];
+    };
+    const imageTool = {
+      ...running.completedTools[0]!,
+      id: "segment-1-image",
+      title: "View generated preview",
+      kind: "image_view",
+      command: "view_image preview.png",
+      output: "IMAGE_RESULT_KEEP",
+      imagePath: "D:\\tmp\\preview.png",
+    };
+    running.activities = [
+      ...segment(1),
+      { kind: "tool", id: imageTool.id, tool: imageTool } as const,
+      ...segment(2),
+      ...segment(3),
+      ...segment(4),
+    ];
+
+    const renderer = new CardRenderer();
+    const card = renderer.renderTurn(running);
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("查看历史思考");
+    expect(serialized).toContain("Commentary 1");
+    expect(serialized).toContain("Commentary 2");
+    expect(serialized).toContain("Commentary 3");
+    expect(serialized).toContain("Commentary 4");
+    expect(serialized).not.toContain("segment-1-tool-1");
+    expect(serialized).not.toContain("SEGMENT_1_RESULT_1");
+    expect(serialized).not.toContain("segment-2-tool-1");
+    expect(serialized).not.toContain("SEGMENT_2_RESULT_1");
+    expect(serialized).not.toContain("segment-3-tool-1");
+    expect(serialized).not.toContain("SEGMENT_3_RESULT_1");
+    expect(serialized).not.toContain("Native reasoning 1");
+    expect(serialized).not.toContain("Native reasoning 2");
+    expect(serialized).not.toContain("Native reasoning 3");
+    expect(serialized).toContain("Native reasoning 4");
+    expect(serialized).toContain("SEGMENT_4_RESULT_1");
+    expect(serialized).not.toContain("IMAGE_RESULT_KEEP");
+    expect(serialized).not.toContain("D:\\\\tmp\\\\preview.png");
+    expect(serialized).not.toContain("View generated preview");
+    expect(collectObjects(card).filter((item) => item.tag === "markdown" && item.content === "…").length)
+      .toBeGreaterThanOrEqual(3);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(30 * 1024);
+
+    const history = JSON.stringify(renderer.renderActivityHistory(running, 0));
+    expect(history).toContain("Commentary 1");
+    expect(history).toContain("SEGMENT_1_RESULT_1");
+    expect(history).toContain("IMAGE_RESULT_KEEP");
+
+    const historyAction = collectObjects(card).find((item) => item.action === "activity_history");
+    expect(historyAction?.page).toEqual(expect.any(String));
+    const cutoffHistory = JSON.stringify(renderer.renderActivityHistory(running, Number(historyAction?.page)));
+    expect(cutoffHistory).not.toContain("Commentary 1");
+    expect(cutoffHistory).toContain("Commentary 2");
+    expect(cutoffHistory).toContain("Commentary 3");
+    expect(cutoffHistory).toContain("SEGMENT_3_RESULT_1");
+    expect(cutoffHistory).not.toContain("SEGMENT_4_RESULT_1");
+  });
+
   test("keeps a stable collapsed default so the client can preserve manual expansion", () => {
     const running = state();
     const command = {
@@ -1104,14 +1194,15 @@ describe("CardRenderer", () => {
     const renderedCommand = inner.slice(2, resultStart);
     const renderedResult = inner.slice(resultStart + 1);
 
-    expect(renderedCommand).toHaveLength(800);
+    expect(renderedCommand).toHaveLength(600);
     expect(renderedCommand).toMatch(/^Write-Output 'first'\n/);
     expect(renderedCommand).toMatch(/\.\.\.$/);
-    expect(renderedResult).toHaveLength(1_200);
+    expect(renderedResult).toHaveLength(900);
     expect(renderedResult).toContain("RESULT_HEAD");
     expect(renderedResult).toContain("RESULT_TAIL");
     expect(renderedResult).toContain("\n...\n");
     expect(renderedResult).not.toContain("MIDDLE_SENTINEL");
+    expect(renderedResult.slice(-600)).toBe(output.slice(-600));
   });
 
   test("shows the active tool prominently and uses a completed header on completion", () => {
