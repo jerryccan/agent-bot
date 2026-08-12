@@ -342,6 +342,88 @@ describe("FeishuTurnPresenter", () => {
     );
   });
 
+  test("refreshes elapsed time every three seconds while a turn is running", async () => {
+    vi.useFakeTimers();
+    try {
+      const { presenter, outbound } = createFixture();
+      await presenter.onEvent({
+        type: "turn_started",
+        sessionId: "s1",
+        turnId: "turn_1",
+        startedAt: Date.now(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(outbound.updateInteractiveCard).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
+      expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]))
+        .toContain("耗时 3.0s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("stops elapsed-time refreshes after a turn reaches a terminal state", async () => {
+    vi.useFakeTimers();
+    try {
+      const { presenter, outbound } = createFixture();
+      await presenter.onEvent({
+        type: "turn_started",
+        sessionId: "s1",
+        turnId: "turn_1",
+        startedAt: Date.now(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const completion = presenter.onEvent(completed());
+      await vi.advanceTimersByTimeAsync(0);
+      await completion;
+      (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(outbound.updateInteractiveCard).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("stops elapsed-time refreshes when a turn fails unexpectedly", async () => {
+    vi.useFakeTimers();
+    try {
+      const { presenter, outbound, store } = createFixture();
+      await presenter.onEvent({
+        type: "turn_started",
+        sessionId: "s1",
+        turnId: "turn_1",
+        startedAt: Date.now(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1_500);
+      const failure = presenter.onEvent({
+        type: "turn_failed",
+        sessionId: "s1",
+        turnId: "turn_1",
+        message: "stream disconnected",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await failure;
+      const terminal = (store.saveTurnSnapshot as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[2];
+      expect(terminal).toMatchObject({ status: "failed", durationMs: 1_500 });
+      (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(outbound.updateInteractiveCard).not.toHaveBeenCalled();
+      expect((store.saveTurnSnapshot as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[2])
+        .toMatchObject({ durationMs: 1_500 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("freezes in-place history pages and resumes live updates on the latest page", async () => {
     const { presenter, outbound } = createFixture(false, new CardRenderer({ thinkingCardLayout: "timeline" }));
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });

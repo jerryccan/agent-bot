@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   appendSteerMessage,
   createTurnViewState,
@@ -124,6 +124,26 @@ describe("TurnStateReducer", () => {
     expect(state.failedTools).toHaveLength(1);
     expect(state.fileSummary).toEqual([{ path: "src/index.ts", additions: 3, deletions: 1 }]);
     expect(state).toMatchObject({ status: "completed", finalResponse: "done", durationMs: 2_500 });
+  });
+
+  test.each([
+    ["turn_cancelled", {}],
+    ["turn_failed", { message: "connection lost" }],
+  ] as const)("freezes elapsed time when a turn ends with %s", (type, fields) => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(4_000);
+    try {
+      const initial = createTurnViewState("s1", "turn_1", 1_000);
+      const terminal = reduceTurnEvent(initial, event(type, fields));
+
+      expect(terminal).toMatchObject({
+        completedAt: 4_000,
+        durationMs: 3_000,
+      });
+      now.mockReturnValue(10_000);
+      expect(terminal.durationMs).toBe(3_000);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   test("ignores events belonging to another turn and bounds verbose fields", () => {

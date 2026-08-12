@@ -42,12 +42,14 @@ export interface TurnPresentationStore {
 export interface FeishuTurnPresenterOptions {
   normalIntervalMs?: number;
   criticalGapMs?: number;
+  elapsedUpdateIntervalMs?: number;
   finalChunkLength?: number;
   onError?: (error: unknown) => void;
   finalRetryBackoffMs?: number[];
 }
 
 const MAX_FINAL_TABLES_PER_CARD = 5;
+const DEFAULT_ELAPSED_UPDATE_INTERVAL_MS = 3_000;
 
 interface TurnEntry {
   contextKey: string;
@@ -58,6 +60,7 @@ interface TurnEntry {
   reactionId?: string;
   reactionEmoji?: string;
   scheduler?: CardUpdateScheduler<TurnViewState>;
+  elapsedTimer?: ReturnType<typeof setInterval>;
   finalizing?: Promise<void>;
   lastFinalizedStatus?: TurnViewState["status"];
 }
@@ -148,6 +151,7 @@ export class FeishuTurnPresenter {
       await entry.initializing;
       return state.turnId;
     } catch (error) {
+      this.stopElapsedUpdates(entry);
       if (this.pendingEntries.get(sessionId) === entry) this.pendingEntries.delete(sessionId);
       this.entries.delete(state.turnId);
       throw error;
@@ -158,7 +162,15 @@ export class FeishuTurnPresenter {
     const entry = this.pendingEntries.get(sessionId);
     if (!entry) return;
     this.pendingEntries.delete(sessionId);
-    entry.state = { ...entry.state, status: "failed", error: message, completedAt: Date.now() };
+    this.stopElapsedUpdates(entry);
+    const completedAt = Date.now();
+    entry.state = {
+      ...entry.state,
+      status: "failed",
+      error: message,
+      completedAt,
+      durationMs: Math.max(0, completedAt - entry.state.startedAt),
+    };
     this.store.saveTurnSnapshot(entry.state.turnId, sessionId, entry.state, entry.contextKey);
     await entry.initializing;
     try {
@@ -178,23 +190,27 @@ export class FeishuTurnPresenter {
   ): Promise<void> {
     const snapshot = this.store.getTurnSnapshot(turnId);
     if (!isTurnViewState(snapshot) || snapshot.sessionId !== sessionId || isTerminalViewStatus(snapshot.status)) return;
+    const completedAt = Date.now();
     const state: TurnViewState = {
       ...snapshot,
       status: "cancelled",
       progressText: message,
       activeTool: undefined,
       approval: undefined,
-      completedAt: Date.now(),
+      completedAt,
+      durationMs: Math.max(0, completedAt - snapshot.startedAt),
     };
     this.store.saveTurnSnapshot(turnId, sessionId, state, contextKey);
+    const entry = this.entries.get(turnId);
+    if (entry) {
+      entry.state = state;
+      this.stopElapsedUpdates(entry);
+      this.entries.delete(turnId);
+      if (this.pendingEntries.get(sessionId) === entry) this.pendingEntries.delete(sessionId);
+    }
     const delivery = this.store.getTurnDelivery(turnId);
     if (delivery?.progressMessageId) {
       await this.outbound.updateInteractiveCard(delivery.progressMessageId, this.renderer.renderTurn(state));
-    }
-    const entry = this.entries.get(turnId);
-    if (entry) {
-      this.entries.delete(turnId);
-      if (this.pendingEntries.get(sessionId) === entry) this.pendingEntries.delete(sessionId);
     }
   }
 
@@ -287,6 +303,7 @@ export class FeishuTurnPresenter {
     if (!entry.scheduler) return;
 
     if (isTerminalEvent(event)) {
+      this.stopElapsedUpdates(entry);
       if (entry.finalizing) await entry.finalizing;
       const terminalState = entry.state;
       if (entry.lastFinalizedStatus === terminalState.status) return;
@@ -434,8 +451,28 @@ export class FeishuTurnPresenter {
       onError: this.options.onError,
     });
     entry.scheduler.seed(sentState);
+    this.startElapsedUpdates(entry);
     if (entry.state !== sentState) entry.scheduler.update(entry.state, "critical");
     await this.syncThinkingCardReaction(entry);
+  }
+
+  private startElapsedUpdates(entry: TurnEntry): void {
+    if (entry.elapsedTimer || isTerminalViewStatus(entry.state.status)) return;
+    const intervalMs = Math.max(1, this.options.elapsedUpdateIntervalMs ?? DEFAULT_ELAPSED_UPDATE_INTERVAL_MS);
+    entry.elapsedTimer = setInterval(() => {
+      if (isTerminalViewStatus(entry.state.status)) {
+        this.stopElapsedUpdates(entry);
+        return;
+      }
+      if (!entry.historySnapshot) entry.scheduler?.update(entry.state);
+    }, intervalMs);
+    entry.elapsedTimer.unref?.();
+  }
+
+  private stopElapsedUpdates(entry: TurnEntry): void {
+    if (!entry.elapsedTimer) return;
+    clearInterval(entry.elapsedTimer);
+    entry.elapsedTimer = undefined;
   }
 
   private async finalize(entry: TurnEntry, state: TurnViewState): Promise<void> {

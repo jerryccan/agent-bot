@@ -102,31 +102,45 @@ export function reduceTurnEvent(state: TurnViewState, event: AgentEvent): TurnVi
       return { ...state, status: "waiting_for_approval", approval: event.request };
     case "approval_resolved":
       return { ...state, status: state.activeTool ? "tool_running" : "running", approval: undefined };
-    case "turn_completed":
+    case "turn_completed": {
+      const durationMs = Math.max(0, event.durationMs ?? Date.now() - state.startedAt);
       return {
         ...state,
         status: "completed",
         activeTool: undefined,
         approval: undefined,
-        completedAt: state.startedAt + (event.durationMs ?? Date.now() - state.startedAt),
-        durationMs: event.durationMs ?? Date.now() - state.startedAt,
+        completedAt: state.startedAt + durationMs,
+        durationMs,
         finalResponse: appendGeneratedImageMarkdown(
           event.finalResponse,
           state.completedTools.flatMap((tool) =>
             tool.kind === "image_generation" && tool.imagePath ? [tool.imagePath] : []),
         ),
       };
-    case "turn_cancelled":
-      return { ...state, status: "cancelled", activeTool: undefined, approval: undefined, completedAt: Date.now() };
-    case "turn_failed":
+    }
+    case "turn_cancelled": {
+      const completedAt = Date.now();
+      return {
+        ...state,
+        status: "cancelled",
+        activeTool: undefined,
+        approval: undefined,
+        completedAt,
+        durationMs: Math.max(0, completedAt - state.startedAt),
+      };
+    }
+    case "turn_failed": {
+      const completedAt = Date.now();
       return {
         ...state,
         status: "failed",
         activeTool: undefined,
         approval: undefined,
-        completedAt: Date.now(),
+        completedAt,
+        durationMs: Math.max(0, completedAt - state.startedAt),
         error: bound(event.message),
       };
+    }
   }
 }
 
