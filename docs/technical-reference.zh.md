@@ -255,7 +255,7 @@ Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeT
 
 每个任务条目都提供 `NewGroup` 和 `ForkGroup` 回调。回调数据保留所选任务 ID 与来源上下文，并使用飞书操作者的 `open_id` 邀请用户进入新群。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
 
-CLI 通过 `agentbot task newgroup <任务> [标题] [--agent <标准名>] [--dir <目录> | --nodir]` 和 `agentbot task forkgroup <任务> [标题]` 提供相同的指定任务操作。两个命令都要求 Server 正在运行，并通过当前 Profile 的本地控制端点发送稳定的本地任务 ID。CLI 进程没有飞书操作者，因此 Server 会邀请 `feishu.userOpenId`，该值由初始化保存为 `FEISHU_USER_OPEN_ID`。NewGroup 默认继承指定任务的 Agent 和执行设置；`--agent <标准名>` 可选择另一个已配置的 Runtime，同时继续继承来源项目形态，并省略执行设置以采用目标 Runtime 自己的默认值。ForkGroup 使用来源任务最新可用的已完成 turn，并让来源任务的活动 turn 继续执行。两类控制响应都包含新群、群上下文、来源任务和新任务；`--json` 会输出不做本地化的结构化结果。
+所有 `agentbot task` 操作都支持 `--task <任务>`，并继续兼容原有的首个位置任务参数。在 Agent Bot 启动的 Agent 中，两者均省略时会通过 Codex 或 TraeX 的 App Server Thread ID 自动解析当前任务；在 Agent Bot 外执行时仍必须显式指定任务。CLI 通过 `agentbot task newgroup [任务] [标题] [--agent <标准名>] [--dir <目录> | --nodir]` 和 `agentbot task forkgroup [任务] [标题]` 提供相同的指定任务操作。两个命令都要求 Server 正在运行，并通过当前 Profile 的本地控制端点发送稳定的本地任务 ID。CLI 进程没有飞书操作者，因此 Server 会邀请 `feishu.userOpenId`，该值由初始化保存为 `FEISHU_USER_OPEN_ID`。NewGroup 默认继承指定任务的 Agent 和执行设置；`--agent <标准名>` 可选择另一个已配置的 Runtime，同时继续继承来源项目形态，并省略执行设置以采用目标 Runtime 自己的默认值。ForkGroup 使用来源任务最新可用的已完成 turn，并让来源任务的活动 turn 继续执行。两类控制响应都包含新群、群上下文、来源任务和新任务；`--json` 会输出不做本地化的结构化结果。
 
 ## App Server Provider 设置
 
@@ -337,7 +337,7 @@ Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fat
 
 ## 受管系统 Skill
 
-随包提供的 Agent Bot Skill 可安装到共享 Agent Skill 目录：
+每次 `agentbot init` 成功时，都会把随包提供的 Agent Bot Skill 安装或刷新到共享 Agent Skill 目录。也可以通过以下命令显式管理这份受管安装：
 
 ```powershell
 agentbot skills install
@@ -387,7 +387,7 @@ npm Trusted Publisher 配置为：
 
 `agentbot update` 只接受包目录与 `npm root --global` 一致的真实 npm 全局安装。源码 checkout、npm link、使用符号链接的全局包以及其他包管理器布局都会被拒绝。预发布版本默认跟随 npm 的 `alpha` 标签，稳定版默认跟随 `latest`；可用 `--alpha`、`--stable` 或 `--version` 显式选择，降级还必须传入 `--allow-downgrade`。
 
-修改当前安装前，CLI 会下载精确版本的 npm tarball，在当前 Profile 的 `updates` 目录中独立安装候选包，验证包身份以及 CLI 的版本和帮助输出，并同时保存当前包的完整副本与 npm 回滚 tarball。服务运行时会复用安全重启调度，等待活动任务、最终结果投递和静默窗口。随后，复制到安装目录外的独立执行器等待 Worker 和 Supervisor 退出，备份 SQLite 主文件及 WAL/SHM 文件，再安装已经验证的 tarball、复验全局安装并启动服务。安装或启动失败时会恢复数据库并重新安装旧 tarball；如果 npm 回滚仍不能恢复可用服务，则直接从完整包备份启动旧版。`update.log`、`result.json`、包备份和数据库备份都会保留在 Profile 中用于排查。
+修改当前安装前，CLI 会下载精确版本的 npm tarball，在当前 Profile 的 `updates` 目录中独立安装候选包，验证包身份以及 CLI 的版本和帮助输出，并同时保存当前包的完整副本与 npm 回滚 tarball。服务运行时会复用安全重启调度，等待活动任务、最终结果投递和静默窗口。随后，复制到安装目录外的独立执行器等待 Worker 和 Supervisor 退出，备份 SQLite 主文件及 WAL/SHM 文件，再安装已经验证的 tarball、复验全局安装，并在启动服务前调用新版本 CLI 的非交互式 `init --skip-feishu --json`。这个步骤会补齐 Profile 文件并刷新受管 Skill，但不会重复启动 Server，也不会在后台等待飞书授权。安装、初始化或启动失败时会恢复数据库并重新安装旧 tarball；如果 npm 回滚仍不能恢复可用服务，则直接从完整包备份启动旧版。`update.log`、`result.json`、包备份和数据库备份都会保留在 Profile 中用于排查。
 
 ## 开发与源码安装
 
