@@ -271,6 +271,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   const acp = { ...runtime, kind: "acp" as const } as AgentRuntime;
   const outbound: FeishuOutbound = {
     createGroup: vi.fn(async (input) => ({ chatId: "oc_new_group", name: input.name })),
+    deleteGroup: vi.fn(async () => undefined),
     addReaction: vi.fn(async () => undefined),
     deleteReaction: vi.fn(async () => undefined),
     downloadImage: vi.fn(async (_messageId, imageKey) => path.join(process.cwd(), `${imageKey}.png`)),
@@ -4037,6 +4038,89 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("confirms, archives, and dissolves the current group with dismiss", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    const contextKey = "chat_id:oc_dismiss";
+    store.recordChatContext(contextKey, "group");
+    store.getOrCreateUserContext(contextKey, "codex");
+    store.createSession({
+      localSessionId: "dismiss_local",
+      contextKey,
+      agentName: "codex",
+      cwd: "D:\\work\\dismiss",
+      status: "ready",
+    });
+    store.updateRuntimeSession("dismiss_local", {
+      runtimeKind: "codex",
+      remoteSessionId: "dismiss_remote",
+      title: "Dismiss task",
+    });
+    store.setCurrentSession(contextKey, "dismiss_local");
+    remoteSessions.push({
+      id: "dismiss_remote",
+      title: "Dismiss task",
+      cwd: "D:\\work\\dismiss",
+      source: "agent-bot",
+      status: "idle",
+    });
+
+    await controller.onMessage({
+      ...groupMessage("oc_dismiss", "/dismiss"),
+      userId: "ou_owner",
+    });
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(card).toMatchObject({ config: { width_mode: "compact" } });
+    expect(JSON.stringify(card)).toContain("group_dismiss_confirm");
+    expect(runtime.archiveRemoteSession).not.toHaveBeenCalled();
+    expect(outbound.deleteGroup).not.toHaveBeenCalled();
+
+    await controller.onCardAction({
+      actionId: "dismiss-confirm",
+      contextKey,
+      userId: "ou_owner",
+      messageId: "om_dismiss_card",
+      value: {
+        action: "group_dismiss_confirm",
+        contextKey,
+        sessionId: "dismiss_local",
+        requestedBy: "ou_owner",
+      },
+    });
+
+    expect(runtime.archiveRemoteSession).toHaveBeenCalledWith("dismiss_remote");
+    expect(outbound.deleteGroup).toHaveBeenCalledWith("oc_dismiss");
+    expect(store.getSession("dismiss_local")?.status).toBe("closed");
+    expect(store.getChatContext(contextKey)).toBeUndefined();
+    expect(store.getUserContext(contextKey)).toBeUndefined();
+  });
+
+  test("keeps the group when dismiss confirmation is cancelled", async () => {
+    const { controller, outbound, store } = fixture();
+    const contextKey = "chat_id:oc_keep";
+    store.recordChatContext(contextKey, "group");
+
+    await controller.onCardAction({
+      actionId: "dismiss-keep",
+      contextKey,
+      userId: "ou_owner",
+      messageId: "om_dismiss_card",
+      value: {
+        action: "group_dismiss_keep",
+        contextKey,
+        sessionId: "session_unused",
+        requestedBy: "ou_owner",
+      },
+    });
+
+    expect(outbound.deleteGroup).not.toHaveBeenCalled();
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith(
+      "om_dismiss_card",
+      expect.objectContaining({ config: expect.objectContaining({ width_mode: "compact" }) }),
+    );
+    expect(store.getChatContext(contextKey)).toBeDefined();
+  });
+
   test("forks a completed task from the sessions card and refreshes the current task", async () => {
     const { controller, remoteSessions, runtime, outbound, store } = fixture();
     remoteSessions.push({
@@ -6389,6 +6473,7 @@ describe("ProxySessionController", () => {
       "/turns",
       "/sessions",
       "/archive",
+      "/dismiss",
       "/switch",
       "/stop",
       "/provider",

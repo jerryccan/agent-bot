@@ -447,6 +447,7 @@ describe("CardRenderer", () => {
     expect(serialized).not.toContain("turn_details");
     expect(serialized).not.toContain("查看详情");
     expect(serialized).toContain("<font color='red'>Stop</font>");
+    expect(serialized).not.toContain("<font color='grey'>· 52s</font>");
     expect(serialized).toContain('"action":"turn_cancel","sessionId":"s1","turnId":"turn_1"');
     expect(serialized).not.toContain('"action":"turn_reset"');
     expect(serialized).not.toContain("已完成的工具（");
@@ -837,6 +838,7 @@ describe("CardRenderer", () => {
     expect(resetNote).toMatchObject({ text_size: "notation" });
     expect(resetNoteIndex).toBe(resetActionIndex + 1);
     expect(completedSerialized).toContain("<font color='blue'>Reset</font>");
+    expect(completedSerialized).not.toContain("<font color='grey'>· 52s</font>");
     expect(completedSerialized).toContain('"action":"turn_reset","sessionId":"s1","turnId":"turn_1"');
     expect(completedSerialized).not.toContain('"action":"turn_cancel"');
 
@@ -894,19 +896,37 @@ describe("CardRenderer", () => {
   });
 
   test.each([
-    [850, "耗时 0.9s"],
-    [9_849, "耗时 9.8s"],
-    [9_950, "耗时 10s"],
-    [10_400, "耗时 10s"],
-    [10_500, "耗时 11s"],
-    [188_000, "耗时 03:08"],
-    [4_320_000, "耗时 01:12:00"],
-    [93_600_000, "耗时 26:00:00"],
+    [850, "0.9s"],
+    [9_849, "9.8s"],
+    [9_950, "10s"],
+    [10_400, "10s"],
+    [10_500, "11s"],
+    [188_000, "03:08"],
+    [4_320_000, "01:12:00"],
+    [93_600_000, "26:00:00"],
   ])("formats a %i ms turn duration with adaptive precision", (durationMs, expectedDuration) => {
     const current = { ...state(), durationMs, totalTokens: 12_345 };
     const card = new CardRenderer().renderTurn(current) as { header: { subtitle: { content: string } } };
 
-    expect(card.header.subtitle.content).toBe(`${expectedDuration} · 12.3K tokens · 2 个工具 · 1 个文件`);
+    expect(card.header.subtitle.content).toBe(`耗时 ${expectedDuration} · 12.3K tokens · 2 个工具 · 1 个文件`);
+    expect(JSON.stringify(card)).not.toContain(`<font color='grey'>· ${expectedDuration}</font>`);
+  });
+
+  test("uses a terminal timestamp to freeze elapsed time for legacy snapshots without durationMs", () => {
+    const failed = {
+      ...state(),
+      status: "failed" as const,
+      startedAt: 1_000,
+      completedAt: 94_000,
+      durationMs: undefined,
+      error: "connection lost",
+    };
+
+    const serialized = JSON.stringify(new CardRenderer().renderTurn(failed));
+
+    expect(serialized).toContain('"content":"耗时 01:33 · 2 个工具 · 1 个文件"');
+    expect(serialized).not.toContain("<font color='grey'>01:33</font>");
+    expect(serialized).not.toContain("Stop");
   });
 
   test.each([
@@ -2020,6 +2040,47 @@ describe("CardRenderer", () => {
     expect(taggedElements.filter((item) => item.tag === "overflow")).toHaveLength(5);
     expect(taggedElements).toHaveLength(88);
     expect(taggedElements.length).toBeLessThan(100);
+  });
+
+  test("renders a compact Chinese group-dismiss confirmation with equal action buttons", () => {
+    const card = new CardRenderer().renderDismissGroupConfirmation({
+      contextKey: "chat_id:oc_group",
+      sessionId: "session_1",
+      taskTitle: "修复登录流程",
+      requestedBy: "ou_owner",
+    });
+    const objects = collectObjects(card);
+    const buttonLabels = objects
+      .filter((item) => item.tag === "button")
+      .map((item) => (item.text as { content?: string } | undefined)?.content);
+    const actionValues = objects
+      .filter((item) => item.type === "callback")
+      .map((item) => item.value);
+
+    expect(card).toMatchObject({
+      schema: "2.0",
+      config: { width_mode: "compact", update_multi: true },
+      header: { title: { content: "解散当前群聊" } },
+    });
+    expect(JSON.stringify(card)).toContain("当前任务「修复登录流程」将同时归档");
+    expect(buttonLabels).toEqual(["Dismiss", "Keep"]);
+    expect(actionValues).toContainEqual({
+      action: "group_dismiss_confirm",
+      contextKey: "chat_id:oc_group",
+      sessionId: "session_1",
+      requestedBy: "ou_owner",
+    });
+    expect(actionValues).toContainEqual(expect.objectContaining({ action: "group_dismiss_keep" }));
+    const buttonRow = objects.find((item) => (
+      item.tag === "column_set" && JSON.stringify(item).includes("group_dismiss_confirm")
+    ));
+    expect(buttonRow).toMatchObject({
+      flex_mode: "none",
+      columns: [
+        { width: "weighted", weight: 1 },
+        { width: "weighted", weight: 1 },
+      ],
+    });
   });
 });
 

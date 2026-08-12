@@ -76,6 +76,11 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/archive --force")).toThrow("不支持参数");
   });
 
+  test("opens dismiss confirmation without accepting arguments", () => {
+    expect(router.parse("/dismiss")).toEqual({ type: "dismiss" });
+    expect(() => router.parse("/dismiss --force")).toThrow("不接受参数");
+  });
+
   test("parses goal lifecycle commands", () => {
     expect(router.parse("/goal")).toEqual({ type: "goal", action: "show" });
     expect(router.parse("/goal 完成迁移并通过全部测试")).toEqual({

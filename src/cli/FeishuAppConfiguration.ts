@@ -25,6 +25,10 @@ const REQUIRED_SCOPE_REQUIREMENTS: ScopeRequirement[] = [
     accepted: ["im:chat:create", "im:chat"],
   },
   {
+    requested: "im:chat:delete",
+    accepted: ["im:chat:delete", "im:chat:operate_as_owner", "im:chat"],
+  },
+  {
     requested: "im:chat:read",
     accepted: ["im:chat:read", "im:chat:readonly", "im:chat"],
   },

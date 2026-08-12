@@ -146,6 +146,7 @@ const HELP_COMMAND_SECTIONS: Array<{
         usage: "[序号或任务 ID]",
         description: "归档当前或指定任务",
       },
+      { command: "/dismiss", description: "归档当前任务并解散当前群" },
       {
         command: "/switch",
         usage: "[序号或任务 ID]",
@@ -498,7 +499,7 @@ export class ProxySessionController {
     if (isQueueIndependentCommand(command)) {
       await this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
-          if (command.type !== "forkgroup") await this.ensureThreadFork(message);
+          if (command.type !== "forkgroup" && command.type !== "dismiss") await this.ensureThreadFork(message);
           await this.execute(
             message.contextKey,
             command,
@@ -667,6 +668,20 @@ export class ProxySessionController {
             source: "sessions_card",
           });
           await this.refreshSessionsCardFromAction(scopedAction);
+        } else if (kind === "group_dismiss_keep") {
+          this.assertDismissGroupRequester(scopedAction);
+          await this.outbound.updateInteractiveCard(
+            contextKey,
+            requiredCardMessageId(scopedAction.messageId),
+            this.cardRenderer.renderDismissGroupKept(),
+          );
+        } else if (kind === "group_dismiss_confirm") {
+          this.assertDismissGroupRequester(scopedAction);
+          await this.dismissGroupAndArchiveTask(
+            contextKey,
+            String(scopedAction.value.sessionId ?? ""),
+            "command",
+          );
         } else if (kind === "session_stop") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.stopSessionReference(contextKey, sessionId);
@@ -825,6 +840,21 @@ export class ProxySessionController {
       announce: false,
       source: "cli",
     });
+  }
+
+  async controlDismissTask(localSessionId: string): Promise<{
+    localSessionId: string;
+    remoteSessionId: string;
+    title: string;
+    chatId: string;
+  }> {
+    const record = this.store.getSession(localSessionId);
+    if (!record) throw new Error(`Task not found: ${localSessionId}`);
+    return this.dismissGroupAndArchiveTask(
+      this.controlSessionContextKey(record),
+      localSessionId,
+      "cli",
+    );
   }
 
   async controlGetTaskStatus(localSessionId: string): Promise<{
@@ -1493,6 +1523,9 @@ export class ProxySessionController {
         });
         return;
       }
+      case "dismiss":
+        await this.openDismissGroupCard(contextKey, userId);
+        return;
       case "status":
         await this.status(contextKey, command.sessionId);
         return;
@@ -4780,7 +4813,7 @@ export class ProxySessionController {
   private async archiveSessionReference(
     contextKey: string,
     reference: string,
-    options: { announce: boolean; source: "cli" | "command" | "sessions_card" },
+    options: { announce: boolean; source: "cli" | "command" | "dismiss" | "sessions_card" },
   ): Promise<{ localSessionId: string; remoteSessionId: string; title: string }> {
     const taskId = this.resolveSessionReference(contextKey, reference);
     const direct = this.store.getSession(taskId);
@@ -4836,6 +4869,101 @@ export class ProxySessionController {
       remoteSessionId: remote.id,
       title,
     };
+  }
+
+  private async openDismissGroupCard(contextKey: string, userId?: string): Promise<void> {
+    const groupContextKey = this.dismissibleGroupContextKey(contextKey);
+    if (!userId) throw new Error("无法识别当前用户，不能发起解散群操作。");
+    const session = this.requireCurrentSession(groupContextKey);
+    await this.outbound.sendInteractiveCard(groupContextKey, this.cardRenderer.renderDismissGroupConfirmation({
+      contextKey: groupContextKey,
+      sessionId: session.localSessionId,
+      taskTitle: session.title ?? session.remoteSessionId ?? session.localSessionId,
+      requestedBy: userId,
+    }));
+  }
+
+  private assertDismissGroupRequester(action: CardAction): void {
+    const requestedBy = String(action.value.requestedBy ?? "");
+    if (!requestedBy || !action.userId || action.userId !== requestedBy) {
+      throw new Error("只有发起解散操作的用户可以点击这张卡片。");
+    }
+  }
+
+  private async dismissGroupAndArchiveTask(
+    contextKey: string,
+    localSessionId: string,
+    source: "cli" | "command",
+  ): Promise<{ localSessionId: string; remoteSessionId: string; title: string; chatId: string }> {
+    const groupContextKey = this.dismissibleGroupContextKey(contextKey);
+    const session = this.store.getSessionForContext(localSessionId, groupContextKey);
+    if (!session) throw new Error("解散群卡片已失效，请重新发送 /dismiss。");
+
+    const currentSessionId = this.store.getUserContext(groupContextKey)?.currentSessionId;
+    if (session.status !== "closed" && currentSessionId !== localSessionId) {
+      throw new Error("当前任务已经切换，解散群卡片已失效，请重新发送 /dismiss。");
+    }
+    this.assertNoOtherActiveGroupTasks(groupContextKey, localSessionId);
+
+    const archived = session.status === "closed"
+      ? {
+          localSessionId: session.localSessionId,
+          remoteSessionId: session.remoteSessionId ?? session.acpSessionId ?? "",
+          title: session.title ?? session.remoteSessionId ?? session.localSessionId,
+        }
+      : await this.archiveSessionReference(groupContextKey, localSessionId, {
+          announce: false,
+          source: "dismiss",
+        });
+    const chatId = groupContextKey.slice("chat_id:".length);
+    try {
+      await this.outbound.deleteGroup(groupContextKey, chatId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`当前任务已归档，但解散群失败：${message}`);
+    }
+
+    const detachedSessionIds = this.store.removeChatContext(groupContextKey);
+    for (const detachedSessionId of detachedSessionIds) {
+      const linked = this.store.getSession(detachedSessionId);
+      const routedContextKey = this.outbound.getSessionContextKey(detachedSessionId) ?? linked?.contextKey;
+      if (routedContextKey && baseChatContextKey(routedContextKey) === groupContextKey) {
+        this.outbound.unregisterSession(detachedSessionId);
+      }
+    }
+    this.store.audit(groupContextKey, "group_dismissed", {
+      chatId,
+      localSessionId,
+      remoteSessionId: archived.remoteSessionId,
+      source,
+    });
+    return { ...archived, chatId };
+  }
+
+  private assertNoOtherActiveGroupTasks(contextKey: string, dismissedSessionId: string): void {
+    const active = this.store.listSessionsForChat(contextKey).find((session) => (
+      session.localSessionId !== dismissedSessionId
+      && session.status !== "closed"
+      && (
+        session.status === "running"
+        || Boolean(this.runtimes.forAgent(session.agentName).getSession(session.localSessionId)?.activeTurnId)
+        || this.store.countQueuedPrompts(session.localSessionId) > 0
+      )
+    ));
+    if (active) {
+      throw new Error(`群内任务仍在执行或有排队消息，暂时不能解散：${active.title ?? active.localSessionId}`);
+    }
+  }
+
+  private dismissibleGroupContextKey(contextKey: string): string {
+    if (isThreadContextKey(contextKey)) {
+      throw new Error("/dismiss 不能在话题中使用，请回到群聊正文后重试。");
+    }
+    const groupContextKey = baseChatContextKey(contextKey);
+    if (!groupContextKey.startsWith("chat_id:") || this.store.getChatContext(groupContextKey)?.chatType !== "group") {
+      throw new Error("/dismiss 仅适用于普通群聊。");
+    }
+    return groupContextKey;
   }
 
   private resolveSessionReference(contextKey: string, reference?: string): string {
@@ -5763,7 +5891,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["archive", "stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer"].includes(command.type)) return true;
+  if (["archive", "dismiss", "stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (["model", "provider", "thinking", "permissions"].includes(command.type)) return true;
   return false;

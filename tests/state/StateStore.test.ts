@@ -100,6 +100,45 @@ describe("StateStore runtime metadata", () => {
     expect(second.chatRequiresMention("chat_id:group")).toBe(false);
   });
 
+  test("removes a dissolved group and all of its topic bindings", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    const group = "chat_id:oc_group_with_underscore";
+    const topic = `${group}:thread_id:omt_topic`;
+
+    store.recordChatContext(group, "group");
+    store.getOrCreateUserContext(group, "codex");
+    store.getOrCreateUserContext(topic, "codex");
+    store.createSession({
+      localSessionId: "group_task",
+      contextKey: group,
+      agentName: "codex",
+      cwd: directory,
+      status: "ready",
+    });
+    store.createSession({
+      localSessionId: "topic_task",
+      contextKey: topic,
+      agentName: "codex",
+      cwd: directory,
+      status: "ready",
+    });
+    store.recordChatContext("chat_id:oc_other", "group");
+
+    expect(store.removeChatContext(group).sort()).toEqual(["group_task", "topic_task"]);
+
+    expect(store.getChatContext(group)).toBeUndefined();
+    expect(store.getUserContext(group)).toBeUndefined();
+    expect(store.getUserContext(topic)).toBeUndefined();
+    expect(store.listSessions(group)).toEqual([]);
+    expect(store.listSessions(topic)).toEqual([]);
+    expect(store.getChatContext("chat_id:oc_other")).toBeDefined();
+    expect(store.getSession("group_task")).toBeDefined();
+    expect(store.getSession("topic_task")).toBeDefined();
+  });
+
   test("adds activity tracking to an existing chat context table", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

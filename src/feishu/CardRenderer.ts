@@ -226,6 +226,13 @@ export interface ResetHistoryCardView {
   pageActions: TaskListCardAction[];
 }
 
+export interface DismissGroupCardView {
+  contextKey: string;
+  sessionId: string;
+  taskTitle: string;
+  requestedBy: string;
+}
+
 export class CardRenderer {
   private readonly thinkingCardLayout: ThinkingCardLayout;
 
@@ -853,19 +860,29 @@ export class CardRenderer {
     const elements = this.thinkingCardLayout === "timeline"
       ? renderTurnElements(state, "hidden")
       : renderGroupedTurnElements(state, "hidden");
+    const footerActions: TaskListCardAction[] = [];
     if (isTurnStoppable(state.status)) {
-      elements.push({ tag: "hr" }, taskActionRow([{
+      footerActions.push({
         text: "Stop",
         type: "danger",
         value: { action: "turn_cancel", sessionId: state.sessionId, turnId: state.turnId },
-      }]));
-    } else if (state.status === "completed") {
+      });
       elements.push(
         { tag: "hr" },
-        taskActionRow([{
-          text: "Reset",
-          value: { action: "turn_reset", sessionId: state.sessionId, turnId: state.turnId },
-        }]),
+        taskActionRow(footerActions),
+      );
+    } else if (state.status === "completed") {
+      footerActions.push({
+        text: "Reset",
+        value: { action: "turn_reset", sessionId: state.sessionId, turnId: state.turnId },
+      });
+      elements.push(
+        { tag: "hr" },
+        taskActionRow(footerActions),
+      );
+    }
+    if (state.status === "completed") {
+      elements.push(
         {
           ...markdown("<font color='grey'>Reset 会将当前任务的对话上下文恢复到本轮完成时；不会回退本地文件。</font>"),
           text_size: "notation",
@@ -978,6 +995,57 @@ export class CardRenderer {
 
   renderStatus(status: string): Record<string, unknown> {
     return this.baseCard("Agent Bot 状态", "blue", [markdown(status)]);
+  }
+
+  renderDismissGroupConfirmation(view: DismissGroupCardView): Record<string, unknown> {
+    const actionValue = {
+      contextKey: view.contextKey,
+      sessionId: view.sessionId,
+      requestedBy: view.requestedBy,
+    };
+    const button = (
+      content: string,
+      type: "default" | "danger",
+      action: "group_dismiss_confirm" | "group_dismiss_keep",
+    ): Record<string, unknown> => ({
+      tag: "button",
+      width: "fill",
+      text: { tag: "plain_text", content },
+      type,
+      behaviors: [{
+        type: "callback",
+        value: { action, ...actionValue },
+      }],
+    });
+    return compactCard("解散当前群聊", "blue", [
+      markdown([
+        "确定要解散当前群聊吗？",
+        `当前任务「${escapeCardHtml(view.taskTitle)}」将同时归档。此操作无法撤销。`,
+      ].join("\n")),
+      {
+        tag: "column_set",
+        flex_mode: "none",
+        horizontal_spacing: "8px",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            elements: [button("Dismiss", "danger", "group_dismiss_confirm")],
+          },
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            elements: [button("Keep", "default", "group_dismiss_keep")],
+          },
+        ],
+      },
+    ]);
+  }
+
+  renderDismissGroupKept(): Record<string, unknown> {
+    return compactCard("已保留当前群聊", "grey", [markdown("已取消解散群聊。")]);
   }
 
   renderSectionsCard(
@@ -1171,15 +1239,19 @@ export class CardRenderer {
 }
 
 function renderTurnSubtitle(state: TurnViewState): string {
-  const elapsed = state.durationMs ?? Math.max(0, Date.now() - state.startedAt);
   const activityTools = turnActivities(state).filter((activity) => activity.kind === "tool").length;
   const totalTools = state.totalToolCount ?? activityTools;
   return [
-    `耗时 ${formatTurnDuration(elapsed)}`,
+    `耗时 ${renderTurnDuration(state)}`,
     state.totalTokens !== undefined ? `${formatTokenCount(state.totalTokens)} tokens` : undefined,
     totalTools > 0 ? `${totalTools} 个工具` : undefined,
     state.fileSummary.length > 0 ? `${state.fileSummary.length} 个文件` : undefined,
   ].filter(Boolean).join(" · ");
+}
+
+function renderTurnDuration(state: TurnViewState): string {
+  const endedAt = state.completedAt ?? Date.now();
+  return formatTurnDuration(state.durationMs ?? Math.max(0, endedAt - state.startedAt));
 }
 
 function isTurnStoppable(status: TurnViewStatus): boolean {
@@ -2492,10 +2564,12 @@ function turnCard(
         tag: "plain_text",
         content: title,
       },
-      subtitle: {
-        tag: "plain_text",
-        content: subtitle,
-      },
+      ...(subtitle ? {
+        subtitle: {
+          tag: "plain_text",
+          content: subtitle,
+        },
+      } : {}),
       padding: "12px 12px 12px 12px",
     },
     body: {
@@ -2530,6 +2604,34 @@ function sectionCard(
     body: {
       direction: "vertical",
       vertical_spacing: verticalSpacing,
+      padding: "12px 12px 12px 12px",
+      elements,
+    },
+  };
+}
+
+function compactCard(
+  title: string,
+  template: string,
+  elements: Record<string, unknown>[],
+): Record<string, unknown> {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "compact",
+    },
+    header: {
+      template,
+      title: {
+        tag: "plain_text",
+        content: title,
+      },
+      padding: "12px 12px 12px 12px",
+    },
+    body: {
+      direction: "vertical",
+      vertical_spacing: "12px",
       padding: "12px 12px 12px 12px",
       elements,
     },

@@ -10,6 +10,7 @@ import {
   type ControlResponse,
   type TaskAgentControlData,
   type TaskDirectoryControlData,
+  type TaskDismissControlData,
   type TaskForkControlData,
   type TaskGoalControlData,
   type TaskGroupControlData,
@@ -1218,6 +1219,33 @@ async function taskCommand(input: string[]): Promise<void> {
       else process.stdout.write(cliText(
         `Task archived: ${archived.title} (${archived.remoteSessionId})\n`,
         `任务已归档：${archived.title}（${archived.remoteSessionId}）\n`,
+      ));
+      return;
+    }
+    if (action === "dismiss") {
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = target.args;
+      rejectUnsupportedTaskOptions(action, options, ["--yes", "--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task dismiss accepts only one task reference.",
+        "task dismiss 只接受一个任务引用。",
+      ));
+      if (!options.includes("--yes")) throw new Error(cliText(
+        "task dismiss permanently dissolves the bound group and archives its current task. Re-run with --yes.",
+        "task dismiss 会永久解散绑定群并归档其当前任务。请添加 --yes 后重试。",
+      ));
+      const dismissed = controlData<TaskDismissControlData>(await sendControlRequest(
+        controlEndpoint(config.storage.sqlitePath),
+        {
+          action: "task_dismiss",
+          localSessionId: target.session.localSessionId,
+        },
+        60_000,
+      ));
+      if (options.includes("--json")) printJson(dismissed);
+      else process.stdout.write(cliText(
+        `Group dissolved and task archived: ${dismissed.title} (${dismissed.chatId})\n`,
+        `群已解散，任务已归档：${dismissed.title}（${dismissed.chatId}）\n`,
       ));
       return;
     }

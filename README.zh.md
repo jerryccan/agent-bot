@@ -73,10 +73,11 @@ agentbot init
 
 1. **创建机器人。** 创建带有标准基础消息配置的飞书应用，并保存 App ID、App Secret 和授权用户。该步骤不能跳过，否则 Agent Bot 无法连接飞书。创建时已经提供的权限不再在下方重复列出。
 2. **按需添加“接收所有群消息”权限。** 只有选择“接收所有群消息”时才会出现这一步。`im:message.group_msg` 用于接收未 @ 机器人的普通群消息，飞书要求用户在开发者后台手动添加。选择“明确 @ 机器人”时不会申请该权限；出现本步骤后输入 `Y` 跳过等待，也会保持仅 @ 响应。
-3. **补充剩余事件和回调。** 创建机器人时使用的模板已经提供 Agent Bot 所需的其他权限，第三步实际只新增：
+3. **补充剩余权限、事件和回调。** 第三步实际只新增：
 
-    | 类型 | 事件或回调 | 功能 |
-    | ---- | ---------- | ------------------ |
+    | 类型 | 权限、事件或回调 | 功能 |
+    | ---- | ---------------- | ------------------ |
+    | 权限 | `im:chat:delete` | 允许 `/dismiss` 解散由机器人创建并担任群主的群；缺失时不影响其他功能。 |
     | 事件 | `im.chat.updated_v1` | 检测群改名，把群名同步到 agent 任务标题。 |
     | 回调 | `card.action.trigger` | 卡片按钮交互。 |
 
@@ -204,9 +205,10 @@ agentbot task file [任务] <路径>
 agentbot task title [任务] "<标题>"
 agentbot task stop [任务]
 agentbot task archive [任务]
+agentbot task dismiss [任务] --yes
 ```
 
-在 Agent Bot 启动的 Agent 中，省略 `[任务]` 会自动使用当前任务；需要操作其他任务时可传入 `--task <任务>`。普通终端仍必须指定任务。`task current` 用于查看自动识别出的任务详情。任务引用可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
+在 Agent Bot 启动的 Agent 中，省略 `[任务]` 会自动使用当前任务；需要操作其他任务时可传入 `--task <任务>`。普通终端仍必须指定任务。`task current` 用于查看自动识别出的任务详情。任务引用可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、解散群、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
 
 `task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
 
@@ -220,6 +222,7 @@ agentbot task archive [任务]
 | `/dir [路径]`                                 | 浏览文件，或在指定目录开始任务 |
 | `/sessions [关键词]`                          | 查找和管理任务               |
 | `/archive [任务]`                             | 归档当前或指定任务           |
+| `/dismiss`                                    | 确认后归档当前任务并解散群聊 |
 | `/switch [任务]`                              | 切换任务，或返回上一个任务   |
 | `/fork [任务]`                                | 创建任务分支                 |
 | `/turns`                                      | 恢复到更早的对话轮次         |

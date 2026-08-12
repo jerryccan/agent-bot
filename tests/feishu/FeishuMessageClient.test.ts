@@ -46,6 +46,24 @@ describe("FeishuMessageClient", () => {
     });
   });
 
+  test("dissolves a Feishu group by chat ID", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: {} }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.deleteGroup("oc_group/id")).resolves.toBeUndefined();
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/chats/oc_group%2Fid",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "DELETE",
+      headers: expect.objectContaining({ Authorization: "Bearer token" }),
+    });
+  });
+
   test("uploads and assigns an avatar while creating a Feishu group", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

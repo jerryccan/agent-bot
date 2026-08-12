@@ -66,12 +66,14 @@ agentbot task prompt "<prompt>"
 agentbot task queue "<prompt>"
 agentbot task stop
 agentbot task archive
+agentbot task dismiss --yes
 agentbot task title "<title>"
 ```
 
 - `prompt` posts the Prompt to the task's Feishu conversation before submitting it.
 - `queue` creates a later turn instead of steering the active turn. `nosteer` is an alias.
 - `stop` requests an Agent interrupt; it does not kill the Agent process.
+- `dismiss --yes` irreversibly dissolves the task's current Feishu group and archives its current task. Use it only after the user explicitly confirms.
 
 Create or branch work in the same conversation:
 

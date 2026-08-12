@@ -344,6 +344,31 @@ export class StateStore {
     return rows.map(mapChatContext);
   }
 
+  removeChatContext(contextKey: string): string[] {
+    const threadPrefix = `${contextKey}:thread_id:`;
+    const linked = this.db.prepare(`
+      SELECT DISTINCT local_session_id
+      FROM context_sessions
+      WHERE context_key = ? OR instr(context_key, ?) = 1
+    `).all(contextKey, threadPrefix) as Array<{ local_session_id: string }>;
+    const remove = this.db.transaction(() => {
+      this.db.prepare(`
+        DELETE FROM context_sessions
+        WHERE context_key = ? OR instr(context_key, ?) = 1
+      `).run(contextKey, threadPrefix);
+      this.db.prepare(`
+        DELETE FROM user_contexts
+        WHERE context_key = ? OR instr(context_key, ?) = 1
+      `).run(contextKey, threadPrefix);
+      this.db.prepare(`
+        DELETE FROM chat_contexts
+        WHERE context_key = ? OR instr(context_key, ?) = 1
+      `).run(contextKey, threadPrefix);
+    });
+    remove();
+    return linked.map((row) => row.local_session_id);
+  }
+
   enqueuePrompt(input: {
     promptId: string;
     localSessionId: string;
@@ -1231,6 +1256,18 @@ export class StateStore {
       .all(contextKey) as SessionRow[];
 
     return rows.map((row) => ({ ...mapSession(row), contextKey }));
+  }
+
+  listSessionsForChat(contextKey: string): SessionRecord[] {
+    const threadPrefix = `${contextKey}:thread_id:`;
+    const rows = this.db.prepare(`
+      SELECT DISTINCT sessions.*
+      FROM context_sessions
+      JOIN sessions ON sessions.local_session_id = context_sessions.local_session_id
+      WHERE context_sessions.context_key = ? OR instr(context_sessions.context_key, ?) = 1
+      ORDER BY sessions.updated_at DESC
+    `).all(contextKey, threadPrefix) as SessionRow[];
+    return rows.map(mapSession);
   }
 
   listAllSessions(): SessionRecord[] {

@@ -30,6 +30,7 @@ export type ControlRequest =
   | { action: "task_status"; localSessionId: string }
   | { action: "task_stop"; localSessionId: string }
   | { action: "task_archive"; localSessionId: string }
+  | { action: "task_dismiss"; localSessionId: string }
   | { action: "task_title"; localSessionId: string; title: string }
   | { action: "task_prompt"; localSessionId: string; text: string }
   | {
@@ -98,6 +99,13 @@ export interface TaskGroupControlData {
     name: string;
   };
   task: SessionRecord;
+}
+
+export interface TaskDismissControlData {
+  localSessionId: string;
+  remoteSessionId: string;
+  title: string;
+  chatId: string;
 }
 
 export interface TaskForkControlData {

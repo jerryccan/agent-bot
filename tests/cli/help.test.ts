@@ -42,6 +42,7 @@ describe("CLI help", () => {
     expect(help).toContain("task file [task] <path>");
     expect(help).toContain("task shell [task] <command>");
     expect(help).toContain("task archive [task]");
+    expect(help).toContain("task dismiss [task] --yes");
     expect(help).toContain("omit task to use the current task; --task <task> overrides it");
     expect(help).toContain("-h, --help");
     expect(help).not.toMatch(/[一-龥]/u);
@@ -79,6 +80,7 @@ describe("CLI help", () => {
     expect(help).toContain("task mute [任务] [on|off]");
     expect(help).toContain("task file [任务] <路径>");
     expect(help).toContain("task archive [任务]");
+    expect(help).toContain("task dismiss [任务] --yes");
     expect(help).toContain("省略任务，CLI 会自动使用当前任务");
   });
 
@@ -88,6 +90,7 @@ describe("CLI help", () => {
       agent: "task agent",
       archive: "task archive",
       dir: "task dir",
+      dismiss: "task dismiss",
       fork: "task fork",
       forkgroup: "task forkgroup",
       goal: "task goal",

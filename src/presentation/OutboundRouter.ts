@@ -172,6 +172,13 @@ export class OutboundRouter {
     return createGroup.call(outbound, input);
   }
 
+  async deleteGroup(contextKey: string, chatId: string): Promise<void> {
+    const outbound = this.route(contextKey).outbound;
+    const deleteGroup = outbound.deleteGroup;
+    if (!deleteGroup) throw new Error("当前消息通道不支持解散飞书群。");
+    await deleteGroup.call(outbound, chatId);
+  }
+
   withReplyTarget<T>(
     contextKey: string,
     target: MessageReplyTarget | undefined,

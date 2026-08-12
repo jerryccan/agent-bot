@@ -39,6 +39,13 @@ interface CreateGroupResponse {
   error?: unknown;
 }
 
+interface DeleteGroupResponse {
+  code: number;
+  msg: string;
+  data?: Record<string, never>;
+  error?: unknown;
+}
+
 interface UploadImageResponse {
   code: number;
   msg: string;
@@ -125,6 +132,31 @@ export class FeishuMessageClient implements FeishuOutbound {
       return { chatId, name: input.name };
     } catch (error) {
       throw normalizeTransportError(error, "create group");
+    }
+  }
+
+  async deleteGroup(chatId: string): Promise<void> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(
+        `https://open.feishu.cn/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      const payload = (await response.json()) as DeleteGroupResponse;
+      if (!response.ok || payload.code !== 0) {
+        throw new FeishuApiError(
+          payload.msg || response.statusText,
+          payload.code,
+          payload,
+          "delete group",
+          response.status,
+        );
+      }
+    } catch (error) {
+      throw normalizeTransportError(error, "delete group");
     }
   }
 
@@ -731,6 +763,7 @@ export class FeishuApiError extends Error {
     readonly payload:
       | SendMessageResponse
       | CreateGroupResponse
+      | DeleteGroupResponse
       | UploadImageResponse
       | UploadFileResponse
       | ReactionResponse

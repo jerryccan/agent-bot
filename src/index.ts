@@ -403,6 +403,8 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       return { ok: true, message: await controller.controlStopTask(request.localSessionId) };
     case "task_archive":
       return { ok: true, data: await controller.controlArchiveTask(request.localSessionId) };
+    case "task_dismiss":
+      return { ok: true, data: await controller.controlDismissTask(request.localSessionId) };
     case "task_title":
       return { ok: true, message: await controller.controlSetTaskTitle(request.localSessionId, request.title) };
     case "task_prompt":

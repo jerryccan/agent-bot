@@ -4,6 +4,7 @@ export const COMMAND_NAMES = [
   "agent",
   "archive",
   "dir",
+  "dismiss",
   "fork",
   "forkgroup",
   "goal",
@@ -29,6 +30,7 @@ export const COMMAND_NAMES = [
 type CommandName = (typeof COMMAND_NAMES)[number];
 
 const COMMAND_INITIALISMS: Partial<Record<CommandName, string>> = {
+  dir: "di",
   forkgroup: "fg",
   newgroup: "ng",
   nosteer: "ns",
@@ -81,6 +83,9 @@ export class CommandRouter {
         rejectOptions("/archive", args);
         if (args.length > 1) throw new Error("/archive 只接受一个可选的任务序号或任务 ID。");
         return args[0] ? { type: "archive", sessionId: args[0] } : { type: "archive" };
+      case "dismiss":
+        if (args.length > 0) throw new Error("/dismiss 不接受参数，请在确认卡片中完成操作。");
+        return { type: "dismiss" };
       case "stop":
         return { type: "stop" };
       case "status":
@@ -136,6 +141,9 @@ function resolveCommandName(rawCommand: string): CommandName {
 
   const exact = COMMAND_NAMES.find((command) => command === input);
   if (exact) return exact;
+
+  const initialism = COMMAND_NAMES.find((command) => COMMAND_INITIALISMS[command] === input);
+  if (initialism) return initialism;
 
   const matches = COMMAND_NAMES.filter(
     (command) => command.startsWith(input) || COMMAND_INITIALISMS[command] === input,

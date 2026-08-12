@@ -50,6 +50,7 @@ export interface ChatUpdatedEvent {
 
 export interface FeishuOutbound {
   createGroup?(input: CreateGroupInput): Promise<CreatedGroup>;
+  deleteGroup?(chatId: string): Promise<void>;
   addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
   deleteReaction?(messageId: string, reactionId: string): Promise<void>;
   downloadImage?(messageId: string, imageKey: string): Promise<string>;

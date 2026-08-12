@@ -158,6 +158,24 @@ describe("local CLI control", () => {
     });
   });
 
+  test("round-trips a task dismiss request", async () => {
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-dismiss-${process.pid}-${Date.now()}.sqlite`));
+    const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));
+    servers.push(server);
+    await server.start();
+
+    await expect(sendControlRequest(endpoint, {
+      action: "task_dismiss",
+      localSessionId: "session_dismiss",
+    })).resolves.toEqual({
+      ok: true,
+      data: {
+        action: "task_dismiss",
+        localSessionId: "session_dismiss",
+      },
+    });
+  });
+
   test.skipIf(process.platform !== "win32")("rejects a second server for the same Windows control pipe", async () => {
     const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-exclusive-${process.pid}-${Date.now()}.sqlite`));
     const first = new LocalControlServer(endpoint, async () => ({ ok: true }));

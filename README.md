@@ -73,10 +73,11 @@ A fresh initialization first asks how group messages should be handled: receive 
 
 1. **Create the bot.** This creates a Feishu app with the standard basic messaging configuration and saves its App ID, App Secret, and authorizing user. This step cannot be skipped because Agent Bot cannot connect to Feishu without it. Permissions already provided during creation are not repeated below.
 2. **Optionally add the all-group-message permission.** This step appears only after choosing to receive all group messages. The `im:message.group_msg` permission lets Agent Bot receive ordinary group messages that do not @ the bot, and Feishu requires it to be added manually in the Developer Console. Mention-only mode does not request this permission. When this step is shown, entering `Y` skips waiting and leaves group conversations in mention-only mode.
-3. **Add the remaining event and callback.** The bot-creation template already provides the other permissions Agent Bot needs. The third step adds only:
+3. **Add the remaining permission, event, and callback.** The third step adds only:
 
-    | Type | Event or callback | Purpose |
-    | ---- | ----------------- | ------- |
+    | Type | Permission, event, or callback | Purpose |
+    | ---- | ------------------------------ | ------- |
+    | Permission | `im:chat:delete` | Let `/dismiss` dissolve a group created and owned by the bot. Without it, other Agent Bot features still work. |
     | Event | `im.chat.updated_v1` | Detect group renames and synchronize them to Agent task titles. |
     | Callback | `card.action.trigger` | Enable card button interactions. |
 
@@ -204,9 +205,10 @@ agentbot task file [task] <path>
 agentbot task title [task] "<title>"
 agentbot task stop [task]
 agentbot task archive [task]
+agentbot task dismiss [task] --yes
 ```
 
-Inside an Agent started by Agent Bot, `[task]` defaults to the current task; use `--task <task>` to target another task explicitly. A regular terminal must supply a task. `task current` shows the automatically detected task details. A task reference can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
+Inside an Agent started by Agent Bot, `[task]` defaults to the current task; use `--task <task>` to target another task explicitly. A regular terminal must supply a task. `task current` shows the automatically detected task details. A task reference can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, group dismissal, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
 
 `task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
 
@@ -220,6 +222,7 @@ Send a message beginning with `/` to run a command. Use `/help` in Feishu for th
 | `/dir [path]`                                 | Browse files or start work in a directory |
 | `/sessions [keyword]`                         | Find and manage tasks                |
 | `/archive [task]`                             | Archive the current or selected task |
+| `/dismiss`                                    | Archive the current task and dissolve the group after confirmation |
 | `/switch [task]`                              | Switch tasks or return to the previous task |
 | `/fork [task]`                                | Branch a task                        |
 | `/turns`                                      | Restore an earlier conversation turn |

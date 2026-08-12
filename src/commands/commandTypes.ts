@@ -11,6 +11,7 @@ export type Command =
   | { type: "switch"; sessionId?: string }
   | { type: "agent"; agent?: string }
   | { type: "archive"; sessionId?: string }
+  | { type: "dismiss" }
   | { type: "stop" }
   | { type: "status"; sessionId?: string }
   | { type: "goal"; action: "show" }
