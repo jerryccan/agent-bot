@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.14-alpha.2] - 2026-08-12
+
 - Ask users during first initialization and `init --reset` whether group messages should be received automatically or require an explicit @ mention, and request `im:message.group_msg` only for the all-group-message mode.
 
 - Add Profile-specific `agentbot server autostart enable|status|disable` support through Windows Task Scheduler, macOS LaunchAgents, and Linux systemd user units, with optional Linux lingering for startup before login and combined OS-registration and live-server status.
