@@ -10,8 +10,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Add Profile-specific `agentbot server autostart enable|status|disable` support through Windows Task Scheduler, macOS LaunchAgents, and Linux systemd user units, with optional Linux lingering for startup before login and combined OS-registration and live-server status.
 
-- Add `agentbot update` for global npm installations, with release-channel selection, candidate-package validation, safe idle shutdown, an external installer, automatic npm rollback, and a complete-package service fallback; source checkouts and `npm link` installs are never modified.
+- Add `agentbot update` for global npm installations, with release-channel selection, candidate-package validation, safe idle shutdown, automatic non-interactive Profile initialization, an external installer, automatic npm rollback, and a complete-package service fallback; source checkouts and `npm link` installs are never modified.
 - Add CLI counterparts for every Feishu command, including same-conversation task creation and forks, queues, Agent and execution settings, Goals, Turn history and Reset, group mute, directory browsing, file delivery, task-directory shell commands, task switching, and task-scoped restart requests.
+- Let every `agentbot task` command automatically target the invoking Agent's current task when its task argument is omitted, while preserving positional references and adding a consistent `--task <task>` override.
+- Install or refresh the managed Agent Bot Skill after every successful initialization, including the non-interactive initialization run automatically after package updates.
+- Keep early Commentary visible on long grouped thinking cards, move omitted reasoning and tool activity into paginated history, and use compact head-and-tail truncation for tool commands and results.
+- Preserve local file line and column references in Feishu Markdown link labels so source links remain understandable when Feishu cannot open their local targets.
 
 ## [0.1.14-alpha.1] - 2026-08-08
 
