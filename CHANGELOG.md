@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Refresh elapsed time in the Feishu thinking-card header at least every three seconds, and freeze it when a turn completes or stops unexpectedly.
+- Add a compact `/dismiss` confirmation card and matching `agentbot task dismiss --yes` command to archive the current task and dissolve its bot-owned Feishu group.
+
 ## [0.1.14-alpha.2] - 2026-08-12
 
 - Ask users during first initialization and `init --reset` whether group messages should be received automatically or require an explicit @ mention, and request `im:message.group_msg` only for the all-group-message mode.
