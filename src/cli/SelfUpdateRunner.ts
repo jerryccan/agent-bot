@@ -33,6 +33,7 @@ export interface SelfUpdateResult {
   fromVersion: string;
   toVersion: string;
   activeVersion?: string;
+  initialized?: boolean;
   serviceReady?: boolean;
   fallback?: "npm" | "backup";
   error?: string;
@@ -59,6 +60,7 @@ export interface SelfUpdateRunnerDependencies {
     packageName: string,
     version: string,
   ): void;
+  initializeProfile(packageRoot: string, cwd: string): CommandResult;
   startSupervisor(packageRoot: string, cwd: string): number | undefined;
   waitForServer(endpoint: string, timeoutMs: number): Promise<boolean>;
   stopServer(endpoint: string, supervisorPid?: number): Promise<void>;
@@ -132,6 +134,7 @@ export async function applySelfUpdatePlan(
         plan.packageName,
         plan.toVersion,
       );
+      initializeUpdatedProfile(plan, dependencies, log);
       if (plan.restartService) {
         startedSupervisorPid = dependencies.startSupervisor(
           plan.packageRoot,
@@ -148,6 +151,7 @@ export async function applySelfUpdatePlan(
         fromVersion: plan.fromVersion,
         toVersion: plan.toVersion,
         activeVersion: plan.toVersion,
+        initialized: true,
         ...(plan.restartService ? { serviceReady: true } : {}),
         completedAt: dependencies.now().toISOString(),
       };
@@ -346,6 +350,26 @@ function installTarball(
   }
 }
 
+function initializeUpdatedProfile(
+  plan: SelfUpdatePlan,
+  dependencies: SelfUpdateRunnerDependencies,
+  log: (event: string, data?: Record<string, unknown>) => void,
+): void {
+  const result = dependencies.initializeProfile(plan.packageRoot, plan.workingDirectory);
+  log("profile_initialization_finished", {
+    status: result.status,
+    stderr: result.stderr.trim().slice(-4_000),
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr.trim()
+        || result.stdout.trim()
+        || `agentbot init exited with ${result.status}.`,
+    );
+  }
+}
+
 export function validateInstalledPackage(
   packageRoot: string,
   packageName: string,
@@ -396,6 +420,15 @@ function startSupervisor(packageRoot: string, cwd: string): number | undefined {
   );
   child.unref();
   return child.pid;
+}
+
+function initializeProfile(packageRoot: string, cwd: string): CommandResult {
+  return runNode([
+    path.join(packageRoot, "dist", "cli.js"),
+    "init",
+    "--skip-feishu",
+    "--json",
+  ], cwd);
 }
 
 async function waitForServer(
@@ -754,6 +787,7 @@ function delay(ms: number): Promise<void> {
 const defaultDependencies: SelfUpdateRunnerDependencies = {
   runNpm: runNpmCommand,
   validatePackage: validateInstalledPackage,
+  initializeProfile,
   startSupervisor,
   waitForServer,
   stopServer,

@@ -27,6 +27,7 @@ describe("self-update runner", () => {
     expect(result).toMatchObject({
       status: "updated",
       activeVersion: "1.2.4",
+      initialized: true,
       serviceReady: true,
     });
     expect(dependencies.waitForProcesses).toHaveBeenCalledWith(
@@ -39,8 +40,13 @@ describe("self-update runner", () => {
       plan.packageName,
       plan.toVersion,
     );
+    expect(dependencies.initializeProfile).toHaveBeenCalledWith(
+      plan.packageRoot,
+      plan.workingDirectory,
+    );
     expect(JSON.parse(fs.readFileSync(plan.resultPath, "utf8"))).toMatchObject({
       status: "updated",
+      initialized: true,
     });
     expect(fs.existsSync(plan.lockPath)).toBe(false);
     expect(fs.existsSync(plan.pendingMarkerPath)).toBe(false);
@@ -65,6 +71,33 @@ describe("self-update runner", () => {
       error: "candidate invalid",
     });
     expect(dependencies.runNpm).toHaveBeenCalledTimes(2);
+    expect(dependencies.initializeProfile).not.toHaveBeenCalled();
+  });
+
+  test("rolls back without starting the updated service when automatic initialization fails", async () => {
+    const plan = createPlan();
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.initializeProfile).mockReturnValue({
+      status: 1,
+      stdout: "",
+      stderr: "automatic init failed",
+    });
+
+    const result = await applySelfUpdatePlan(plan, [], dependencies);
+
+    expect(result).toMatchObject({
+      status: "rolled-back",
+      activeVersion: "1.2.3",
+      fallback: "npm",
+      serviceReady: true,
+      error: "automatic init failed",
+    });
+    expect(dependencies.runNpm).toHaveBeenCalledTimes(2);
+    expect(dependencies.startSupervisor).toHaveBeenCalledTimes(1);
+    expect(dependencies.startSupervisor).toHaveBeenCalledWith(
+      plan.packageRoot,
+      plan.workingDirectory,
+    );
   });
 
   test("starts the complete package backup when npm rollback also fails", async () => {
@@ -201,6 +234,7 @@ function createDependencies(): SelfUpdateRunnerDependencies {
   return {
     runNpm: vi.fn(() => ({ status: 0, stdout: "ok", stderr: "" })),
     validatePackage: vi.fn(),
+    initializeProfile: vi.fn(() => ({ status: 0, stdout: "{}", stderr: "" })),
     startSupervisor: vi.fn(() => 123),
     waitForServer: vi.fn(async () => true),
     stopServer: vi.fn(async () => undefined),
