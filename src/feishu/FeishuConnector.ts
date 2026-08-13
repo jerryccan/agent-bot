@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
 import { threadContextKey } from "./contextKey.js";
 import { resolveFeishuBotOpenId } from "./FeishuBotIdentity.js";
+import { normalizeFeishuPostText } from "./InboundText.js";
 import { allowsFeishuUser } from "./ownerAccess.js";
 import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
 
@@ -171,8 +172,9 @@ function toIncomingMessage(
     return undefined;
   }
 
+  const messageId = message.message_id ?? `${Date.now()}`;
   return {
-    messageId: message.message_id ?? `${Date.now()}`,
+    messageId,
     contextKey: chatId
       ? threadContext
         ? threadContextKey(chatId, threadId!)
@@ -189,6 +191,8 @@ function toIncomingMessage(
     ...(mentionedBot ? { mentionedBot: true as const } : {}),
     text: parsed.text,
     ...(parsed.images.length > 0 ? { images: parsed.images.map((imageKey) => ({ imageKey })) } : {}),
+    ...(parsed.files.length > 0 ? { files: parsed.files } : {}),
+    ...(parsed.mergedForward ? { mergedForwardMessageId: messageId } : {}),
   };
 }
 
@@ -201,21 +205,36 @@ function parseMessageContent(
   messageType: unknown,
   content: Record<string, unknown>,
   mentions: unknown,
-): { text: string; images: string[] } | undefined {
+): {
+  text: string;
+  images: string[];
+  files: Array<{ fileKey: string; fileName: string }>;
+  mergedForward?: true;
+} | undefined {
   if (messageType === "text") {
     const rawText = typeof content.text === "string" ? content.text : "";
-    return { text: stripLeadingMentions(rawText, mentions), images: [] };
+    return { text: normalizeFeishuPostText(stripLeadingMentions(rawText, mentions)), images: [], files: [] };
   }
   if (messageType === "image") {
     const imageKey = typeof content.image_key === "string" ? content.image_key : undefined;
-    return imageKey ? { text: "", images: [imageKey] } : undefined;
+    return imageKey ? { text: "", images: [imageKey], files: [] } : undefined;
+  }
+  if (messageType === "file") {
+    const fileKey = typeof content.file_key === "string" ? content.file_key : undefined;
+    const fileName = typeof content.file_name === "string" && content.file_name.trim()
+      ? content.file_name.trim()
+      : "file";
+    return fileKey ? { text: "", images: [], files: [{ fileKey, fileName }] } : undefined;
+  }
+  if (messageType === "merge_forward") {
+    return { text: "", images: [], files: [], mergedForward: true };
   }
   if (messageType !== "post") return undefined;
 
   const locale = selectPostLocale(content);
   if (!locale) return undefined;
   const paragraphs: string[] = [];
-  const title = typeof locale.title === "string" ? locale.title.trim() : "";
+  const title = typeof locale.title === "string" ? normalizeFeishuPostText(locale.title) : "";
   if (title) paragraphs.push(title);
   const images: string[] = [];
   if (Array.isArray(locale.content)) {
@@ -230,10 +249,11 @@ function parseMessageContent(
           images.push(element.image_key);
         }
       }
-      if (rowText.trim()) paragraphs.push(rowText.trim());
+      const normalizedRow = normalizeFeishuPostText(rowText);
+      if (normalizedRow) paragraphs.push(normalizedRow);
     }
   }
-  return { text: paragraphs.join("\n"), images: [...new Set(images)] };
+  return { text: paragraphs.join("\n"), images: [...new Set(images)], files: [] };
 }
 
 function selectPostLocale(content: Record<string, unknown>): Record<string, unknown> | undefined {

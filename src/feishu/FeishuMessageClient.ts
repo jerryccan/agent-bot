@@ -7,6 +7,13 @@ import type { AppConfig } from "../config/schema.js";
 import { normalizeFeishuMarkdown } from "./FeishuMarkdown.js";
 import { LOCAL_CARD_IMAGE_PATH } from "./LocalCardImage.js";
 import { renderMarkdownWithLocalImages } from "./LocalImageMarkdown.js";
+import {
+  renderMergedForwardPrompt,
+  renderReferencedMessage,
+  type MergedForwardContent,
+  type MergedForwardMessageItem,
+  type ReferencedMessageContent,
+} from "./MergedForwardMessage.js";
 import type {
   CreatedGroup,
   CreateGroupInput,
@@ -79,6 +86,15 @@ interface DownloadImageErrorResponse {
   error?: unknown;
 }
 
+interface GetMessageResponse {
+  code: number;
+  msg: string;
+  data?: {
+    items?: MergedForwardMessageItem[];
+  };
+  error?: unknown;
+}
+
 export class FeishuMessageClient implements FeishuOutbound {
   private token?: {
     value: string;
@@ -88,6 +104,7 @@ export class FeishuMessageClient implements FeishuOutbound {
   private readonly lastSendAt = new Map<string, number>();
   private readonly imageUploads = new Map<string, { mtimeMs: number; upload: Promise<string> }>();
   private readonly imageDownloads = new Map<string, Promise<string>>();
+  private readonly fileDownloads = new Map<string, Promise<string>>();
   private readonly minSendIntervalMs = 1200;
 
   constructor(
@@ -213,6 +230,51 @@ export class FeishuMessageClient implements FeishuOutbound {
     });
     this.imageDownloads.set(cacheKey, download);
     return download;
+  }
+
+  async downloadFile(messageId: string, fileKey: string, fileName: string): Promise<string> {
+    const cacheKey = `${messageId}:${fileKey}`;
+    const cached = this.fileDownloads.get(cacheKey);
+    if (cached) return cached;
+    const download = this.downloadFileNow(messageId, fileKey, fileName).catch((error: unknown) => {
+      if (this.fileDownloads.get(cacheKey) === download) this.fileDownloads.delete(cacheKey);
+      throw error;
+    });
+    this.fileDownloads.set(cacheKey, download);
+    return download;
+  }
+
+  async readMergedForward(messageId: string): Promise<MergedForwardContent> {
+    const items = await this.readMessageItems(messageId, "read merged forward");
+    return renderMergedForwardPrompt(messageId, items);
+  }
+
+  async readReferencedMessage(messageId: string): Promise<ReferencedMessageContent> {
+    const items = await this.readMessageItems(messageId, "read referenced message");
+    return renderReferencedMessage(messageId, items);
+  }
+
+  private async readMessageItems(messageId: string, operation: string): Promise<MergedForwardMessageItem[]> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(
+        `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const payload = (await response.json()) as GetMessageResponse;
+      if (!response.ok || payload.code !== 0) {
+        throw new FeishuApiError(
+          payload.msg || response.statusText,
+          payload.code,
+          payload,
+          operation,
+          response.status,
+        );
+      }
+      return payload.data?.items ?? [];
+    } catch (error) {
+      throw normalizeTransportError(error, operation);
+    }
   }
 
   async sendText(contextKey: string, text: string): Promise<string | undefined> {
@@ -711,6 +773,42 @@ export class FeishuMessageClient implements FeishuOutbound {
     }
   }
 
+  private async downloadFileNow(messageId: string, fileKey: string, fileName: string): Promise<string> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const response = await fetch(
+        `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=file`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({
+          code: response.status,
+          msg: response.statusText,
+        })) as DownloadImageErrorResponse;
+        throw new FeishuApiError(
+          payload.msg || response.statusText,
+          payload.code,
+          payload,
+          "download file",
+          response.status,
+        );
+      }
+
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0) throw new Error("Feishu returned an empty file.");
+      const sqlitePath = this.config.storage?.sqlitePath ?? defaultSqlitePath();
+      const directory = path.join(path.dirname(sqlitePath), "inbound-files");
+      await mkdir(directory, { recursive: true });
+      const digest = createHash("sha256").update(`${messageId}:${fileKey}`).digest("hex").slice(0, 16);
+      const safeName = safeInboundFileName(fileName);
+      const filePath = path.join(directory, `${digest}-${safeName}`);
+      await writeFile(filePath, bytes);
+      return filePath;
+    } catch (error) {
+      throw normalizeTransportError(error, "download file");
+    }
+  }
+
   private async uploadImageCached(filePath: string): Promise<string> {
     const cacheKey = path.resolve(filePath);
     const mtimeMs = (await stat(cacheKey)).mtimeMs;
@@ -792,6 +890,18 @@ function imageExtension(contentType: string): string {
     case "image/tiff": return ".tiff";
     default: return ".img";
   }
+}
+
+function safeInboundFileName(value: string): string {
+  const baseName = path.basename(value.trim() || "file");
+  const sanitized = baseName
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "_")
+    .replace(/[. ]+$/gu, "")
+    .slice(0, 180)
+    || "file";
+  return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(sanitized)
+    ? `_${sanitized}`
+    : sanitized;
 }
 
 function normalizeTransportError(error: unknown, operation: string): FeishuApiError {

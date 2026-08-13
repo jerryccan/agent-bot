@@ -64,6 +64,10 @@ export interface TurnAnchorRecord {
   contextKey?: string;
 }
 
+export interface AgentBotTurnMessageRecord extends TurnAnchorRecord {
+  messageKind: "progress" | "final";
+}
+
 export interface TurnRuntimeOriginRecord {
   turnId: string;
   localSessionId: string;
@@ -84,6 +88,7 @@ export interface QueuedPromptRecord {
   localSessionId: string;
   contextKey: string;
   text: string;
+  displayPrompt?: string;
   localImagePaths?: string[];
   messageId?: string;
   replyMessageId?: string;
@@ -181,6 +186,7 @@ interface QueuedPromptRow {
   local_session_id: string;
   context_key: string;
   prompt_text: string;
+  display_prompt: string | null;
   local_image_paths_json: string;
   message_id: string | null;
   reply_message_id: string | null;
@@ -221,6 +227,7 @@ export class StateStore {
     this.ensureTurnSnapshotColumns();
     this.ensureChatContextColumns();
     this.ensureTurnAttemptColumns();
+    this.ensureQueuedPromptColumns();
     this.initializeContextSessionMappings();
     this.db.exec("DROP INDEX IF EXISTS idx_sessions_remote_session_id_unique");
     this.reconcileDuplicateRemoteSessions();
@@ -374,6 +381,7 @@ export class StateStore {
     localSessionId: string;
     contextKey: string;
     text: string;
+    displayPrompt?: string;
     localImagePaths?: string[];
     messageId?: string;
     replyMessageId?: string;
@@ -381,14 +389,15 @@ export class StateStore {
     const createdAt = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO queued_prompts (
-        prompt_id, local_session_id, context_key, prompt_text, local_image_paths_json,
+        prompt_id, local_session_id, context_key, prompt_text, display_prompt, local_image_paths_json,
         message_id, reply_message_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.promptId,
       input.localSessionId,
       input.contextKey,
       input.text,
+      input.displayPrompt ?? null,
       JSON.stringify(input.localImagePaths ?? []),
       input.messageId ?? null,
       input.replyMessageId ?? null,
@@ -1586,6 +1595,35 @@ export class StateStore {
       : undefined;
   }
 
+  findAgentBotTurnMessageById(messageId: string): AgentBotTurnMessageRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT deliveries.turn_id, snapshots.local_session_id,
+        CASE WHEN deliveries.progress_message_id = ? THEN 'progress' ELSE 'final' END AS message_kind
+      FROM turn_deliveries AS deliveries
+      JOIN turn_snapshots AS snapshots ON snapshots.turn_id = deliveries.turn_id
+      WHERE deliveries.progress_message_id = ?
+         OR EXISTS (
+           SELECT 1
+           FROM json_each(deliveries.final_message_ids_json)
+           WHERE json_each.value = ?
+         )
+      ORDER BY deliveries.updated_at DESC
+      LIMIT 1
+    `).get(messageId, messageId, messageId) as {
+      turn_id: string;
+      local_session_id: string;
+      message_kind: "progress" | "final";
+    } | undefined;
+    return row
+      ? {
+          turnId: row.turn_id,
+          localSessionId: row.local_session_id,
+          contextKey: this.getTurnContextKey(row.turn_id),
+          messageKind: row.message_kind,
+        }
+      : undefined;
+  }
+
   private initializeContextSessionMappings(): void {
     this.db.exec(`
       INSERT OR IGNORE INTO context_sessions (context_key, local_session_id, created_at, updated_at)
@@ -1749,6 +1787,15 @@ export class StateStore {
       this.db.exec("ALTER TABLE turn_attempts ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
     }
   }
+
+  private ensureQueuedPromptColumns(): void {
+    const existing = new Set(
+      (this.db.pragma("table_info(queued_prompts)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!existing.has("display_prompt")) {
+      this.db.exec("ALTER TABLE queued_prompts ADD COLUMN display_prompt TEXT");
+    }
+  }
 }
 
 const MAX_TASK_TITLE_LENGTH = 120;
@@ -1836,6 +1883,7 @@ function mapQueuedPrompt(row: QueuedPromptRow): QueuedPromptRecord {
     localSessionId: row.local_session_id,
     contextKey: row.context_key,
     text: row.prompt_text,
+    displayPrompt: row.display_prompt ?? undefined,
     localImagePaths: localImagePaths.length > 0 ? localImagePaths : undefined,
     messageId: row.message_id ?? undefined,
     replyMessageId: row.reply_message_id ?? undefined,

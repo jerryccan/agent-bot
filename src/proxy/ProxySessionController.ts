@@ -13,6 +13,7 @@ import type {
   ChatUpdatedEvent,
   IncomingMessage,
   MessageReplyTarget,
+  ReferencedMessageContent,
 } from "../feishu/types.js";
 import {
   CardRenderer,
@@ -26,6 +27,7 @@ import {
   type TaskListCardAction,
 } from "../feishu/CardRenderer.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
+import { normalizeFeishuPostText } from "../feishu/InboundText.js";
 import { allowsFeishuUser } from "../feishu/ownerAccess.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
@@ -72,6 +74,20 @@ interface StartTurnOptions {
   preserveAttemptOnFailure?: boolean;
 }
 
+interface PendingForwardAttachment {
+  contextKey: string;
+  attachmentMessageId?: string;
+  attachmentPromise: Promise<IncomingMessage | undefined>;
+  resolveAttachment: (message: IncomingMessage | undefined) => void;
+}
+
+interface ForwardAttachmentReservation {
+  sourceMessageId: string;
+  sourceKind: "merged_forward" | "resource";
+  pending: PendingForwardAttachment;
+  registry: Map<string, PendingForwardAttachment>;
+}
+
 const MESSAGE_RECEIVED_REACTION = "OnIt";
 const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
@@ -82,6 +98,9 @@ const RESET_HISTORY_PAGE_SIZE = 10;
 const MAX_LLM_TURN_RETRIES = 3;
 const RECOVERY_ACTIVITY_WINDOW_MS = 5 * 60 * 1_000;
 const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
+const FORWARD_ATTACHMENT_WINDOW_MS = 800;
+const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
+const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
 const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
 const WINDOWS_DRIVES_DIRECTORY = "agentbot://windows-drives";
 const IMAGE_FILE_EXTENSIONS = new Set([
@@ -370,6 +389,9 @@ export class ProxySessionController {
   private readonly llmRetryingSessions = new Set<string>();
   private readonly retriedFailureTurnIds = new Set<string>();
   private readonly recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingMergedForwards = new Map<string, PendingForwardAttachment>();
+  private readonly pendingResourceForwards = new Map<string, PendingForwardAttachment>();
+  private readonly relatedReactionMessageIds = new Map<string, string[]>();
   private readonly unsubscribe: Array<() => void> = [];
   private readonly recoveryActivityHeartbeat: NodeJS.Timeout;
   private startupRecovery?: Promise<void>;
@@ -406,6 +428,9 @@ export class ProxySessionController {
   }
 
   async onMessage(message: IncomingMessage): Promise<void> {
+    let forwardedImages: Array<{ messageId: string; imageKey: string }> = [];
+    let forwardedFiles: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
+    let coalescedForwardAttachment = false;
     if (!message.contextKey.startsWith("console:") && !allowsFeishuUser(this.config, message.userId)) {
       this.logger.debug(
         { messageId: message.messageId },
@@ -427,6 +452,15 @@ export class ProxySessionController {
     // For accepted messages, claim durable deduplication before acknowledgement so event
     // retries cannot add duplicate reactions.
     if (!this.store.claimInboundEvent(message.messageId, "message")) return;
+    const attachmentReservation = message.mergedForwardMessageId
+      ? undefined
+      : this.reserveForwardAttachment(message);
+    const pendingMergedForward = message.mergedForwardMessageId
+      ? this.registerPendingForwardAttachment(message, this.pendingMergedForwards)
+      : undefined;
+    const pendingResourceForward = !attachmentReservation && isStandaloneResourceMessage(message)
+      ? this.registerPendingForwardAttachment(message, this.pendingResourceForwards)
+      : undefined;
     try {
       const reactionId = await this.outbound.addReaction(
         message.contextKey,
@@ -441,6 +475,13 @@ export class ProxySessionController {
         { error, messageId: message.messageId, contextKey: message.contextKey },
         "Failed to acknowledge the incoming Feishu message with a reaction.",
       );
+    }
+    if (attachmentReservation && this.completeForwardAttachment(message, attachmentReservation)) {
+      this.store.audit(message.contextKey, `${attachmentReservation.sourceKind}_attachment_coalesced`, {
+        messageId: message.messageId,
+        parentMessageId: message.parentMessageId,
+      });
+      return;
     }
     if (message.chatType === "p2p" && message.userId?.startsWith("ou_")) {
       try {
@@ -457,20 +498,165 @@ export class ProxySessionController {
       this.store.recordChatContext(chatContextKey, message.chatType);
       this.store.markChatActive(chatContextKey);
     }
+    if (pendingResourceForward) {
+      const resourceMessage = message;
+      const attachment = await this.waitForForwardAttachment(
+        message.messageId,
+        pendingResourceForward,
+        this.pendingResourceForwards,
+      );
+      if (attachment) {
+        coalescedForwardAttachment = true;
+        const instruction = normalizeFeishuPostText(attachment.text) || defaultResourcePrompt(resourceMessage);
+        forwardedImages = (resourceMessage.images ?? []).map((image) => ({
+          messageId: resourceMessage.messageId,
+          imageKey: image.imageKey,
+        }));
+        forwardedFiles = (resourceMessage.files ?? []).map((file) => ({
+          messageId: resourceMessage.messageId,
+          fileKey: file.fileKey,
+          fileName: file.fileName,
+        }));
+        message = {
+          ...attachment,
+          text: instruction,
+          displayText: instruction,
+        };
+        this.relatedReactionMessageIds.set(message.messageId, [resourceMessage.messageId]);
+      }
+    }
+    if (message.mergedForwardMessageId) {
+      const mergedForwardMessage = message;
+      const mergedForwardResult = this.outbound.readMergedForward(
+        message.contextKey,
+        message.mergedForwardMessageId,
+      ).then(
+        (content) => ({ content } as const),
+        (error: unknown) => ({ error } as const),
+      );
+      const attachment = pendingMergedForward
+        ? await this.waitForForwardAttachment(
+            message.messageId,
+            pendingMergedForward,
+            this.pendingMergedForwards,
+          )
+        : undefined;
+      if (attachment) {
+        coalescedForwardAttachment = true;
+        const instruction = normalizeFeishuPostText(attachment.text)
+          || ((attachment.images?.length ?? 0) > 0 ? "请查看附带的内容。" : "请结合参考聊天记录处理。");
+        message = {
+          ...attachment,
+          text: instruction,
+          displayText: instruction,
+        };
+        this.relatedReactionMessageIds.set(message.messageId, [mergedForwardMessage.messageId]);
+      }
+      const result = await mergedForwardResult;
+      if ("error" in result) {
+        const replyTarget = message.replyInThread
+          ? { messageId: message.messageId, replyInThread: true as const }
+          : undefined;
+        await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
+        const detail = result.error instanceof Error ? result.error.message : String(result.error);
+        await this.outbound.withReplyTarget(
+          message.contextKey,
+          replyTarget,
+          () => this.sendError(message.contextKey, new Error(`无法读取合并转发消息：${detail}`)),
+        );
+        return;
+      }
+      const instruction = message.displayText ?? DEFAULT_MERGED_FORWARD_INSTRUCTION;
+      forwardedImages = result.content.images;
+      forwardedFiles = result.content.files;
+      message = {
+        ...message,
+        displayText: instruction,
+        text: mergedForwardPrompt(instruction, result.content.text),
+      };
+    }
+    const referencedMessageId = coalescedForwardAttachment ? undefined : quotedMessageId(message);
+    if (referencedMessageId) {
+      try {
+        const referenced = await this.resolveReferencedMessage(message.contextKey, referencedMessageId);
+        const instruction = normalizeFeishuPostText(message.displayText ?? message.text)
+          || DEFAULT_REFERENCED_MESSAGE_INSTRUCTION;
+        forwardedImages = [...referenced.images, ...forwardedImages];
+        forwardedFiles = [...referenced.files, ...forwardedFiles];
+        message = {
+          ...message,
+          displayText: instruction,
+          text: referencedMessagePrompt(instruction, referenced.text),
+        };
+      } catch (error) {
+        const replyTarget = message.replyInThread
+          ? { messageId: message.messageId, replyInThread: true as const }
+          : undefined;
+        await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
+        const detail = error instanceof Error ? error.message : String(error);
+        await this.outbound.withReplyTarget(
+          message.contextKey,
+          replyTarget,
+          () => this.sendError(message.contextKey, new Error(`无法读取引用消息：${detail}`)),
+        );
+        return;
+      }
+    }
     const replyTarget = message.replyInThread
       ? { messageId: message.messageId, replyInThread: true as const }
       : undefined;
-    const imageCount = message.images?.length ?? 0;
+    const imageReferences = deduplicateImageReferences([
+      ...forwardedImages,
+      ...(message.images ?? []).map((image) => ({ messageId: message.messageId, imageKey: image.imageKey })),
+    ]);
+    const fileReferences = deduplicateFileReferences([
+      ...forwardedFiles,
+      ...(message.files ?? []).map((file) => ({
+        messageId: message.messageId,
+        fileKey: file.fileKey,
+        fileName: file.fileName,
+      })),
+    ]);
+    const imageCount = imageReferences.length;
+    const fileCount = fileReferences.length;
     this.store.audit(message.contextKey, "incoming_message", {
       messageId: message.messageId,
       text: message.text,
       ...(imageCount > 0 ? { imageCount } : {}),
+      ...(fileCount > 0 ? { fileCount } : {}),
     });
     let localImagePaths: string[] | undefined;
     if (imageCount > 0) {
       try {
-        localImagePaths = await Promise.all(message.images!.map((image) =>
-          this.outbound.downloadImage(message.contextKey, message.messageId, image.imageKey)));
+        localImagePaths = await Promise.all(imageReferences.map((image) =>
+          this.outbound.downloadImage(message.contextKey, image.messageId, image.imageKey)));
+      } catch (error) {
+        await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
+        await this.outbound.withReplyTarget(
+          message.contextKey,
+          replyTarget,
+          () => this.sendError(message.contextKey, error),
+        );
+        return;
+      }
+    }
+    if (fileCount > 0) {
+      try {
+        const downloadedFiles = await Promise.all(fileReferences.map(async (file) => ({
+          fileName: file.fileName,
+          filePath: await this.outbound.downloadFile(
+            message.contextKey,
+            file.messageId,
+            file.fileKey,
+            file.fileName,
+          ),
+        })));
+        const instruction = message.text.trim() || defaultResourcePromptFromCounts(imageCount, fileCount);
+        message = {
+          ...message,
+          displayText: message.displayText ?? instruction,
+          text: appendDownloadedFiles(instruction, downloadedFiles),
+        };
       } catch (error) {
         await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
         await this.outbound.withReplyTarget(
@@ -483,8 +669,9 @@ export class ProxySessionController {
     }
     let command: Command;
     try {
-      command = imageCount > 0 && !message.text.trimStart().startsWith("/")
-        ? { type: "prompt", text: message.text.trim() || "请查看这张图片" }
+      const resourceCount = imageCount + fileCount;
+      command = resourceCount > 0 && !message.text.trimStart().startsWith("/")
+        ? { type: "prompt", text: message.text.trim() || defaultResourcePromptFromCounts(imageCount, fileCount) }
         : this.router.parse(message.text);
     } catch (error) {
       await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
@@ -818,6 +1005,11 @@ export class ProxySessionController {
     this.queuedPromptCards.clear();
     this.queuedPromptCardWrites.clear();
     this.sessionResets.clear();
+    for (const pending of this.pendingMergedForwards.values()) pending.resolveAttachment(undefined);
+    this.pendingMergedForwards.clear();
+    for (const pending of this.pendingResourceForwards.values()) pending.resolveAttachment(undefined);
+    this.pendingResourceForwards.clear();
+    this.relatedReactionMessageIds.clear();
     for (const timer of this.recoveryRetryTimers.values()) clearTimeout(timer);
     this.recoveryRetryTimers.clear();
     clearInterval(this.recoveryActivityHeartbeat);
@@ -1499,7 +1691,14 @@ export class ProxySessionController {
         await this.setTitle(contextKey, command.title);
         return;
       case "prompt":
-        await this.prompt(contextKey, command.text, messageId, replyTarget, localImagePaths);
+        await this.prompt(
+          contextKey,
+          command.text,
+          messageId,
+          replyTarget,
+          localImagePaths,
+          incomingMessage?.displayText,
+        );
         return;
       case "nosteer":
         await this.enqueueNoSteerPrompt(contextKey, command.text, messageId, replyTarget);
@@ -1986,6 +2185,7 @@ export class ProxySessionController {
     messageId?: string,
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
+    displayPrompt?: string,
   ): Promise<void> {
     if (!text.trim()) throw new Error("请输入要交给 Agent 的内容。");
     let record = this.currentSession(contextKey);
@@ -1997,11 +2197,11 @@ export class ProxySessionController {
         this.inheritedNewTaskCwd(contextKey),
         false,
         true,
-        text,
+        displayPrompt ?? text,
         replyTarget,
       );
     }
-    await this.promptSession(record, contextKey, text, messageId, replyTarget, localImagePaths);
+    await this.promptSession(record, contextKey, text, messageId, replyTarget, localImagePaths, displayPrompt);
   }
 
   private async promptSession(
@@ -2011,12 +2211,14 @@ export class ProxySessionController {
     messageId?: string,
     replyTarget?: MessageReplyTarget,
     localImagePaths?: string[],
+    displayPrompt?: string,
   ): Promise<void> {
     if (this.llmRetryingSessions.has(record.localSessionId)) {
       const queued = this.persistQueuedPrompt(record.localSessionId, contextKey, text, {
         localImagePaths,
         messageId,
         replyTarget,
+        displayPrompt,
       });
       this.store.audit(contextKey, "queued_prompt_added_during_llm_retry", {
         promptId: queued.promptId,
@@ -2034,7 +2236,13 @@ export class ProxySessionController {
         record.cwd,
         this.agentLabel(record.agentName),
       );
-      await this.outbound.startPendingTurn(record.localSessionId, contextKey, record.title, replyTarget, text);
+      await this.outbound.startPendingTurn(
+        record.localSessionId,
+        contextKey,
+        record.title,
+        replyTarget,
+        displayPrompt ?? text,
+      );
     }
     let loaded: LoadedSession;
     try {
@@ -2065,12 +2273,13 @@ export class ProxySessionController {
           localImagePaths,
           messageId,
           replyTarget,
+          displayPrompt,
         });
         return;
       }
       try {
         await loaded.runtime.steerTurn(record.localSessionId, activeTurnId, runtimePrompt(text, localImagePaths));
-        await this.presentSteerMessage(record.localSessionId, activeTurnId, text, messageId);
+        await this.presentSteerMessage(record.localSessionId, activeTurnId, displayPrompt ?? text, messageId);
         if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, activeTurnId);
         return;
       } catch (error) {
@@ -2082,7 +2291,7 @@ export class ProxySessionController {
           this.logger.warn({ error: syncError, sessionId: record.localSessionId }, "Failed to synchronize after steering failure.");
         }
         if (!current?.activeTurnId) {
-          const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths, { messageId });
+          const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths, { messageId, displayPrompt });
           if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
           return;
         }
@@ -2093,7 +2302,12 @@ export class ProxySessionController {
               current.activeTurnId,
               runtimePrompt(text, localImagePaths),
             );
-            await this.presentSteerMessage(record.localSessionId, current.activeTurnId, text, messageId);
+            await this.presentSteerMessage(
+              record.localSessionId,
+              current.activeTurnId,
+              displayPrompt ?? text,
+              messageId,
+            );
             if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, current.activeTurnId);
             return;
           } catch (retryError) {
@@ -2107,11 +2321,12 @@ export class ProxySessionController {
           localImagePaths,
           messageId,
           replyTarget,
+          displayPrompt,
         });
         return;
       }
     }
-    const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths, { messageId });
+    const turnId = await this.startTurn(loaded, text, replyTarget, localImagePaths, { messageId, displayPrompt });
     if (messageId) await this.bindMessageReactionToTurn(messageId, record.localSessionId, turnId);
   }
 
@@ -2156,6 +2371,7 @@ export class ProxySessionController {
       localImagePaths?: string[];
       messageId?: string;
       replyTarget?: MessageReplyTarget;
+      displayPrompt?: string;
     } = {},
   ): QueuedPromptRecord {
     return this.store.enqueuePrompt({
@@ -2166,6 +2382,7 @@ export class ProxySessionController {
       localImagePaths: options.localImagePaths,
       messageId: options.messageId,
       replyMessageId: options.replyTarget?.messageId,
+      displayPrompt: options.displayPrompt,
     });
   }
 
@@ -2227,7 +2444,7 @@ export class ProxySessionController {
       contextKey,
       prompts: this.store.listQueuedPrompts(localSessionId).map((prompt) => ({
         id: prompt.promptId,
-        text: prompt.text,
+        text: prompt.displayPrompt ?? prompt.text,
       })),
     });
   }
@@ -2729,7 +2946,7 @@ export class ProxySessionController {
     options: StartTurnOptions = {},
   ): Promise<string> {
     const currentRecord = this.store.getSession(loaded.record.localSessionId);
-    const title = currentRecord?.title ?? normalizeTaskTitle(text);
+    const title = currentRecord?.title ?? normalizeTaskTitle(options.displayPrompt ?? text);
     if (!currentRecord?.title && title) this.store.updateRuntimeSession(loaded.record.localSessionId, { title });
     if (title) this.outbound.updateSessionTitle(loaded.record.localSessionId, title);
     const attemptId = options.attemptId ?? createId("attempt");
@@ -3392,7 +3609,7 @@ export class ProxySessionController {
         prompt.text,
         prompt.replyMessageId ? { messageId: prompt.replyMessageId, replyInThread: true } : undefined,
         prompt.localImagePaths,
-        { messageId: prompt.messageId },
+        { messageId: prompt.messageId, displayPrompt: prompt.displayPrompt },
       );
       if (prompt.messageId) await this.bindMessageReactionToTurn(prompt.messageId, sessionId, turnId);
     } catch (error) {
@@ -3418,18 +3635,117 @@ export class ProxySessionController {
     messageId: string,
     status: "completed" | "failed" | "cancelled",
   ): Promise<void> {
-    const reaction = this.store.claimMessageReaction(messageId);
-    if (reaction) await this.replaceMessageReaction(reaction, status);
+    for (const relatedMessageId of this.takeRelatedReactionMessageIds(messageId)) {
+      const reaction = this.store.claimMessageReaction(relatedMessageId);
+      if (reaction) await this.replaceMessageReaction(reaction, status);
+    }
   }
 
   private async bindMessageReactionToTurn(messageId: string, sessionId: string, turnId: string): Promise<void> {
-    this.store.bindMessageToTurn(messageId, sessionId, turnId);
-    this.store.bindMessageReaction(messageId, sessionId, turnId);
+    for (const relatedMessageId of this.takeRelatedReactionMessageIds(messageId)) {
+      this.store.bindMessageToTurn(relatedMessageId, sessionId, turnId);
+      this.store.bindMessageReaction(relatedMessageId, sessionId, turnId);
+    }
     const session = this.store.getSession(sessionId);
     if (session?.lastTurnId !== turnId) return;
     if (session.lastTurnStatus === "completed" || session.lastTurnStatus === "failed" || session.lastTurnStatus === "cancelled") {
       await this.finalizeTurnMessageReactions(turnId, session.lastTurnStatus);
     }
+  }
+
+  private registerPendingForwardAttachment(
+    message: IncomingMessage,
+    registry: Map<string, PendingForwardAttachment>,
+  ): PendingForwardAttachment {
+    let resolveAttachment!: (message: IncomingMessage | undefined) => void;
+    const attachmentPromise = new Promise<IncomingMessage | undefined>((resolve) => {
+      resolveAttachment = resolve;
+    });
+    const pending = {
+      contextKey: message.contextKey,
+      attachmentPromise,
+      resolveAttachment,
+    };
+    registry.set(message.messageId, pending);
+    return pending;
+  }
+
+  private reserveForwardAttachment(message: IncomingMessage): ForwardAttachmentReservation | undefined {
+    if (!message.parentMessageId) return undefined;
+    const candidates = [
+      { sourceKind: "merged_forward" as const, registry: this.pendingMergedForwards },
+      { sourceKind: "resource" as const, registry: this.pendingResourceForwards },
+    ];
+    for (const candidate of candidates) {
+      const pending = candidate.registry.get(message.parentMessageId);
+      if (!pending || pending.contextKey !== message.contextKey || pending.attachmentMessageId) continue;
+      pending.attachmentMessageId = message.messageId;
+      return {
+        sourceMessageId: message.parentMessageId,
+        sourceKind: candidate.sourceKind,
+        pending,
+        registry: candidate.registry,
+      };
+    }
+    return undefined;
+  }
+
+  private completeForwardAttachment(
+    message: IncomingMessage,
+    reservation: ForwardAttachmentReservation,
+  ): boolean {
+    if (!message.parentMessageId) return false;
+    if (reservation.sourceMessageId !== message.parentMessageId) return false;
+    if (reservation.registry.get(message.parentMessageId) !== reservation.pending) return false;
+    if (reservation.pending.attachmentMessageId !== message.messageId) return false;
+    reservation.pending.resolveAttachment(message);
+    return true;
+  }
+
+  private async waitForForwardAttachment(
+    messageId: string,
+    pending: PendingForwardAttachment,
+    registry: Map<string, PendingForwardAttachment>,
+  ): Promise<IncomingMessage | undefined> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), FORWARD_ATTACHMENT_WINDOW_MS);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([pending.attachmentPromise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (registry.get(messageId) === pending) {
+        registry.delete(messageId);
+      }
+    }
+  }
+
+  private async resolveReferencedMessage(
+    contextKey: string,
+    messageId: string,
+  ): Promise<ReferencedMessageContent> {
+    const local = this.store.findAgentBotTurnMessageById(messageId);
+    if (local) {
+      const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(local.turnId));
+      const text = snapshot ? renderLocalTurnReference(snapshot, local.messageKind) : undefined;
+      if (text) {
+        return {
+          text,
+          messageType: local.messageKind === "final" ? "agent_bot_reply" : "agent_bot_progress",
+          images: [],
+          files: [],
+        };
+      }
+    }
+    return this.outbound.readReferencedMessage(contextKey, messageId);
+  }
+
+  private takeRelatedReactionMessageIds(messageId: string): string[] {
+    const related = this.relatedReactionMessageIds.get(messageId) ?? [];
+    this.relatedReactionMessageIds.delete(messageId);
+    return [...new Set([messageId, ...related])];
   }
 
   private async finalizeTurnMessageReactions(
@@ -6040,6 +6356,104 @@ function isPromptCommand(command: Command): boolean {
 
 function runtimePrompt(text: string, localImagePaths?: string[]): RuntimePrompt {
   return localImagePaths?.length ? { text, localImagePaths } : text;
+}
+
+function mergedForwardPrompt(
+  instruction: string,
+  transcript: string,
+): string {
+  return `${instruction}\n\n参考聊天记录：\n${transcript}`;
+}
+
+function referencedMessagePrompt(instruction: string, referencedMessage: string): string {
+  return `${instruction}\n\n引用消息：\n${referencedMessage}`;
+}
+
+function quotedMessageId(message: IncomingMessage): string | undefined {
+  const messageId = message.parentMessageId?.trim();
+  if (!messageId || message.contextKey.startsWith("console:")) return undefined;
+  if (message.mergedForwardMessageId) return undefined;
+  const text = message.text.trimStart();
+  if (text.startsWith("/") || text.startsWith("!")) return undefined;
+  if (message.threadContext && message.rootMessageId === messageId) return undefined;
+  return messageId;
+}
+
+function renderLocalTurnReference(
+  snapshot: TurnViewState,
+  messageKind: "progress" | "final",
+): string | undefined {
+  if (messageKind === "final") {
+    const response = snapshot.finalResponse?.trim() || snapshot.assistantText?.trim();
+    return response
+      ? `[消息类型：AgentBot 回复]\n${truncateMiddle(response, 48_000)}`
+      : undefined;
+  }
+
+  const activityText = (snapshot.activities ?? [])
+    .filter((activity): activity is Extract<TurnActivity, { kind: "assistant" | "reasoning" }> =>
+      activity.kind === "assistant" || activity.kind === "reasoning")
+    .map((activity) => activity.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const content = [
+    snapshot.prompt?.trim() ? `用户请求：\n${snapshot.prompt.trim()}` : "",
+    activityText,
+    snapshot.progressText?.trim() || "",
+    snapshot.finalResponse?.trim() || snapshot.assistantText?.trim() || "",
+    snapshot.error?.trim() ? `错误：${snapshot.error.trim()}` : "",
+  ].filter(Boolean).join("\n\n");
+  return content
+    ? `[消息类型：AgentBot 思考卡片]\n${truncateMiddle(content, 48_000)}`
+    : undefined;
+}
+
+function appendDownloadedFiles(
+  prompt: string,
+  files: Array<{ fileName: string; filePath: string }>,
+): string {
+  return `${prompt}\n\n参考文件（已下载到本地）：\n${files.map((file, index) =>
+    `[文件 ${index + 1}：${file.fileName}] ${file.filePath}`).join("\n")}`;
+}
+
+function defaultResourcePrompt(message: IncomingMessage): string {
+  return defaultResourcePromptFromCounts(message.images?.length ?? 0, message.files?.length ?? 0);
+}
+
+function defaultResourcePromptFromCounts(imageCount: number, fileCount: number): string {
+  if (imageCount > 0 && fileCount > 0) return "请查看附带的图片和文件";
+  if (fileCount > 0) return fileCount === 1 ? "请查看这个文件" : "请查看这些文件";
+  return imageCount === 1 ? "请查看这张图片" : "请查看这些图片";
+}
+
+function isStandaloneResourceMessage(message: IncomingMessage): boolean {
+  return !message.mergedForwardMessageId
+    && message.text.trim().length === 0
+    && ((message.images?.length ?? 0) > 0 || (message.files?.length ?? 0) > 0);
+}
+
+function deduplicateImageReferences(
+  images: Array<{ messageId: string; imageKey: string }>,
+): Array<{ messageId: string; imageKey: string }> {
+  const seen = new Set<string>();
+  return images.filter((image) => {
+    const key = `${image.messageId}:${image.imageKey}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function deduplicateFileReferences(
+  files: Array<{ messageId: string; fileKey: string; fileName: string }>,
+): Array<{ messageId: string; fileKey: string; fileName: string }> {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = `${file.messageId}:${file.fileKey}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function recoveryCardPrompt(prompt: string): string {

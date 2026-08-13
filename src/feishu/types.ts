@@ -1,3 +1,7 @@
+import type { MergedForwardContent, ReferencedMessageContent } from "./MergedForwardMessage.js";
+
+export type { MergedForwardContent, ReferencedMessageContent } from "./MergedForwardMessage.js";
+
 export interface IncomingMessage {
   messageId: string;
   contextKey: string;
@@ -12,10 +16,18 @@ export interface IncomingMessage {
   mentionedBot?: true;
   text: string;
   images?: IncomingImageReference[];
+  files?: IncomingFileReference[];
+  mergedForwardMessageId?: string;
+  displayText?: string;
 }
 
 export interface IncomingImageReference {
   imageKey: string;
+}
+
+export interface IncomingFileReference {
+  fileKey: string;
+  fileName: string;
 }
 
 export interface MessageReplyTarget {
@@ -54,6 +66,9 @@ export interface FeishuOutbound {
   addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
   deleteReaction?(messageId: string, reactionId: string): Promise<void>;
   downloadImage?(messageId: string, imageKey: string): Promise<string>;
+  downloadFile?(messageId: string, fileKey: string, fileName: string): Promise<string>;
+  readMergedForward?(messageId: string): Promise<MergedForwardContent>;
+  readReferencedMessage?(messageId: string): Promise<ReferencedMessageContent>;
   sendText(contextKey: string, text: string): Promise<string | undefined>;
   sendFile?(contextKey: string, filePath: string): Promise<string | undefined>;
   sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined>;

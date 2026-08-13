@@ -275,6 +275,20 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     addReaction: vi.fn(async () => undefined),
     deleteReaction: vi.fn(async () => undefined),
     downloadImage: vi.fn(async (_messageId, imageKey) => path.join(process.cwd(), `${imageKey}.png`)),
+    downloadFile: vi.fn(async (_messageId, _fileKey, fileName) => path.join(process.cwd(), fileName)),
+    readMergedForward: vi.fn(async () => ({
+      text: "resolved merged-forward transcript",
+      messageCount: 2,
+      truncated: false,
+      images: [],
+      files: [],
+    })),
+    readReferencedMessage: vi.fn(async () => ({
+      text: "[消息类型：文本]\nquoted message",
+      messageType: "text",
+      images: [],
+      files: [],
+    })),
     sendText: vi.fn(async () => "text"),
     sendFile: vi.fn(async () => "file"),
     sendMarkdown: vi.fn(async () => "markdown"),
@@ -1464,6 +1478,186 @@ describe("ProxySessionController", () => {
     expect(runtime.listRemoteSessions).toHaveBeenCalled();
   });
 
+  test("acknowledges and submits a merged-forward message with the default instruction", async () => {
+    const { controller, runtime, outbound, presenter } = fixture();
+    let releaseReaction!: () => void;
+    const reactionVisible = new Promise<string>((resolve) => {
+      releaseReaction = () => resolve("reaction_visible");
+    });
+    vi.mocked(outbound.addReaction!).mockReturnValueOnce(reactionVisible);
+
+    const processing = controller.onMessage({
+      messageId: "om_merged",
+      contextKey: "chat_id:c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      mergedForwardMessageId: "om_merged",
+    });
+
+    await vi.waitFor(() => expect(outbound.addReaction).toHaveBeenCalledWith("om_merged", "OnIt"));
+    expect(outbound.readMergedForward).not.toHaveBeenCalled();
+
+    releaseReaction();
+    await processing;
+
+    expect(outbound.readMergedForward).toHaveBeenCalledWith("om_merged");
+    expect((outbound.addReaction as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeLessThan(
+      (outbound.readMergedForward as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
+    );
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "请参考以下内容回复用户\n\n参考聊天记录：\nresolved merged-forward transcript",
+    );
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "chat_id:c1",
+      "请参考以下内容回复用户",
+      undefined,
+      "请参考以下内容回复用户",
+    );
+  });
+
+  test("combines a merged-forward message and its attached instruction into one Agent turn", async () => {
+    const { controller, runtime, outbound, presenter, store } = fixture();
+    vi.mocked(outbound.addReaction!).mockImplementation(async (messageId) => `reaction-${messageId}`);
+
+    const mergedProcessing = controller.onMessage({
+      messageId: "om_merged_with_instruction",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      mergedForwardMessageId: "om_merged_with_instruction",
+    });
+    await vi.waitFor(() => expect(outbound.readMergedForward).toHaveBeenCalledWith("om_merged_with_instruction"));
+
+    const instructionProcessing = controller.onMessage({
+      messageId: "om_merged_instruction",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      parentMessageId: "om_merged_with_instruction",
+      text: "<p>查一下这个问题</p>",
+    });
+    await Promise.all([mergedProcessing, instructionProcessing]);
+
+    expect(runtime.createSession).toHaveBeenCalledOnce();
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "查一下这个问题\n\n参考聊天记录：\nresolved merged-forward transcript",
+    );
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "chat_id:c1",
+      "查一下这个问题",
+      undefined,
+      "查一下这个问题",
+    );
+    expect(store.listSessions("chat_id:c1")[0]).toMatchObject({ title: "查一下这个问题" });
+    expect(store.getMessageReaction("om_merged_with_instruction")).toMatchObject({
+      turnId: "turn_1",
+      status: "pending",
+    });
+    expect(store.getMessageReaction("om_merged_instruction")).toMatchObject({
+      turnId: "turn_1",
+      status: "pending",
+    });
+  });
+
+  test("downloads merged-forward child images and submits them to the Agent in transcript order", async () => {
+    const { controller, runtime, outbound } = fixture();
+    vi.mocked(outbound.readMergedForward!).mockResolvedValueOnce({
+      text: "[消息 1 · 成员 1]\n[图片 1]\n\n[消息 2 · 成员 2]\n说明[图片 2]",
+      messageCount: 2,
+      truncated: false,
+      images: [
+        { messageId: "om_child_image", imageKey: "img_direct" },
+        { messageId: "om_child_post", imageKey: "img_post" },
+      ],
+      files: [],
+    });
+
+    await controller.onMessage({
+      messageId: "om_merged_images",
+      contextKey: "chat_id:c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      mergedForwardMessageId: "om_merged_images",
+    });
+
+    expect(outbound.downloadImage).toHaveBeenNthCalledWith(1, "om_child_image", "img_direct");
+    expect(outbound.downloadImage).toHaveBeenNthCalledWith(2, "om_child_post", "img_post");
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      {
+        text: "请参考以下内容回复用户\n\n参考聊天记录：\n[消息 1 · 成员 1]\n[图片 1]\n\n[消息 2 · 成员 2]\n说明[图片 2]",
+        localImagePaths: [
+          path.join(process.cwd(), "img_direct.png"),
+          path.join(process.cwd(), "img_post.png"),
+        ],
+      },
+    );
+  });
+
+  test("downloads merged-forward files and appends their local paths to the Agent prompt", async () => {
+    const { controller, runtime, outbound } = fixture();
+    vi.mocked(outbound.readMergedForward!).mockResolvedValueOnce({
+      text: "[消息 1 · 成员 1]\n[文件 1：error.log]",
+      messageCount: 1,
+      truncated: false,
+      images: [],
+      files: [{ messageId: "om_child_file", fileKey: "file_error", fileName: "error.log" }],
+    });
+
+    await controller.onMessage({
+      messageId: "om_merged_file",
+      contextKey: "chat_id:c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      mergedForwardMessageId: "om_merged_file",
+    });
+
+    expect(outbound.downloadFile).toHaveBeenCalledWith("om_child_file", "file_error", "error.log");
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      `请参考以下内容回复用户\n\n参考聊天记录：\n[消息 1 · 成员 1]\n[文件 1：error.log]\n\n参考文件（已下载到本地）：\n[文件 1：error.log] ${path.join(process.cwd(), "error.log")}`,
+    );
+  });
+
+  test("reports a merged-forward read failure without starting an Agent turn", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    vi.mocked(outbound.addReaction!)
+      .mockResolvedValueOnce("reaction_pending")
+      .mockResolvedValueOnce("reaction_failed");
+    vi.mocked(outbound.readMergedForward!).mockRejectedValueOnce(new Error("permission denied"));
+
+    await controller.onMessage({
+      messageId: "om_merged_failed",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      mergedForwardMessageId: "om_merged_failed",
+    });
+
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(outbound.addReaction).toHaveBeenNthCalledWith(2, "om_merged_failed", "ERROR");
+    expect(outbound.deleteReaction).toHaveBeenCalledWith("om_merged_failed", "reaction_pending");
+    expect(store.getChatContext("chat_id:c1")).toMatchObject({ chatType: "p2p" });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("无法读取合并转发消息：permission denied"),
+    );
+  });
+
   test("waits for the received reaction before shell execution", async () => {
     const { controller, outbound, shellCommandExecutor } = fixture();
     let releaseReaction!: (reactionId: string) => void;
@@ -1620,6 +1814,220 @@ describe("ProxySessionController", () => {
       text: "请查看这张图片",
       localImagePaths: [expect.stringContaining("img_input.png")],
     });
+  });
+
+  test("combines a forwarded image and its attached instruction into one Agent turn", async () => {
+    const { controller, runtime, outbound, presenter, store } = fixture();
+    vi.mocked(outbound.addReaction!).mockImplementation(async (messageId) => `reaction-${messageId}`);
+
+    const imageProcessing = controller.onMessage({
+      messageId: "om_forwarded_image",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      images: [{ imageKey: "img_forwarded" }],
+    });
+    await vi.waitFor(() => expect(outbound.addReaction).toHaveBeenCalledWith("om_forwarded_image", "OnIt"));
+
+    const instructionProcessing = controller.onMessage({
+      messageId: "om_image_instruction",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      parentMessageId: "om_forwarded_image",
+      text: "总结图中的内容",
+    });
+    await Promise.all([imageProcessing, instructionProcessing]);
+
+    expect(outbound.downloadImage).toHaveBeenCalledOnce();
+    expect(outbound.downloadImage).toHaveBeenCalledWith("om_forwarded_image", "img_forwarded");
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), {
+      text: "总结图中的内容",
+      localImagePaths: [path.join(process.cwd(), "img_forwarded.png")],
+    });
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "chat_id:c1",
+      "总结图中的内容",
+      undefined,
+      "总结图中的内容",
+    );
+    expect(store.getMessageReaction("om_forwarded_image")).toMatchObject({ turnId: "turn_1" });
+    expect(store.getMessageReaction("om_image_instruction")).toMatchObject({ turnId: "turn_1" });
+  });
+
+  test("combines a forwarded file and its attached instruction into one Agent turn", async () => {
+    const { controller, runtime, outbound, presenter, store } = fixture();
+    vi.mocked(outbound.addReaction!).mockImplementation(async (messageId) => `reaction-${messageId}`);
+
+    const fileProcessing = controller.onMessage({
+      messageId: "om_forwarded_file",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      text: "",
+      files: [{ fileKey: "file_forwarded", fileName: "error.log" }],
+    });
+    await vi.waitFor(() => expect(outbound.addReaction).toHaveBeenCalledWith("om_forwarded_file", "OnIt"));
+
+    const instructionProcessing = controller.onMessage({
+      messageId: "om_file_instruction",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_owner",
+      parentMessageId: "om_forwarded_file",
+      text: "分析这个日志",
+    });
+    await Promise.all([fileProcessing, instructionProcessing]);
+
+    expect(outbound.downloadFile).toHaveBeenCalledOnce();
+    expect(outbound.downloadFile).toHaveBeenCalledWith("om_forwarded_file", "file_forwarded", "error.log");
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      `分析这个日志\n\n参考文件（已下载到本地）：\n[文件 1：error.log] ${path.join(process.cwd(), "error.log")}`,
+    );
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "chat_id:c1",
+      "分析这个日志",
+      undefined,
+      "分析这个日志",
+    );
+    expect(store.getMessageReaction("om_forwarded_file")).toMatchObject({ turnId: "turn_1" });
+    expect(store.getMessageReaction("om_file_instruction")).toMatchObject({ turnId: "turn_1" });
+  });
+
+  test("uses the default file prompt when a forwarded file has no attached instruction", async () => {
+    const { controller, runtime, outbound } = fixture();
+
+    await controller.onMessage({
+      messageId: "om_file_without_instruction",
+      contextKey: "chat_id:c1",
+      text: "",
+      files: [{ fileKey: "file_plain", fileName: "notes.txt" }],
+    });
+
+    expect(outbound.downloadFile).toHaveBeenCalledWith("om_file_without_instruction", "file_plain", "notes.txt");
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      `请查看这个文件\n\n参考文件（已下载到本地）：\n[文件 1：notes.txt] ${path.join(process.cwd(), "notes.txt")}`,
+    );
+  });
+
+  test("combines a user question with a referenced Feishu text message", async () => {
+    const { controller, runtime, outbound } = fixture();
+    vi.mocked(outbound.readReferencedMessage!).mockResolvedValueOnce({
+      text: "[消息类型：文本]\n这是被引用的消息",
+      messageType: "text",
+      images: [],
+      files: [],
+    });
+
+    await controller.onMessage({
+      messageId: "om_quote_question",
+      contextKey: "chat_id:c1",
+      text: "你这样说的原因是什么？",
+      parentMessageId: "om_quoted_text",
+    });
+
+    expect(outbound.readReferencedMessage).toHaveBeenCalledWith("om_quoted_text");
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "你这样说的原因是什么？\n\n引用消息：\n[消息类型：文本]\n这是被引用的消息",
+    );
+  });
+
+  test("downloads a referenced image and passes it with the combined Prompt", async () => {
+    const { controller, runtime, outbound } = fixture();
+    vi.mocked(outbound.readReferencedMessage!).mockResolvedValueOnce({
+      text: "[消息类型：图片]\n[图片 1]",
+      messageType: "image",
+      images: [{ messageId: "om_quoted_image", imageKey: "img_quoted" }],
+      files: [],
+    });
+
+    await controller.onMessage({
+      messageId: "om_quote_image_question",
+      contextKey: "chat_id:c1",
+      text: "你这样说的原因是什么？",
+      parentMessageId: "om_quoted_image",
+    });
+
+    expect(outbound.downloadImage).toHaveBeenCalledWith("om_quoted_image", "img_quoted");
+    expect(runtime.startTurn).toHaveBeenCalledWith(expect.any(String), {
+      text: "你这样说的原因是什么？\n\n引用消息：\n[消息类型：图片]\n[图片 1]",
+      localImagePaths: [path.join(process.cwd(), "img_quoted.png")],
+    });
+  });
+
+  test("downloads a referenced file and appends its local path to the combined Prompt", async () => {
+    const { controller, runtime, outbound } = fixture();
+    vi.mocked(outbound.readReferencedMessage!).mockResolvedValueOnce({
+      text: "[消息类型：文件]\n[文件 1：report.pdf]",
+      messageType: "file",
+      images: [],
+      files: [{ messageId: "om_quoted_file", fileKey: "file_report", fileName: "report.pdf" }],
+    });
+
+    await controller.onMessage({
+      messageId: "om_quote_file_question",
+      contextKey: "chat_id:c1",
+      text: "总结这个文件",
+      parentMessageId: "om_quoted_file",
+    });
+
+    expect(outbound.downloadFile).toHaveBeenCalledWith("om_quoted_file", "file_report", "report.pdf");
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      `总结这个文件\n\n引用消息：\n[消息类型：文件]\n[文件 1：report.pdf]\n\n参考文件（已下载到本地）：\n[文件 1：report.pdf] ${path.join(process.cwd(), "report.pdf")}`,
+    );
+  });
+
+  test("prefers the local Turn snapshot for an AgentBot final reply", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    store.saveTurnSnapshot("turn_quoted", "session_quoted", {
+      sessionId: "session_quoted",
+      turnId: "turn_quoted",
+      status: "completed",
+      assistantText: "本地回答",
+      activities: [],
+      finalResponse: "这是 AgentBot 的本地最终回复。",
+    }, "chat_id:c1");
+    store.markFinalDelivered("turn_quoted", ["om_agentbot_final"]);
+
+    await controller.onMessage({
+      messageId: "om_quote_agentbot_question",
+      contextKey: "chat_id:c1",
+      text: "为什么？",
+      parentMessageId: "om_agentbot_final",
+    });
+
+    expect(outbound.readReferencedMessage).not.toHaveBeenCalled();
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "为什么？\n\n引用消息：\n[消息类型：AgentBot 回复]\n这是 AgentBot 的本地最终回复。",
+    );
+  });
+
+  test("does not treat a topic root parent as an explicitly referenced message", async () => {
+    const { controller, outbound } = fixture();
+
+    await controller.onMessage(threadMessage(
+      "topic_group",
+      "group",
+      "topic_quote_guard",
+      "om_topic_root",
+      "继续处理",
+    ));
+
+    expect(outbound.readReferencedMessage).not.toHaveBeenCalled();
   });
 
   test("rejects unknown slash commands without sending text or images to the model", async () => {

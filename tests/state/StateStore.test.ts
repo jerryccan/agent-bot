@@ -275,6 +275,7 @@ describe("StateStore runtime metadata", () => {
       localSessionId: "session_1",
       contextKey: "chat_id:c1",
       text: "second",
+      displayPrompt: "Second display title",
       localImagePaths: ["D:\\images\\one.png"],
       replyMessageId: "reply_2",
     });
@@ -303,6 +304,7 @@ describe("StateStore runtime metadata", () => {
     stores.push(second);
     expect(second.takeNextQueuedPrompt("session_1")).toMatchObject({
       promptId: "prompt_2",
+      displayPrompt: "Second display title",
       localImagePaths: ["D:\\images\\one.png"],
       replyMessageId: "reply_2",
     });
@@ -727,6 +729,17 @@ describe("StateStore runtime metadata", () => {
       localSessionId: "session_1",
     });
     expect(store.findTurnAnchorByMessageId("om_unknown")).toBeUndefined();
+    expect(store.findAgentBotTurnMessageById("om_user")).toBeUndefined();
+    expect(store.findAgentBotTurnMessageById("om_progress")).toEqual({
+      turnId: "turn_1",
+      localSessionId: "session_1",
+      messageKind: "progress",
+    });
+    expect(store.findAgentBotTurnMessageById("om_final_2")).toEqual({
+      turnId: "turn_1",
+      localSessionId: "session_1",
+      messageKind: "final",
+    });
   });
 
   test("persists unfinished turn attempts and rolls the same attempt forward for recovery", () => {

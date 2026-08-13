@@ -118,6 +118,7 @@ export const migrations = [
     local_session_id TEXT NOT NULL,
     context_key TEXT NOT NULL,
     prompt_text TEXT NOT NULL,
+    display_prompt TEXT,
     local_image_paths_json TEXT NOT NULL DEFAULT '[]',
     message_id TEXT,
     reply_message_id TEXT,

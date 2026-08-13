@@ -283,6 +283,78 @@ test("dispatches an image message with its Feishu image key", async () => {
   }));
 });
 
+test("dispatches a file message with its Feishu file key and name", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_file",
+      chat_id: "oc_file",
+      chat_type: "p2p",
+      message_type: "file",
+      content: JSON.stringify({ file_key: "file_v2_input", file_name: "error.log" }),
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledWith({
+    messageId: "om_file",
+    contextKey: "chat_id:oc_file",
+    chatId: "oc_file",
+    chatType: "p2p",
+    userId: "ou_member",
+    text: "",
+    files: [{ fileKey: "file_v2_input", fileName: "error.log" }],
+  }));
+});
+
+test("dispatches a merged-forward message for deferred content retrieval", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_merged",
+      chat_id: "oc_private",
+      chat_type: "p2p",
+      message_type: "merge_forward",
+      content: JSON.stringify({ content: "Merged and Forwarded Message" }),
+    },
+    sender: { sender_id: { open_id: "ou_sender" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledWith({
+    messageId: "om_merged",
+    contextKey: "chat_id:oc_private",
+    chatId: "oc_private",
+    chatType: "p2p",
+    userId: "ou_sender",
+    text: "",
+    mergedForwardMessageId: "om_merged",
+  }));
+});
+
 test("extracts text and de-duplicated images from a rich-text message", async () => {
   const config = {
     feishu: {
@@ -350,7 +422,7 @@ test("extracts images from the top-level rich-text shape used by received Feishu
         title: "",
         content: [
           [{ tag: "img", image_key: "img_v3_real" }],
-          [{ tag: "text", text: "右侧的方块的左上角是否有圆角" }],
+          [{ tag: "text", text: "<p>右侧的方块的左上角是否有圆角</p>" }],
         ],
       }),
     },
@@ -685,7 +757,7 @@ test("dispatches private-chat thread messages with an isolated task context", as
       root_id: "om_source_turn",
       parent_id: "om_source_turn",
       thread_id: "omt_private_topic",
-      content: JSON.stringify({ text: "continue from here" }),
+      content: JSON.stringify({ text: "<p>continue from here</p>" }),
     },
     sender: { sender_id: { open_id: "ou_private" } },
   });

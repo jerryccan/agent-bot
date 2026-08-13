@@ -115,6 +115,107 @@ describe("FeishuMessageClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  test("downloads a Feishu message file into the bot data directory with a safe name and caches it", async () => {
+    const clientConfig = config();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([5, 6, 7, 8]), { status: 200 }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(clientConfig, logger());
+
+    const first = await client.downloadFile("om_file_input", "file_input", "../report?.pdf");
+    const second = await client.downloadFile("om_file_input", "file_input", "ignored.pdf");
+
+    expect(first).toBe(second);
+    expect(path.dirname(first)).toBe(path.join(path.dirname(clientConfig.storage.sqlitePath), "inbound-files"));
+    expect(path.basename(first)).toMatch(/^[a-f0-9]{16}-report_\.pdf$/u);
+    expect([...fs.readFileSync(first)]).toEqual([5, 6, 7, 8]);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_file_input/resources/file_input?type=file",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("reads and renders the child messages of a merged-forward message", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 0,
+        msg: "ok",
+        data: {
+          items: [
+            { message_id: "om_merged", msg_type: "merge_forward" },
+            {
+              message_id: "om_child",
+              upper_message_id: "om_merged",
+              msg_type: "text",
+              sender: { id: "ou_member", sender_type: "user" },
+              body: { content: JSON.stringify({ text: "merged child text" }) },
+            },
+            {
+              message_id: "om_image_child",
+              upper_message_id: "om_merged",
+              msg_type: "image",
+              sender: { id: "ou_member", sender_type: "user" },
+              body: { content: JSON.stringify({ image_key: "img_child" }) },
+            },
+            {
+              message_id: "om_file_child",
+              upper_message_id: "om_merged",
+              msg_type: "file",
+              sender: { id: "ou_member", sender_type: "user" },
+              body: { content: JSON.stringify({ file_key: "file_child", file_name: "notes.txt" }) },
+            },
+          ],
+        },
+      }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.readMergedForward("om_merged")).resolves.toMatchObject({
+      messageCount: 3,
+      truncated: false,
+      text: expect.stringContaining("merged child text"),
+      images: [{ messageId: "om_image_child", imageKey: "img_child" }],
+      files: [{ messageId: "om_file_child", fileKey: "file_child", fileName: "notes.txt" }],
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_merged",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: { Authorization: "Bearer token" },
+    });
+  });
+
+  test("reads and renders a referenced Feishu message", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({
+        code: 0,
+        msg: "ok",
+        data: {
+          items: [{
+            message_id: "om_quoted_image",
+            msg_type: "image",
+            body: { content: JSON.stringify({ image_key: "img_quoted" }) },
+          }],
+        },
+      }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await expect(client.readReferencedMessage("om_quoted_image")).resolves.toEqual({
+      text: "[消息类型：图片]\n[图片 1]",
+      messageType: "image",
+      images: [{ messageId: "om_quoted_image", imageKey: "img_quoted" }],
+      files: [],
+    });
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://open.feishu.cn/open-apis/im/v1/messages/om_quoted_image",
+    );
+  });
+
   test("uploads a local file and sends it as a Feishu file message", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-send-file-"));
     temporaryDirectories.push(directory);

@@ -4,7 +4,9 @@ import type {
   CreatedGroup,
   CreateGroupInput,
   FeishuOutbound,
+  MergedForwardContent,
   MessageReplyTarget,
+  ReferencedMessageContent,
 } from "../feishu/types.js";
 
 export interface TurnPresenter {
@@ -163,6 +165,32 @@ export class OutboundRouter {
     const download = outbound.downloadImage;
     if (!download) throw new Error("当前消息通道不支持下载图片。");
     return download.call(outbound, messageId, imageKey);
+  }
+
+  async downloadFile(
+    contextKey: string,
+    messageId: string,
+    fileKey: string,
+    fileName: string,
+  ): Promise<string> {
+    const outbound = this.route(contextKey).outbound;
+    const download = outbound.downloadFile;
+    if (!download) throw new Error("当前消息通道不支持下载文件。");
+    return download.call(outbound, messageId, fileKey, fileName);
+  }
+
+  async readMergedForward(contextKey: string, messageId: string): Promise<MergedForwardContent> {
+    const outbound = this.route(contextKey).outbound;
+    const read = outbound.readMergedForward;
+    if (!read) throw new Error("当前消息通道不支持读取合并转发消息。");
+    return read.call(outbound, messageId);
+  }
+
+  async readReferencedMessage(contextKey: string, messageId: string): Promise<ReferencedMessageContent> {
+    const outbound = this.route(contextKey).outbound;
+    const read = outbound.readReferencedMessage;
+    if (!read) throw new Error("当前消息通道不支持读取引用消息。");
+    return read.call(outbound, messageId);
   }
 
   async createGroup(contextKey: string, input: CreateGroupInput): Promise<CreatedGroup> {
