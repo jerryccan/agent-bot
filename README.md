@@ -15,7 +15,7 @@ Agent Bot runs on your computer and connects a Feishu bot to your local coding a
 - Use your existing local Codex or TraeX login from Feishu
 - Create, continue, switch, fork, and stop tasks
 - Reset the current conversation from any successfully completed progress card
-- Collaborate with text, images, group chats, and topics
+- Collaborate with text, images, files, quoted messages, merged-forwarded chat records, group chats, and topics
 - Queue follow-up Prompts or add instructions while a task is running
 - Automatically retry temporary model-service failures
 - Continue existing work after Agent Bot restarts
@@ -163,12 +163,14 @@ Each Profile stores its own `config.yaml`, `.env`, `data/`, and `logs/` in the s
 
 ### Reset A Profile
 
-To completely reconfigure an existing Profile, stop its Server and select the Profile explicitly:
+To completely reconfigure the default Profile, stop its Server and run reset without `--profile`:
 
 ```bash
-agentbot --profile ~/.agent-bot server stop # Stop the main Profile Server
-agentbot --profile ~/.agent-bot init --reset # Reset the main Profile
+agentbot server stop # Stop the default Profile Server
+agentbot init --reset # Reset the default Profile
 ```
+
+Use `--profile <directory>` with both commands to reset another Profile.
 
 Reset moves the current `config.yaml`, `.env`, `data/`, and `logs/` into `.reset-backups`, then creates clean files and directories. Existing backups are retained permanently and are not overwritten or cleaned by later resets. The old remote Feishu app is not deleted.
 

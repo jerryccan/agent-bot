@@ -6,6 +6,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Read merged-forward Lark messages after acknowledging them, combine optional forwarding comments into one Prompt, pass ordered child images to the Agent, and download forwarded files locally with numbered Prompt path references.
+- Coalesce separately delivered image or file forwards and their attached comments into one Agent Prompt, falling back to a resource-specific default only when no comment arrives.
+- Resolve quoted messages into the same Agent Prompt as the user's question, preferring persisted Agent Bot Turn content for bot cards and replies while reading other text, cards, images, and files through Lark.
+- Allow `agentbot init --reset` to reset the default Profile without requiring an explicit `--profile` path.
+- Let initialization welcome cards use the Feishu client's default width for comfortable reading across clients.
+- Keep the newest complete execution segment visible when compacting long thinking cards, while moving only the preceding activity into history.
+- Add a linked AgentBot source note to long or split final replies without changing short answers.
 - Refresh elapsed time in both the header and active footer of Feishu thinking cards at least every three seconds, then freeze it in the header and remove the footer duplicate when a turn ends.
 
 ## [0.1.14] - 2026-08-12

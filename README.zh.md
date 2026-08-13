@@ -15,7 +15,7 @@ Agent Bot 运行在你的电脑上，把飞书机器人连接到本机编程 Age
 - 在飞书中使用本机已有的 Codex 或 TraeX 登录
 - 创建、继续、切换、分支和停止任务
 - 从任意成功完成的思考卡片重置当前对话
-- 使用文字、图片、群聊和话题协作
+- 使用文字、图片、文件、引用消息、合并转发记录、群聊和话题协作
 - 排队后续 Prompt，或在任务运行中追加指令
 - 模型服务临时失败时自动重试
 - Agent Bot 重启后继续已有工作
@@ -163,12 +163,14 @@ agentbot --profile ~/.agent-bot-rescue server autostart enable
 
 ### 重置 Profile
 
-如需完整重新配置一个现有 Profile，请先停止它的 Server，并显式指定 Profile：
+如需完整重新配置默认 Profile，请先停止它的 Server，然后直接执行重置：
 
 ```bash
-agentbot --profile ~/.agent-bot server stop # 停止主 Profile 的 Server
-agentbot --profile ~/.agent-bot init --reset # 重置主 Profile
+agentbot server stop # 停止默认 Profile 的 Server
+agentbot init --reset # 重置默认 Profile
 ```
+
+如需重置其他 Profile，请为两条命令同时指定 `--profile <目录>`。
 
 重置会把当前 `config.yaml`、`.env`、`data/` 和 `logs/` 移入 `.reset-backups` 目录中，再创建干净的新文件和目录。已有备份会永久保留，不会被后续重置覆盖或清理。远端旧飞书应用不会被删除。
 
