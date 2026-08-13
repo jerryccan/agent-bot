@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15-alpha.0] - 2026-08-13
+
 - Read merged-forward Lark messages after acknowledging them, combine optional forwarding comments into one Prompt, pass ordered child images to the Agent, and download forwarded files locally with numbered Prompt path references.
 - Coalesce separately delivered image or file forwards and their attached comments into one Agent Prompt, falling back to a resource-specific default only when no comment arrives.
 - Resolve quoted messages into the same Agent Prompt as the user's question, preferring persisted Agent Bot Turn content for bot cards and replies while reading other text, cards, images, and files through Lark.
