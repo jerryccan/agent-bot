@@ -62,6 +62,38 @@ describe("FeishuTurnPresenter", () => {
     );
   });
 
+  test("adds Agent Bot branding only to the last chunk of a long final answer", async () => {
+    const { outbound, store } = createFixture();
+    const presenter = new FeishuTurnPresenter(outbound, store, undefined, {
+      finalChunkLength: 128,
+      criticalGapMs: 0,
+    });
+    presenter.registerSession("s1", "chat_id:c1");
+
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed("x".repeat(150)));
+
+    const chunks = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[1] as string);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.slice(0, -1).every((chunk) => !chunk.includes("Powered by [AgentBot]"))).toBe(true);
+    expect(chunks.at(-1)).toMatch(/^x+\n\n> Powered by \[AgentBot\]\(https:\/\/github\.com\/keyou\/agent-bot\)$/u);
+    expect(chunks.every((chunk) => chunk.length <= 128)).toBe(true);
+  });
+
+  test("adds linked Agent Bot branding to a long final answer that still fits one chunk", async () => {
+    const { presenter, outbound } = createFixture();
+    const answer = "x".repeat(1_000);
+
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed(answer));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
+    expect((outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe(
+      `${answer}\n\n> Powered by [AgentBot](https://github.com/keyou/agent-bot)`,
+    );
+  });
+
   test("delivers completion after an earlier cancelled event for the same turn", async () => {
     const { presenter, outbound } = createFixture();
     await presenter.onEvent({
@@ -659,8 +691,11 @@ describe("FeishuTurnPresenter", () => {
     second.registerSession("s1", "chat_id:c1");
     await second.resumeDelivery("s1", "chat_id:c1", "turn_1");
 
-    expect(secondSend).toHaveBeenCalledOnce();
-    expect(store.getTurnDelivery("turn_1")).toMatchObject({ finalDelivered: true, finalMessageIds: ["part_1", "part_2"] });
+    expect(secondSend).toHaveBeenCalledTimes(2);
+    expect(store.getTurnDelivery("turn_1")).toMatchObject({
+      finalDelivered: true,
+      finalMessageIds: ["part_1", "part_2", "part_2"],
+    });
   });
 
   test("splits table-heavy final answers at the Feishu card table limit", async () => {
@@ -681,6 +716,8 @@ describe("FeishuTurnPresenter", () => {
       .map((call) => call[1] as string);
     expect(chunks[0]?.match(/^\| Name \| Value \|$/gmu)).toHaveLength(5);
     expect(chunks[1]?.match(/^\| Name \| Value \|$/gmu)).toHaveLength(4);
+    expect(chunks[0]).not.toContain("Powered by [AgentBot]");
+    expect(chunks[1]).toMatch(/> Powered by \[AgentBot\]\(https:\/\/github\.com\/keyou\/agent-bot\)$/u);
     expect(store.saveFinalDeliveryProgress).toHaveBeenCalledTimes(2);
     expect(store.markFinalDelivered).toHaveBeenCalledWith("turn_1", ["final_1", "final_1"]);
   });

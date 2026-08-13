@@ -803,7 +803,6 @@ export class CardRenderer {
       schema: "2.0",
       config: {
         update_multi: true,
-        width_mode: "fill",
       },
       header: {
         template: view.kind === "first" ? "turquoise" : view.kind === "upgrade" ? "blue" : "green",
@@ -1729,37 +1728,27 @@ function groupedLiveActivityPage(
   const commentaryIndexes = groups
     .map((group, index) => isCommentaryGroup(group) ? index : -1)
     .filter((index) => index >= 0);
-  if (commentaryIndexes.length === 0) {
-    return { groups: latest, historyGroups: groups.slice(0, latestStart) };
-  }
-
-  const selected = new Set<number>();
-  const pinnedCommentaries = commentaryIndexes.slice(0, PINNED_LIVE_COMMENTARIES);
-  for (const index of pinnedCommentaries) selected.add(index);
-  const latestCommentary = commentaryIndexes.at(-1)!;
-  for (let index = latestCommentary; index < groups.length; index += 1) selected.add(index);
-
-  const renderSelection = (selection: ReadonlySet<number>): LiveGroupedActivityPage => ({
-    groups: groupsWithGaps(groups, selection),
-    historyGroups: groups.filter((_group, index) => index < latestCommentary || !selection.has(index)),
-  });
-  const fits = (selection: ReadonlySet<number>): boolean => {
-    const view = renderSelection(selection);
-    return groupedActivityPageFits(view.groups, projectCwd, {});
+  const renderCutoff = (cutoff: number): LiveGroupedActivityPage => {
+    const selected = new Set<number>(commentaryIndexes
+      .filter((index) => index < cutoff)
+      .slice(-PINNED_LIVE_COMMENTARIES));
+    for (let index = cutoff; index < groups.length; index += 1) selected.add(index);
+    return {
+      groups: groupsWithGaps(groups, selected),
+      historyGroups: groups.slice(0, cutoff),
+    };
   };
 
-  if (!fits(selected)) {
-    const latestExecutions = [...selected]
-      .filter((index) => index > latestCommentary && groups[index]?.kind === "execution")
-      .sort((left, right) => left - right);
-    const newestExecution = latestExecutions.at(-1);
-    for (const index of latestExecutions) {
-      if (fits(selected) || index === newestExecution) break;
-      selected.delete(index);
-    }
+  const executionCutoffs = groups
+    .map((group, index) => group.kind === "execution" && group.tools.length > 0 ? index : -1)
+    .filter((index) => index > 0);
+  for (const cutoff of executionCutoffs) {
+    const view = renderCutoff(cutoff);
+    if (groupedActivityPageFits(view.groups, projectCwd, {})) return view;
   }
 
-  return renderSelection(selected);
+  if (executionCutoffs.length > 0) return renderCutoff(executionCutoffs.at(-1)!);
+  return { groups: latest, historyGroups: groups.slice(0, latestStart) };
 }
 
 function isCommentaryGroup(group: GroupedTurnActivity): boolean {

@@ -50,6 +50,8 @@ export interface FeishuTurnPresenterOptions {
 
 const MAX_FINAL_TABLES_PER_CARD = 5;
 const DEFAULT_ELAPSED_UPDATE_INTERVAL_MS = 3_000;
+const FINAL_RESPONSE_BRANDING = "> Powered by [AgentBot](https://github.com/keyou/agent-bot)";
+const FINAL_RESPONSE_BRANDING_MIN_LENGTH = 1_000;
 
 interface TurnEntry {
   contextKey: string;
@@ -532,10 +534,10 @@ export class FeishuTurnPresenter {
   private async deliverFinal(contextKey: string, state: TurnViewState): Promise<void> {
     const delivery = this.store.getTurnDelivery(state.turnId);
     if (delivery?.finalDelivered || !state.finalResponse) return;
-    const chunks = splitMarkdown(
+    const finalChunkLength = this.options.finalChunkLength ?? 4_000;
+    const chunks = brandedFinalChunks(
       state.finalResponse,
-      this.options.finalChunkLength ?? 4_000,
-      MAX_FINAL_TABLES_PER_CARD,
+      finalChunkLength,
     );
     const messageIds = [...(delivery?.finalMessageIds ?? [])];
     for (let index = messageIds.length; index < chunks.length; index += 1) {
@@ -572,6 +574,25 @@ export class FeishuTurnPresenter {
       }
     }
   }
+}
+
+function brandedFinalChunks(response: string, maxLength: number): string[] {
+  const chunks = splitMarkdown(response, maxLength, MAX_FINAL_TABLES_PER_CARD);
+  if (chunks.length <= 1 && response.length < FINAL_RESPONSE_BRANDING_MIN_LENGTH) return chunks;
+
+  const last = chunks.pop();
+  if (last === undefined) return chunks;
+  const reservedLength = FINAL_RESPONSE_BRANDING.length + 2;
+  const brandedContentLimit = maxLength - reservedLength;
+  if (brandedContentLimit < 32) return [...chunks, last, FINAL_RESPONSE_BRANDING];
+
+  const lastParts = splitMarkdown(last, brandedContentLimit, MAX_FINAL_TABLES_PER_CARD);
+  const lastContent = lastParts.pop();
+  if (lastContent === undefined || lastContent.length > brandedContentLimit) {
+    return [...chunks, ...lastParts, lastContent ?? last, FINAL_RESPONSE_BRANDING];
+  }
+  const separator = lastContent.endsWith("\n\n") ? "" : lastContent.endsWith("\n") ? "\n" : "\n\n";
+  return [...chunks, ...lastParts, `${lastContent}${separator}${FINAL_RESPONSE_BRANDING}`];
 }
 
 function eventPriority(event: AgentEvent): "normal" | "critical" {

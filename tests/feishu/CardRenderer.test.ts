@@ -265,6 +265,7 @@ describe("CardRenderer", () => {
 
     expect(card).toMatchObject({
       schema: "2.0",
+      config: { update_multi: true },
       header: {
         template: "turquoise",
         title: { content: "欢迎使用 Agent Bot" },
@@ -284,6 +285,7 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("[查看更新日志](https://github.com/keyou/agent-bot/blob/master/CHANGELOG.md)");
     expect(objects.filter((item) => item.tag === "button" || item.tag === "interactive_container"))
       .toHaveLength(0);
+    expect((card.config as Record<string, unknown>).width_mode).toBeUndefined();
     const featureRows = objects.filter((item) => (
       item.tag === "column_set"
       && Array.isArray(item.columns)
@@ -644,7 +646,7 @@ describe("CardRenderer", () => {
     expect(Buffer.byteLength(verboseSerialized, "utf8")).toBeLessThanOrEqual(30 * 1024);
   });
 
-  test("pins the first three commentaries and replaces all older reasoning and tools with ellipses", () => {
+  test("chooses one execution-group cutoff and pins the three nearest earlier commentaries", () => {
     const running = state();
     running.plan = [];
     running.fileSummary = [];
@@ -705,18 +707,18 @@ describe("CardRenderer", () => {
     expect(serialized).not.toContain("SEGMENT_1_RESULT_1");
     expect(serialized).not.toContain("segment-2-tool-1");
     expect(serialized).not.toContain("SEGMENT_2_RESULT_1");
-    expect(serialized).not.toContain("segment-3-tool-1");
-    expect(serialized).not.toContain("SEGMENT_3_RESULT_1");
+    expect(serialized).toContain("segment-3-tool-1");
+    expect(serialized).toContain("SEGMENT_3_RESULT_1");
     expect(serialized).not.toContain("Native reasoning 1");
     expect(serialized).not.toContain("Native reasoning 2");
-    expect(serialized).not.toContain("Native reasoning 3");
+    expect(serialized).toContain("Native reasoning 3");
     expect(serialized).toContain("Native reasoning 4");
     expect(serialized).toContain("SEGMENT_4_RESULT_1");
     expect(serialized).not.toContain("IMAGE_RESULT_KEEP");
     expect(serialized).not.toContain("D:\\\\tmp\\\\preview.png");
     expect(serialized).not.toContain("View generated preview");
     expect(collectObjects(card).filter((item) => item.tag === "markdown" && item.content === "…").length)
-      .toBeGreaterThanOrEqual(3);
+      .toBeGreaterThanOrEqual(2);
     expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(30 * 1024);
 
     const history = JSON.stringify(renderer.renderActivityHistory(running, 0));
@@ -727,11 +729,66 @@ describe("CardRenderer", () => {
     const historyAction = collectObjects(card).find((item) => item.action === "activity_history");
     expect(historyAction?.page).toEqual(expect.any(String));
     const cutoffHistory = JSON.stringify(renderer.renderActivityHistory(running, Number(historyAction?.page)));
-    expect(cutoffHistory).not.toContain("Commentary 1");
+    expect(cutoffHistory).toContain("Commentary 1");
     expect(cutoffHistory).toContain("Commentary 2");
     expect(cutoffHistory).toContain("Commentary 3");
-    expect(cutoffHistory).toContain("SEGMENT_3_RESULT_1");
+    expect(cutoffHistory).toContain("SEGMENT_2_RESULT_1");
+    expect(cutoffHistory).not.toContain("SEGMENT_3_RESULT_1");
     expect(cutoffHistory).not.toContain("SEGMENT_4_RESULT_1");
+  });
+
+  test("keeps a single tool before the latest commentary when the rendered card has room", () => {
+    const running = state();
+    running.plan = [];
+    running.fileSummary = [];
+    const verboseTools = (segment: number) => Array.from({ length: 10 }, (_value, index) => {
+      const position = index + 1;
+      const tool = {
+        ...running.completedTools[0]!,
+        id: `verbose-${segment}-${position}`,
+        title: `Verbose ${segment}.${position}`,
+        command: `verbose-${segment}-${position}`,
+        output: `VERBOSE_${segment}_${position}\n${"result-data-".repeat(180)}`,
+      };
+      return { kind: "tool" as const, id: tool.id, tool };
+    });
+    const targetTool = {
+      ...running.completedTools[0]!,
+      id: "single-before-latest",
+      title: "Single before latest",
+      command: "single-before-latest",
+      output: "SINGLE_RESULT",
+    };
+    const latestTool = {
+      ...running.completedTools[0]!,
+      id: "latest-tool",
+      title: "Latest tool",
+      command: "latest-tool",
+      output: "LATEST_RESULT",
+    };
+    running.activities = [
+      { kind: "assistant", id: "commentary:1", text: "Commentary 1" },
+      ...verboseTools(1),
+      { kind: "assistant", id: "commentary:2", text: "Commentary 2" },
+      ...verboseTools(2),
+      { kind: "assistant", id: "commentary:3", text: "Commentary 3" },
+      { kind: "reasoning", id: "reasoning:target", text: "Target native reasoning" },
+      { kind: "tool", id: targetTool.id, tool: targetTool },
+      { kind: "assistant", id: "commentary:4", text: "Commentary 4" },
+      { kind: "reasoning", id: "reasoning:latest", text: "Latest native reasoning" },
+      { kind: "tool", id: latestTool.id, tool: latestTool },
+    ];
+
+    const card = new CardRenderer().renderTurn(running);
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("查看历史思考");
+    expect(serialized).not.toContain('"content":"✅ Verbose 1.1"');
+    expect(serialized).toContain("single-before-latest");
+    expect(serialized).toContain("SINGLE_RESULT");
+    expect(serialized).toContain("Target native reasoning");
+    expect(serialized).toContain("Latest native reasoning");
+    expect(serialized).toContain("LATEST_RESULT");
   });
 
   test("keeps a stable collapsed default so the client can preserve manual expansion", () => {
