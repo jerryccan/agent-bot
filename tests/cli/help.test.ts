@@ -17,8 +17,8 @@ describe("CLI help", () => {
     expect(help).toContain("update                            Safely update an npm-installed Agent Bot");
     expect(help).toContain("--allow-downgrade");
     expect(help).toContain("init --reset");
-    expect(help).toContain("Back up and reset the selected explicit profile");
-    expect(help).toContain("agentbot --profile ~/.agent-bot init --reset");
+    expect(help).toContain("Back up and reset the default or selected Profile");
+    expect(help).toContain("agentbot init --reset");
     expect(help).toContain("Show the server, Lark App ID, Agent processes, and safe-restart status");
     expect(help).toContain("server autostart <action>");
     expect(help).toContain("server autostart enable --linger");

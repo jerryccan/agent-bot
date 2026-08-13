@@ -162,7 +162,7 @@ agentbot --profile ~/.agent-bot-rescue server status
 
 Initialization prepares configuration, checks supported Agents, configures Feishu, and starts the server. On first initialization and `init --reset`, let the user choose whether all group messages are accepted or an explicit @ mention is required; only the first choice requests the additional all-group-message permission. Relay authorization links and wait for the user; never choose a response mode, skip authorization, or choose maintenance actions without permission.
 
-Use `init --reset` only for an explicitly requested full reset and always with an explicit `--profile`. It preserves backups under `.reset-backups`.
+Use `init --reset` only for an explicitly requested full reset. Without `--profile` it resets the default Profile; pass `--profile <directory>` to reset another Profile. It preserves backups under `.reset-backups`.
 
 ## After Code Changes
 

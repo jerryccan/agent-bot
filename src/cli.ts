@@ -148,7 +148,7 @@ async function main(input: string[]): Promise<void> {
     return;
   }
   if (command === "init") {
-    await initCommand(rest, parsed.configPath, Boolean(parsed.profilePath));
+    await initCommand(rest, parsed.configPath);
     return;
   }
   if (command === "update") {
@@ -294,9 +294,8 @@ interface InitializedAgent extends SupportedAgentInspection {
 async function initCommand(
   input: string[],
   configPath: string | undefined,
-  explicitProfile: boolean,
 ): Promise<void> {
-  const options = parseInitCommandOptions(input, explicitProfile);
+  const options = parseInitCommandOptions(input);
   const version = readPackageVersion();
   const previousInitialization = readInitializationReceipt(agentBotHome());
   let initializationLock = options.reset
@@ -878,8 +877,8 @@ async function assertResetProfileServerStopped(configPath?: string): Promise<voi
     if (await isServerReachable(endpoint)) {
       throw new Error(
         cliText(
-          "Cannot reset a running profile. Stop it with agentbot --profile <directory> server stop, then try again.",
-          "无法重置正在运行的 Profile。请先执行 agentbot --profile <目录> server stop，然后重试。",
+          "Cannot reset a running profile. Stop it with the matching agentbot server stop command, then try again.",
+          "无法重置正在运行的 Profile。请先使用对应 Profile 的 agentbot server stop 命令停止服务，然后重试。",
         ),
       );
     }

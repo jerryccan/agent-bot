@@ -10,7 +10,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
 
 常用命令：
   init                              检查并配置 Agent，初始化飞书应用和服务
-  init --reset                      重置并重新配置显式指定的 Profile
+  init --reset                      重置并重新配置默认或指定的 Profile
   update                            安全更新 npm 安装的 Agent Bot
   console                           打开本地控制台
   server start                      在后台启动 Agent Bot
@@ -59,7 +59,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   -v, --version                     显示版本
 
 初始化选项：
-  --reset                           备份并重置显式指定的 Profile
+  --reset                           备份并重置默认或指定的 Profile
   --skip-feishu                     仅初始化 Console 环境
   --reconfigure-feishu              仅替换现有飞书凭据
 
@@ -84,7 +84,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
 示例：
   agentbot init
   agentbot update
-  agentbot --profile ~/.agent-bot init --reset
+  agentbot init --reset
   agentbot --profile ~/.agent-bot-rescue init
   agentbot server start
   agentbot server status
@@ -102,7 +102,7 @@ Usage:
 
 Common commands:
   init                              Check and configure Agents; initialize the Lark app and service
-  init --reset                      Reset and reconfigure an explicit profile
+  init --reset                      Reset and reconfigure the default or selected Profile
   update                            Safely update an npm-installed Agent Bot
   console                           Open the local console
   server start                      Start Agent Bot in the background
@@ -151,7 +151,7 @@ Options:
   -v, --version                     Show version
 
 Init options:
-  --reset                           Back up and reset the selected explicit profile
+  --reset                           Back up and reset the default or selected Profile
   --skip-feishu                     Initialize for Console only
   --reconfigure-feishu              Replace only the existing Lark credentials
 
@@ -176,7 +176,7 @@ Autostart actions:
 Examples:
   agentbot init
   agentbot update
-  agentbot --profile ~/.agent-bot init --reset
+  agentbot init --reset
   agentbot --profile ~/.agent-bot-rescue init
   agentbot server start
   agentbot server status

@@ -5,10 +5,7 @@ export interface InitCommandOptions {
   reset: boolean;
 }
 
-export function parseInitCommandOptions(
-  input: string[],
-  explicitProfile: boolean,
-): InitCommandOptions {
+export function parseInitCommandOptions(input: string[]): InitCommandOptions {
   const supported = new Set(["--json", "--skip-feishu", "--reconfigure-feishu", "--reset"]);
   const unsupported = input.filter((value) => !supported.has(value));
   if (unsupported.length > 0) {
@@ -27,12 +24,6 @@ export function parseInitCommandOptions(
     throw new Error(cliText(
       "--skip-feishu and --reconfigure-feishu cannot be used together.",
       "--skip-feishu 和 --reconfigure-feishu 不能同时使用。",
-    ));
-  }
-  if (options.reset && !explicitProfile) {
-    throw new Error(cliText(
-      "--reset requires an explicit --profile <directory>.",
-      "--reset 需要显式指定 --profile <目录>。",
     ));
   }
   if (options.reset && options.reconfigureFeishu) {
