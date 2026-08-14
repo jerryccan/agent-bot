@@ -55,6 +55,28 @@ describe("prepare-release", () => {
     expect(result.stdout).toContain("npm dist-tag: latest");
   });
 
+  it("promotes an alpha directly when Unreleased is empty", () => {
+    const root = createRepository("1.2.4-alpha.2", []);
+
+    const result = run(root, "stable");
+
+    expect(result.status).toBe(0);
+    expect(readJson(root, "package.json").version).toBe("1.2.4");
+    expect(fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8")).toMatch(
+      /## \[1\.2\.4\] - \d{4}-\d{2}-\d{2}\n\n- Promote 1\.2\.4-alpha\.2 to the stable release channel\./,
+    );
+  });
+
+  it("still requires Unreleased changes for a stable-to-stable release", () => {
+    const root = createRepository("1.2.3", []);
+
+    const result = run(root, "stable");
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("CHANGELOG.md has no Unreleased entries to publish.");
+    expect(readJson(root, "package.json").version).toBe("1.2.3");
+  });
+
   it("refuses to modify a dirty worktree", () => {
     const root = createRepository();
     fs.appendFileSync(path.join(root, "CHANGELOG.md"), "\n- Not committed.\n");
@@ -69,7 +91,10 @@ describe("prepare-release", () => {
   });
 });
 
-function createRepository(currentVersion = "1.2.3"): string {
+function createRepository(
+  currentVersion = "1.2.3",
+  unreleasedEntries = ["- Pending change.", "", "- Another pending change."],
+): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-release-"));
   temporaryRoots.push(root);
   fs.mkdirSync(path.join(root, "scripts"));
@@ -103,10 +128,8 @@ function createRepository(currentVersion = "1.2.3"): string {
       "",
       "## [Unreleased]",
       "",
-      "- Pending change.",
-      "",
-      "- Another pending change.",
-      "",
+      ...unreleasedEntries,
+      ...(unreleasedEntries.length > 0 ? [""] : []),
       `## [${currentVersion}] - 2026-07-01`,
       "",
       "- Previous release.",

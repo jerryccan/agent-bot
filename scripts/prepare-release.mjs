@@ -17,7 +17,10 @@ const shrinkwrap = readJson(shrinkwrapPath);
 const nextVersion = resolveNextVersion(packageJson.version, requestedVersion);
 const npmTag = isAlphaVersion(nextVersion) ? "alpha" : "latest";
 const changelog = fs.readFileSync(changelogPath, "utf8");
-const nextChangelog = prepareChangelog(changelog, nextVersion);
+const promotedAlphaVersion = requestedVersion === "stable" && isAlphaVersion(packageJson.version)
+  ? packageJson.version
+  : undefined;
+const nextChangelog = prepareChangelog(changelog, nextVersion, promotedAlphaVersion);
 
 packageJson.version = nextVersion;
 shrinkwrap.version = nextVersion;
@@ -66,7 +69,7 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-function prepareChangelog(contents, version) {
+function prepareChangelog(contents, version, promotedAlphaVersion) {
   if (
     new RegExp(`^## \\[${escapeRegExp(version)}\\](?:\\s|$)`, "m").test(
       contents,
@@ -86,7 +89,10 @@ function prepareChangelog(contents, version) {
   const nextHeader = /^## \[/gm;
   nextHeader.lastIndex = sectionStart;
   const sectionEnd = nextHeader.exec(normalized)?.index ?? normalized.length;
-  const entries = normalized.slice(sectionStart, sectionEnd).trim();
+  const pendingEntries = normalized.slice(sectionStart, sectionEnd).trim();
+  const entries = pendingEntries || (promotedAlphaVersion
+    ? `- Promote ${promotedAlphaVersion} to the stable release channel.`
+    : "");
   if (!entries) {
     throw new Error("CHANGELOG.md has no Unreleased entries to publish.");
   }

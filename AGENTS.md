@@ -41,7 +41,7 @@ npm run build
 npm run package:smoke
 ```
 
-Release preparation requires a clean worktree and non-empty `Unreleased` changelog. `npm run release` prepares the next Alpha by default; use `npm run release:stable` to promote an Alpha or prepare the next stable patch.
+Release preparation requires a clean worktree. `npm run release` prepares the next Alpha by default. `npm run release:stable` can promote the current Alpha directly even when `Unreleased` is empty; when starting from an existing stable version, it still requires non-empty `Unreleased` notes before preparing the next stable patch.
 
 Useful runtime commands after building:
 
