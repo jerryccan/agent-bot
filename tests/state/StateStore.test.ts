@@ -18,6 +18,31 @@ afterEach(() => {
 });
 
 describe("StateStore runtime metadata", () => {
+  test("persists Goal card deliveries across store restarts", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.saveGoalCardDelivery("session-1", "chat_id:c1", "message-1");
+    first.saveGoalCardDelivery("session-1", "chat_id:c2", "message-2");
+    expect(first.getGoalCardDelivery("session-1", "chat_id:c1")).toMatchObject({
+      localSessionId: "session-1",
+      contextKey: "chat_id:c1",
+      messageId: "message-1",
+    });
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.listGoalCardDeliveries("session-1")).toMatchObject([
+      { contextKey: "chat_id:c1", messageId: "message-1" },
+      { contextKey: "chat_id:c2", messageId: "message-2" },
+    ]);
+  });
+
   test("lists all persisted user contexts in creation order", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

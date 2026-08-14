@@ -1092,9 +1092,10 @@ describe("ProxySessionController", () => {
     let card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(JSON.stringify(card)).toContain("Goal 已启动");
     expect(JSON.stringify(card)).toContain("完成迁移并通过全部测试");
+    expect(store.getGoalCardDelivery(currentId, "chat_id:c1")).toMatchObject({ messageId: "card" });
 
     await controller.onMessage(message("/goal"));
-    card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(JSON.stringify(card)).toContain("当前 Goal");
     expect(JSON.stringify(card)).toContain("执行中");
 
@@ -1125,8 +1126,46 @@ describe("ProxySessionController", () => {
 
     await controller.onMessage(message("/goal clear"));
     expect(runtime.clearGoal).toHaveBeenCalledWith(currentId);
-    card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(JSON.stringify(card)).toContain("Goal 已清除");
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(2);
+  });
+
+  test("refreshes the persisted Goal card when the App Server completes the Goal", async () => {
+    const { controller, runtime, outbound, store, goals, listeners } = fixture();
+    await controller.onMessage(message("/goal 完成自动化迁移"));
+    const currentId = store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId!;
+    const current = goals.get(currentId)!;
+    goals.set(currentId, {
+      ...current,
+      status: "complete",
+      tokensUsed: 12_345,
+      timeUsedSeconds: 78,
+      updatedAt: 1_776_272_520,
+    });
+    (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mockClear();
+
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: currentId,
+        turnId: "goal_turn_final",
+        finalResponse: "Goal complete",
+      });
+    }
+
+    await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalledWith(
+      "card",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: expect.objectContaining({ content: "Agent Goal · 已完成" }),
+        }),
+      }),
+    ));
+    const card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(card)).toContain("**状态**：已完成");
+    expect(JSON.stringify(card)).toContain("12.3K tokens / 01:18");
+    expect(runtime.getGoal).toHaveBeenCalledWith(currentId);
   });
 
   test("pauses an active goal before stopping its Codex turn", async () => {

@@ -173,4 +173,15 @@ export const migrations = [
   CREATE INDEX IF NOT EXISTS idx_turn_attempts_turn
     ON turn_attempts(turn_id);
   `,
+  `
+  CREATE TABLE IF NOT EXISTS goal_card_deliveries (
+    local_session_id TEXT NOT NULL,
+    context_key TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (local_session_id, context_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_card_deliveries_session
+    ON goal_card_deliveries(local_session_id);
+  `,
 ] as const;

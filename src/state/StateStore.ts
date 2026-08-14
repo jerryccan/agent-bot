@@ -68,6 +68,13 @@ export interface AgentBotTurnMessageRecord extends TurnAnchorRecord {
   messageKind: "progress" | "final";
 }
 
+export interface GoalCardDeliveryRecord {
+  localSessionId: string;
+  contextKey: string;
+  messageId: string;
+  updatedAt: string;
+}
+
 export interface TurnRuntimeOriginRecord {
   turnId: string;
   localSessionId: string;
@@ -240,6 +247,46 @@ export class StateStore {
       CREATE INDEX IF NOT EXISTS idx_chat_contexts_activity
       ON chat_contexts(last_activity_at)
     `);
+  }
+
+  saveGoalCardDelivery(localSessionId: string, contextKey: string, messageId: string): void {
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO goal_card_deliveries (local_session_id, context_key, message_id, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(local_session_id, context_key) DO UPDATE SET
+        message_id = excluded.message_id,
+        updated_at = excluded.updated_at
+    `).run(localSessionId, contextKey, messageId, updatedAt);
+  }
+
+  getGoalCardDelivery(localSessionId: string, contextKey: string): GoalCardDeliveryRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT local_session_id, context_key, message_id, updated_at
+      FROM goal_card_deliveries
+      WHERE local_session_id = ? AND context_key = ?
+    `).get(localSessionId, contextKey) as {
+      local_session_id: string;
+      context_key: string;
+      message_id: string;
+      updated_at: string;
+    } | undefined;
+    return row ? goalCardDeliveryFromRow(row) : undefined;
+  }
+
+  listGoalCardDeliveries(localSessionId: string): GoalCardDeliveryRecord[] {
+    const rows = this.db.prepare(`
+      SELECT local_session_id, context_key, message_id, updated_at
+      FROM goal_card_deliveries
+      WHERE local_session_id = ?
+      ORDER BY updated_at ASC
+    `).all(localSessionId) as Array<{
+      local_session_id: string;
+      context_key: string;
+      message_id: string;
+      updated_at: string;
+    }>;
+    return rows.map(goalCardDeliveryFromRow);
   }
 
   close(): void {
@@ -1869,6 +1916,20 @@ function mapMessageReaction(row: MessageReactionRow): MessageReactionRecord {
     turnId: row.turn_id ?? undefined,
     status: row.status,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function goalCardDeliveryFromRow(row: {
+  local_session_id: string;
+  context_key: string;
+  message_id: string;
+  updated_at: string;
+}): GoalCardDeliveryRecord {
+  return {
+    localSessionId: row.local_session_id,
+    contextKey: row.context_key,
+    messageId: row.message_id,
     updatedAt: row.updated_at,
   };
 }

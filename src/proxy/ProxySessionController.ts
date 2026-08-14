@@ -3476,6 +3476,7 @@ export class ProxySessionController {
     }
 
     if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+      await this.refreshGoalCards(event.sessionId);
       const terminalStatus = event.type === "turn_completed"
         ? "completed"
         : event.type === "turn_cancelled"
@@ -4369,6 +4370,25 @@ export class ProxySessionController {
     notice?: string,
     record = this.currentSession(contextKey),
   ): Promise<void> {
+    const card = this.renderGoalCard(goal, notice, record);
+    if (!record) {
+      await this.outbound.sendInteractiveCard(contextKey, card);
+      return;
+    }
+    const existing = this.store.getGoalCardDelivery(record.localSessionId, contextKey);
+    if (existing) {
+      await this.outbound.updateInteractiveCard(contextKey, existing.messageId, card);
+      return;
+    }
+    const messageId = await this.outbound.sendInteractiveCard(contextKey, card);
+    if (messageId) this.store.saveGoalCardDelivery(record.localSessionId, contextKey, messageId);
+  }
+
+  private renderGoalCard(
+    goal: RuntimeGoal | undefined,
+    notice?: string,
+    record?: SessionRecord,
+  ): Record<string, unknown> {
     const sections: CardSection[] = [];
     if (notice) sections.push({ lines: [cardText(notice)] });
     sections.push(goal
@@ -4390,7 +4410,35 @@ export class ProxySessionController {
         "**/goal edit &#60;新目标&#62;**　修改　　**/goal clear**　清除",
       ],
     });
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderSectionsCard("Agent Goal", sections));
+    const title = goal ? `Agent Goal · ${goalStatusLabel(goal.status)}` : "Agent Goal";
+    return this.cardRenderer.renderSectionsCard(title, sections);
+  }
+
+  private async refreshGoalCards(localSessionId: string): Promise<void> {
+    const deliveries = this.store.listGoalCardDeliveries(localSessionId);
+    if (deliveries.length === 0) return;
+    const record = this.store.getSession(localSessionId);
+    if (!record) return;
+    const runtime = this.runtimes.forAgent(record.agentName);
+    if (runtime.kind !== "codex" || !runtime.getGoal) return;
+
+    try {
+      const loaded = runtime.getSession(localSessionId) ?? (await this.loadSession(record)).session;
+      const goal = await runtime.getGoal(loaded.localSessionId);
+      const card = this.renderGoalCard(goal, undefined, record);
+      await Promise.all(deliveries.map(async (delivery) => {
+        try {
+          await this.outbound.updateInteractiveCard(delivery.contextKey, delivery.messageId, card);
+        } catch (error) {
+          this.logger.warn(
+            { error, localSessionId, contextKey: delivery.contextKey, messageId: delivery.messageId },
+            "Failed to refresh an Agent Goal card.",
+          );
+        }
+      }));
+    } catch (error) {
+      this.logger.warn({ error, localSessionId }, "Failed to read the latest Agent Goal status.");
+    }
   }
 
   private async runShellCommand(contextKey: string, command: string): Promise<void> {
