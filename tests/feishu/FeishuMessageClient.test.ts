@@ -324,6 +324,50 @@ describe("FeishuMessageClient", () => {
     });
   });
 
+  test("renders final-answer branding after a divider in notation-sized text", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_1" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    await client.sendMarkdown(
+      "chat_id:c1",
+      "answer\n\n----\n\n> Powered by [AgentBot](https://github.com/keyou/agent-bot)",
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    expect(body.msg_type).toBe("interactive");
+    expect(JSON.parse(String(body.content))).toMatchObject({
+      body: {
+        elements: [
+          { tag: "markdown", content: "answer" },
+          { tag: "hr" },
+          {
+            tag: "markdown",
+            content: "> Powered by [AgentBot](https://github.com/keyou/agent-bot)",
+            text_size: "notation",
+          },
+        ],
+      },
+    });
+  });
+
+  test("keeps a branded plain-text message as plain text", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", data: { message_id: "om_1" } }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+    const text = "answer\n\n----\n\nPowered by AgentBot";
+
+    await client.sendText("chat_id:c1", text);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    expect(body.msg_type).toBe("text");
+    expect(JSON.parse(String(body.content))).toEqual({ text });
+  });
+
   test("retries a rejected final message with audit-safe email text", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

@@ -7,6 +7,7 @@ import type { AppConfig } from "../config/schema.js";
 import { normalizeFeishuMarkdown } from "./FeishuMarkdown.js";
 import { LOCAL_CARD_IMAGE_PATH } from "./LocalCardImage.js";
 import { renderMarkdownWithLocalImages } from "./LocalImageMarkdown.js";
+import { splitFinalResponseBranding } from "./FinalResponseBranding.js";
 import {
   renderMergedForwardPrompt,
   renderReferencedMessage,
@@ -288,11 +289,7 @@ export class FeishuMessageClient implements FeishuOutbound {
 
   async sendMarkdown(contextKey: string, markdown: string, idempotencyKey?: string): Promise<string | undefined> {
     const normalizedMarkdown = normalizeFeishuMarkdown(markdown);
-    const elements = await renderMarkdownWithLocalImages(
-      normalizedMarkdown,
-      (filePath) => this.uploadImageCached(filePath),
-      (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
-    );
+    const elements = await this.renderFinalAnswerElements(normalizedMarkdown);
     return this.sendMessage(
       contextKey,
       "interactive",
@@ -334,11 +331,7 @@ export class FeishuMessageClient implements FeishuOutbound {
     idempotencyKey?: string,
   ): Promise<string | undefined> {
     const normalizedMarkdown = normalizeFeishuMarkdown(markdown);
-    const elements = await renderMarkdownWithLocalImages(
-      normalizedMarkdown,
-      (filePath) => this.uploadImageCached(filePath),
-      (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
-    );
+    const elements = await this.renderFinalAnswerElements(normalizedMarkdown);
     return this.replyMessage(
       contextKey,
       target,
@@ -362,6 +355,23 @@ export class FeishuMessageClient implements FeishuOutbound {
       await this.prepareInteractiveCard(card),
       idempotencyKey,
     );
+  }
+
+  private async renderFinalAnswerElements(markdown: string): Promise<Array<Record<string, unknown>>> {
+    const { content, branding } = splitFinalResponseBranding(markdown);
+    const elements = content
+      ? await renderMarkdownWithLocalImages(
+        content,
+        (filePath) => this.uploadImageCached(filePath),
+        (error, filePath) => this.logger.warn({ error, filePath }, "Failed to upload local image to Feishu."),
+      )
+      : [];
+    if (!branding) return elements;
+    return [
+      ...elements,
+      { tag: "hr" },
+      { tag: "markdown", content: branding, text_size: "notation" },
+    ];
   }
 
   async updateInteractiveCard(messageId: string, card: Record<string, unknown>): Promise<void> {

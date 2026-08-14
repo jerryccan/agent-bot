@@ -9,6 +9,9 @@ import type { TurnViewState } from "../presentation/turnViewTypes.js";
 import { CardRenderer } from "./CardRenderer.js";
 import { CardUpdateScheduler } from "./CardUpdateScheduler.js";
 import type { FeishuOutbound, MessageReplyTarget } from "./types.js";
+import {
+  FINAL_RESPONSE_BRANDING_BLOCK,
+} from "./FinalResponseBranding.js";
 import { createId } from "../utils/id.js";
 import { createHash } from "node:crypto";
 
@@ -50,7 +53,6 @@ export interface FeishuTurnPresenterOptions {
 
 const MAX_FINAL_TABLES_PER_CARD = 5;
 const DEFAULT_ELAPSED_UPDATE_INTERVAL_MS = 3_000;
-const FINAL_RESPONSE_BRANDING = "> Powered by [AgentBot](https://github.com/keyou/agent-bot)";
 const FINAL_RESPONSE_BRANDING_MIN_LENGTH = 1_000;
 
 interface TurnEntry {
@@ -582,17 +584,17 @@ function brandedFinalChunks(response: string, maxLength: number): string[] {
 
   const last = chunks.pop();
   if (last === undefined) return chunks;
-  const reservedLength = FINAL_RESPONSE_BRANDING.length + 2;
+  const reservedLength = FINAL_RESPONSE_BRANDING_BLOCK.length + 2;
   const brandedContentLimit = maxLength - reservedLength;
-  if (brandedContentLimit < 32) return [...chunks, last, FINAL_RESPONSE_BRANDING];
+  if (brandedContentLimit < 32) return [...chunks, last, FINAL_RESPONSE_BRANDING_BLOCK];
 
   const lastParts = splitMarkdown(last, brandedContentLimit, MAX_FINAL_TABLES_PER_CARD);
   const lastContent = lastParts.pop();
   if (lastContent === undefined || lastContent.length > brandedContentLimit) {
-    return [...chunks, ...lastParts, lastContent ?? last, FINAL_RESPONSE_BRANDING];
+    return [...chunks, ...lastParts, lastContent ?? last, FINAL_RESPONSE_BRANDING_BLOCK];
   }
   const separator = lastContent.endsWith("\n\n") ? "" : lastContent.endsWith("\n") ? "\n" : "\n\n";
-  return [...chunks, ...lastParts, `${lastContent}${separator}${FINAL_RESPONSE_BRANDING}`];
+  return [...chunks, ...lastParts, `${lastContent}${separator}${FINAL_RESPONSE_BRANDING_BLOCK}`];
 }
 
 function eventPriority(event: AgentEvent): "normal" | "critical" {

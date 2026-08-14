@@ -77,7 +77,7 @@ describe("FeishuTurnPresenter", () => {
       .map((call) => call[1] as string);
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.slice(0, -1).every((chunk) => !chunk.includes("Powered by [AgentBot]"))).toBe(true);
-    expect(chunks.at(-1)).toMatch(/^x+\n\n> Powered by \[AgentBot\]\(https:\/\/github\.com\/keyou\/agent-bot\)$/u);
+    expect(chunks.at(-1)).toMatch(/^x+\n\n----\n\n> Powered by \[AgentBot\]\(https:\/\/github\.com\/keyou\/agent-bot\)$/u);
     expect(chunks.every((chunk) => chunk.length <= 128)).toBe(true);
   });
 
@@ -90,7 +90,7 @@ describe("FeishuTurnPresenter", () => {
 
     expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
     expect((outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe(
-      `${answer}\n\n> Powered by [AgentBot](https://github.com/keyou/agent-bot)`,
+      `${answer}\n\n----\n\n> Powered by [AgentBot](https://github.com/keyou/agent-bot)`,
     );
   });
 
@@ -717,7 +717,7 @@ describe("FeishuTurnPresenter", () => {
     expect(chunks[0]?.match(/^\| Name \| Value \|$/gmu)).toHaveLength(5);
     expect(chunks[1]?.match(/^\| Name \| Value \|$/gmu)).toHaveLength(4);
     expect(chunks[0]).not.toContain("Powered by [AgentBot]");
-    expect(chunks[1]).toMatch(/> Powered by \[AgentBot\]\(https:\/\/github\.com\/keyou\/agent-bot\)$/u);
+    expect(chunks[1]).toMatch(/----\n\n> Powered by \[AgentBot\]\(https:\/\/github\.com\/keyou\/agent-bot\)$/u);
     expect(store.saveFinalDeliveryProgress).toHaveBeenCalledTimes(2);
     expect(store.markFinalDelivered).toHaveBeenCalledWith("turn_1", ["final_1", "final_1"]);
   });
