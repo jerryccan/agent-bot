@@ -53,14 +53,6 @@ agentbot --help
 
 从源码安装的方法见[技术参考](docs/technical-reference.zh.md#开发与源码安装)。
 
-### 更新
-
-```bash
-agentbot update
-```
-
-正式版默认检查稳定通道，Alpha 版默认检查 Alpha 通道。也可以使用 `--stable`、`--alpha` 或 `--version <版本>` 明确选择。服务正在运行时，Agent Bot 会等待当前任务完成后更新并自动恢复服务；源码目录和 `npm link` 安装不会被自更新命令修改。
-
 ### 初始化
 
 ```bash
@@ -114,18 +106,27 @@ agentbot server restart
 
 它会等待当前运行中的 Agent 任务完成后自动重启，确保所有任务都能正常执行。在飞书话题中触发时，重启状态和重启后的启动卡都会返回原话题。
 
-启用下次用户登录时自动启动：
+如需在用户登录后自动启动 Agent Bot：
 
 ```bash
 agentbot server autostart enable
 agentbot server autostart status
+agentbot server autostart disable
 ```
 
-每个 Profile 都会创建独立的操作系统启动项：Windows 使用任务计划程序，macOS 使用 LaunchAgent，Linux 使用 systemd 用户单元。如果 Windows 策略拒绝创建计划任务，Agent Bot 会自动改用当前用户的启动文件夹，无需管理员权限。Linux 如需在用户尚未登录时启动，可执行 `agentbot server autostart enable --linger`；该命令会启用用户 linger，可能需要系统授权。`server autostart disable` 只移除启动项，不停止当前正在运行的 Server；它也不会关闭 Linux linger，因为其他用户服务可能依赖 linger。
+每个 Profile 的自启动设置相互独立；关闭自启动不会停止当前正在运行的 Server。
 
 ### 更新或卸载
 
-替换或移除全局包前，先停止正在运行的服务：
+全局 npm 安装推荐使用以下命令更新：
+
+```bash
+agentbot update
+```
+
+正式版默认检查稳定通道，Alpha 版默认检查 Alpha 通道。也可以使用 `--stable`、`--alpha` 或 `--version <版本>` 明确选择。服务正在运行时，Agent Bot 会等待当前任务完成后更新并自动恢复服务；源码目录和 `npm link` 安装不会被自更新命令修改。
+
+如需手动替换全局包，请先停止正在运行的服务：
 
 ```bash
 agentbot server stop
@@ -133,7 +134,7 @@ npm install --global @keyou007/agent-bot@latest
 agentbot init # 更新 Profile 并启动 Server
 ```
 
-卸载：
+卸载前，请先移除自动启动项并停止服务：
 
 ```bash
 agentbot server autostart disable

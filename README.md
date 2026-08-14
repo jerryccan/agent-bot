@@ -53,14 +53,6 @@ agentbot --help
 
 See the [technical reference](docs/technical-reference.md#development-and-source-installation) to install from source.
 
-### Update
-
-```bash
-agentbot update
-```
-
-Stable installations check the stable channel by default; Alpha installations stay on the Alpha channel. Use `--stable`, `--alpha`, or `--version <version>` to choose explicitly. When the service is running, Agent Bot waits for active tasks to finish, updates, and restores the service automatically. Source checkouts and `npm link` installations are never modified by self-update.
-
 ### Initialize
 
 ```bash
@@ -114,18 +106,27 @@ agentbot server restart
 
 It waits for currently running Agent tasks to finish before restarting, allowing every task to complete normally. When triggered from a Feishu topic, both restart status and the post-restart startup card return to that topic.
 
-Enable startup at the next user login:
+To start Agent Bot automatically at user login:
 
 ```bash
 agentbot server autostart enable
 agentbot server autostart status
+agentbot server autostart disable
 ```
 
-This creates a separate OS registration for the selected Profile: Task Scheduler on Windows, a LaunchAgent on macOS, or a systemd user unit on Linux. If Windows policy denies creating a scheduled task, Agent Bot automatically uses the current user's Startup folder instead, without requiring administrator access. Linux users who need startup before login can run `agentbot server autostart enable --linger`; this enables user lingering and may require system authorization. `server autostart disable` removes only the startup registration and leaves the currently running Server untouched. It intentionally does not disable Linux linger because other user services may depend on it.
+Autostart is configured separately for each Profile. Disabling it does not stop the currently running Server.
 
 ### Update Or Uninstall
 
-Stop the running service before replacing or removing the global package:
+The recommended way to update a global npm installation is:
+
+```bash
+agentbot update
+```
+
+Stable installations check the stable channel by default; Alpha installations stay on the Alpha channel. Use `--stable`, `--alpha`, or `--version <version>` to choose explicitly. When the service is running, Agent Bot waits for active tasks to finish, updates, and restores the service automatically. Source checkouts and `npm link` installations are never modified by self-update.
+
+To replace the global package manually, stop the running service first:
 
 ```bash
 agentbot server stop
@@ -133,7 +134,7 @@ npm install --global @keyou007/agent-bot@latest
 agentbot init # Update the Profile and start the Server
 ```
 
-To uninstall:
+To uninstall, remove the startup registration and stop the service first:
 
 ```bash
 agentbot server autostart disable
