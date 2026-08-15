@@ -499,6 +499,35 @@ describe("FeishuMessageClient", () => {
     expect(retried.content).not.toContain("git@github.com");
   });
 
+  test("serializes updates to the same interactive card", async () => {
+    let finishFirstUpdate!: (value: ReturnType<typeof response>) => void;
+    const firstUpdate = new Promise<ReturnType<typeof response>>((resolve) => {
+      finishFirstUpdate = resolve;
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))
+      .mockImplementationOnce(() => firstUpdate)
+      .mockResolvedValueOnce(response({ code: 0, msg: "ok" }));
+    globalThis.fetch = fetchMock;
+    const client = new FeishuMessageClient(config(), logger());
+
+    const first = client.updateInteractiveCard("om_progress", { sequence: 1 });
+    const second = client.updateInteractiveCard("om_progress", { sequence: 2 });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      content: JSON.stringify({ sequence: 1 }),
+    });
+
+    finishFirstUpdate(response({ code: 0, msg: "ok" }));
+    await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      content: JSON.stringify({ sequence: 2 }),
+    });
+  });
+
   test("uses the base chat id when sending for a thread-scoped task context", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 }))

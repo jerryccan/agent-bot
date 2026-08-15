@@ -806,6 +806,7 @@ test("dispatches direct Feishu SDK card action events", async () => {
       open_message_id: "om_card_1",
     },
   });
+  await new Promise<void>((resolve) => setImmediate(resolve));
 
   expect(handler.onCardAction).toHaveBeenCalledWith({
     actionId: "evt_card_1",
@@ -873,6 +874,7 @@ test("dispatches the selected sessions overflow action", async () => {
       open_message_id: "om_sessions",
     },
   });
+  await new Promise<void>((resolve) => setImmediate(resolve));
 
   expect(handler.onCardAction).toHaveBeenCalledWith({
     actionId: "evt_session_overflow",
@@ -887,7 +889,7 @@ test("dispatches the selected sessions overflow action", async () => {
   });
 });
 
-test("acknowledges card callbacks before asynchronous card updates finish", async () => {
+test("acknowledges card callbacks before starting asynchronous card updates", async () => {
   const config = {
     feishu: {
       transport: "sdk",
@@ -921,6 +923,8 @@ test("acknowledges card callbacks before asynchronous card updates finish", asyn
   });
 
   expect(response).toEqual({ toast: { type: "success", content: "已处理" } });
+  expect(handler.onCardAction).not.toHaveBeenCalled();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   expect(handler.onCardAction).toHaveBeenCalledOnce();
   finishAction();
   await pendingAction;

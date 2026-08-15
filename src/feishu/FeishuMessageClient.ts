@@ -102,6 +102,7 @@ export class FeishuMessageClient implements FeishuOutbound {
     expiresAt: number;
   };
   private readonly sendQueues = new Map<string, Promise<void>>();
+  private readonly cardUpdateQueues = new Map<string, Promise<void>>();
   private readonly lastSendAt = new Map<string, number>();
   private readonly imageUploads = new Map<string, { mtimeMs: number; upload: Promise<string> }>();
   private readonly imageDownloads = new Map<string, Promise<string>>();
@@ -375,8 +376,10 @@ export class FeishuMessageClient implements FeishuOutbound {
   }
 
   async updateInteractiveCard(messageId: string, card: Record<string, unknown>): Promise<void> {
-    const preparedCard = await this.prepareInteractiveCard(card);
-    await this.updateInteractiveCardNow(messageId, preparedCard);
+    await this.enqueueCardUpdate(messageId, async () => {
+      const preparedCard = await this.prepareInteractiveCard(card);
+      await this.updateInteractiveCardNow(messageId, preparedCard);
+    });
   }
 
   private async updateInteractiveCardNow(
@@ -633,6 +636,22 @@ export class FeishuMessageClient implements FeishuOutbound {
       }
     });
 
+    return queued;
+  }
+
+  private enqueueCardUpdate(messageId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.cardUpdateQueues.get(messageId) ?? Promise.resolve();
+    const queued = previous.catch(() => undefined).then(task);
+    const stored = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.cardUpdateQueues.set(messageId, stored);
+    stored.finally(() => {
+      if (this.cardUpdateQueues.get(messageId) === stored) {
+        this.cardUpdateQueues.delete(messageId);
+      }
+    });
     return queued;
   }
 

@@ -4,7 +4,7 @@ import { threadContextKey } from "./contextKey.js";
 import { resolveFeishuBotOpenId } from "./FeishuBotIdentity.js";
 import { normalizeFeishuPostText } from "./InboundText.js";
 import { allowsFeishuUser } from "./ownerAccess.js";
-import type { ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
+import type { CardAction, ChatUpdatedEvent, FeishuEventHandler, IncomingMessage } from "./types.js";
 
 type BotOpenIdResolver = (appId: string, appSecret: string) => Promise<string>;
 type BotOpenIdListener = (botOpenId: string) => void;
@@ -89,6 +89,7 @@ export class FeishuConnector {
           });
       },
       "card.action.trigger": async (data: unknown) => {
+        const receivedAt = Date.now();
         const operatorOpenId = getFeishuEvent(data)?.operator?.open_id;
         if (!allowsFeishuUser(this.config, operatorOpenId)) {
           this.logger.debug(
@@ -103,11 +104,11 @@ export class FeishuConnector {
           return {};
         }
 
-        void Promise.resolve()
-          .then(() => this.handler.onCardAction(action))
-          .catch((error: unknown) => {
-            this.logger.error({ error, actionId: action.actionId }, "Failed to handle Feishu card action.");
-          });
+        this.deferCardAction(action, receivedAt);
+        this.logger.debug(
+          { actionId: action.actionId, messageId: action.messageId, responsePreparedInMs: Date.now() - receivedAt },
+          "Prepared the Feishu card action acknowledgement.",
+        );
         return {
           toast: {
             type: "success",
@@ -122,6 +123,27 @@ export class FeishuConnector {
     });
     await wsClient.start({ eventDispatcher });
     this.logger.info("Feishu WebSocket connector started.");
+  }
+
+  private deferCardAction(action: CardAction, receivedAt: number): void {
+    setImmediate(() => {
+      const startedAt = Date.now();
+      this.logger.debug(
+        { actionId: action.actionId, messageId: action.messageId, dispatchDelayMs: startedAt - receivedAt },
+        "Started deferred Feishu card action handling.",
+      );
+      void Promise.resolve()
+        .then(() => this.handler.onCardAction(action))
+        .then(() => {
+          this.logger.debug(
+            { actionId: action.actionId, messageId: action.messageId, durationMs: Date.now() - startedAt },
+            "Completed Feishu card action handling.",
+          );
+        })
+        .catch((error: unknown) => {
+          this.logger.error({ error, actionId: action.actionId }, "Failed to handle Feishu card action.");
+        });
+    });
   }
 }
 
