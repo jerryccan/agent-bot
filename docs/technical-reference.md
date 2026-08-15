@@ -43,7 +43,7 @@ The CLI reads the system locale through Node.js internationalization support. Lo
 | `~/.agent-bot/.env`                  | Feishu credentials                 |
 | `~/.agent-bot/data/agent-bot.sqlite` | Persistent task and delivery state |
 | `~/.agent-bot/data/inbound-images/`  | Cached incoming images             |
-| `~/.agent-bot/logs/agent-bot.log`    | Structured runtime logs            |
+| `~/.agent-bot/logs/agent-bot.YYYY-MM-DD.log` | Daily structured runtime logs      |
 
 Configuration path precedence:
 
@@ -84,18 +84,19 @@ Initialization holds `~/.agent-bot/init.lock` so concurrent commands cannot crea
 
 When complete credentials are absent, initialization uses Feishu one-click registration and reports its verification URL as text and a QR code. In-progress registration codes are not resumed: if the process exits before the complete credential pair is persisted, the next run starts a new app registration. After credentials are persisted, initialization audits the currently published app version and can safely resume that audit after interruption.
 
-Missing app configuration is handled in two stages:
+Missing app configuration is handled in three stages:
 
-1. Core configuration is requested and polled until it becomes available. When all-group-message mode was selected, the manually configured `im:message.group_msg` scope is included and may be explicitly skipped with `Y`; mention-only mode excludes it entirely.
+1. Core configuration is requested and polled until basic messaging becomes available.
 2. Remaining optional configuration is requested. The CLI prints its QR code followed by the authorization URL, then immediately polls for up to five minutes. An interactive terminal offers only `Y` to skip optional authorization and continue; otherwise the user completes authorization in the browser while polling continues.
+3. Only in all-group-message mode, the manually configured and published `im:message.group_msg` scope is requested last. Entering `Y` skips this step, and a timeout returns a partial result instead of failing initialization. Mention-only mode excludes the permission entirely.
 
-Configuration supported by the one-click launcher is encoded in its `addons` manifest. When all-group-message mode is selected, the core `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints a QR code and this app-specific, pre-filtered Developer Console URL:
+Configuration supported by the one-click launcher is encoded in its `addons` manifest. When all-group-message mode is selected, the manual `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints a QR code and this app-specific, pre-filtered Developer Console URL during the final stage:
 
 ```text
 https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi&token_type=tenant
 ```
 
-The user must add the permission, publish the app version, and complete tenant approval when required. Core polling then detects the permission in the published version before initialization continues. In an interactive terminal, entering `Y` skips only this manual permission wait; other missing core scopes and the message event remain blocking. Initialization returns a partial configuration result and warns that ordinary group messages which do not mention the bot are unavailable.
+The user must add the permission, publish the app version, and complete tenant approval when required. The final stage waits for up to five minutes for the permission to appear in the published version. Entering `Y`, reaching the timeout, or leaving the version unpublished returns a partial configuration result and warns that ordinary group messages which do not mention the bot are unavailable.
 
 Optional polling failures and timeouts return a partial configuration result instead of failing initialization. When stdin is not an interactive terminal, no skip input is available and polling continues until configuration becomes active or times out. Verification URLs and prompts use stderr, so `--json` keeps its final stdout machine-readable.
 
@@ -223,7 +224,7 @@ The message route determines the current task:
 
 Commands, card callbacks, progress cards, and final responses stay on the originating route.
 
-Starting a Feishu thread from a mapped user message, progress card, or final response forks from the associated completed App Server turn. If no reliable completed source turn exists, the operation fails instead of selecting an arbitrary point.
+Starting a Feishu thread from a mapped user message, progress card, or final response does not immediately create a task. Slash commands execute while the thread remains unbound; commands that require a current task return binding guidance instead of targeting the parent conversation. The first ordinary Prompt lazily forks from the associated completed App Server turn. If no reliable source turn exists, it starts a fresh task. `/new` also starts a fresh task directly, and `/sessions` or `/switch` can bind an existing task without creating an intermediate fork.
 
 `/forkgroup` has thread-aware source selection. An unbound thread, or a bound thread task with no completed turn of its own, forks directly from the thread's original anchor turn without creating an intermediate thread task. Once the thread task has completed a turn, `/forkgroup` uses its latest locally persisted completed turn. A newer active turn does not block the command and is excluded from the fork point.
 
@@ -303,8 +304,8 @@ On Windows, the CLI refreshes Machine and User environment variables before the 
 
 Supervisor crash diagnostics are isolated to the selected profile:
 
-- `logs/supervisor.log` permanently records worker PIDs, exit codes, uptime, restart delays, and diagnostic artifact paths.
-- `logs/worker.stderr.log` captures Node/V8 fatal output that would otherwise be lost by the detached process. Both diagnostic logs rotate at 10 MiB with three backups.
+- `logs/supervisor.YYYY-MM-DD.log` permanently records worker PIDs, exit codes, uptime, restart delays, and diagnostic artifact paths.
+- `logs/worker.stderr.YYYY-MM-DD.log` captures Node/V8 fatal output that would otherwise be lost by the detached process. Both diagnostic logs are split by local calendar day and retain the existing 10 MiB backup rotation within a day.
 - `data/last-crash.json` points to the latest unexpected worker exit, while timestamped `data/crash-reports/crash-*.json` files preserve the history.
 - `data/crash-reports/report.*.json` contains Node diagnostic reports when Node can generate one.
 

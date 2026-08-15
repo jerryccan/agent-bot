@@ -64,14 +64,15 @@ Initialization detects Codex and TraeX and reports their installed versions. Mis
 A fresh initialization first asks how group messages should be handled: receive every group message, or respond only when the bot is explicitly @ mentioned. It then presents two or three QR-code or link steps, depending on that choice.
 
 1. **Create the bot.** This creates a Feishu app with the standard basic messaging configuration and saves its App ID, App Secret, and authorizing user. This step cannot be skipped because Agent Bot cannot connect to Feishu without it. Permissions already provided during creation are not repeated below.
-2. **Optionally add the all-group-message permission.** This step appears only after choosing to receive all group messages. The `im:message.group_msg` permission lets Agent Bot receive ordinary group messages that do not @ the bot, and Feishu requires it to be added manually in the Developer Console. Mention-only mode does not request this permission. When this step is shown, entering `Y` skips waiting and leaves group conversations in mention-only mode.
-3. **Add the remaining permission, event, and callback.** The third step adds only:
+2. **Add the remaining permission, event, and callback.** This step adds only:
 
     | Type | Permission, event, or callback | Purpose |
     | ---- | ------------------------------ | ------- |
     | Permission | `im:chat:delete` | Let `/dismiss` dissolve a group created and owned by the bot. Without it, other Agent Bot features still work. |
     | Event | `im.chat.updated_v1` | Detect group renames and synchronize them to Agent task titles. |
     | Callback | `card.action.trigger` | Enable card button interactions. |
+
+3. **Optionally add the all-group-message permission.** This final step appears only after choosing to receive all group messages. The `im:message.group_msg` permission lets Agent Bot receive ordinary group messages that do not @ the bot, and Feishu requires it to be added manually in the Developer Console and published in an app version. Entering `Y`, reaching the timeout, or leaving the version unpublished does not fail initialization; group conversations simply remain mention-only. Mention-only mode never requests this permission.
 
 After these steps, the `~/.agent-bot` directory is initialized and Agent Bot starts immediately. Every successful `agentbot init` sends a private welcome card containing the Agent Bot logo. The first card introduces the main capabilities; after an upgrade it highlights the new version, while a same-version rerun confirms that the Profile was refreshed.
 
@@ -213,7 +214,7 @@ agentbot task dismiss [task] --yes
 
 Inside an Agent started by Agent Bot, `[task]` defaults to the current task; use `--task <task>` to target another task explicitly. A regular terminal must supply a task. `task current` shows the automatically detected task details. A task reference can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, group dismissal, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
 
-`task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
+`task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. Generated group names show at most the final two levels of the Project directory. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
 
 ## Feishu Commands
 
@@ -246,7 +247,7 @@ Send a message beginning with `/` to run a command. Use `/help` in Feishu for th
 | `/mute [on\|off]`                            | Require @ mentions in the current group |
 | `/help`                                       | Show command help                    |
 
-Private chats, group timelines, and topics keep separate current tasks. Ordinary messages sent while a task is running add instructions to that turn; use `/queue` when the message should run afterward as a separate turn.
+Private chats, group timelines, and topics keep separate current tasks. A new topic remains unbound while you use commands such as `/help`, `/status`, or `/sessions`; those commands do not create a hidden fork. Its first ordinary message forks from the mapped source turn, or starts a fresh task when no source turn can be identified. `/new` starts a fresh topic task, while `/sessions` can bind an existing task. Commands that require a current task explain how to bind one instead of operating on the parent conversation. Ordinary messages sent while a task is running add instructions to that turn; use `/queue` when the message should run afterward as a separate turn.
 
 In a group, `/mute` and `/mute on` make the bot process only messages that mention it. Mention the bot and send `/mute off` to restore automatic responses. The setting applies to every topic in that group.
 
@@ -259,6 +260,7 @@ In a group, `/mute` and `/mute on` make the bot process only messages that menti
 Enter a message beginning with `!` directly in the Feishu chat box to run a local command in the current task directory.
 
 For example, `! ls` lists files in the current directory, and `! git status` shows the state of the current Git repository.
+The same output card refreshes while the command runs. Long output keeps its beginning and end while the middle is truncated.
 
 ## Configuration And Data
 
@@ -269,7 +271,7 @@ Agent Bot keeps user-owned files outside the repository:
 | `~/.agent-bot/config.yaml` | Agent Bot configuration     |
 | `~/.agent-bot/.env`        | Feishu credentials          |
 | `~/.agent-bot/data/`       | Task data and cached inputs |
-| `~/.agent-bot/logs/`       | Runtime logs                |
+| `~/.agent-bot/logs/`       | Daily runtime logs          |
 
 Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yaml](config.example.yaml) for configuration examples.
 
@@ -277,14 +279,14 @@ Agent processes inherit ordinary parent-process variables and their explicit `ag
 
 By default, `feishu.respondToOwnerOnly: true` accepts only messages and card actions from the bot owner identified by `feishu.userOpenId`; other users are ignored before any processing reaction is added. Set it to `false` to allow collaborators. When enabled without an owner Open ID, all Feishu user input is ignored until the owner is configured.
 
-Agent Bot responds to ordinary owner messages in groups containing the bot. Set `feishu.respondToAllGroupMessages` to `false` to additionally require the owner to @ the bot in groups; private chats are unchanged. Initialization still requests the complete group-message permission set so changing this option later does not require another authorization.
+Agent Bot responds to ordinary owner messages in groups containing the bot. Set `feishu.respondToAllGroupMessages` to `false` to additionally require the owner to @ the bot in groups; private chats are unchanged. Initialization requests the manually published all-group-message permission only when this option is enabled. After changing it from `false` to `true`, rerun `agentbot init` and complete the final permission step.
 
 Thinking cards use the grouped layout by default: auxiliary Commentary and user steering remain visible, while each execution group shows only its latest native reasoning and expands to reveal complete tool commands and results. Common PowerShell, zsh, bash, and sh launcher prefixes are omitted from the displayed commands. A failed tool remains marked inside its own tool panel but does not turn the complete execution group red or give the group a failure icon. Execution groups start collapsed and keep stable component identities so a group manually opened in Feishu stays open across card updates. On long turns, pagination measures the fully rendered card content instead of using fixed message or tool counts. Set `feishu.thinkingCardLayout` to `timeline` to temporarily restore the original layout.
 
 ## Troubleshooting
 
-- **The bot does not respond:** run `agentbot server status` and check `~/.agent-bot/logs/agent-bot.log`
-- **The Worker restarted after a Node crash:** check `~/.agent-bot/data/last-crash.json`, `~/.agent-bot/logs/worker.stderr.log`, and `~/.agent-bot/data/crash-reports/`
+- **The bot does not respond:** run `agentbot server status` and check today's `~/.agent-bot/logs/agent-bot.YYYY-MM-DD.log`
+- **The Worker restarted after a Node crash:** check `~/.agent-bot/data/last-crash.json`, that day's `~/.agent-bot/logs/worker.stderr.YYYY-MM-DD.log`, and `~/.agent-bot/data/crash-reports/`
 - **Feishu permissions are incomplete:** rerun `agentbot init` and follow the displayed authorization steps
 - **An Agent cannot start:** run `codex login status` or `traex login status` as the same operating-system user that runs Agent Bot, then rerun `agentbot init` to check its version
 - **You only need local testing:** run `agentbot init --skip-feishu`, then run `agentbot console`

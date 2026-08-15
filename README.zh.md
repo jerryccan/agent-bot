@@ -64,14 +64,15 @@ agentbot init
 全新的初始化会先询问群消息响应方式：接收所有群消息，或者只有明确 @ 机器人才接收。根据选择不同，终端随后会显示 2 或 3 轮二维码或链接。
 
 1. **创建机器人。** 创建带有标准基础消息配置的飞书应用，并保存 App ID、App Secret 和授权用户。该步骤不能跳过，否则 Agent Bot 无法连接飞书。创建时已经提供的权限不再在下方重复列出。
-2. **按需添加“接收所有群消息”权限。** 只有选择“接收所有群消息”时才会出现这一步。`im:message.group_msg` 用于接收未 @ 机器人的普通群消息，飞书要求用户在开发者后台手动添加。选择“明确 @ 机器人”时不会申请该权限；出现本步骤后输入 `Y` 跳过等待，也会保持仅 @ 响应。
-3. **补充剩余权限、事件和回调。** 第三步实际只新增：
+2. **补充剩余权限、事件和回调。** 这一步实际只新增：
 
     | 类型 | 权限、事件或回调 | 功能 |
     | ---- | ---------------- | ------------------ |
     | 权限 | `im:chat:delete` | 允许 `/dismiss` 解散由机器人创建并担任群主的群；缺失时不影响其他功能。 |
     | 事件 | `im.chat.updated_v1` | 检测群改名，把群名同步到 agent 任务标题。 |
     | 回调 | `card.action.trigger` | 卡片按钮交互。 |
+
+3. **按需添加“接收所有群消息”权限。** 只有选择“接收所有群消息”时才会在最后出现这一步。`im:message.group_msg` 用于接收未 @ 机器人的普通群消息，飞书要求用户在开发者后台手动添加并发布应用版本。输入 `Y` 跳过、等待超时或没有完成发布都不会导致初始化失败，只会让群聊保持仅 @ 响应。选择“明确 @ 机器人”时不会申请该权限。
 
 完成这些步骤后，即完成了 `~/.agent-bot` 目录的初始化，Agent Bot 会立即启动。每次 `agentbot init` 成功后，机器人都会向授权用户私聊发送一张包含 Agent Bot Logo 的欢迎卡片：首次初始化会介绍主要能力，升级后初始化会展示新版亮点，同版本再次初始化则会确认 Profile 已刷新。
 
@@ -213,7 +214,7 @@ agentbot task dismiss [任务] --yes
 
 在 Agent Bot 启动的 Agent 中，省略 `[任务]` 会自动使用当前任务；需要操作其他任务时可传入 `--task <任务>`。普通终端仍必须指定任务。`task current` 用于查看自动识别出的任务详情。任务引用可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、解散群、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
 
-`task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
+`task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。自动生成的群名最多显示 Project 目录末尾两级。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
 
 ## 飞书命令
 
@@ -246,7 +247,7 @@ agentbot task dismiss [任务] --yes
 | `/mute [on\|off]`                            | 设置当前群仅响应 @ 消息      |
 | `/help`                                       | 显示命令帮助                 |
 
-私聊、群正文和话题分别维护当前任务。任务运行时发送普通消息会向当前轮次追加指令；需要在本轮结束后独立执行时，使用 `/queue`。
+私聊、群正文和话题分别维护当前任务。新话题在执行 `/help`、`/status` 或 `/sessions` 等命令时保持未绑定状态，不会暗中创建分支；收到第一条普通消息后，才会从可识别的原始 turn 创建分支，无法识别来源时则创建全新任务。使用 `/new` 可以直接创建全新话题任务，使用 `/sessions` 可以绑定现有任务；依赖当前任务的命令会提示如何绑定，而不会操作父会话任务。任务运行时发送普通消息会向当前轮次追加指令；需要在本轮结束后独立执行时，使用 `/queue`。
 
 在群聊中发送 `/mute` 或 `/mute on` 后，机器人只处理 @ 它的消息；@ 机器人并发送 `/mute off` 可恢复自动响应。该设置对群内所有话题生效。
 
@@ -259,6 +260,7 @@ agentbot task dismiss [任务] --yes
 在飞书聊天框直接输入 `!` 开头的消息会作为本地命令处理，命令会在当前任务目录执行。
 
 比如 `! ls` 会列出当前目录下的文件，`! git status` 会显示当前 Git 仓库的状态。
+命令运行期间会动态刷新同一张输出卡片；内容过长时会保留开头和结尾，并截断中间部分。
 
 ## 配置与数据
 
@@ -269,7 +271,7 @@ Agent Bot 将用户相关文件保存在仓库之外：
 | `~/.agent-bot/config.yaml` | Agent Bot 配置     |
 | `~/.agent-bot/.env`        | 飞书凭据           |
 | `~/.agent-bot/data/`       | 任务数据和输入缓存 |
-| `~/.agent-bot/logs/`       | 运行日志           |
+| `~/.agent-bot/logs/`       | 按天切分的运行日志 |
 
 可通过 `AGENT_BOT_HOME` 修改用户数据目录。配置示例见 [config.example.yaml](config.example.yaml)。
 
@@ -277,14 +279,14 @@ Agent 进程会继承普通父进程变量及其显式配置的 `agents.<name>.e
 
 默认配置 `feishu.respondToOwnerOnly: true` 只接受 `feishu.userOpenId` 所标识的机器人拥有者发送的消息和卡片操作；其他用户会在添加处理 reaction 之前被忽略。设为 `false` 可允许其他协作者使用。开启后若未配置拥有者 Open ID，Agent Bot 会忽略所有飞书用户输入，直到完成拥有者配置。
 
-Agent Bot 会响应机器人所在群内拥有者发送的普通消息。将 `feishu.respondToAllGroupMessages` 设为 `false` 后，还会要求拥有者在群消息中 @ 当前机器人；私聊不受这一项影响。初始化仍会申请完整的群消息权限，因此以后切换该配置无需重新授权。
+Agent Bot 会响应机器人所在群内拥有者发送的普通消息。将 `feishu.respondToAllGroupMessages` 设为 `false` 后，还会要求拥有者在群消息中 @ 当前机器人；私聊不受这一项影响。只有开启该配置时，初始化才会申请需要手动发布的“接收所有群消息”权限。从 `false` 改为 `true` 后，需要重新运行 `agentbot init` 并完成最后的权限步骤。
 
 思考卡片默认使用分组布局：辅助 Commentary 和用户追加消息保持直接显示，每个执行组只显示最新一段原生思考，点击后可展开完整的工具命令和结果。显示命令时会省略常见的 PowerShell、zsh、bash 和 sh 启动包装前缀。失败工具仍会在自己的工具面板中标记，但不会让整个执行组显示失败图标或红色边框。执行组默认折叠，并使用稳定的组件标识，使用户在飞书中手动打开的面板在卡片更新后继续保持展开。长任务会根据完整渲染后的卡片内容大小翻页，不再使用固定的消息数或工具数。将 `feishu.thinkingCardLayout` 设为 `timeline` 可临时恢复原版布局。
 
 ## 常见问题
 
-- **机器人没有响应：** 运行 `agentbot server status`，并查看 `~/.agent-bot/logs/agent-bot.log`
-- **Node 崩溃后 Worker 被自动重启：** 查看 `~/.agent-bot/data/last-crash.json`、`~/.agent-bot/logs/worker.stderr.log` 和 `~/.agent-bot/data/crash-reports/`
+- **机器人没有响应：** 运行 `agentbot server status`，并查看当天的 `~/.agent-bot/logs/agent-bot.YYYY-MM-DD.log`
+- **Node 崩溃后 Worker 被自动重启：** 查看 `~/.agent-bot/data/last-crash.json`、崩溃当天的 `~/.agent-bot/logs/worker.stderr.YYYY-MM-DD.log` 和 `~/.agent-bot/data/crash-reports/`
 - **飞书权限不完整：** 重新运行 `agentbot init`，完成显示的授权步骤
 - **Agent 无法启动：** 使用运行 Agent Bot 的同一操作系统用户执行 `codex login status` 或 `traex login status`，然后重新运行 `agentbot init` 检查版本
 - **只需要本地测试：** 运行 `agentbot init --skip-feishu`，然后执行 `agentbot console`

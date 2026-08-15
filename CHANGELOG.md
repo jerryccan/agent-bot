@@ -6,7 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Keep new Feishu topics unbound while slash commands run, lazily fork only for the first ordinary Prompt, and prevent task-scoped commands from falling back to the parent conversation.
+- Stream `!` command output into an in-place Feishu card while the process is running, preserving both the beginning and end when output exceeds the display or capture limit.
+- Move the manually published `im:message.group_msg` permission to the final initialization stage; skipping it or reaching the five-minute timeout now leaves group chats in mention-only mode without failing initialization.
 - Allow the current Alpha package to be promoted directly to a stable version without requiring additional Unreleased changes.
+- Split runtime logs into local-calendar-day files so long-running Agent Bot instances do not grow one unbounded log file.
+- Limit the Project directory segment in newly created Lark group names to the final two path levels.
 
 ## [0.1.15-alpha.0] - 2026-08-13
 
