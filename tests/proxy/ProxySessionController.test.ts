@@ -467,6 +467,79 @@ describe("ProxySessionController", () => {
     });
   });
 
+  test("keeps a recovered turn in the attached group when the task was created in a private chat", async () => {
+    const { controller, runtime, remoteSessions, outbound, outboundRouter, presenter, store } = fixture();
+    const privateContextKey = "chat_id:private";
+    const groupContextKey = "chat_id:group";
+    remoteSessions.push({
+      id: "thr_shared_recovery",
+      cwd: process.cwd(),
+      source: "agent-bot",
+      status: "not_loaded",
+      lastTurnId: "turn_shared_interrupted",
+      lastTurnStatus: "interrupted",
+    });
+    store.getOrCreateUserContext(privateContextKey, "codex");
+    store.getOrCreateUserContext(groupContextKey, "codex");
+    store.createSession({
+      localSessionId: "session_shared_recovery",
+      contextKey: privateContextKey,
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "running",
+    });
+    store.attachSessionToContext(groupContextKey, "session_shared_recovery");
+    store.setCurrentSession(groupContextKey, "session_shared_recovery");
+    store.updateRuntimeSession("session_shared_recovery", {
+      runtimeKind: "codex",
+      remoteSessionId: "thr_shared_recovery",
+      lastTurnId: "turn_shared_interrupted",
+      lastTurnStatus: "running",
+      title: "Shared interrupted work",
+    });
+    store.saveTurnSnapshot("turn_shared_interrupted", "session_shared_recovery", {
+      sessionId: "session_shared_recovery",
+      turnId: "turn_shared_interrupted",
+      status: "running",
+      startedAt: 1,
+      prompt: "finish the shared task",
+      assistantText: "",
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, groupContextKey);
+    store.createTurnAttempt({
+      attemptId: "attempt_shared_recovery",
+      localSessionId: "session_shared_recovery",
+      contextKey: groupContextKey,
+      promptText: "finish the shared task",
+      turnId: "turn_shared_interrupted",
+      status: "running",
+    });
+
+    await controller.recoverInterruptedTasks();
+
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      groupContextKey,
+      "检测到任务在 Agent Bot 重启前尚未完成，正在自动恢复。",
+    );
+    expect(presenter.startPendingTurn).toHaveBeenCalledWith(
+      "session_shared_recovery",
+      groupContextKey,
+      "Shared interrupted work",
+      undefined,
+      "恢复重启前的任务：finish the shared task",
+    );
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      "session_shared_recovery",
+      expect.stringContaining("Finish the original request:\n\nfinish the shared task"),
+    );
+    expect(outboundRouter.getSessionContextKey("session_shared_recovery")).toBe(groupContextKey);
+    expect(store.getSession("session_shared_recovery")?.contextKey).toBe(privateContextKey);
+  });
+
   test("expires an interrupted turn inactive for more than five minutes without recovering it", async () => {
     const { controller, runtime, outbound, presenter, store } = fixture();
     const staleAt = new Date(Date.now() - 6 * 60 * 1_000).toISOString();
@@ -1205,15 +1278,63 @@ describe("ProxySessionController", () => {
 
     await controller.onMessage(message("! ls"));
 
-    expect(shellCommandExecutor).toHaveBeenCalledWith("ls", cwd);
-    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
-      "chat_id:c1",
-      expect.stringContaining("```text\n$  ls\nREADME.md\nsrc\ntests\n```"),
+    expect(shellCommandExecutor).toHaveBeenCalledWith(
+      "ls",
+      cwd,
+      expect.objectContaining({ onOutput: expect.any(Function) }),
     );
-    const markdown = (outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
-    expect(markdown).toContain(`\`${cwd}\` · 退出码 0`);
-    expect(markdown).not.toContain("**目录**");
-    expect(markdown).not.toContain("**命令**");
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          title: expect.objectContaining({ content: "正在执行命令" }),
+        }),
+      }),
+    );
+    const card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(card).toMatchObject({ header: { title: { content: "命令执行完成" } } });
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("$  ls\\nREADME.md\\nsrc\\ntests");
+    expect(serialized).toContain(cwd.replaceAll("\\", "\\\\"));
+    expect(serialized).toContain("退出码 0");
+  });
+
+  test("updates a bang-command card while the command is still running", async () => {
+    const { controller, outbound, shellCommandExecutor } = fixture();
+    let finishCommand!: () => void;
+    const commandPending = new Promise<void>((resolve) => { finishCommand = resolve; });
+    (shellCommandExecutor as ReturnType<typeof vi.fn>).mockImplementationOnce(async (
+      _command: string,
+      _cwd: string,
+      options?: { onOutput?: (snapshot: { stdout: string; stderr: string; outputTruncated: boolean }) => void },
+    ) => {
+      options?.onOutput?.({ stdout: "first chunk\n", stderr: "", outputTruncated: false });
+      await commandPending;
+      return {
+        stdout: "first chunk\nlast chunk\n",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        outputTruncated: false,
+      };
+    });
+
+    const processing = controller.onMessage(message("! stream-output"));
+    await vi.waitFor(() => {
+      const updates = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls;
+      expect(updates.some((call) => JSON.stringify(call[1]).includes("first chunk"))).toBe(true);
+    }, { timeout: 3_500 });
+
+    const runningCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[1])
+      .find((card) => JSON.stringify(card).includes("first chunk"));
+    expect(runningCard).toMatchObject({ header: { title: { content: "正在执行命令" } } });
+
+    finishCommand();
+    await processing;
+    const finalCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(finalCard).toMatchObject({ header: { title: { content: "命令执行完成" } } });
+    expect(JSON.stringify(finalCard)).toContain("last chunk");
   });
 
   test("uses the configured default directory for bang commands without a current task", async () => {
@@ -1221,7 +1342,11 @@ describe("ProxySessionController", () => {
 
     await controller.onMessage(message("！ Get-ChildItem"));
 
-    expect(shellCommandExecutor).toHaveBeenCalledWith("Get-ChildItem", process.cwd());
+    expect(shellCommandExecutor).toHaveBeenCalledWith(
+      "Get-ChildItem",
+      process.cwd(),
+      expect.objectContaining({ onOutput: expect.any(Function) }),
+    );
   });
 
   test("browses the current task directory and navigates into a child directory in place", async () => {
@@ -1246,8 +1371,8 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("🖼️ logo.png");
     expect(serialized).toContain("📦 agentbot.exe");
     expect(serialized).toContain('"action":"directory_send_file"');
-    expect(serialized.match(/"action":"directory_new"/g)).toHaveLength(2);
-    expect(serialized.match(/"action":"directory_new_group"/g)).toHaveLength(2);
+    expect(serialized.match(/"action":"directory_new"/g)).toHaveLength(1);
+    expect(serialized.match(/"action":"directory_new_group"/g)).toHaveLength(1);
 
     await controller.onCardAction({
       actionId: "directory-open-child",
@@ -1344,6 +1469,8 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("💽 Windows (C:)");
     expect(serialized).toContain("💽 本地磁盘 (D:)");
     expect(serialized).not.toContain("📁 ..");
+    expect(serialized).not.toContain('"action":"directory_new"');
+    expect(serialized).not.toContain('"action":"directory_new_group"');
   });
 
   test.skipIf(process.platform !== "win32")("opens the Windows drive selector from a drive root", async () => {
@@ -1711,7 +1838,11 @@ describe("ProxySessionController", () => {
     releaseReaction("reaction_visible");
     await processing;
 
-    expect(shellCommandExecutor).toHaveBeenCalledWith("Get-ChildItem", process.cwd());
+    expect(shellCommandExecutor).toHaveBeenCalledWith(
+      "Get-ChildItem",
+      process.cwd(),
+      expect.objectContaining({ onOutput: expect.any(Function) }),
+    );
   });
 
   test("acknowledges a queued message before the previous slow operation completes", async () => {
@@ -2288,6 +2419,100 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("keeps an anchored topic unbound for commands and forks on its first Prompt", async () => {
+    const { controller, runtime, store, listeners, outbound } = fixture();
+    await controller.onMessage({
+      messageId: "om_lazy_topic_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "build lazy topic source",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+
+    const threadId = "omt_lazy_topic";
+    const topicContextKey = `chat_id:c1:thread_id:${threadId}`;
+    const statusMessage = threadMessage("c1", "p2p", threadId, "om_lazy_topic_source", "/status");
+    await controller.onMessage(statusMessage);
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(store.getUserContext(topicContextKey)?.currentSessionId).toBeUndefined();
+    const statusCard = (outbound.replyInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[2];
+    expect(JSON.stringify(statusCard)).toContain("当前话题尚未绑定任务");
+
+    const modelMessage = threadMessage("c1", "p2p", threadId, "om_lazy_topic_source", "/model");
+    await controller.onMessage(modelMessage);
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(store.getUserContext(topicContextKey)?.currentSessionId).toBeUndefined();
+    expect(outbound.replyText).toHaveBeenCalledWith(
+      topicContextKey,
+      { messageId: modelMessage.messageId, replyInThread: true },
+      expect.stringContaining("当前话题尚未绑定任务"),
+    );
+
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      threadId,
+      "om_lazy_topic_source",
+      "continue from the source turn",
+    ));
+
+    expect(runtime.forkSession).toHaveBeenCalledOnce();
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+    }));
+    expect(store.getUserContext(topicContextKey)?.currentSessionId).toBeDefined();
+  });
+
+  test("creates a fresh topic task with new without creating an intermediate fork", async () => {
+    const { controller, runtime, store, listeners } = fixture();
+    await controller.onMessage({
+      messageId: "om_new_topic_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "build new topic source",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+    (runtime.createSession as ReturnType<typeof vi.fn>).mockClear();
+
+    const topicContextKey = "chat_id:c1:thread_id:omt_new_topic";
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      "omt_new_topic",
+      "om_new_topic_source",
+      "/new fresh topic task",
+    ));
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(runtime.createSession).toHaveBeenCalledOnce();
+    expect(runtime.createSession).toHaveBeenCalledWith(expect.objectContaining({ title: "fresh topic task" }));
+    const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
+    expect(topicSessionId).toBeDefined();
+    expect(topicSessionId).not.toBe(sourceSessionId);
+    expect(store.getSession(topicSessionId!)?.title).toBe("fresh topic task");
+  });
+
   test("shows an empty status instead of requiring a fork anchor in a new standalone topic", async () => {
     const { controller, runtime, outbound, store } = fixture();
     const messageId = "om_standalone_topic_status";
@@ -2470,7 +2695,7 @@ describe("ProxySessionController", () => {
       "p2p",
       "omt_forkgroup_bound",
       "om_bound_forkgroup_source",
-      "/sessions",
+      "start the topic task",
     ));
     const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
     expect(topicSessionId).toBeDefined();
@@ -2529,7 +2754,7 @@ describe("ProxySessionController", () => {
       "p2p",
       "omt_forkgroup_progressed",
       "om_progressed_forkgroup_source",
-      "/sessions",
+      "start the progressed topic task",
     ));
     const topicSessionId = store.getUserContext(topicContextKey)?.currentSessionId;
     const topicSession = store.getSession(topicSessionId!);
@@ -2587,6 +2812,15 @@ describe("ProxySessionController", () => {
         finalResponse: "source complete",
       });
     }
+    store.saveTurnSnapshot("turn_1", sourceSessionId!, {
+      sessionId: sourceSessionId!,
+      turnId: "turn_1",
+      status: "completed",
+      prompt: "build the source task",
+      startedAt: 1,
+      completedAt: 2,
+    }, "chat_id:c1");
+    store.saveTurnRuntimeOrigin("turn_1", sourceSessionId!, "codex", "thr_1");
     const sourceRuntimeSession = sessions.get(sourceSessionId!);
     if (sourceRuntimeSession) sourceRuntimeSession.activeTurnId = undefined;
     const sourceRemote = remoteSessions.find((session) => session.id === "thr_1")!;
@@ -2627,6 +2861,32 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "已从当前任务创建分支并切换到新任务：build the source task（分支 1）（thr_1_fork）",
     );
+    expect(controller.controlListTaskTurns(forkedSessionId!).turns).toEqual([
+      expect.objectContaining({ turnId: "turn_1", prompt: "build the source task", current: true }),
+    ]);
+
+    store.getOrCreateUserContext("chat_id:switched", "codex");
+    store.attachSessionToContext("chat_id:switched", forkedSessionId!);
+    store.setCurrentSession("chat_id:switched", forkedSessionId!);
+    await controller.onMessage({
+      messageId: "fork-turns-after-switch",
+      contextKey: "chat_id:switched",
+      text: "/turns",
+    });
+    const turnsCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(turnsCard)).toContain("build the source task");
+
+    store.updateRuntimeSession(forkedSessionId!, {
+      lastTurnId: "turn_failed",
+      lastTurnStatus: "failed",
+    });
+    const reset = await controller.controlResetTaskToTurn(forkedSessionId!, "turn_1");
+    expect(runtime.forkSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      localSessionId: forkedSessionId,
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+    }));
+    expect(reset).toMatchObject({ lastTurnId: "turn_1", lastTurnStatus: "completed" });
   });
 
   test("forks the current task's latest completed turn into a new Feishu group", async () => {
@@ -3095,7 +3355,7 @@ describe("ProxySessionController", () => {
       permissionMode: "auto",
     }));
     expect(outbound.createGroup).toHaveBeenLastCalledWith({
-      name: `[codex] [~${path.sep}work${path.sep}demo] Home project`,
+      name: `[codex] [work${path.sep}demo] Home project`,
       userOpenId: "ou_current_user",
       avatarPng: expect.any(Uint8Array),
     });
@@ -5905,7 +6165,7 @@ describe("ProxySessionController", () => {
       title: "CLI home project",
     }));
     expect(outbound.createGroup).toHaveBeenLastCalledWith({
-      name: `[codex] [~${path.sep}work${path.sep}demo] CLI home project`,
+      name: `[codex] [work${path.sep}demo] CLI home project`,
       userOpenId: "ou_cli_user",
       avatarPng: expect.any(Uint8Array),
     });

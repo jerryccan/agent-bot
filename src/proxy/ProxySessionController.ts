@@ -24,8 +24,10 @@ import {
   type ResetHistoryCardEntry,
   type SessionTaskCardEntry,
   type SessionTaskCardGroup,
+  type ShellCommandCardView,
   type TaskListCardAction,
 } from "../feishu/CardRenderer.js";
+import { CardUpdateScheduler } from "../feishu/CardUpdateScheduler.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
 import { normalizeFeishuPostText } from "../feishu/InboundText.js";
 import { allowsFeishuUser } from "../feishu/ownerAccess.js";
@@ -54,10 +56,12 @@ import {
   type TurnAnchorRecord,
 } from "../state/StateStore.js";
 import { createId } from "../utils/id.js";
-import { asInlineCode, codeBlock, truncateMiddle, truncateText } from "../utils/markdown.js";
+import { truncateMiddle, truncateText } from "../utils/markdown.js";
 import { normalizeTaskTitle } from "../utils/taskTitle.js";
 import {
   executeShellCommand,
+  type ShellCommandOptions,
+  type ShellCommandOutputSnapshot,
   type ShellCommandResult,
 } from "../utils/executeShellCommand.js";
 
@@ -98,6 +102,7 @@ const RESET_HISTORY_PAGE_SIZE = 10;
 const MAX_LLM_TURN_RETRIES = 3;
 const RECOVERY_ACTIVITY_WINDOW_MS = 5 * 60 * 1_000;
 const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
+const SHELL_COMMAND_ELAPSED_UPDATE_INTERVAL_MS = 3_000;
 const FORWARD_ATTACHMENT_WINDOW_MS = 800;
 const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
 const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
@@ -366,7 +371,11 @@ export interface ProxyLifecycle {
   rememberFeishuUserOpenId?(userOpenId: string): Promise<void> | void;
 }
 
-export type ShellCommandExecutor = (command: string, cwd: string) => Promise<ShellCommandResult>;
+export type ShellCommandExecutor = (
+  command: string,
+  cwd: string,
+  options?: ShellCommandOptions,
+) => Promise<ShellCommandResult>;
 export interface WindowsDriveInfo {
   root: string;
   label?: string;
@@ -686,7 +695,7 @@ export class ProxySessionController {
     if (isQueueIndependentCommand(command)) {
       await this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
-          if (command.type !== "forkgroup" && command.type !== "dismiss") await this.ensureThreadFork(message);
+          if (command.type === "prompt") await this.ensureThreadFork(message);
           await this.execute(
             message.contextKey,
             command,
@@ -709,7 +718,7 @@ export class ProxySessionController {
     const next = previous.catch(() => undefined).then(() =>
       this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
-          if (command.type !== "forkgroup") await this.ensureThreadFork(message);
+          if (command.type === "prompt") await this.ensureThreadFork(message);
           await this.execute(
             message.contextKey,
             command,
@@ -1488,8 +1497,7 @@ export class ProxySessionController {
     if (!session.remoteSessionId || !this.isCodexSession(session)) {
       throw new Error("The task is not an App Server task that can be reset.");
     }
-    const contextKey = this.controlSessionContextKey(session);
-    const rows = this.store.listCompletedTurnGraph(session.localSessionId, contextKey);
+    const rows = this.store.listTaskTurnGraph(session.localSessionId);
     const graph = buildTurnGraphRows(rows.map((turn) => ({ turnId: turn.turnId, parentTurnId: turn.parentTurnId })));
     return {
       session,
@@ -1641,6 +1649,9 @@ export class ProxySessionController {
     incomingMessage?: IncomingMessage,
   ): Promise<void> {
     const context = this.store.getOrCreateUserContext(contextKey, this.config.defaults.agent!);
+    if (!this.currentSession(contextKey) && isThreadContextKey(contextKey) && commandRequiresCurrentSession(command)) {
+      throw new Error(unboundThreadTaskMessage());
+    }
     switch (command.type) {
       case "shell":
         await this.runShellCommand(contextKey, command.command);
@@ -3308,7 +3319,13 @@ export class ProxySessionController {
     const existing = runtime.getSession(record.localSessionId);
     if (existing) return { record, runtime, session: existing };
     const pending = this.sessionLoads.get(record.localSessionId);
-    if (pending) return pending;
+    if (pending) {
+      const loaded = await pending;
+      return {
+        ...loaded,
+        record: { ...loaded.record, contextKey: record.contextKey },
+      };
+    }
 
     this.outbound.registerSession(
       record.localSessionId,
@@ -3377,7 +3394,11 @@ export class ProxySessionController {
       }
       this.persistRuntimeSession(record, session, session.activeTurnId ? "running" : "ready");
       const saved = this.store.getSession(record.localSessionId) ?? record;
-      return { record: saved, runtime, session };
+      return {
+        record: { ...saved, contextKey: record.contextKey },
+        runtime,
+        session,
+      };
     })();
     this.sessionLoads.set(record.localSessionId, loading);
     try {
@@ -3884,8 +3905,10 @@ export class ProxySessionController {
       throw new Error("当前任务不是可 Reset 的 App Server 任务。");
     }
 
-    const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(turnId));
-    if (!snapshot || snapshot.sessionId !== current.localSessionId || snapshot.status !== "completed") {
+    const historyTurn = this.store.listTaskTurnGraph(current.localSessionId)
+      .find((turn) => turn.turnId === turnId);
+    const snapshot = turnViewSnapshot(historyTurn?.snapshot);
+    if (!snapshot || snapshot.status !== "completed") {
       throw new Error("只能将当前任务 Reset 到已成功完成的轮次。");
     }
     if (current.lastTurnId === turnId && current.lastTurnStatus === "completed") {
@@ -3906,7 +3929,7 @@ export class ProxySessionController {
     }
 
     const origin = this.store.getTurnRuntimeOrigin(turnId);
-    if (origin && (origin.localSessionId !== current.localSessionId || origin.agentName !== current.agentName)) {
+    if (origin && origin.agentName !== current.agentName) {
       throw new Error("这张思考卡片与当前任务不匹配，已拒绝 Reset。");
     }
     const sourceRemoteSessionId = origin?.remoteSessionId ?? current.remoteSessionId;
@@ -4443,19 +4466,105 @@ export class ProxySessionController {
 
   private async runShellCommand(contextKey: string, command: string): Promise<void> {
     const cwd = this.currentSession(contextKey)?.cwd ?? this.config.defaults.cwd;
-    const result = await this.shellCommandExecutor(command, cwd);
-    const outputParts = [
-      result.stdout.trimEnd(),
-      result.stderr.trimEnd() ? `[stderr]\n${result.stderr.trimEnd()}` : "",
-    ].filter(Boolean);
-    const output = truncateMiddle(outputParts.join("\n"), 6_000);
-    const status = result.timedOut
-      ? "已超时（120s）"
-      : `退出码 ${result.exitCode ?? "未知"}`;
-    await this.outbound.sendMarkdown(contextKey, [
-      codeBlock(`$  ${command.trim()}\n${output || "（无输出）"}`, "text"),
-      `${asInlineCode(cwd)} · ${status}${result.outputTruncated ? " · 输出已截断" : ""}`,
-    ].join("\n"));
+    const startedAt = Date.now();
+    let latestOutput: ShellCommandOutputSnapshot = {
+      stdout: "",
+      stderr: "",
+      outputTruncated: false,
+    };
+    let runningState: ShellCommandCardView = {
+      command,
+      cwd,
+      ...latestOutput,
+      status: "running",
+      elapsedMs: 0,
+    };
+    const cardMessageId = await this.outbound.sendInteractiveCard(
+      contextKey,
+      this.cardRenderer.renderShellCommandCard(runningState),
+    );
+    const scheduler = cardMessageId
+      ? new CardUpdateScheduler<ShellCommandCardView>({
+          render: (state) => this.cardRenderer.renderShellCommandCard(state),
+          write: (card) => this.outbound.updateInteractiveCard(contextKey, cardMessageId, card),
+          onError: (error) => this.logger.warn(
+            { error, contextKey, messageId: cardMessageId },
+            "Failed to update a shell command card.",
+          ),
+        })
+      : undefined;
+    scheduler?.seed(runningState);
+    const elapsedTimer = scheduler ? setInterval(() => {
+      runningState = { ...runningState, elapsedMs: Date.now() - startedAt };
+      scheduler.update(runningState);
+    }, SHELL_COMMAND_ELAPSED_UPDATE_INTERVAL_MS) : undefined;
+    elapsedTimer?.unref?.();
+
+    const updateRunningOutput = (snapshot: ShellCommandOutputSnapshot): void => {
+      latestOutput = snapshot;
+      runningState = {
+        ...runningState,
+        ...snapshot,
+        elapsedMs: Date.now() - startedAt,
+      };
+      scheduler?.update(runningState);
+    };
+
+    let result: ShellCommandResult;
+    try {
+      result = await this.shellCommandExecutor(command, cwd, { onOutput: updateRunningOutput });
+    } catch (error) {
+      if (elapsedTimer) clearInterval(elapsedTimer);
+      const failedCard = this.cardRenderer.renderShellCommandCard({
+        command,
+        cwd,
+        ...latestOutput,
+        stderr: [latestOutput.stderr.trimEnd(), runtimeErrorMessage(error)].filter(Boolean).join("\n"),
+        status: "failed",
+        elapsedMs: Date.now() - startedAt,
+      });
+      if (scheduler) {
+        try {
+          await scheduler.flush({
+            ...runningState,
+            stderr: [latestOutput.stderr.trimEnd(), runtimeErrorMessage(error)].filter(Boolean).join("\n"),
+            status: "failed",
+            elapsedMs: Date.now() - startedAt,
+          });
+        } catch (cardError) {
+          this.logger.warn(
+            { error: cardError, contextKey, messageId: cardMessageId },
+            "Failed to finalize a shell command card.",
+          );
+        } finally {
+          scheduler.dispose();
+        }
+      } else {
+        await this.outbound.sendInteractiveCard(contextKey, failedCard);
+      }
+      throw error;
+    }
+
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    const finalState: ShellCommandCardView = {
+      command,
+      cwd,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      status: result.timedOut ? "timed_out" : result.exitCode === 0 ? "completed" : "failed",
+      exitCode: result.exitCode,
+      elapsedMs: Date.now() - startedAt,
+      outputTruncated: result.outputTruncated,
+    };
+    if (scheduler) {
+      try {
+        await scheduler.flush(finalState);
+      } finally {
+        scheduler.dispose();
+      }
+    } else {
+      await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderShellCommandCard(finalState));
+    }
   }
 
   private async setTitle(contextKey: string, title: string): Promise<void> {
@@ -4572,7 +4681,7 @@ export class ProxySessionController {
     if (!current.remoteSessionId || !this.isCodexSession(current)) {
       throw new Error("当前任务不是可 Reset 的 App Server 任务。");
     }
-    const allTurns = this.store.listCompletedTurnGraph(current.localSessionId, contextKey);
+    const allTurns = this.store.listTaskTurnGraph(current.localSessionId);
     const graphRows = buildTurnGraphRows(allTurns.map((turn) => ({
       turnId: turn.turnId,
       parentTurnId: turn.parentTurnId,
@@ -4714,7 +4823,6 @@ export class ProxySessionController {
                 contextKey,
               },
             },
-            actions: directoryCreationActions(entry.path, contextKey),
           }
         : {
             name: entry.name,
@@ -4739,7 +4847,7 @@ export class ProxySessionController {
       footerLines: [
         `第 ${page + 1}/${totalPages} 页 · ${directoryCount} 个目录 · ${entries.length - directoryCount} 个文件`,
         "",
-        "> 点击目录名称进入，点击文件名称发送到当前会话；**New** 在该目录创建任务，**NewGroup** 在该目录创建新群和任务。",
+        "> 点击目录名称进入，点击文件名称发送到当前会话；卡片顶部的 **New** 和 **NewGroup** 使用当前目录。",
       ],
     });
     if (options.updateMessageId) {
@@ -4771,7 +4879,6 @@ export class ProxySessionController {
             contextKey,
           },
         },
-        actions: directoryCreationActions(drive.root, contextKey),
       }));
     const card = this.cardRenderer.renderDirectoryBrowserCard({
       directory: "此电脑",
@@ -4786,7 +4893,7 @@ export class ProxySessionController {
       footerLines: [
         `第 ${page + 1}/${totalPages} 页 · ${drives.length} 个磁盘`,
         "",
-        "> 点击磁盘名称进入；**New** 在磁盘根目录创建任务，**NewGroup** 在磁盘根目录创建新群和任务。",
+        "> 点击磁盘名称进入。",
       ],
     });
     if (options.updateMessageId) {
@@ -5468,7 +5575,9 @@ export class ProxySessionController {
     let activeTurnId: string | undefined;
     let queued = 0;
     if (!current) {
-      taskLines.push("无。直接发送消息即可创建一个未指定项目的 Agent 任务。");
+      taskLines.push(isThreadContextKey(contextKey)
+        ? unboundThreadTaskMessage()
+        : "无。直接发送消息即可创建一个未指定项目的 Agent 任务。");
     } else {
       const agent = this.ensureAgent(current.agentName);
       const runtimeSession = this.runtimes.forAgent(current.agentName).getSession(current.localSessionId);
@@ -5744,7 +5853,11 @@ export class ProxySessionController {
 
   private requireCurrentSession(contextKey: string): SessionRecord {
     const record = this.currentSession(contextKey);
-    if (!record) throw new Error("当前没有任务，直接发送一条消息即可自动创建。");
+    if (!record) {
+      throw new Error(isThreadContextKey(contextKey)
+        ? unboundThreadTaskMessage()
+        : "当前没有任务，直接发送一条消息即可自动创建。");
+    }
     return record;
   }
 
@@ -6261,6 +6374,19 @@ function isQueueIndependentCommand(command: Command): boolean {
   return false;
 }
 
+function commandRequiresCurrentSession(command: Command): boolean {
+  if (["dismiss", "stop", "title", "turns", "model", "provider", "thinking", "permissions", "nosteer"].includes(command.type)) {
+    return true;
+  }
+  if (command.type === "archive" || command.type === "fork") return command.sessionId === undefined;
+  if (command.type === "goal") return command.action !== "set";
+  return false;
+}
+
+function unboundThreadTaskMessage(): string {
+  return "当前话题尚未绑定任务。发送普通消息后，Agent Bot 会从可识别的原始轮次创建分支；没有原始轮次时会创建全新任务。也可以使用 /new 创建全新任务，或使用 /sessions 绑定现有任务。";
+}
+
 function parseSessionPage(value: unknown): number {
   const parsed = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
@@ -6602,14 +6728,13 @@ const GROUP_PROJECT_DIRECTORY_MAX_LENGTH = 15;
 
 function formatGroupProjectDirectory(projectCwd: string): string {
   const value = abbreviateHomeDirectory(projectCwd);
-  if (Array.from(value).length <= GROUP_PROJECT_DIRECTORY_MAX_LENGTH) return `[${value}]`;
-
   const levels = value
     .replace(/[\\/]+$/, "")
     .split(/[\\/]+/)
     .filter(Boolean)
     .slice(-2);
-  return `[${fitTrailingPathLevels(levels, GROUP_PROJECT_DIRECTORY_MAX_LENGTH, path.sep)}]`;
+  const separator = value.includes("\\") ? path.win32.sep : path.posix.sep;
+  return `[${fitTrailingPathLevels(levels, GROUP_PROJECT_DIRECTORY_MAX_LENGTH, separator)}]`;
 }
 
 function abbreviateHomeDirectory(value: string): string {
