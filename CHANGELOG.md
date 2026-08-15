@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15-alpha.1] - 2026-08-15
+
 - Keep new Feishu topics unbound while slash commands run, lazily fork only for the first ordinary Prompt, and prevent task-scoped commands from falling back to the parent conversation.
 - Stream `!` command output into an in-place Feishu card while the process is running, preserving both the beginning and end when output exceeds the display or capture limit.
 - Move the manually published `im:message.group_msg` permission to the final initialization stage; skipping it or reaching the five-minute timeout now leaves group chats in mention-only mode without failing initialization.
