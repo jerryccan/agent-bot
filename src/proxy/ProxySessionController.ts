@@ -821,6 +821,30 @@ export class ProxySessionController {
           const filePath = directoryFileActionPath(scopedAction.value.filePath);
           await this.assertSendableFile(filePath);
           await this.outbound.sendFile(contextKey, filePath);
+        } else if (kind === "directory_new_folder_prompt") {
+          const directory = directoryActionPath(scopedAction.value.directory);
+          await this.assertBrowsableDirectory(directory);
+          await this.outbound.updateInteractiveCard(
+            contextKey,
+            requiredCardMessageId(scopedAction.messageId),
+            this.cardRenderer.renderDirectoryNewFolderCard({
+              directory,
+              displayDirectory: abbreviateHomeDirectory(directory),
+              contextKey,
+              page: directoryPageValue(scopedAction.value.page),
+            }),
+          );
+        } else if (kind === "directory_new_folder_submit") {
+          await this.createDirectoryFromCard(contextKey, scopedAction);
+        } else if (kind === "directory_new_folder_cancel") {
+          await this.openDirectoryBrowser(
+            contextKey,
+            directoryActionPath(scopedAction.value.directory),
+            {
+              updateMessageId: requiredCardMessageId(scopedAction.messageId),
+              page: directoryPageValue(scopedAction.value.page),
+            },
+          );
         } else if (kind === "directory_new" || kind === "directory_new_group") {
           const directory = directoryActionPath(scopedAction.value.directory);
           await this.assertBrowsableDirectory(directory);
@@ -4842,12 +4866,12 @@ export class ProxySessionController {
     const card = this.cardRenderer.renderDirectoryBrowserCard({
       directory: abbreviateHomeDirectory(directory),
       entries: visibleEntries,
-      currentActions: directoryCreationActions(directory, contextKey),
+      currentActions: directoryCreationActions(directory, contextKey, page),
       navigationActions,
       footerLines: [
         `第 ${page + 1}/${totalPages} 页 · ${directoryCount} 个目录 · ${entries.length - directoryCount} 个文件`,
         "",
-        "> 点击目录名称进入，点击文件名称发送到当前会话；卡片顶部的 **New** 和 **NewGroup** 使用当前目录。",
+        "> 点击目录名称进入，点击文件名称发送到当前会话；卡片顶部可新建目录、任务或群聊。",
       ],
     });
     if (options.updateMessageId) {
@@ -4911,6 +4935,27 @@ export class ProxySessionController {
       throw new Error(`目录不存在或无法访问：${directory}（${runtimeErrorMessage(error)}）`);
     }
     if (!stats.isDirectory()) throw new Error(`这不是目录：${directory}`);
+  }
+
+  private async createDirectoryFromCard(contextKey: string, action: CardAction): Promise<void> {
+    const directory = directoryActionPath(action.value.directory);
+    await this.assertBrowsableDirectory(directory);
+    const folderName = directoryFolderName(cardFormValue(action.value, "folderName"));
+    const newDirectory = path.join(directory, folderName);
+    try {
+      await fs.mkdir(newDirectory);
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : undefined;
+      if (code === "EEXIST") throw new Error(`目录已存在：${newDirectory}`);
+      throw new Error(`无法创建目录 ${newDirectory}：${runtimeErrorMessage(error)}`);
+    }
+    await this.openDirectoryBrowser(contextKey, directory, {
+      updateMessageId: requiredCardMessageId(action.messageId),
+      page: directoryPageValue(action.value.page),
+    });
+    await this.outbound.sendText(contextKey, `已创建目录：${newDirectory}`);
   }
 
   private async assertSendableFile(filePath: string): Promise<void> {
@@ -6424,10 +6469,45 @@ function directoryFileActionPath(value: unknown): string {
   return path.resolve(value);
 }
 
-function directoryCreationActions(directory: string, contextKey: string): TaskListCardAction[] {
+function cardFormValue(value: Record<string, unknown>, name: string): unknown {
+  const formValue = value.formValue;
+  return typeof formValue === "object" && formValue !== null
+    ? (formValue as Record<string, unknown>)[name]
+    : undefined;
+}
+
+function directoryFolderName(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error("请输入目录名。");
+  const name = value.trim();
+  if (name === "." || name === "..") throw new Error("目录名不能是 . 或 ..。");
+  if (name.length > 255) throw new Error("目录名不能超过 255 个字符。");
+  if (/[<>:"/\\|?*\u0000-\u001F]/u.test(name)) {
+    throw new Error("目录名不能包含路径分隔符或以下字符：< > : \" / \\ | ? *");
+  }
+  if (/[. ]$/u.test(name)) throw new Error("目录名不能以空格或句点结尾。");
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(name)) {
+    throw new Error("该名称是系统保留名称，请使用其他目录名。");
+  }
+  return name;
+}
+
+function directoryCreationActions(
+  directory: string,
+  contextKey: string,
+  page: number,
+): TaskListCardAction[] {
   return [
     {
-      text: "New",
+      text: "NewFolder",
+      value: {
+        action: "directory_new_folder_prompt",
+        directory,
+        contextKey,
+        page: String(page),
+      },
+    },
+    {
+      text: "NewTask",
       value: {
         action: "directory_new",
         directory,
@@ -6435,7 +6515,7 @@ function directoryCreationActions(directory: string, contextKey: string): TaskLi
       },
     },
     {
-      text: "NewGroup",
+      text: "NewGroupTask",
       value: {
         action: "directory_new_group",
         directory,

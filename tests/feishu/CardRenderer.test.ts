@@ -1888,8 +1888,9 @@ describe("CardRenderer", () => {
         },
       ],
       currentActions: [
-        { text: "New", value: { action: "directory_new", directory: "D:\\dev\\agent-bot" } },
-        { text: "NewGroup", value: { action: "directory_new_group", directory: "D:\\dev\\agent-bot" } },
+        { text: "NewFolder", value: { action: "directory_new_folder_prompt", directory: "D:\\dev\\agent-bot" } },
+        { text: "NewTask", value: { action: "directory_new", directory: "D:\\dev\\agent-bot" } },
+        { text: "NewGroupTask", value: { action: "directory_new_group", directory: "D:\\dev\\agent-bot" } },
       ],
       navigationActions: [],
       footerLines: ["第 1/1 页 · 1 个目录 · 1 个文件"],
@@ -1903,6 +1904,10 @@ describe("CardRenderer", () => {
       item.tag === "column_set"
       && item.flex_mode === "none"
       && JSON.stringify(item).includes("📄 README.md"));
+    const creationRow = objects.find((item) =>
+      item.tag === "column_set"
+      && JSON.stringify(item).includes("NewFolder")
+      && JSON.stringify(item).includes("NewGroupTask"));
 
     expect(card).toMatchObject({ header: { title: { content: "文件浏览" } } });
     expect(card).toMatchObject({ body: { vertical_spacing: "2px" } });
@@ -1921,6 +1926,19 @@ describe("CardRenderer", () => {
     expect(JSON.stringify(card)).toContain("🖼️ logo.png");
     expect(JSON.stringify(card)).toContain("📦 agentbot.exe");
     expect(JSON.stringify(card)).toContain("💽 Windows (C:)");
+    expect(JSON.stringify(card)).toContain("NewFolder");
+    expect(JSON.stringify(card)).toContain("NewTask");
+    expect(JSON.stringify(card)).toContain("NewGroupTask");
+    expect(JSON.stringify(card)).toContain('"action":"directory_new_folder_prompt"');
+    expect(creationRow).toMatchObject({
+      columns: [
+        expect.any(Object),
+        { elements: [{ content: "<font color='grey'>·</font>" }] },
+        expect.any(Object),
+        { elements: [{ content: "<font color='grey'>·</font>" }] },
+        expect.any(Object),
+      ],
+    });
     const browserRows = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.filter((item) =>
       item.tag === "column_set"
       && item.flex_mode === "none"
@@ -1930,6 +1948,36 @@ describe("CardRenderer", () => {
     expect(browserRows.at(-1)).toMatchObject({
       columns: [{ elements: [{ tag: "markdown", content: "\u00a0" }] }],
     });
+  });
+
+  test("renders a required new-folder form with English actions", () => {
+    const card = new CardRenderer().renderDirectoryNewFolderCard({
+      directory: "C:\\Users\\Admin\\work",
+      displayDirectory: "~\\work",
+      contextKey: "chat_id:c1",
+      page: 2,
+    });
+    const objects = collectObjects(card);
+    const input = objects.find((item) => item.tag === "input");
+    const create = objects.find((item) => item.tag === "button" && item.action_type === "form_submit");
+
+    expect(card).toMatchObject({
+      config: { width_mode: "compact" },
+      header: { title: { content: "新建目录" } },
+    });
+    expect(JSON.stringify(card)).toContain("`~\\\\work`");
+    expect(input).toMatchObject({ name: "folderName", required: true, max_length: 255 });
+    expect(create).toMatchObject({
+      text: { content: "Create" },
+      value: {
+        action: "directory_new_folder_submit",
+        directory: "C:\\Users\\Admin\\work",
+        contextKey: "chat_id:c1",
+        page: "2",
+      },
+    });
+    expect(JSON.stringify(card)).toContain("Back");
+    expect(JSON.stringify(card)).toContain('"action":"directory_new_folder_cancel"');
   });
 
   test("renders status card actions as callback links after the sections", () => {

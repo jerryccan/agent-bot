@@ -327,7 +327,10 @@ function getCardActionValue(action: Record<string, unknown>): Record<string, unk
     const option = parseJsonObject(action.option);
     if (Object.keys(option).length > 0) return option;
   }
-  return isRecord(action.value) ? action.value : {};
+  const value = isRecord(action.value) ? action.value : {};
+  return isRecord(action.form_value)
+    ? { ...value, formValue: action.form_value }
+    : value;
 }
 
 function getEventId(data: unknown): string | undefined {

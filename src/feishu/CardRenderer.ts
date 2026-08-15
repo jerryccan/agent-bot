@@ -205,6 +205,13 @@ export interface DirectoryBrowserCardView {
   footerLines: string[];
 }
 
+export interface DirectoryNewFolderCardView {
+  directory: string;
+  displayDirectory?: string;
+  contextKey: string;
+  page: number;
+}
+
 const DIRECTORY_BROWSER_ROW_COUNT = 16;
 
 export type ThinkingCardLayout = "grouped" | "timeline";
@@ -1213,7 +1220,7 @@ export class CardRenderer {
   renderDirectoryBrowserCard(view: DirectoryBrowserCardView): Record<string, unknown> {
     const elements: Record<string, unknown>[] = [
       markdown(`**当前目录**：${inlineCode(view.directory)}`),
-      taskActionRow(view.currentActions),
+      taskActionRow(view.currentActions, undefined, true),
       { tag: "hr" },
     ];
     const entryRows = view.entries.length === 0
@@ -1228,6 +1235,54 @@ export class CardRenderer {
       elements.push({ tag: "hr" }, markdown(view.footerLines.join("\n")));
     }
     return sectionCard("文件浏览", elements, "blue", "2px");
+  }
+
+  renderDirectoryNewFolderCard(view: DirectoryNewFolderCardView): Record<string, unknown> {
+    const actionValue = {
+      action: "directory_new_folder_submit",
+      directory: view.directory,
+      contextKey: view.contextKey,
+      page: String(view.page),
+    };
+    return compactCard("新建目录", "blue", [
+      markdown(`将在当前目录下创建一个子目录：\n${inlineCode(view.displayDirectory ?? view.directory)}`),
+      {
+        tag: "form",
+        name: "directory_new_folder_form",
+        vertical_spacing: "8px",
+        elements: [
+          {
+            tag: "input",
+            element_id: "folder_name_input",
+            name: "folderName",
+            required: true,
+            input_type: "text",
+            width: "fill",
+            max_length: 255,
+            label: { tag: "plain_text", content: "目录名" },
+            placeholder: { tag: "plain_text", content: "请输入目录名" },
+          },
+          {
+            tag: "button",
+            name: "directory_new_folder_create",
+            text: { tag: "plain_text", content: "Create" },
+            type: "primary",
+            width: "fill",
+            action_type: "form_submit",
+            value: actionValue,
+          },
+        ],
+      },
+      taskActionRow([{
+        text: "Back",
+        value: {
+          action: "directory_new_folder_cancel",
+          directory: view.directory,
+          contextKey: view.contextKey,
+          page: String(view.page),
+        },
+      }]),
+    ]);
   }
 
   renderResetHistoryCard(view: ResetHistoryCardView): Record<string, unknown> {
@@ -2481,13 +2536,25 @@ function resetHistoryEntryRow(
   };
 }
 
-function taskActionRow(actions: TaskListCardAction[], trailingText?: string): Record<string, unknown> {
-  const columns = actions.map((action) => ({
-    tag: "column",
-    width: "auto",
-    vertical_align: "center",
-    elements: [taskActionElement(action)],
-  }));
+function taskActionRow(
+  actions: TaskListCardAction[],
+  trailingText?: string,
+  dotSeparated = false,
+): Record<string, unknown> {
+  const columns = actions.flatMap((action, index) => [
+    ...(dotSeparated && index > 0 ? [{
+      tag: "column",
+      width: "auto",
+      vertical_align: "center",
+      elements: [markdown("<font color='grey'>·</font>")],
+    }] : []),
+    {
+      tag: "column",
+      width: "auto",
+      vertical_align: "center",
+      elements: [taskActionElement(action)],
+    },
+  ]);
   if (trailingText) {
     columns.push({
       tag: "column",

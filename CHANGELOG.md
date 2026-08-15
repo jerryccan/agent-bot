@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add dot-separated `NewFolder`, `NewTask`, and `NewGroupTask` actions to the Feishu file browser, including an in-card folder-name form, safe child-directory validation, and in-place return to the refreshed listing.
+
 ## [0.1.15-alpha.1] - 2026-08-15
 
 - Keep new Feishu topics unbound while slash commands run, lazily fork only for the first ordinary Prompt, and prevent task-scoped commands from falling back to the parent conversation.

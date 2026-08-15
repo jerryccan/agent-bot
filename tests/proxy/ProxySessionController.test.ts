@@ -1371,6 +1371,10 @@ describe("ProxySessionController", () => {
     expect(serialized).toContain("🖼️ logo.png");
     expect(serialized).toContain("📦 agentbot.exe");
     expect(serialized).toContain('"action":"directory_send_file"');
+    expect(serialized).toContain("NewFolder");
+    expect(serialized).toContain("NewTask");
+    expect(serialized).toContain("NewGroupTask");
+    expect(serialized.match(/"action":"directory_new_folder_prompt"/g)).toHaveLength(1);
     expect(serialized.match(/"action":"directory_new"/g)).toHaveLength(1);
     expect(serialized.match(/"action":"directory_new_group"/g)).toHaveLength(1);
 
@@ -1392,6 +1396,76 @@ describe("ProxySessionController", () => {
     expect(updatedSerialized).not.toContain("root.txt");
     expect(updatedSerialized).toContain("📁 ..");
     expect(updatedSerialized).not.toContain("Parent");
+  });
+
+  test("creates a named child directory from the browser card form", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-dir-new-folder-"));
+    tempDirs.push(root);
+    const { controller, outbound } = fixture();
+
+    await controller.onCardAction({
+      actionId: "directory-new-folder-prompt",
+      contextKey: "chat_id:c1",
+      messageId: "om_directory",
+      value: {
+        action: "directory_new_folder_prompt",
+        directory: root,
+        contextKey: "chat_id:c1",
+        page: "0",
+      },
+    });
+
+    const promptCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(promptCard).toMatchObject({ header: { title: { content: "新建目录" } } });
+    expect(JSON.stringify(promptCard)).toContain('"name":"folderName"');
+
+    await controller.onCardAction({
+      actionId: "directory-new-folder-submit",
+      contextKey: "chat_id:c1",
+      messageId: "om_directory",
+      value: {
+        action: "directory_new_folder_submit",
+        directory: root,
+        contextKey: "chat_id:c1",
+        page: "0",
+        formValue: { folderName: "new-child" },
+      },
+    });
+
+    expect(fs.statSync(path.join(root, "new-child")).isDirectory()).toBe(true);
+    const browserCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(browserCard).toMatchObject({ header: { title: { content: "文件浏览" } } });
+    expect(JSON.stringify(browserCard)).toContain("new-child");
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      `已创建目录：${path.join(root, "new-child")}`,
+    );
+  });
+
+  test("rejects path traversal in a new-folder card submission", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-dir-invalid-folder-"));
+    tempDirs.push(root);
+    const escapedName = `escape-${path.basename(root)}`;
+    const { controller, outbound } = fixture();
+
+    await controller.onCardAction({
+      actionId: "directory-new-folder-invalid",
+      contextKey: "chat_id:c1",
+      messageId: "om_directory",
+      value: {
+        action: "directory_new_folder_submit",
+        directory: root,
+        contextKey: "chat_id:c1",
+        page: "0",
+        formValue: { folderName: `../${escapedName}` },
+      },
+    });
+
+    expect(fs.existsSync(path.join(root, "..", escapedName))).toBe(false);
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("目录名不能包含路径分隔符"),
+    );
   });
 
   test("sends a selected file to the chat or topic containing the browser card", async () => {

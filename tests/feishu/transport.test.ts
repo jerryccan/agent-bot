@@ -817,6 +817,45 @@ test("dispatches direct Feishu SDK card action events", async () => {
   });
 });
 
+test("preserves submitted form values in Feishu card actions", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(config, handler, logger);
+
+  await connector.start();
+  await larkSdkMock.handlers["card.action.trigger"]({
+    header: { event_id: "evt_form_1" },
+    action: {
+      tag: "button",
+      value: { action: "directory_new_folder_submit", directory: "D:\\work" },
+      form_value: { folderName: "src-new" },
+    },
+    operator: { open_id: "ou_1" },
+    context: { open_chat_id: "oc_1", open_message_id: "om_form_1" },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  expect(handler.onCardAction).toHaveBeenCalledWith({
+    actionId: "evt_form_1",
+    contextKey: "chat_id:oc_1",
+    userId: "ou_1",
+    messageId: "om_form_1",
+    value: {
+      action: "directory_new_folder_submit",
+      directory: "D:\\work",
+      formValue: { folderName: "src-new" },
+    },
+  });
+});
+
 test("silently ignores card actions from users other than the configured owner", async () => {
   const config = {
     feishu: {
