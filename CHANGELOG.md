@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15-alpha.2] - 2026-08-15
+
 - Add dot-separated `NewFolder`, `NewTask`, and `NewGroupTask` actions to the Feishu file browser, including an in-card folder-name form, safe child-directory validation, and in-place return to the refreshed listing.
 
 ## [0.1.15-alpha.1] - 2026-08-15
