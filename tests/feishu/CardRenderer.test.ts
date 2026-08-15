@@ -53,6 +53,55 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("renders live shell output with head-and-tail truncation", () => {
+    const card = new CardRenderer().renderShellCommandCard({
+      command: "npm run noisy",
+      cwd: "D:\\dev\\agent-bot",
+      stdout: `HEAD-${"x".repeat(7_000)}-TAIL`,
+      stderr: "",
+      status: "running",
+      elapsedMs: 12_300,
+      outputTruncated: false,
+    });
+    const serialized = JSON.stringify(card);
+
+    expect(card).toMatchObject({
+      config: { update_multi: true },
+      header: { template: "blue", title: { content: "正在执行命令" } },
+    });
+    expect(serialized).toContain("HEAD-");
+    expect(serialized).toContain("中间输出已截断");
+    expect(serialized).toContain("-TAIL");
+    expect(serialized).toContain("输出过长，已保留开头和结尾并截断中间内容");
+  });
+
+  test("normalizes Windows, Linux, macOS, and carriage-return progress in native shell cards", () => {
+    const card = new CardRenderer().renderShellCommandCard({
+      command: "git clone repository",
+      cwd: "/tmp/repository",
+      stdout: [
+        "windows line\r\n",
+        "linux line\n",
+        "macOS progress 10%\r",
+        "macOS progress 20%\r",
+      ].join(""),
+      stderr: "remote progress 40%\rremote progress 50%\r",
+      status: "running",
+      elapsedMs: 1_000,
+      outputTruncated: false,
+    });
+    const content = collectObjects(card)
+      .filter((item) => item.tag === "markdown")
+      .map((item) => String(item.content ?? ""))
+      .join("\n");
+
+    expect(content).toContain("windows line\nlinux line\nmacOS progress 20%");
+    expect(content).toContain("[stderr]\nremote progress 50%");
+    expect(content).not.toContain("macOS progress 10%");
+    expect(content).not.toContain("remote progress 40%");
+    expect(content).not.toContain("\r");
+  });
+
   test("keeps auto-sized execution-setting tabs on one dot-separated row", () => {
     const card = new CardRenderer().renderExecutionSettings({
       sessionId: "session_1",
@@ -1282,6 +1331,38 @@ describe("CardRenderer", () => {
     expect(renderedResult.slice(-600)).toBe(output.slice(-600));
   });
 
+  test("collapses carriage-return progress updates into separate latest-status lines", () => {
+    const running = state();
+    const output = [
+      "Cloning into '.'...\r\n",
+      "remote: Counting objects: 94% (431234/458759)\r",
+      "remote: Counting objects: 95% (435821/458759)\r",
+      "remote: Counting objects: 100% (458759/458759), done.\n",
+      "remote: Compressing objects: 36% (43662/119295)\r",
+      "remote: Compressing objects: 37% (45277/119295)\r",
+    ].join("");
+    const tool = {
+      id: "git-progress",
+      title: "git clone",
+      kind: "command",
+      status: "running" as const,
+      command: "git clone repository",
+      output,
+    };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes("git clone"));
+    const content = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(content).toContain("Cloning into '.'...\nremote: Counting objects: 100% (458759/458759), done.\nremote: Compressing objects: 37% (45277/119295)");
+    expect(content).not.toContain("Counting objects: 94%");
+    expect(content).not.toContain("Counting objects: 95%");
+    expect(content).not.toContain("Compressing objects: 36%");
+    expect(content).not.toContain("\r");
+  });
+
   test("shows the active tool prominently and uses a completed header on completion", () => {
     const running = state();
     running.activeTool = { id: "active", title: "查看仓库", kind: "command", status: "running", command: "rg --files" };
@@ -1753,7 +1834,7 @@ describe("CardRenderer", () => {
     expect(actionRowIndex).toBe(taskBodyIndex + 1);
   });
 
-  test("renders clickable directory rows with New and NewGroup on the same row", () => {
+  test("renders compact clickable directory rows without per-directory creation actions", () => {
     const card = new CardRenderer().renderDirectoryBrowserCard({
       directory: "D:\\dev\\agent-bot",
       entries: [
@@ -1772,10 +1853,6 @@ describe("CardRenderer", () => {
             text: "src",
             value: { action: "directory_open", directory: "D:\\dev\\agent-bot\\src" },
           },
-          actions: [
-            { text: "New", value: { action: "directory_new", directory: "D:\\dev\\agent-bot\\src" } },
-            { text: "NewGroup", value: { action: "directory_new_group", directory: "D:\\dev\\agent-bot\\src" } },
-          ],
         },
         {
           name: "Windows (C:)",
@@ -1834,15 +1911,11 @@ describe("CardRenderer", () => {
     expect(JSON.stringify(card)).not.toContain("Parent");
     expect(directoryRow).toMatchObject({
       margin: "0px",
-      columns: [
-        expect.objectContaining({ width: "weighted" }),
-        expect.objectContaining({ width: "auto" }),
-        expect.objectContaining({ width: "auto" }),
-      ],
+      columns: [expect.objectContaining({ width: "weighted" })],
     });
     expect(JSON.stringify(directoryRow)).toContain('"action":"directory_open"');
-    expect(JSON.stringify(directoryRow)).toContain('"action":"directory_new"');
-    expect(JSON.stringify(directoryRow)).toContain('"action":"directory_new_group"');
+    expect(JSON.stringify(directoryRow)).not.toContain('"action":"directory_new"');
+    expect(JSON.stringify(directoryRow)).not.toContain('"action":"directory_new_group"');
     expect(fileRow).toMatchObject({ columns: [expect.objectContaining({ width: "weighted" })] });
     expect(JSON.stringify(fileRow)).toContain('"action":"directory_send_file"');
     expect(JSON.stringify(card)).toContain("🖼️ logo.png");

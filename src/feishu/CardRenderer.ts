@@ -11,7 +11,7 @@ import type {
   ToolState,
 } from "../runtime/types.js";
 import type { TurnActivity, TurnViewState, TurnViewStatus } from "../presentation/turnViewTypes.js";
-import { truncateText } from "../utils/markdown.js";
+import { truncateMiddle, truncateText } from "../utils/markdown.js";
 import { localCardImage } from "./LocalCardImage.js";
 
 export interface StartupStatusView {
@@ -195,7 +195,6 @@ export interface DirectoryBrowserCardEntry {
   name: string;
   kind: "directory" | "drive" | "file" | "image" | "binary";
   openAction?: TaskListCardAction;
-  actions?: TaskListCardAction[];
 }
 
 export interface DirectoryBrowserCardView {
@@ -233,11 +232,51 @@ export interface DismissGroupCardView {
   requestedBy: string;
 }
 
+export interface ShellCommandCardView {
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  status: "running" | "completed" | "failed" | "timed_out";
+  exitCode?: number | null;
+  elapsedMs: number;
+  outputTruncated: boolean;
+}
+
 export class CardRenderer {
   private readonly thinkingCardLayout: ThinkingCardLayout;
 
   constructor(options: CardRendererOptions = {}) {
     this.thinkingCardLayout = options.thinkingCardLayout ?? "grouped";
+  }
+
+  renderShellCommandCard(view: ShellCommandCardView): Record<string, unknown> {
+    const stdout = normalizeTerminalOutput(view.stdout).trimEnd();
+    const stderr = normalizeTerminalOutput(view.stderr).trimEnd();
+    const rawOutput = [
+      stdout,
+      stderr ? `[stderr]\n${stderr}` : "",
+    ].filter(Boolean).join("\n");
+    const displayOutput = truncateMiddle(
+      rawOutput,
+      6_000,
+      "\n\n... 中间输出已截断 ...\n\n",
+    );
+    const command = truncateMiddle(view.command.trim(), 600, " ... ");
+    const output = displayOutput || (view.status === "running" ? "等待输出..." : "（无输出）");
+    const status = shellCommandStatus(view);
+    const outputWasTruncated = view.outputTruncated || rawOutput.length > 6_000;
+    return sectionCard(
+      status.title,
+      [
+        markdown(codeBlock(`$  ${command}\n${output}`, 6_700)),
+        markdown([
+          `${inlineCode(view.cwd)} · ${status.label} · ${formatTurnDuration(view.elapsedMs)}`,
+          ...(outputWasTruncated ? ["输出过长，已保留开头和结尾并截断中间内容。"] : []),
+        ].join("\n")),
+      ],
+      status.template,
+    );
   }
 
   renderExecutionSettings(view: ExecutionSettingsCardView): Record<string, unknown> {
@@ -1958,8 +1997,24 @@ function renderToolDetails(tool: ToolState, projectCwd?: string): string {
     ? unwrapShellCommand(normalizedCommand) ?? normalizedCommand
     : normalizedCommand;
   const commandText = truncateText(displayCommand, 600);
-  const resultText = result ? truncateToolResult(stripAnsi(result).trim()) : undefined;
+  const resultText = result ? truncateToolResult(normalizeTerminalOutput(result).trim()) : undefined;
   return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
+}
+
+function normalizeTerminalOutput(value: string): string {
+  const clean = stripAnsi(value).replace(/\r\n/g, "\n");
+  return clean
+    .split("\n")
+    .map((line) => {
+      if (!line.includes("\r")) return line;
+      const updates = line.split("\r");
+      for (let index = updates.length - 1; index >= 0; index -= 1) {
+        const update = updates[index];
+        if (update) return update;
+      }
+      return "";
+    })
+    .join("\n");
 }
 
 function truncateToolResult(result: string): string {
@@ -2046,6 +2101,23 @@ function formatTurnDuration(durationMs: number): string {
   }
   if (totalMinutes > 0) return `${String(totalMinutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   return `${seconds}s`;
+}
+
+function shellCommandStatus(view: ShellCommandCardView): {
+  title: string;
+  label: string;
+  template: string;
+} {
+  if (view.status === "running") {
+    return { title: "正在执行命令", label: "运行中", template: "blue" };
+  }
+  if (view.status === "timed_out") {
+    return { title: "命令执行超时", label: "已超时（120s）", template: "orange" };
+  }
+  if (view.status === "completed") {
+    return { title: "命令执行完成", label: `退出码 ${view.exitCode ?? 0}`, template: "green" };
+  }
+  return { title: "命令执行失败", label: `退出码 ${view.exitCode ?? "未知"}`, template: "red" };
 }
 
 function unwrapShellCommand(command: string): string | undefined {
@@ -2453,12 +2525,6 @@ function directoryBrowserEntryRow(entry: DirectoryBrowserCardEntry): Record<stri
           ? [taskActionElement({ ...entry.openAction, text: label })]
           : [markdown(escapeCardHtml(label))],
       },
-      ...(entry.actions ?? []).map((action) => ({
-        tag: "column",
-        width: "auto",
-        vertical_align: "center",
-        elements: [taskActionElement(action)],
-      })),
     ],
   };
 }
