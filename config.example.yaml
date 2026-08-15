@@ -44,4 +44,5 @@ storage:
 
 logging:
   level: "info"
+  # Runtime logs use this base name and are written as agent-bot.YYYY-MM-DD.log.
   path: "./logs/agent-bot.log"

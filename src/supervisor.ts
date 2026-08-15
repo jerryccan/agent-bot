@@ -70,18 +70,24 @@ async function startChild(): Promise<void> {
         AGENT_BOT_SUPERVISED: "1",
         AGENT_BOT_RESTART_REASON: restartReason,
       }, restartNotificationTargets),
-      stdio: ["ignore", "ignore", workerStderr],
+      stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
     });
-  } finally {
-    diagnostics.closeWorkerStderr(workerStderr);
+    if (workerStderr === "ignore") {
+      child.stderr?.resume();
+    } else {
+      child.stderr?.pipe(workerStderr);
+    }
+  } catch (error) {
+    void diagnostics.closeWorkerStderr(workerStderr);
+    throw error;
   }
   const workerPid = child.pid;
   writeSupervisorLog("started", {
     pid: child.pid,
     restartReason,
     restartNotificationTargets,
-    workerStderrPath: diagnostics.paths.workerStderrPath,
+    workerStderrPath: diagnostics.currentWorkerStderrPath(),
     crashReportDirectory: diagnostics.paths.crashReportDirectory,
   });
 

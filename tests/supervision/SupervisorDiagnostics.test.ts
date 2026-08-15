@@ -69,19 +69,22 @@ describe("SupervisorDiagnostics", () => {
     expect(fs.statSync(reportDirectory).isDirectory()).toBe(true);
   });
 
-  test("persists supervisor events, worker stderr, and crash manifests", () => {
+  test("persists supervisor events, worker stderr, and crash manifests in daily files", async () => {
     const root = temporaryDirectory();
-    const diagnostics = new SupervisorDiagnostics(testConfig(root));
+    const now = new Date(2026, 6, 31, 12, 0, 0);
+    const diagnostics = new SupervisorDiagnostics(testConfig(root), () => now);
     const previousReportSettings = captureReportSettings();
     try {
       diagnostics.initialize();
       diagnostics.writeEvent("started", { pid: 1234 });
       const workerStderr = diagnostics.openWorkerStderr();
-      expect(typeof workerStderr).toBe("number");
-      if (typeof workerStderr === "number") {
-        fs.writeSync(workerStderr, "fatal worker output\n");
+      expect(workerStderr).not.toBe("ignore");
+      if (workerStderr !== "ignore") {
+        await new Promise<void>((resolve, reject) => {
+          workerStderr.write("fatal worker output\n", (error) => error ? reject(error) : resolve());
+        });
       }
-      diagnostics.closeWorkerStderr(workerStderr);
+      await diagnostics.closeWorkerStderr(workerStderr);
 
       const reportPath = path.join(
         diagnostics.paths.crashReportDirectory,
@@ -92,8 +95,8 @@ describe("SupervisorDiagnostics", () => {
         workerPid: 1234,
         exitCode: 3221226505,
         signal: null,
-        startedAt: "2026-07-31T03:59:00.000Z",
-        exitedAt: "2026-07-31T04:00:00.000Z",
+        startedAt: new Date(now.getTime() - 60_000).toISOString(),
+        exitedAt: now.toISOString(),
         uptimeMs: 60_000,
         consecutiveFailures: 1,
         restartDelayMs: 1_000,
@@ -104,13 +107,13 @@ describe("SupervisorDiagnostics", () => {
         workerPid: 1234,
         exitCode: 3221226505,
         diagnosticReports: [reportPath],
-        supervisorLogPath: diagnostics.paths.supervisorLogPath,
-        workerStderrPath: diagnostics.paths.workerStderrPath,
+        supervisorLogPath: diagnostics.currentSupervisorLogPath(),
+        workerStderrPath: diagnostics.currentWorkerStderrPath(),
       });
-      expect(fs.readFileSync(diagnostics.paths.supervisorLogPath, "utf8")).toContain(
+      expect(fs.readFileSync(diagnostics.currentSupervisorLogPath(), "utf8")).toContain(
         '"event":"crash_context_saved"',
       );
-      expect(fs.readFileSync(diagnostics.paths.workerStderrPath, "utf8")).toContain(
+      expect(fs.readFileSync(diagnostics.currentWorkerStderrPath(), "utf8")).toContain(
         "fatal worker output",
       );
       expect(JSON.parse(fs.readFileSync(diagnostics.paths.lastCrashPath, "utf8"))).toMatchObject({
@@ -120,6 +123,43 @@ describe("SupervisorDiagnostics", () => {
       const crashManifests = fs.readdirSync(diagnostics.paths.crashReportDirectory)
         .filter((name) => name.startsWith("crash-"));
       expect(crashManifests).toHaveLength(1);
+    } finally {
+      restoreReportSettings(previousReportSettings);
+    }
+  });
+
+  test("records the last stderr file actually written when a worker crosses midnight silently", async () => {
+    const root = temporaryDirectory();
+    let now = new Date(2026, 6, 31, 23, 59, 59);
+    const diagnostics = new SupervisorDiagnostics(testConfig(root), () => now);
+    const previousReportSettings = captureReportSettings();
+    try {
+      diagnostics.initialize();
+      const workerStderr = diagnostics.openWorkerStderr();
+      expect(workerStderr).not.toBe("ignore");
+      if (workerStderr !== "ignore") {
+        await new Promise<void>((resolve, reject) => {
+          workerStderr.write("before midnight\n", (error) => error ? reject(error) : resolve());
+        });
+      }
+      const writtenPath = diagnostics.currentWorkerStderrPath(now);
+      now = new Date(2026, 7, 1, 0, 0, 1);
+
+      const record = diagnostics.recordCrash({
+        workerPid: 2345,
+        exitCode: 1,
+        signal: null,
+        startedAt: new Date(now.getTime() - 60_000).toISOString(),
+        exitedAt: now.toISOString(),
+        uptimeMs: 60_000,
+        consecutiveFailures: 1,
+        restartDelayMs: 1_000,
+      });
+
+      expect(record?.workerStderrPath).toBe(writtenPath);
+      expect(fs.existsSync(writtenPath)).toBe(true);
+      expect(fs.existsSync(diagnostics.currentWorkerStderrPath(now))).toBe(false);
+      await diagnostics.closeWorkerStderr(workerStderr);
     } finally {
       restoreReportSettings(previousReportSettings);
     }

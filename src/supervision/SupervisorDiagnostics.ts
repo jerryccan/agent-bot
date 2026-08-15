@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AppConfig } from "../config/schema.js";
+import { DailyLogStream, dailyLogPath } from "../logging/DailyLogStream.js";
 
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
 const LOG_BACKUP_COUNT = 3;
@@ -42,8 +43,12 @@ type ExtendedProcessReport = typeof process.report & {
 
 export class SupervisorDiagnostics {
   readonly paths: SupervisorDiagnosticsPaths;
+  private workerStderrStream?: DailyLogStream;
 
-  constructor(config: Pick<AppConfig, "logging" | "storage">) {
+  constructor(
+    config: Pick<AppConfig, "logging" | "storage">,
+    private readonly clock: () => Date = () => new Date(),
+  ) {
     this.paths = resolveSupervisorDiagnosticsPaths(config);
   }
 
@@ -51,13 +56,13 @@ export class SupervisorDiagnostics {
     try {
       ensurePrivateDirectory(path.dirname(this.paths.supervisorLogPath));
       ensurePrivateDirectory(this.paths.crashReportDirectory);
-      rotateLogFile(this.paths.supervisorLogPath);
-      rotateLogFile(this.paths.workerStderrPath);
+      rotateLogFile(this.currentSupervisorLogPath());
+      rotateLogFile(this.currentWorkerStderrPath());
       this.configureCurrentProcessReports();
       this.writeEvent("diagnostics_initialized", {
         nodeVersion: process.versions.node,
-        supervisorLogPath: this.paths.supervisorLogPath,
-        workerStderrPath: this.paths.workerStderrPath,
+        supervisorLogPath: this.currentSupervisorLogPath(),
+        workerStderrPath: this.currentWorkerStderrPath(),
         crashReportDirectory: this.paths.crashReportDirectory,
       });
     } catch (error) {
@@ -73,40 +78,51 @@ export class SupervisorDiagnostics {
       ...data,
     })}\n`;
     try {
-      fs.appendFileSync(this.paths.supervisorLogPath, line, { encoding: "utf8", mode: 0o600 });
-      restrictFilePermissions(this.paths.supervisorLogPath);
+      const logPath = this.currentSupervisorLogPath();
+      rotateLogFile(logPath);
+      fs.appendFileSync(logPath, line, { encoding: "utf8", mode: 0o600 });
+      restrictFilePermissions(logPath);
     } catch (error) {
       writeFallbackDiagnostic(event, error);
     }
   }
 
-  openWorkerStderr(): number | "ignore" {
+  openWorkerStderr(): DailyLogStream | "ignore" {
     try {
-      rotateLogFile(this.paths.workerStderrPath);
-      fs.appendFileSync(
-        this.paths.workerStderrPath,
-        `${JSON.stringify({ event: "worker_started", time: new Date().toISOString() })}\n`,
-        { encoding: "utf8", mode: 0o600 },
-      );
-      restrictFilePermissions(this.paths.workerStderrPath);
-      return fs.openSync(this.paths.workerStderrPath, "a", 0o600);
+      const stream = new DailyLogStream(this.paths.workerStderrPath, {
+        clock: this.clock,
+        mode: 0o600,
+        beforeOpen: (filePath) => rotateLogFile(filePath),
+      });
+      stream.on("error", (error) => {
+        this.writeEvent("worker_stderr_write_failed", { error: errorMessage(error) });
+      });
+      stream.write(`${JSON.stringify({ event: "worker_started", time: this.clock().toISOString() })}\n`);
+      this.workerStderrStream = stream;
+      return stream;
     } catch (error) {
       this.writeEvent("worker_stderr_open_failed", { error: errorMessage(error) });
       return "ignore";
     }
   }
 
-  closeWorkerStderr(target: number | "ignore"): void {
-    if (typeof target !== "number") return;
-    try {
-      fs.closeSync(target);
-    } catch (error) {
-      this.writeEvent("worker_stderr_close_failed", { error: errorMessage(error) });
-    }
+  closeWorkerStderr(target: DailyLogStream | "ignore"): Promise<void> {
+    if (target === "ignore") return Promise.resolve();
+    return new Promise((resolve) => target.end(resolve));
+  }
+
+  currentSupervisorLogPath(date = this.clock()): string {
+    return dailyLogPath(this.paths.supervisorLogPath, date);
+  }
+
+  currentWorkerStderrPath(date = this.clock()): string {
+    return dailyLogPath(this.paths.workerStderrPath, date);
   }
 
   recordCrash(context: WorkerCrashContext): WorkerCrashRecord | undefined {
     try {
+      const exitedAt = new Date(context.exitedAt);
+      const crashDate = Number.isNaN(exitedAt.getTime()) ? this.clock() : exitedAt;
       const record: WorkerCrashRecord = {
         version: 1,
         ...context,
@@ -114,8 +130,8 @@ export class SupervisorDiagnostics {
         nodeVersion: process.versions.node,
         executablePath: process.execPath,
         cwd: process.cwd(),
-        supervisorLogPath: this.paths.supervisorLogPath,
-        workerStderrPath: this.paths.workerStderrPath,
+        supervisorLogPath: this.currentSupervisorLogPath(crashDate),
+        workerStderrPath: this.workerStderrStream?.filePath ?? this.currentWorkerStderrPath(crashDate),
         crashReportDirectory: this.paths.crashReportDirectory,
         diagnosticReports: findDiagnosticReports(
           this.paths.crashReportDirectory,
