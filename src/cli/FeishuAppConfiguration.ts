@@ -71,7 +71,6 @@ export const REQUIRED_FEISHU_CALLBACKS = ["card.action.trigger"] as const;
 
 const CORE_FEISHU_SCOPES = new Set([
   "application:application:self_manage",
-  "im:message.group_msg",
   "im:message.p2p_msg:readonly",
   "im:message:send_as_bot",
 ]);
@@ -287,7 +286,8 @@ async function completeOptionalFeishuConfiguration(
 ): Promise<EnsureFeishuAppConfigurationResult> {
   let configuration = initialConfiguration;
   let remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
-  const requested = withoutIgnoredScopes(remaining, ignoredScopes);
+  const launcherIgnoredScopes = new Set([...ignoredScopes, ...MANUAL_FEISHU_SCOPES]);
+  const requested = withoutIgnoredScopes(remaining, launcherIgnoredScopes);
   if (hasMissingConfiguration(requested)) {
     await requestMissingFeishuConfiguration(
       credentials.appId,
@@ -305,7 +305,32 @@ async function completeOptionalFeishuConfiguration(
         timeoutMs,
         options.signal,
         options.optionalSkipSignal,
-        ignoredScopes,
+        launcherIgnoredScopes,
+        excludedScopes,
+      );
+      configuration = completed.configuration;
+      remaining = completed.remaining;
+    }
+  }
+
+  const manualMissing = manualMissingFeishuAppConfiguration(remaining);
+  if (hasMissingConfiguration(manualMissing)) {
+    await requestMissingFeishuConfiguration(
+      credentials.appId,
+      manualMissing,
+      true,
+      options.onVerification,
+    );
+    if (!options.manualPermissionSkipSignal?.aborted) {
+      const completed = await waitForManualFeishuConfiguration(
+        credentials,
+        configuration,
+        fetchImpl,
+        sleep,
+        pollIntervalMs,
+        timeoutMs,
+        options.signal,
+        options.manualPermissionSkipSignal,
         excludedScopes,
       );
       configuration = completed.configuration;
@@ -318,6 +343,44 @@ async function completeOptionalFeishuConfiguration(
     added: resolvedMissingConfiguration(initialMissing, remaining),
     remaining,
   };
+}
+
+async function waitForManualFeishuConfiguration(
+  credentials: FeishuAppCredentials,
+  initialConfiguration: FeishuAppConfiguration,
+  fetchImpl: typeof globalThis.fetch,
+  sleep: (milliseconds: number) => Promise<void>,
+  pollIntervalMs: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  manualPermissionSkipSignal?: AbortSignal,
+  excludedScopes: ReadonlySet<string> = new Set(),
+): Promise<{
+  configuration: FeishuAppConfiguration;
+  remaining: MissingFeishuAppConfiguration;
+}> {
+  let configuration = initialConfiguration;
+  let remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
+  let remainingMs = timeoutMs;
+  while (remainingMs > 0 && hasMissingConfiguration(manualMissingFeishuAppConfiguration(remaining))) {
+    if (manualPermissionSkipSignal?.aborted) break;
+    const waitMs = Math.min(pollIntervalMs, remainingMs);
+    const waitResult = await sleepWithOptionalSkip(
+      sleep,
+      waitMs,
+      signal,
+      manualPermissionSkipSignal,
+    );
+    if (waitResult === "skipped") break;
+    remainingMs -= waitMs;
+    try {
+      configuration = await readFeishuAppConfiguration(credentials, fetchImpl, signal);
+      remaining = withoutIgnoredScopes(missingFeishuAppConfiguration(configuration), excludedScopes);
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+    }
+  }
+  return { configuration, remaining };
 }
 
 async function waitForOptionalFeishuConfiguration(
@@ -617,6 +680,16 @@ function coreMissingFeishuAppConfiguration(missing: MissingFeishuAppConfiguratio
   return {
     scopes: missing.scopes.filter((scope) => CORE_FEISHU_SCOPES.has(scope)),
     events: missing.events.filter((event) => CORE_FEISHU_EVENTS.has(event)),
+    callbacks: [],
+  };
+}
+
+function manualMissingFeishuAppConfiguration(
+  missing: MissingFeishuAppConfiguration,
+): MissingFeishuAppConfiguration {
+  return {
+    scopes: missing.scopes.filter((scope) => MANUAL_FEISHU_SCOPES.has(scope)),
+    events: [],
     callbacks: [],
   };
 }

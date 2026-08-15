@@ -319,6 +319,49 @@ describe("ensureFeishuAppConfiguration", () => {
     expect(url.searchParams.has("addons")).toBe(false);
   });
 
+  test("requests the manually published group-message permission after optional configuration", async () => {
+    const optionalSkip = new AbortController();
+    const manualPermissionSkip = new AbortController();
+    const fetchMock = configurationFetch(() => ({
+      scopes: REQUIRED_FEISHU_SCOPES.filter(
+        (scope) => scope !== "im:chat:create" && scope !== "im:message.group_msg",
+      ),
+      events: ["im.message.receive_v1"],
+      callbacks: [],
+    }));
+    const challenges: FeishuConfigurationChallenge[] = [];
+
+    const result = await ensureFeishuAppConfiguration(credentials, {
+      fetch: fetchMock,
+      optionalSkipSignal: optionalSkip.signal,
+      manualPermissionSkipSignal: manualPermissionSkip.signal,
+      onVerification: (challenge) => {
+        challenges.push(challenge);
+        if (challenge.kind === "launcher") optionalSkip.abort();
+        if (challenge.kind === "manual_scope") manualPermissionSkip.abort();
+      },
+    });
+
+    expect(challenges.map((challenge) => challenge.kind)).toEqual(["launcher", "manual_scope"]);
+    expect(challenges[0]).toMatchObject({
+      blocking: false,
+      missing: {
+        scopes: ["im:chat:create"],
+        events: ["im.chat.updated_v1"],
+        callbacks: ["card.action.trigger"],
+      },
+    });
+    expect(challenges[1]).toMatchObject({
+      blocking: true,
+      missing: {
+        scopes: ["im:message.group_msg"],
+        events: [],
+        callbacks: [],
+      },
+    });
+    expect(result.status).toBe("partial");
+  });
+
   test("continues with a partial result when manual group-message permission waiting is skipped", async () => {
     const manualPermissionSkip = new AbortController();
     const scopes = REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:message.group_msg");
@@ -446,16 +489,11 @@ describe("ensureFeishuAppConfiguration", () => {
       },
     });
 
-    expect(challenges).toHaveLength(2);
+    expect(challenges).toHaveLength(1);
     expect(challenges[0]).toMatchObject({
       kind: "launcher",
       blocking: true,
       missing: launcherCoreMissingConfiguration(),
-    });
-    expect(challenges[1]).toMatchObject({
-      kind: "manual_scope",
-      blocking: true,
-      missing: manualCoreMissingConfiguration(),
     });
   });
 
@@ -478,16 +516,11 @@ describe("ensureFeishuAppConfiguration", () => {
       },
     });
 
-    expect(challenges).toHaveLength(2);
+    expect(challenges).toHaveLength(1);
     expect(challenges[0]).toMatchObject({
       kind: "launcher",
       blocking: true,
       missing: launcherCoreMissingConfiguration(),
-    });
-    expect(challenges[1]).toMatchObject({
-      kind: "manual_scope",
-      blocking: true,
-      missing: manualCoreMissingConfiguration(),
     });
   });
 
@@ -593,31 +626,14 @@ function configurationWithoutOptionalCapabilities(): ConfigurationFixture {
   };
 }
 
-function coreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
+function launcherCoreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
   return {
     scopes: [
       "application:application:self_manage",
-      "im:message.group_msg",
       "im:message.p2p_msg:readonly",
       "im:message:send_as_bot",
     ],
     events: ["im.message.receive_v1"],
-    callbacks: [],
-  };
-}
-
-function launcherCoreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
-  const missing = coreMissingConfiguration();
-  return {
-    ...missing,
-    scopes: missing.scopes.filter((scope) => scope !== "im:message.group_msg"),
-  };
-}
-
-function manualCoreMissingConfiguration(): FeishuConfigurationChallenge["missing"] {
-  return {
-    scopes: ["im:message.group_msg"],
-    events: [],
     callbacks: [],
   };
 }

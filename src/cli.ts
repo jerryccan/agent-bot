@@ -2044,7 +2044,12 @@ function printFeishuConfigurationVerification(
       "请添加已筛选的权限、发布应用版本，并在需要时完成租户管理员审批。\n",
     ));
   }
-  if (challenge.blocking) {
+  if (challenge.kind === "manual_scope") {
+    process.stderr.write(cliText(
+      "Waiting up to 5 minutes for this permission to appear in the published app version...\n",
+      "将等待最多 5 分钟，直到该权限出现在已发布的应用版本中...\n",
+    ));
+  } else if (challenge.blocking) {
     process.stderr.write(cliText(
       "Waiting for the core scopes and message event to become active...\n",
       "正在等待核心权限和消息事件生效...\n",
