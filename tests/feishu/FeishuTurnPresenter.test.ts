@@ -62,6 +62,26 @@ describe("FeishuTurnPresenter", () => {
     );
   });
 
+  test("expands file link labels outside the task project before delivering the final answer", async () => {
+    const { presenter, outbound } = createFixture();
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed([
+      "[inside.ts](D:\\dev\\agent-bot\\src\\inside.ts:10)",
+      "[app.ts](D:\\dev\\agent-bot\\src\\app.ts:11)",
+      "[runner.py](C:\\Users\\Admin\\runtime\\runner.py:122)",
+    ].join("\n")));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      [
+        "[inside.ts:10](D:\\dev\\agent-bot\\src\\inside.ts:10)",
+        "[src\\app.ts:11](D:\\dev\\agent-bot\\src\\app.ts:11)",
+        "[C:\\Users\\Admin\\runtime\\runner.py:122](C:\\Users\\Admin\\runtime\\runner.py:122)",
+      ].join("\n"),
+      expect.stringMatching(/^codex-final-/),
+    );
+  });
+
   test("adds Agent Bot branding only to the last chunk of a long final answer", async () => {
     const { outbound, store } = createFixture();
     const presenter = new FeishuTurnPresenter(outbound, store, undefined, {

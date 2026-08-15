@@ -8,6 +8,7 @@ import { splitMarkdown } from "../presentation/splitMarkdown.js";
 import type { TurnViewState } from "../presentation/turnViewTypes.js";
 import { CardRenderer } from "./CardRenderer.js";
 import { CardUpdateScheduler } from "./CardUpdateScheduler.js";
+import { normalizeFeishuMarkdown } from "./FeishuMarkdown.js";
 import type { FeishuOutbound, MessageReplyTarget } from "./types.js";
 import {
   FINAL_RESPONSE_BRANDING_BLOCK,
@@ -538,7 +539,7 @@ export class FeishuTurnPresenter {
     if (delivery?.finalDelivered || !state.finalResponse) return;
     const finalChunkLength = this.options.finalChunkLength ?? 4_000;
     const chunks = brandedFinalChunks(
-      state.finalResponse,
+      normalizeFeishuMarkdown(state.finalResponse, state.projectCwd),
       finalChunkLength,
     );
     const messageIds = [...(delivery?.finalMessageIds ?? [])];

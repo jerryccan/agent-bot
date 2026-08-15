@@ -69,6 +69,50 @@ describe("normalizeFeishuMarkdown", () => {
     ].join("\n"));
   });
 
+  test("shows complete paths for files outside the current project", () => {
+    const markdown = [
+      "[controller.ts](D:\\dev\\agent-bot\\src\\controller.ts:42)",
+      "[runner.py](C:\\Users\\Admin\\sandbox_runtime\\runner.py:122)",
+      "[cache.cc](/D:/dev/another-project/sandbox_env_cache.cc:490)",
+      "[cell.py](file:///C:/Users/Admin/runtime/cell.py:248)",
+    ].join("\n");
+
+    expect(normalizeFeishuMarkdown(markdown, "D:\\dev\\agent-bot")).toBe([
+      "[controller.ts:42](D:\\dev\\agent-bot\\src\\controller.ts:42)",
+      "[C:\\Users\\Admin\\sandbox_runtime\\runner.py:122](C:\\Users\\Admin\\sandbox_runtime\\runner.py:122)",
+      "[D:\\dev\\another-project\\sandbox_env_cache.cc:490](/D:/dev/another-project/sandbox_env_cache.cc:490)",
+      "[C:\\Users\\Admin\\runtime\\cell.py:248](file:///C:/Users/Admin/runtime/cell.py:248)",
+    ].join("\n"));
+  });
+
+  test("includes the parent directory for short file names inside a Windows project", () => {
+    const markdown = [
+      "[app.ts](D:\\dev\\agent-bot\\src\\app.ts:12)",
+      "[index.ts](/D:/dev/agent-bot/src/index.ts:18)",
+      "[README.md](D:\\dev\\agent-bot\\README.md:7)",
+    ].join("\n");
+
+    expect(normalizeFeishuMarkdown(markdown, "D:\\dev\\agent-bot")).toBe([
+      "[src\\app.ts:12](D:\\dev\\agent-bot\\src\\app.ts:12)",
+      "[src\\index.ts:18](/D:/dev/agent-bot/src/index.ts:18)",
+      "[README.md:7](D:\\dev\\agent-bot\\README.md:7)",
+    ].join("\n"));
+  });
+
+  test("shows complete POSIX paths only outside the current project", () => {
+    const markdown = [
+      "[worker.ts](/home/user/project/src/worker.ts:12)",
+      "[cell.py](/home/user/project/runtime/cell.py:248)",
+      "[shared.ts](/opt/shared/shared.ts:7)",
+    ].join("\n");
+
+    expect(normalizeFeishuMarkdown(markdown, "/home/user/project")).toBe([
+      "[worker.ts:12](/home/user/project/src/worker.ts:12)",
+      "[runtime/cell.py:248](/home/user/project/runtime/cell.py:248)",
+      "[/opt/shared/shared.ts:7](/opt/shared/shared.ts:7)",
+    ].join("\n"));
+  });
+
   test("does not duplicate references or rewrite web links, images, or fenced code", () => {
     const markdown = [
       "[worker.ts:42](/D:/project/worker.ts:42)",
