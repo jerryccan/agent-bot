@@ -671,6 +671,54 @@ describe("StateStore runtime metadata", () => {
     ]);
   });
 
+  test("includes the inherited Fork ancestry in a task Turn graph across contexts", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.saveTurnSnapshot("turn_root", "source", {
+      sessionId: "source",
+      turnId: "turn_root",
+      status: "completed",
+      completedAt: 100,
+    }, "chat_id:source");
+    store.saveTurnParent("turn_root", "source");
+    store.saveTurnSnapshot("turn_anchor", "source", {
+      sessionId: "source",
+      turnId: "turn_anchor",
+      status: "completed",
+      completedAt: 200,
+    }, "chat_id:source");
+    store.saveTurnParent("turn_anchor", "source", "turn_root");
+    store.saveTurnSnapshot("turn_source_later", "source", {
+      sessionId: "source",
+      turnId: "turn_source_later",
+      status: "completed",
+      completedAt: 300,
+    }, "chat_id:source");
+    store.saveTurnParent("turn_source_later", "source", "turn_anchor");
+    store.audit("chat_id:fork-topic", "thread_forked", {
+      sourceLocalSessionId: "source",
+      sourceTurnId: "turn_anchor",
+      forkedLocalSessionId: "forked",
+    });
+
+    expect(store.listTaskTurnGraph("forked").map((turn) => turn.turnId))
+      .toEqual(["turn_anchor", "turn_root"]);
+
+    store.saveTurnSnapshot("turn_forked", "forked", {
+      sessionId: "forked",
+      turnId: "turn_forked",
+      status: "completed",
+      completedAt: 400,
+    }, "chat_id:new-group");
+    store.saveTurnParent("turn_forked", "forked", "turn_anchor");
+
+    expect(store.listTaskTurnGraph("forked").map((turn) => turn.turnId))
+      .toEqual(["turn_forked", "turn_anchor", "turn_root"]);
+  });
+
   test("repairs a missing parent recorded before crash recovery completed", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

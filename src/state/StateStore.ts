@@ -1105,6 +1105,91 @@ export class StateStore {
     }));
   }
 
+  listTaskTurnGraph(localSessionId: string): CompletedTurnSnapshotRecord[] {
+    this.backfillTurnParents(localSessionId);
+    const records = new Map(
+      this.listCompletedTurnGraphRows(localSessionId).map((record) => [record.turnId, record]),
+    );
+    let ancestorTurnId = this.findForkSourceTurnId(localSessionId)
+      ?? this.findCrossSessionParentTurnId(localSessionId);
+    const visited = new Set<string>();
+
+    while (ancestorTurnId && !visited.has(ancestorTurnId)) {
+      visited.add(ancestorTurnId);
+      const ancestor = this.getCompletedTurnGraphRecord(ancestorTurnId);
+      if (!ancestor) break;
+      records.set(ancestor.turnId, ancestor);
+      ancestorTurnId = ancestor.parentTurnId;
+    }
+
+    return [...records.values()].sort(compareCompletedTurnSnapshots);
+  }
+
+  private listCompletedTurnGraphRows(localSessionId: string): CompletedTurnSnapshotRecord[] {
+    const rows = this.db.prepare(`
+      SELECT ts.turn_id, tpl.parent_turn_id, ts.snapshot_json, ts.updated_at
+      FROM turn_snapshots ts
+      LEFT JOIN turn_parent_links tpl ON tpl.turn_id = ts.turn_id
+      WHERE ts.local_session_id = ?
+        AND json_extract(ts.snapshot_json, '$.status') = 'completed'
+    `).all(localSessionId) as Array<{
+      turn_id: string;
+      parent_turn_id: string | null;
+      snapshot_json: string;
+      updated_at: string;
+    }>;
+    return rows.map(mapCompletedTurnSnapshot);
+  }
+
+  private getCompletedTurnGraphRecord(turnId: string): CompletedTurnSnapshotRecord | undefined {
+    const owner = this.db.prepare(`
+      SELECT local_session_id
+      FROM turn_snapshots
+      WHERE turn_id = ?
+        AND json_extract(snapshot_json, '$.status') = 'completed'
+    `).get(turnId) as { local_session_id: string } | undefined;
+    if (!owner) return undefined;
+    this.backfillTurnParents(owner.local_session_id);
+    const row = this.db.prepare(`
+      SELECT ts.turn_id, tpl.parent_turn_id, ts.snapshot_json, ts.updated_at
+      FROM turn_snapshots ts
+      LEFT JOIN turn_parent_links tpl ON tpl.turn_id = ts.turn_id
+      WHERE ts.turn_id = ?
+        AND json_extract(ts.snapshot_json, '$.status') = 'completed'
+    `).get(turnId) as {
+      turn_id: string;
+      parent_turn_id: string | null;
+      snapshot_json: string;
+      updated_at: string;
+    } | undefined;
+    return row ? mapCompletedTurnSnapshot(row) : undefined;
+  }
+
+  private findForkSourceTurnId(localSessionId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT json_extract(payload_json, '$.sourceTurnId') AS source_turn_id
+      FROM audit_events
+      WHERE event_type IN ('session_forked', 'thread_forked')
+        AND json_extract(payload_json, '$.forkedLocalSessionId') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(localSessionId) as { source_turn_id: string | null } | undefined;
+    return row?.source_turn_id ?? undefined;
+  }
+
+  private findCrossSessionParentTurnId(localSessionId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT links.parent_turn_id
+      FROM turn_parent_links links
+      JOIN turn_snapshots parent ON parent.turn_id = links.parent_turn_id
+      WHERE links.local_session_id = ?
+        AND parent.local_session_id <> ?
+      ORDER BY links.created_at ASC
+      LIMIT 1
+    `).get(localSessionId, localSessionId) as { parent_turn_id: string } | undefined;
+    return row?.parent_turn_id;
+  }
+
   private backfillTurnParents(localSessionId: string): void {
     const turns = this.db.prepare(`
       SELECT
@@ -1974,6 +2059,40 @@ function mapTurnAttempt(row: TurnAttemptRow): TurnAttemptRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function mapCompletedTurnSnapshot(row: {
+  turn_id: string;
+  parent_turn_id: string | null;
+  snapshot_json: string;
+  updated_at: string;
+}): CompletedTurnSnapshotRecord {
+  return {
+    turnId: row.turn_id,
+    parentTurnId: row.parent_turn_id ?? undefined,
+    snapshot: JSON.parse(row.snapshot_json),
+    updatedAt: row.updated_at,
+  };
+}
+
+function compareCompletedTurnSnapshots(
+  left: CompletedTurnSnapshotRecord,
+  right: CompletedTurnSnapshotRecord,
+): number {
+  const timeDifference = completedTurnTimestamp(right) - completedTurnTimestamp(left);
+  return timeDifference || right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function completedTurnTimestamp(record: CompletedTurnSnapshotRecord): number {
+  const snapshot = record.snapshot && typeof record.snapshot === "object"
+    ? record.snapshot as { completedAt?: unknown; startedAt?: unknown }
+    : undefined;
+  const timestamp = typeof snapshot?.completedAt === "number"
+    ? snapshot.completedAt
+    : typeof snapshot?.startedAt === "number"
+      ? snapshot.startedAt
+      : Date.parse(record.updatedAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function isIncompleteTurnAttemptStatus(status: TurnAttemptStatus): boolean {
