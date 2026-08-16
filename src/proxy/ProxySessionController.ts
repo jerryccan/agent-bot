@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { promises as fs, type Dirent } from "node:fs";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 import type { Logger } from "pino";
 import { createProjectlessWorkspace, detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import { resolveUserPath } from "../config/paths.js";
@@ -48,6 +49,7 @@ import type {
 } from "../runtime/types.js";
 import {
   StateStore,
+  type CardActionBinding,
   type MessageReactionRecord,
   type MessageReactionStatus,
   type QueuedPromptRecord,
@@ -96,7 +98,8 @@ const MESSAGE_RECEIVED_REACTION = "OnIt";
 const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
 const MESSAGE_CANCELLED_REACTION = "CrossMark";
-const SESSION_PAGE_SIZE = 5;
+const SESSION_PAGE_SIZE = 10;
+const SESSION_PROMPT_PREVIEW_LENGTH = 50;
 const DIRECTORY_PAGE_SIZE = 15;
 const RESET_HISTORY_PAGE_SIZE = 10;
 const MAX_LLM_TURN_RETRIES = 3;
@@ -749,8 +752,17 @@ export class ProxySessionController {
       return;
     }
     if (!this.store.claimInboundEvent(action.actionId, "card_action")) return;
-    const contextKey = this.cardActionContextKey(action);
-    const scopedAction = contextKey === action.contextKey ? action : { ...action, contextKey };
+    let resolvedAction: CardAction;
+    try {
+      resolvedAction = this.resolveCardActionBinding(action);
+    } catch (error) {
+      await this.sendError(action.contextKey, error);
+      return;
+    }
+    const contextKey = this.cardActionContextKey(resolvedAction);
+    const scopedAction = contextKey === resolvedAction.contextKey
+      ? resolvedAction
+      : { ...resolvedAction, contextKey };
     const replyTarget = isThreadContextKey(contextKey) && action.messageId
       ? { messageId: action.messageId, replyInThread: true as const }
       : undefined;
@@ -1661,6 +1673,16 @@ export class ProxySessionController {
     return turnSession && baseChatContextKey(turnSession.contextKey) === baseChatContextKey(action.contextKey)
       ? turnSession.contextKey
       : action.contextKey;
+  }
+
+  private resolveCardActionBinding(action: CardAction): CardAction {
+    if (typeof action.value.action === "string") return action;
+    const token = typeof action.value.t === "string" ? action.value.t : undefined;
+    if (!token) return action;
+    if (!action.messageId) throw new Error("任务列表卡片缺少消息 ID，请重新发送 /sessions。");
+    const value = this.store.getCardActionBinding(action.messageId, token);
+    if (!value) throw new Error("任务列表卡片已失效，请重新发送 /sessions。");
+    return { ...action, value };
   }
 
   private async execute(
@@ -4997,13 +5019,34 @@ export class ProxySessionController {
     const remoteHint = remoteErrors.length > 0
       ? `部分 Agent 的任务读取失败：${remoteErrors.join("；")}`
       : undefined;
+    const latestLocalUserPrompts = new Map<string, string>();
+    for (const session of localSessions) {
+      const persisted = this.store.findLatestTurnSnapshotForSession(session.localSessionId);
+      const prompt = latestUserPromptFromTurnView(turnViewSnapshot(persisted?.snapshot));
+      if (prompt) latestLocalUserPrompts.set(session.localSessionId, prompt);
+    }
+    const latestRemoteUserPrompts = new Map<string, string>();
+    for (const { agentName, session: remote } of remoteSessions) {
+      const local = this.store.findSessionByRemoteSessionId(remote.id, undefined, agentName);
+      if (!local) continue;
+      const persisted = this.store.findLatestTurnSnapshotForSession(local.localSessionId);
+      const prompt = latestUserPromptFromTurnView(turnViewSnapshot(persisted?.snapshot));
+      if (prompt) latestRemoteUserPrompts.set(agentRemoteKey(agentName, remote.id), prompt);
+    }
 
-    const entries = orderTaskListByProject(
-      mergeTaskList(localSessions, remoteSessions, context.currentSessionId)
+    const globallyOrderedEntries = orderTaskListByRecency(
+      mergeTaskList(
+        localSessions,
+        remoteSessions,
+        context.currentSessionId,
+        latestLocalUserPrompts,
+        latestRemoteUserPrompts,
+      )
         .filter((entry) => !normalizedSearch
         || [entry.id, entry.title, entry.cwd, entry.agentName]
           .some((value) => value.toLowerCase().includes(normalizedSearch))),
     );
+    const entries = groupTaskListPagesByProject(globallyOrderedEntries, SESSION_PAGE_SIZE);
     const activeCount = entries.filter((entry) => entry.active).length;
     const lastKnownPage = Math.max(0, Math.ceil(entries.length / SESSION_PAGE_SIZE) - 1);
     const page = remoteHasMore ? requestedPage : Math.min(requestedPage, lastKnownPage);
@@ -5017,6 +5060,9 @@ export class ProxySessionController {
     const hasPrevious = page > 0;
     const hasNext = remoteHasMore || entries.length > offset + SESSION_PAGE_SIZE;
     this.lastSessionListings.set(contextKey, entries.map((entry) => entry.reference));
+    const cardActionBindings = new Map<string, CardActionBinding>();
+    const bindCardAction = (action: TaskListCardAction): TaskListCardAction =>
+      bindSessionCardAction(action, cardActionBindings);
     const cardEntries = visibleEntries.map((entry, index): {
       project: TaskProjectInfo;
       projectActions: TaskListCardAction[];
@@ -5024,11 +5070,11 @@ export class ProxySessionController {
     } => {
       const project = taskProjectInfo(entry);
       const projectActionSource = projectActionSources.get(project.key) ?? entry;
-      const marker = entry.current ? "✅" : entry.active ? "🟢" : "•";
+      const marker = entry.current ? "✅ " : entry.active ? "🟢 " : "";
       const showStop = entry.status === "外部执行中"
         && entry.reference !== options.forceSwitchTaskId
         && entry.id !== options.forceSwitchTaskId;
-      const actions: TaskListCardAction[] = entry.current ? [] : [{
+      const actions: TaskListCardAction[] = entry.current ? [] : [bindCardAction({
         text: showStop ? "Stop" : "Switch",
         type: showStop ? "danger" as const : "default" as const,
         value: {
@@ -5038,8 +5084,8 @@ export class ProxySessionController {
           page: String(page),
           contextKey,
         },
-      }];
-      const projectActions: TaskListCardAction[] = [{
+      })];
+      const projectActions: TaskListCardAction[] = [bindCardAction({
         text: "New",
         value: {
           action: "session_new",
@@ -5048,7 +5094,7 @@ export class ProxySessionController {
           page: String(page),
           contextKey,
         },
-      }, {
+      }), bindCardAction({
         text: "NewGroup",
         value: {
           action: "session_new_group",
@@ -5057,8 +5103,8 @@ export class ProxySessionController {
           page: String(page),
           contextKey,
         },
-      }];
-      actions.push({
+      })];
+      actions.push(bindCardAction({
         text: "Fork",
         value: {
           action: "session_fork",
@@ -5067,8 +5113,8 @@ export class ProxySessionController {
           page: String(page),
           contextKey,
         },
-      });
-      actions.push({
+      }));
+      actions.push(bindCardAction({
         text: "ForkGroup",
         value: {
           action: "session_fork_group",
@@ -5077,16 +5123,16 @@ export class ProxySessionController {
           page: String(page),
           contextKey,
         },
-      });
-      actions.push({
+      }));
+      actions.push(bindCardAction({
         text: "Status",
         value: {
           action: "session_status",
           sessionId: entry.reference,
           contextKey,
         },
-      });
-      actions.push({
+      }));
+      actions.push(bindCardAction({
         text: "Archive",
         value: {
           action: "session_archive",
@@ -5095,18 +5141,18 @@ export class ProxySessionController {
           page: String(page),
           contextKey,
         },
-      });
+      }));
       const title = truncateText(entry.title.replace(/\s+/gu, " ").trim() || "未命名任务", 56);
+      const lastUserPrompt = sessionPromptPreview(entry.lastUserPrompt);
       return {
         project,
         projectActions,
         cardEntry: {
           reference: entry.reference,
-          summary: `${offset + index + 1}. ${marker} ${title} · ${entry.agentName}`,
+          summary: `${offset + index + 1}. ${marker}${title} · ${entry.agentName}`,
           detailLines: [
-            `**状态 / 更新时间**：${cardText(entry.status)} / ${cardText(entry.updatedLabel)}`,
-            `**Agent / 任务 ID**：${cardCode(entry.agentName)} / ${cardCode(entry.id)}`,
-            `**目录**：${cardCode(entry.cwd || "目录未知")}`,
+            cardText(lastUserPrompt),
+            `**更新时间**：${cardText(entry.updatedLabel)}`,
           ],
           actions,
           current: entry.current,
@@ -5136,11 +5182,11 @@ export class ProxySessionController {
         ...(remoteHint ? [remoteHint] : []),
         `第 ${page + 1} 页 · 每页 ${SESSION_PAGE_SIZE} 个任务${hasNext ? "" : ` · 当前共 ${entries.length} 个任务`}`,
         "",
-        "> 项目行：**New** 新建任务，**NewGroup** 新建群。",
+        "> 项目菜单：**New** 新建任务，**NewGroup** 新建群。",
         "> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态，**Archive** 归档。",
       ],
       [
-        ...(hasPrevious ? [{
+        ...(hasPrevious ? [bindCardAction({
           text: "Previous",
           value: {
             action: "session_page",
@@ -5148,8 +5194,8 @@ export class ProxySessionController {
             page: String(page - 1),
             contextKey,
           },
-        }] : []),
-        ...(hasNext ? [{
+        })] : []),
+        ...(hasNext ? [bindCardAction({
           text: "Next",
           value: {
             action: "session_page",
@@ -5157,13 +5203,20 @@ export class ProxySessionController {
             page: String(page + 1),
             contextKey,
           },
-        }] : []),
+        })] : []),
       ],
     );
+    const bindings = [...cardActionBindings.values()];
     if (options.updateMessageId) {
+      this.store.upsertCardActionBindings(options.updateMessageId, bindings);
       await this.outbound.updateInteractiveCard(contextKey, options.updateMessageId, card);
+      this.store.retainCardActionBindings(options.updateMessageId, bindings.map((binding) => binding.token));
     } else {
-      await this.outbound.sendInteractiveCard(contextKey, card);
+      const messageId = await this.outbound.sendInteractiveCard(contextKey, card);
+      if (messageId) {
+        this.store.upsertCardActionBindings(messageId, bindings);
+        this.store.retainCardActionBindings(messageId, bindings.map((binding) => binding.token));
+      }
     }
   }
 
@@ -5973,6 +6026,7 @@ interface UnifiedTaskListEntry {
   status: string;
   active: boolean;
   current: boolean;
+  lastUserPrompt?: string;
   updatedAt: number;
   updatedLabel: string;
 }
@@ -5982,26 +6036,28 @@ interface TaskProjectInfo {
   title: string;
 }
 
-function orderTaskListByProject(entries: UnifiedTaskListEntry[]): UnifiedTaskListEntry[] {
-  const groups = new Map<string, { project: TaskProjectInfo; entries: UnifiedTaskListEntry[] }>();
-  for (const entry of entries) {
-    const project = taskProjectInfo(entry);
-    const group = groups.get(project.key);
-    if (group) group.entries.push(entry);
-    else groups.set(project.key, { project, entries: [entry] });
+function orderTaskListByRecency(entries: UnifiedTaskListEntry[]): UnifiedTaskListEntry[] {
+  return [...entries].sort(compareTaskListEntries);
+}
+
+function groupTaskListPagesByProject(
+  entries: UnifiedTaskListEntry[],
+  pageSize: number,
+): UnifiedTaskListEntry[] {
+  const result: UnifiedTaskListEntry[] = [];
+  for (let offset = 0; offset < entries.length; offset += pageSize) {
+    const groups = new Map<string, UnifiedTaskListEntry[]>();
+    for (const entry of entries.slice(offset, offset + pageSize)) {
+      const key = taskProjectInfo(entry).key;
+      const group = groups.get(key);
+      if (group) group.push(entry);
+      else groups.set(key, [entry]);
+    }
+    for (const group of groups.values()) {
+      result.push(...group.sort(compareTaskListEntries));
+    }
   }
-  const orderedGroups = [...groups.values()]
-    .map((group) => ({
-      ...group,
-      current: group.entries.some((entry) => entry.current),
-      active: group.entries.some((entry) => entry.active),
-      updatedAt: Math.max(...group.entries.map((entry) => entry.updatedAt)),
-    }))
-    .sort((left, right) => Number(right.current) - Number(left.current)
-      || Number(right.active) - Number(left.active)
-      || right.updatedAt - left.updatedAt
-      || left.project.title.localeCompare(right.project.title, undefined, { sensitivity: "base" }));
-  return orderedGroups.flatMap((group) => group.entries.sort(compareTaskListEntries));
+  return result;
 }
 
 function compareTaskListEntries(left: UnifiedTaskListEntry, right: UnifiedTaskListEntry): number {
@@ -6030,6 +6086,8 @@ function mergeTaskList(
   localSessions: SessionRecord[],
   remoteSessions: AgentRemoteSessionSummary[],
   currentLocalSessionId?: string,
+  latestLocalUserPrompts: ReadonlyMap<string, string> = new Map(),
+  latestRemoteUserPrompts: ReadonlyMap<string, string> = new Map(),
 ): UnifiedTaskListEntry[] {
   const localByRemoteId = new Map(
     localSessions
@@ -6054,6 +6112,9 @@ function mergeTaskList(
       status,
       active,
       current: Boolean(local && local.localSessionId === currentLocalSessionId),
+      lastUserPrompt: remote.lastUserPrompt
+        ?? (local ? latestLocalUserPrompts.get(local.localSessionId) : undefined)
+        ?? latestRemoteUserPrompts.get(agentRemoteKey(agentName, remote.id)),
       updatedAt: (recencyAt ?? 0) * 1_000,
       updatedLabel: formatRemoteTime(recencyAt),
     };
@@ -6073,6 +6134,7 @@ function mergeTaskList(
       status: sessionStatusLabel(local.status),
       active: local.status === "running",
       current: local.localSessionId === currentLocalSessionId,
+      lastUserPrompt: latestLocalUserPrompts.get(local.localSessionId),
       updatedAt: Number.isNaN(updatedAt) ? 0 : updatedAt,
       updatedLabel: formatStatusTime(local.updatedAt),
     });
@@ -6102,6 +6164,20 @@ function parseRemoteSessionReference(reference: string): { agentName: string; re
   }
 }
 
+function bindSessionCardAction(
+  action: TaskListCardAction,
+  bindings: Map<string, CardActionBinding>,
+): TaskListCardAction {
+  const serialized = JSON.stringify(action.value);
+  const token = createHash("sha256").update(serialized).digest("hex").slice(0, 16);
+  const existing = bindings.get(token);
+  if (existing && JSON.stringify(existing.value) !== serialized) {
+    throw new Error("任务列表卡片操作令牌发生冲突，请重试。");
+  }
+  bindings.set(token, { token, value: action.value });
+  return { ...action, value: { t: token } };
+}
+
 function runtimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -6122,6 +6198,22 @@ function turnViewSnapshot(value: unknown): TurnViewState | undefined {
   return typeof candidate.turnId === "string" && typeof candidate.status === "string"
     ? candidate as TurnViewState
     : undefined;
+}
+
+function latestUserPromptFromTurnView(snapshot: TurnViewState | undefined): string | undefined {
+  const latestUserActivity = [...(snapshot?.activities ?? [])]
+    .reverse()
+    .find((activity): activity is Extract<TurnActivity, { kind: "user" }> =>
+      activity.kind === "user" && Boolean(activity.text.trim()));
+  return latestUserActivity?.text.trim() || snapshot?.prompt?.trim() || undefined;
+}
+
+function sessionPromptPreview(prompt: string | undefined): string {
+  const normalized = prompt?.replace(/\s+/gu, " ").trim() || "暂无用户 Prompt";
+  const characters = Array.from(normalized);
+  return characters.length > SESSION_PROMPT_PREVIEW_LENGTH
+    ? `${characters.slice(0, SESSION_PROMPT_PREVIEW_LENGTH).join("")}...`
+    : normalized;
 }
 
 function isTerminalTurnViewStatus(status: TurnViewState["status"]): boolean {

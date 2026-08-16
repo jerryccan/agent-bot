@@ -1988,6 +1988,7 @@ function sessionTaskPanel(entry: SessionTaskCardEntry): Record<string, unknown> 
 }
 
 function sessionProjectRow(group: SessionTaskCardGroup): Record<string, unknown> {
+  const actions = group.actions ?? [];
   return {
     tag: "column_set",
     flex_mode: "none",
@@ -2002,12 +2003,12 @@ function sessionProjectRow(group: SessionTaskCardGroup): Record<string, unknown>
         vertical_align: "center",
         elements: [markdown(`**${escapeCardActionText(group.title)}**`)],
       },
-      ...(group.actions ?? []).map((action) => ({
+      ...(actions.length > 0 ? [{
         tag: "column",
         width: "auto",
         vertical_align: "center",
-        elements: [sessionActionButton(action)],
-      })),
+        elements: [sessionActionOverflow(actions)],
+      }] : []),
     ],
   };
 }

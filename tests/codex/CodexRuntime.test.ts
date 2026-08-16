@@ -1213,7 +1213,9 @@ describe("CodexRuntime", () => {
           id: "turn_external",
           status: "completed",
           items: [
+            { type: "userMessage", content: [{ type: "text", text: "Initial request" }] },
             { type: "commandExecution", status: "completed" },
+            { type: "userMessage", content: [{ type: "text", text: "Latest follow-up" }] },
             { type: "mcpToolCall", status: "failed" },
             { type: "agentMessage", phase: "final_answer", text: "done" },
           ],
@@ -1230,6 +1232,7 @@ describe("CodexRuntime", () => {
         createdAt: 80,
         recencyAt: 90,
         lastTurnStatus: "completed",
+        lastUserPrompt: "Latest follow-up",
       })],
       nextCursor: "next",
     });
@@ -1238,6 +1241,7 @@ describe("CodexRuntime", () => {
       lastTurnId: "turn_external",
       lastCompletedTurnId: "turn_external",
       lastTurnStatus: "completed",
+      lastUserPrompt: "Latest follow-up",
       lastTurnToolCount: 2,
       lastTurnCompletedToolCount: 1,
       lastTurnFailedToolCount: 1,

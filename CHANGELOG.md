@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Refine the Feishu `/sessions` card with globally ordered ten-task pages, compact restart-safe action menus, and latest user Prompt previews that also resolve Agent Bot tasks bound to other conversations.
+
 ## [0.1.15-alpha.2] - 2026-08-15
 
 - Add dot-separated `NewFolder`, `NewTask`, and `NewGroupTask` actions to the Feishu file browser, including an in-card folder-name form, safe child-directory validation, and in-place return to the refreshed listing.

@@ -184,4 +184,15 @@ export const migrations = [
   CREATE INDEX IF NOT EXISTS idx_goal_card_deliveries_session
     ON goal_card_deliveries(local_session_id);
   `,
+  `
+  CREATE TABLE IF NOT EXISTS card_action_bindings (
+    message_id TEXT NOT NULL,
+    token TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (message_id, token)
+  );
+  CREATE INDEX IF NOT EXISTS idx_card_action_bindings_created
+    ON card_action_bindings(created_at);
+  `,
 ] as const;

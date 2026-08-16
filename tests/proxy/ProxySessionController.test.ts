@@ -33,7 +33,11 @@ function message(text: string): IncomingMessage {
   return { messageId: `m-${text}`, contextKey: "chat_id:c1", text };
 }
 
-function sessionOverflowActions(card: unknown): Array<Record<string, unknown>> {
+function sessionOverflowActions(
+  card: unknown,
+  store?: StateStore,
+  messageId = "card",
+): Array<Record<string, unknown>> {
   const actions: Array<Record<string, unknown>> = [];
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -50,17 +54,55 @@ function sessionOverflowActions(card: unknown): Array<Record<string, unknown>> {
         try {
           const parsed = JSON.parse(encoded) as unknown;
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            actions.push(parsed as Record<string, unknown>);
+            const value = parsed as Record<string, unknown>;
+            const token = typeof value.t === "string" ? value.t : undefined;
+            const resolved = token && store ? store.getCardActionBinding(messageId, token) : undefined;
+            actions.push(resolved ?? value);
           }
         } catch {
           // Ignore unrelated overflow options.
         }
       }
     }
+    if (record.type === "callback" && record.value && typeof record.value === "object" && !Array.isArray(record.value)) {
+      const value = record.value as Record<string, unknown>;
+      const token = typeof value.t === "string" ? value.t : undefined;
+      const resolved = token && store ? store.getCardActionBinding(messageId, token) : undefined;
+      actions.push(resolved ?? value);
+    }
     Object.values(record).forEach(visit);
   };
   visit(card);
   return actions;
+}
+
+function sessionOverflowToken(card: unknown, label: string): string | undefined {
+  let token: string | undefined;
+  const visit = (value: unknown): void => {
+    if (token) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    if (record.tag === "overflow" && Array.isArray(record.options)) {
+      for (const option of record.options) {
+        if (!option || typeof option !== "object") continue;
+        const candidate = option as Record<string, unknown>;
+        const text = candidate.text as Record<string, unknown> | undefined;
+        if (text?.content !== label || typeof candidate.value !== "string") continue;
+        const parsed = JSON.parse(candidate.value) as Record<string, unknown>;
+        if (typeof parsed.t === "string") {
+          token = parsed.t;
+          return;
+        }
+      }
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(card);
+  return token;
 }
 
 function groupMessage(chatId: string, text: string): IncomingMessage {
@@ -4528,6 +4570,7 @@ describe("ProxySessionController", () => {
       recencyAt: 1_893_456_000,
       lastTurnId: "turn_external",
       lastTurnStatus: "completed",
+      lastUserPrompt: "Inspect the latest desktop state",
     });
 
     await controller.onMessage(message("/sessions Desktop"));
@@ -4536,13 +4579,14 @@ describe("ProxySessionController", () => {
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("Desktop investigation");
-    expect(serialized).toContain("external_1");
+    expect(serialized).toContain("Inspect the latest desktop state");
+    expect(serialized).not.toContain("external_1");
     expect(serialized).toContain("2030");
     expect(serialized).not.toContain("2000");
     expect(serialized).not.toContain("最后更新：");
     expect(serialized).toContain('"tag":"overflow"');
     expect(serialized).toContain('"content":"Switch"');
-    expect(sessionOverflowActions(card)).toEqual(expect.arrayContaining([
+    expect(sessionOverflowActions(card, store)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         action: "session_switch",
         sessionId: "agent-runtime:codex:external_1",
@@ -4553,20 +4597,149 @@ describe("ProxySessionController", () => {
       expect.objectContaining({ action: "session_fork_group", sessionId: "agent-runtime:codex:external_1" }),
       expect.objectContaining({ action: "session_status", sessionId: "agent-runtime:codex:external_1" }),
     ]));
-    expect(serialized).toContain('"tag":"button","text":{"tag":"plain_text","content":"New"}');
-    expect(serialized).toContain('"action":"session_new","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
-    expect(serialized).toContain('"tag":"button","text":{"tag":"plain_text","content":"NewGroup"}');
-    expect(serialized).toContain('"action":"session_new_group","sessionId":"agent-runtime:codex:external_1","searchTerm":"Desktop","page":"0"');
+    expect(serialized).toContain('"tag":"plain_text","content":"New"');
+    expect(serialized).toContain('"tag":"plain_text","content":"NewGroup"');
+    expect(sessionOverflowActions(card, store)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "session_new",
+        sessionId: "agent-runtime:codex:external_1",
+        searchTerm: "Desktop",
+        page: "0",
+      }),
+      expect.objectContaining({
+        action: "session_new_group",
+        sessionId: "agent-runtime:codex:external_1",
+        searchTerm: "Desktop",
+        page: "0",
+      }),
+    ]));
     expect(serialized).not.toContain("Legacy ACP task");
     expect(serialized).not.toContain("remote_acp");
-    expect(serialized).toContain("> 项目行：**New** 新建任务，**NewGroup** 新建群。");
+    expect(serialized).toContain("> 项目菜单：**New** 新建任务，**NewGroup** 新建群。");
     expect(serialized).not.toContain("/switch [序号或任务 ID]");
     expect(serialized).not.toContain("已接入");
     expect(serialized).not.toContain("其他 Codex 任务");
+    expect(serialized).not.toContain("未加载");
+    expect(serialized).not.toContain("Agent / 任务 ID");
+    expect(serialized).not.toContain("**目录**");
+  });
+
+  test("shows the latest persisted user Prompt for an Agent Bot task", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    const latestPrompt = "这是一条包含表情🙂且长度明显超过五十个字符的最新用户请求，请只显示前五十个字符，并确保后续的这部分内容不会出现在任务卡片中";
+    store.createSession({
+      localSessionId: "local_prompt_task",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: "D:\\work\\prompt-task",
+      status: "ready",
+    });
+    store.updateRuntimeSession("local_prompt_task", {
+      runtimeKind: "codex",
+      remoteSessionId: "remote_prompt_task",
+      title: "Prompt task",
+    });
+    store.saveTurnSnapshot("turn_prompt_task", "local_prompt_task", {
+      turnId: "turn_prompt_task",
+      status: "completed",
+      prompt: "Initial request",
+      activities: [
+        { kind: "user", id: "user_follow_up", text: latestPrompt },
+      ],
+    });
+    remoteSessions.push({
+      id: "remote_prompt_task",
+      title: "Prompt task",
+      cwd: "D:\\work\\prompt-task",
+      source: "agent-bot",
+      status: "idle",
+      updatedAt: 1_893_456_000,
+    });
+
+    await controller.onMessage(message("/sessions"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain(`${Array.from(latestPrompt).slice(0, 50).join("")}...`);
+    expect(serialized).not.toContain(latestPrompt);
+    expect(serialized).not.toContain("最后一个用户 Prompt");
+    expect(serialized).not.toContain("Initial request");
+    expect(serialized).not.toContain("remote_prompt_task");
+    expect(serialized).not.toContain("Agent / 任务 ID");
+    expect(serialized).not.toContain("**目录**");
+  });
+
+  test("shows the persisted Prompt for a task bound to another Feishu conversation", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    store.createSession({
+      localSessionId: "cross_context_prompt_task",
+      contextKey: "chat_id:other_group",
+      agentName: "codex",
+      cwd: "D:\\work\\cross-context",
+      status: "running",
+    });
+    store.updateRuntimeSession("cross_context_prompt_task", {
+      runtimeKind: "codex",
+      remoteSessionId: "remote_cross_context_prompt",
+      title: "Cross-context Prompt task",
+      lastTurnId: "turn_cross_context_prompt",
+      lastTurnStatus: "running",
+    });
+    store.saveTurnSnapshot("turn_cross_context_prompt", "cross_context_prompt_task", {
+      turnId: "turn_cross_context_prompt",
+      status: "running",
+      startedAt: 1_893_456_000_000,
+      prompt: "Run the Amazon case until it matches CNGC",
+    }, "chat_id:other_group");
+    remoteSessions.push({
+      id: "remote_cross_context_prompt",
+      title: "Cross-context Prompt task",
+      cwd: "D:\\work\\cross-context",
+      source: "agent-bot",
+      status: "active",
+      lastTurnId: "turn_cross_context_prompt",
+      lastTurnStatus: "inProgress",
+      updatedAt: 1_893_456_000,
+    });
+
+    await controller.onMessage(message("/sessions"));
+
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("Run the Amazon case until it matches CNGC");
+    expect(serialized).not.toContain("暂无用户 Prompt");
+  });
+
+  test("resolves compact sessions-card actions from persisted message bindings", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    remoteSessions.push({
+      id: "compact_switch",
+      title: "Compact switch target",
+      cwd: "D:\\work\\compact-switch",
+      source: "vscode",
+      status: "idle",
+    });
+
+    await controller.onMessage(message("/sessions"));
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const token = sessionOverflowToken(card, "Switch");
+    expect(token).toBeDefined();
+    expect(JSON.stringify(card)).not.toContain("session_switch");
+
+    await controller.onCardAction({
+      actionId: "compact-session-switch",
+      contextKey: "chat_id:c1",
+      messageId: "card",
+      value: { t: token! },
+    });
+
+    const currentSessionId = store.getOrCreateUserContext("chat_id:c1", "codex").currentSessionId;
+    expect(store.getSession(currentSessionId!)?.remoteSessionId).toBe("compact_switch");
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("card", expect.any(Object));
   });
 
   test("groups compact session rows by project directory", async () => {
-    const { controller, remoteSessions, outbound } = fixture();
+    const { controller, remoteSessions, outbound, store } = fixture();
     vi.spyOn(os, "homedir").mockReturnValue("/home/runner");
     remoteSessions.push(
       {
@@ -4591,7 +4764,7 @@ describe("ProxySessionController", () => {
         cwd: "D:\\work\\other",
         source: "vscode",
         status: "idle",
-        updatedAt: 100,
+        updatedAt: 250,
       },
     );
 
@@ -4601,18 +4774,71 @@ describe("ProxySessionController", () => {
       body: { elements: Array<Record<string, unknown>> };
     };
     const projectRows = card.body.elements.filter((item) => item.tag === "column_set"
-      && JSON.stringify(item).includes('"action":"session_new"'));
+      && JSON.stringify(item).includes("📁"));
     const panels = card.body.elements.filter((item) => item.tag === "collapsible_panel");
     expect(projectRows).toHaveLength(2);
     expect(JSON.stringify(projectRows[0])).toContain("📁 D:&#92;work&#92;same");
-    expect(JSON.stringify(projectRows[0])).toContain('"action":"session_new","sessionId":"agent-runtime:codex:same_new"');
-    expect(JSON.stringify(projectRows[0])).toContain('"action":"session_new_group","sessionId":"agent-runtime:codex:same_new"');
+    expect(sessionOverflowActions(projectRows[0], store)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "session_new", sessionId: "agent-runtime:codex:same_new" }),
+      expect.objectContaining({ action: "session_new_group", sessionId: "agent-runtime:codex:same_new" }),
+    ]));
     expect(JSON.stringify(projectRows[1])).toContain("📁 D:&#92;work&#92;other");
     expect(panels.map((item) => JSON.stringify(item.header))).toEqual([
-      expect.stringContaining("1. • Newer task · codex"),
-      expect.stringContaining("2. • Older task · codex"),
-      expect.stringContaining("3. • Other project task · codex"),
+      expect.stringContaining("1. Newer task · codex"),
+      expect.stringContaining("2. Older task · codex"),
+      expect.stringContaining("3. Other project task · codex"),
     ]);
+  });
+
+  test("paginates by global activity before rendering project groups", async () => {
+    const { controller, remoteSessions, runtime, outbound } = fixture();
+    remoteSessions.push(
+      {
+        id: "active_project_task",
+        title: "Active project task",
+        cwd: "D:\\work\\active-project",
+        source: "vscode",
+        status: "active",
+        lastTurnStatus: "inProgress",
+        updatedAt: 1_000,
+      },
+      {
+        id: "old_same_project_task",
+        title: "Old task from active project",
+        cwd: "D:\\work\\active-project",
+        source: "vscode",
+        status: "idle",
+        updatedAt: 1,
+      },
+      ...Array.from({ length: 9 }, (_, index): RemoteSessionSummary => ({
+        id: `recent_other_project_${index + 1}`,
+        title: `Recent task ${index + 1}`,
+        cwd: `D:\\work\\recent-project-${index + 1}`,
+        source: "vscode",
+        status: "idle",
+        updatedAt: 900 - index,
+      })),
+    );
+    (runtime.listRemoteSessions as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      sessions: [...remoteSessions],
+    }));
+
+    await controller.onMessage(message("/sessions"));
+
+    const firstCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const firstPage = JSON.stringify(firstCard);
+    expect(firstPage).toContain("Active project task");
+    expect(firstPage).toContain("Recent task 9");
+    expect(firstPage).not.toContain("Old task from active project");
+
+    await controller.onCardAction({
+      actionId: "global-activity-next-page",
+      contextKey: "chat_id:c1",
+      messageId: "om_global_sessions",
+      value: { action: "session_page", page: "1" },
+    });
+    const secondCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    expect(JSON.stringify(secondCard)).toContain("Old task from active project");
   });
 
   test("keeps same-id Codex tasks isolated by Agent and routes card actions to their owning runtime", async () => {
@@ -4644,8 +4870,10 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain('"sessionId":"agent-runtime:codex:shared_task"');
-    expect(serialized).toContain('"sessionId":"agent-runtime:traex:shared_task"');
+    expect(sessionOverflowActions(card, store)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: "agent-runtime:codex:shared_task" }),
+      expect.objectContaining({ sessionId: "agent-runtime:traex:shared_task" }),
+    ]));
     expect(serialized).toContain("Codex task");
     expect(serialized).toContain("TraeX task");
 
@@ -4662,7 +4890,7 @@ describe("ProxySessionController", () => {
   });
 
   test("marks active external Codex sessions and sorts them first", async () => {
-    const { controller, remoteSessions, outbound } = fixture();
+    const { controller, remoteSessions, outbound, store } = fixture();
     remoteSessions.push(
       { id: "idle_1", title: "Idle task", cwd: "D:\\work", source: "cli", status: "idle" },
       {
@@ -4681,18 +4909,18 @@ describe("ProxySessionController", () => {
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("任务（1 个活跃）");
     expect(serialized).toContain("1. 🟢 Running task · codex");
-    expect(serialized).toContain("外部执行中");
+    expect(serialized).not.toContain("外部执行中");
     expect(serialized).toContain('"content":"Stop"');
-    expect(sessionOverflowActions(card)).toContainEqual(expect.objectContaining({
+    expect(sessionOverflowActions(card, store)).toContainEqual(expect.objectContaining({
       action: "session_stop",
       sessionId: "agent-runtime:codex:active_1",
       page: "0",
     }));
-    expect(serialized.indexOf("active_1")).toBeLessThan(serialized.indexOf("idle_1"));
+    expect(serialized.indexOf("Running task")).toBeLessThan(serialized.indexOf("Idle task"));
   });
 
   test("stops an active external task from the sessions card and changes its button to Switch", async () => {
-    const { controller, remoteSessions, runtime, outbound } = fixture();
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
     remoteSessions.push({
       id: "active_external",
       title: "External build",
@@ -4719,12 +4947,12 @@ describe("ProxySessionController", () => {
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(updatedCard);
     expect(serialized).toContain('"content":"Switch"');
-    expect(sessionOverflowActions(updatedCard)).toContainEqual(expect.objectContaining({
+    expect(sessionOverflowActions(updatedCard, store, "om_sessions")).toContainEqual(expect.objectContaining({
       action: "session_switch",
       sessionId: "agent-runtime:codex:active_external",
       page: "0",
     }));
-    expect(sessionOverflowActions(updatedCard)).not.toContainEqual(expect.objectContaining({
+    expect(sessionOverflowActions(updatedCard, store, "om_sessions")).not.toContainEqual(expect.objectContaining({
       action: "session_stop",
       sessionId: "agent-runtime:codex:active_external",
     }));
@@ -4756,7 +4984,7 @@ describe("ProxySessionController", () => {
 
     await controller.onMessage(message("/sessions"));
     const initialCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
-    expect(sessionOverflowActions(initialCard)).toContainEqual(expect.objectContaining({
+    expect(sessionOverflowActions(initialCard, store)).toContainEqual(expect.objectContaining({
       action: "session_archive",
       sessionId: "agent-runtime:codex:archive_remote",
     }));
@@ -5205,9 +5433,9 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_sessions", expect.any(Object));
   });
 
-  test("pages through five tasks at a time in the same sessions card", async () => {
-    const { controller, remoteSessions, runtime, outbound } = fixture();
-    for (let index = 1; index <= 12; index += 1) {
+  test("pages through ten tasks at a time in the same sessions card", async () => {
+    const { controller, remoteSessions, runtime, outbound, store } = fixture();
+    for (let index = 1; index <= 22; index += 1) {
       remoteSessions.push({
         id: `task_${index}`,
         title: `Task ${index}`,
@@ -5224,16 +5452,19 @@ describe("ProxySessionController", () => {
     const initial = JSON.stringify(initialCard);
     const initialPanels = (initialCard as { body: { elements: Array<Record<string, unknown>> } })
       .body.elements.filter((item) => item.tag === "collapsible_panel");
-    expect(initialPanels).toHaveLength(5);
-    expect(JSON.stringify(initialPanels[0]?.header)).toContain("1. • Task 1 · codex");
-    expect(JSON.stringify(initialPanels.at(-1)?.header)).toContain("5. • Task 5 · codex");
+    expect(initialPanels).toHaveLength(10);
+    expect(JSON.stringify(initialPanels[0]?.header)).toContain("1. Task 1 · codex");
+    expect(JSON.stringify(initialPanels.at(-1)?.header)).toContain("10. Task 10 · codex");
     expect(initial).toContain("<font color='blue'>Next</font>");
-    expect(initial).toContain('"action":"session_page","page":"1"');
+    expect(sessionOverflowActions(initialCard, store)).toContainEqual(expect.objectContaining({
+      action: "session_page",
+      page: "1",
+    }));
     expect(initial).not.toContain("<font color='blue'>Previous</font>");
-    expect(initial).toContain("> 项目行：**New** 新建任务，**NewGroup** 新建群。");
+    expect(initial).toContain("> 项目菜单：**New** 新建任务，**NewGroup** 新建群。");
     expect(initial).toContain("> 任务详情：**Switch** 切换，**Stop** 停止，**Fork** / **ForkGroup** 创建分支，**Status** 查看状态，**Archive** 归档。");
     expect(initial.indexOf("<font color='blue'>Next</font>")).toBeLessThan(
-      initial.indexOf("> 项目行：**New** 新建任务"),
+      initial.indexOf("> 项目菜单：**New** 新建任务"),
     );
 
     await controller.onCardAction({
@@ -5243,23 +5474,29 @@ describe("ProxySessionController", () => {
       value: { action: "session_page", page: "1" },
     });
 
-    expect(runtime.listRemoteSessions).toHaveBeenLastCalledWith({ searchTerm: undefined, limit: 10 });
+    expect(runtime.listRemoteSessions).toHaveBeenLastCalledWith({ searchTerm: undefined, limit: 20 });
     const secondPageCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const secondPage = JSON.stringify(secondPageCard);
     const secondPagePanels = (secondPageCard as { body: { elements: Array<Record<string, unknown>> } })
       .body.elements.filter((item) => item.tag === "collapsible_panel");
     const secondPageProjectRow = (secondPageCard as { body: { elements: Array<Record<string, unknown>> } })
-      .body.elements.find((item) => JSON.stringify(item).includes('"action":"session_new"'));
+      .body.elements.find((item) => JSON.stringify(item).includes("📁"));
     expect(secondPagePanels.map((item) => JSON.stringify(item.header))).toEqual([
-      expect.stringContaining("6. • Task 6 · codex"),
-      expect.stringContaining("7. • Task 7 · codex"),
-      expect.stringContaining("8. • Task 8 · codex"),
-      expect.stringContaining("9. • Task 9 · codex"),
-      expect.stringContaining("10. • Task 10 · codex"),
+      expect.stringContaining("11. Task 11 · codex"),
+      expect.stringContaining("12. Task 12 · codex"),
+      expect.stringContaining("13. Task 13 · codex"),
+      expect.stringContaining("14. Task 14 · codex"),
+      expect.stringContaining("15. Task 15 · codex"),
+      expect.stringContaining("16. Task 16 · codex"),
+      expect.stringContaining("17. Task 17 · codex"),
+      expect.stringContaining("18. Task 18 · codex"),
+      expect.stringContaining("19. Task 19 · codex"),
+      expect.stringContaining("20. Task 20 · codex"),
     ]);
-    expect(JSON.stringify(secondPageProjectRow)).toContain(
-      '"action":"session_new","sessionId":"agent-runtime:codex:task_1"',
-    );
+    expect(sessionOverflowActions(secondPageProjectRow, store, "om_sessions")).toContainEqual(expect.objectContaining({
+      action: "session_new",
+      sessionId: "agent-runtime:codex:task_1",
+    }));
     expect(secondPage).toContain("<font color='blue'>Previous</font>");
     expect(secondPage).toContain("<font color='blue'>Next</font>");
 
@@ -5272,8 +5509,8 @@ describe("ProxySessionController", () => {
     const firstPageAgain = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[1]?.[1];
     const firstPageAgainPanels = (firstPageAgain as { body: { elements: Array<Record<string, unknown>> } })
       .body.elements.filter((item) => item.tag === "collapsible_panel");
-    expect(firstPageAgainPanels.map((item) => JSON.stringify(item.header))).toHaveLength(5);
-    expect(JSON.stringify(firstPageAgainPanels.at(-1)?.header)).toContain("5. • Task 5 · codex");
+    expect(firstPageAgainPanels.map((item) => JSON.stringify(item.header))).toHaveLength(10);
+    expect(JSON.stringify(firstPageAgainPanels.at(-1)?.header)).toContain("10. Task 10 · codex");
   });
 
   test("stops an external task even when another context has a local route for it", async () => {
@@ -5332,19 +5569,21 @@ describe("ProxySessionController", () => {
       status: "not_loaded",
       lastTurnId: "turn_completed",
       lastTurnStatus: "completed",
+      lastUserPrompt: "Verify the completed task",
     });
 
     await controller.onMessage(message("/sessions"));
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
-    expect(serialized).toContain("remote_completed");
-    expect(serialized).toContain("未加载");
+    expect(serialized).toContain("Verify the completed task");
+    expect(serialized).not.toContain("remote_completed");
+    expect(serialized).not.toContain("未加载");
     expect(serialized).not.toContain("个活跃");
   });
 
   test("always lists the current task before other active tasks", async () => {
-    const { controller, remoteSessions, outbound } = fixture();
+    const { controller, remoteSessions, outbound, store } = fixture();
     await controller.onMessage(message("/new"));
     remoteSessions.push({
       id: "active_external",
@@ -5360,8 +5599,8 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
-    const actions = sessionOverflowActions(card);
-    expect(serialized.indexOf("thr_1")).toBeLessThan(serialized.indexOf("active_external"));
+    const actions = sessionOverflowActions(card, store);
+    expect(serialized.indexOf("新任务")).toBeLessThan(serialized.indexOf("Running elsewhere"));
     expect(actions).not.toContainEqual(expect.objectContaining({ action: "session_switch", sessionId: "agent-runtime:codex:thr_1" }));
     expect(actions).not.toContainEqual(expect.objectContaining({ action: "session_stop", sessionId: "agent-runtime:codex:thr_1" }));
     expect(actions).toContainEqual(expect.objectContaining({ action: "session_fork", sessionId: "agent-runtime:codex:thr_1" }));
@@ -5385,7 +5624,7 @@ describe("ProxySessionController", () => {
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
     expect(serialized).toContain("1. ✅ 未命名任务 · codex");
-    expect(serialized).toContain("2. • Second task · codex");
+    expect(serialized).toContain("2. Second task · codex");
     await controller.onMessage(message("/switch 2"));
 
     const context = store.getOrCreateUserContext("chat_id:c1", "codex");
@@ -5597,7 +5836,7 @@ describe("ProxySessionController", () => {
     await controller.onMessage(message("/sessions"));
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
-    const actions = sessionOverflowActions(card);
+    const actions = sessionOverflowActions(card, store);
     expect(actions).toContainEqual(expect.objectContaining({
       action: "session_switch",
       sessionId: "agent-runtime:codex:thr_1",
@@ -5652,7 +5891,7 @@ describe("ProxySessionController", () => {
     await controller.onMessage(message("/sessions"));
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
-    const actions = sessionOverflowActions(card);
+    const actions = sessionOverflowActions(card, store);
     expect(actions).toContainEqual(expect.objectContaining({
       action: "session_stop",
       sessionId: "agent-runtime:codex:external_origin",

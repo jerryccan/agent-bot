@@ -2154,8 +2154,8 @@ describe("CardRenderer", () => {
         reference: "agent-runtime:codex:thr_1",
         summary: "1. ✅ Improve sessions · codex",
         detailLines: [
-          "**状态 / 更新时间**：空闲 / 刚刚",
-          "**Agent / 任务 ID**：`codex` / `thr_1`",
+          "优化任务列表",
+          "**更新时间**：刚刚",
         ],
         actions: [{ text: "Status", value: { action: "session_status", sessionId: "thr_1" } }],
         current: true,
@@ -2164,13 +2164,14 @@ describe("CardRenderer", () => {
     const objects = collectObjects(card);
     const panel = objects.find((item) => item.tag === "collapsible_panel");
     const projectRow = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements
-      .find((item) => JSON.stringify(item).includes('"action":"session_new"'));
+      .find((item) => JSON.stringify(item).includes("📁 D:&#92;work&#92;agent-bot"));
 
     expect(JSON.stringify(card)).toContain("📁 D:&#92;work&#92;agent-bot");
     expect(projectRow).toMatchObject({ tag: "column_set", flex_mode: "none" });
-    expect(JSON.stringify(projectRow)).toContain('"action":"session_new_group","sessionId":"thr_1"');
+    expect(JSON.stringify(projectRow)).toContain("session_new_group");
+    expect(JSON.stringify(projectRow)).toContain("thr_1");
     expect(JSON.stringify(projectRow)).toContain(
-      '"tag":"button","text":{"tag":"plain_text","content":"NewGroup"}',
+      '"tag":"overflow","options":[{"text":{"tag":"plain_text","content":"New"}',
     );
     expect(panel).toMatchObject({
       tag: "collapsible_panel",
@@ -2183,7 +2184,11 @@ describe("CardRenderer", () => {
       },
       border: { color: "green" },
     });
-    expect(JSON.stringify(panel)).toContain("状态 / 更新时间");
+    expect(JSON.stringify(panel)).toContain("优化任务列表");
+    expect(JSON.stringify(panel)).not.toContain("最后一个用户 Prompt");
+    expect(JSON.stringify(panel)).toContain("更新时间");
+    expect(JSON.stringify(panel)).not.toContain("任务 ID");
+    expect(JSON.stringify(panel)).not.toContain("目录");
     expect(JSON.stringify(panel)).toContain('"tag":"overflow"');
     expect(JSON.stringify(panel)).toContain('"content":"Status"');
     expect(JSON.stringify(panel)).toContain('session_status');
@@ -2194,32 +2199,46 @@ describe("CardRenderer", () => {
       .not.toContainEqual(expect.objectContaining({ tag: "hr" }));
   });
 
-  test("keeps a five-project sessions page well below the Feishu card element limit", () => {
-    const groups = Array.from({ length: 5 }, (_, index) => ({
-      title: `📁 D:\\work\\project-${index + 1}`,
+  test("keeps a ten-project sessions page within Feishu card limits", () => {
+    const groups = Array.from({ length: 10 }, (_, index) => ({
+      title: `📁 D:\\work\\organization\\project-${index + 1}`,
       actions: [
-        { text: "New", value: { action: "session_new", sessionId: `thr_${index + 1}` } },
-        { text: "NewGroup", value: { action: "session_new_group", sessionId: `thr_${index + 1}` } },
+        { text: "New", value: { t: `project-new-${index + 1}` } },
+        { text: "NewGroup", value: { t: `project-group-${index + 1}` } },
       ],
       entries: [{
         reference: `agent-runtime:codex:thr_${index + 1}`,
-        summary: `${index + 1}. • Task ${index + 1} · codex`,
-        detailLines: ["状态：空闲", `任务 ID：thr_${index + 1}`],
+        summary: `${index + 1}. Task ${index + 1} · codex`,
+        detailLines: [
+          `Review project ${index + 1} ${"x".repeat(50)}`,
+          "**更新时间**：2026/08/15 10:00:00",
+        ],
         actions: [
-          { text: "Switch", value: { action: "session_switch", sessionId: `thr_${index + 1}` } },
-          { text: "Fork", value: { action: "session_fork", sessionId: `thr_${index + 1}` } },
-          { text: "ForkGroup", value: { action: "session_fork_group", sessionId: `thr_${index + 1}` } },
-          { text: "Status", value: { action: "session_status", sessionId: `thr_${index + 1}` } },
+          { text: "Switch", value: { t: `switch-${index + 1}` } },
+          { text: "Fork", value: { t: `fork-${index + 1}` } },
+          { text: "ForkGroup", value: { t: `fork-group-${index + 1}` } },
+          { text: "Status", value: { t: `status-${index + 1}` } },
+          { text: "Archive", value: { t: `archive-${index + 1}` } },
         ],
       }],
     }));
-    const card = new CardRenderer().renderSessionTaskListCard("任务列表", "任务", groups, ["第 1 页"]);
+    const card = new CardRenderer().renderSessionTaskListCard(
+      "任务列表",
+      "任务",
+      groups,
+      ["第 2 页 · 每页 10 个任务"],
+      [
+        { text: "Previous", value: { t: "previous" } },
+        { text: "Next", value: { t: "next" } },
+      ],
+    );
     const taggedElements = collectObjects(card).filter((item) => typeof item.tag === "string");
+    const serialized = JSON.stringify(card);
 
-    expect(taggedElements.filter((item) => item.tag === "collapsible_panel")).toHaveLength(5);
-    expect(taggedElements.filter((item) => item.tag === "overflow")).toHaveLength(5);
-    expect(taggedElements).toHaveLength(88);
-    expect(taggedElements.length).toBeLessThan(100);
+    expect(taggedElements.filter((item) => item.tag === "collapsible_panel")).toHaveLength(10);
+    expect(taggedElements.filter((item) => item.tag === "overflow")).toHaveLength(20);
+    expect(taggedElements.length).toBeLessThan(200);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(30 * 1024);
   });
 
   test("renders a compact Chinese group-dismiss confirmation with equal action buttons", () => {

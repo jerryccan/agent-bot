@@ -18,6 +18,38 @@ afterEach(() => {
 });
 
 describe("StateStore runtime metadata", () => {
+  test("persists and replaces compact card action bindings", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const dbPath = path.join(directory, "state.sqlite");
+    const first = new StateStore(dbPath);
+    stores.push(first);
+
+    first.upsertCardActionBindings("message-1", [
+      { token: "token-a", value: { action: "session_switch", sessionId: "task-a" } },
+      { token: "token-b", value: { action: "session_status", sessionId: "task-b" } },
+    ]);
+    first.close();
+    stores.pop();
+
+    const second = new StateStore(dbPath);
+    stores.push(second);
+    expect(second.getCardActionBinding("message-1", "token-a")).toEqual({
+      action: "session_switch",
+      sessionId: "task-a",
+    });
+    second.upsertCardActionBindings("message-1", [{
+      token: "token-c",
+      value: { action: "session_page", page: "1" },
+    }]);
+    second.retainCardActionBindings("message-1", ["token-c"]);
+    expect(second.getCardActionBinding("message-1", "token-a")).toBeUndefined();
+    expect(second.getCardActionBinding("message-1", "token-c")).toEqual({
+      action: "session_page",
+      page: "1",
+    });
+  });
+
   test("persists Goal card deliveries across store restarts", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

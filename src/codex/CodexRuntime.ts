@@ -987,6 +987,10 @@ interface CodexTurnSnapshot {
   items?: Array<{
     type?: string;
     text?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
     phase?: string | null;
     status?: string;
     savedPath?: string;
@@ -1122,6 +1126,7 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     lastTurnId: lastTurn?.id,
     lastCompletedTurnId: lastCompletedTurn?.id,
     lastTurnStatus,
+    lastUserPrompt: extractLastUserPrompt(thread.turns),
     lastActivity: lastText,
     finalResponse: lastTurn && lastTurn.status !== "inProgress"
       ? appendGeneratedImageMarkdown(extractFinalResponse(lastTurn), extractGeneratedImagePaths(lastTurn)) || undefined
@@ -1132,6 +1137,22 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     lastTurnFailedToolCount: toolCounts?.failed,
     lastTurnRunningToolCount: toolCounts?.running,
   };
+}
+
+function extractLastUserPrompt(turns: CodexTurnSnapshot[] | undefined): string | undefined {
+  for (const turn of [...(turns ?? [])].reverse()) {
+    for (const item of [...(turn.items ?? [])].reverse()) {
+      if (item.type !== "userMessage") continue;
+      const text = item.content
+        ?.filter((content) => content.type === "text" && typeof content.text === "string")
+        .map((content) => content.text!.trim())
+        .filter(Boolean)
+        .join("\n\n")
+        || item.text?.trim();
+      if (text) return text;
+    }
+  }
+  return undefined;
 }
 
 function summarizeTurnTools(turn: CodexTurnSnapshot): {
@@ -1176,6 +1197,7 @@ function mergeRemoteSessionSummary(
     createdAt: inspected.createdAt ?? listed.createdAt,
     updatedAt: inspected.updatedAt ?? listed.updatedAt,
     recencyAt: inspected.recencyAt ?? listed.recencyAt,
+    lastUserPrompt: inspected.lastUserPrompt ?? listed.lastUserPrompt,
     lastActivity: inspected.lastActivity ?? listed.lastActivity,
     finalResponse: inspected.finalResponse ?? listed.finalResponse,
     lastError: inspected.lastError ?? listed.lastError,

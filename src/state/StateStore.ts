@@ -75,6 +75,11 @@ export interface GoalCardDeliveryRecord {
   updatedAt: string;
 }
 
+export interface CardActionBinding {
+  token: string;
+  value: Record<string, string>;
+}
+
 export interface TurnRuntimeOriginRecord {
   turnId: string;
   localSessionId: string;
@@ -287,6 +292,52 @@ export class StateStore {
       updated_at: string;
     }>;
     return rows.map(goalCardDeliveryFromRow);
+  }
+
+  upsertCardActionBindings(messageId: string, bindings: CardActionBinding[]): void {
+    if (bindings.length === 0) return;
+    const createdAt = new Date().toISOString();
+    const upsert = this.db.prepare(`
+      INSERT INTO card_action_bindings (message_id, token, value_json, created_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(message_id, token) DO UPDATE SET
+        value_json = excluded.value_json,
+        created_at = excluded.created_at
+    `);
+    this.db.transaction(() => {
+      for (const binding of bindings) {
+        upsert.run(messageId, binding.token, JSON.stringify(binding.value), createdAt);
+      }
+    })();
+  }
+
+  retainCardActionBindings(messageId: string, tokens: string[]): void {
+    if (tokens.length === 0) {
+      this.db.prepare("DELETE FROM card_action_bindings WHERE message_id = ?").run(messageId);
+      return;
+    }
+    const placeholders = tokens.map(() => "?").join(", ");
+    this.db.prepare(`
+      DELETE FROM card_action_bindings
+      WHERE message_id = ? AND token NOT IN (${placeholders})
+    `).run(messageId, ...tokens);
+  }
+
+  getCardActionBinding(messageId: string, token: string): Record<string, unknown> | undefined {
+    const row = this.db.prepare(`
+      SELECT value_json
+      FROM card_action_bindings
+      WHERE message_id = ? AND token = ?
+    `).get(messageId, token) as { value_json: string } | undefined;
+    if (!row) return undefined;
+    try {
+      const value = JSON.parse(row.value_json) as unknown;
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   close(): void {

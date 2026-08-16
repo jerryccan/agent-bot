@@ -123,6 +123,7 @@ export interface RemoteSessionSummary {
   lastTurnId?: string;
   lastCompletedTurnId?: string;
   lastTurnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
+  lastUserPrompt?: string;
   lastActivity?: string;
   finalResponse?: string;
   lastError?: string;
