@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15-alpha.4] - 2026-08-16
+
 - Simplify `agentbot init` authorization by printing links only and removing terminal QR codes.
 
 ## [0.1.15-alpha.3] - 2026-08-16
