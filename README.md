@@ -253,7 +253,7 @@ In a group, `/mute` and `/mute on` make the bot process only messages that menti
 
 `/new` and `/newgroup` inherit the current Agent, project, and execution settings. Use `--dir` to choose another directory or `--nodir` to start without a project directory; `~` represents your home directory.
 
-`/fork` and `/forkgroup` branch from completed work without interrupting a running turn. `/sessions` manages tasks across projects, while `/turns` restores conversation context without reverting local files.
+`/fork` and `/forkgroup` branch from completed work without interrupting a running turn. `/sessions` manages tasks across projects in pages of up to 10 tasks; use each project menu for `New` and `NewGroup`. Expanding a task directly shows the first 50 characters of its latest user Prompt, its update time, and task-specific actions. `/turns` restores conversation context without reverting local files.
 
 ## Local Commands
 

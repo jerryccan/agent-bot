@@ -252,9 +252,9 @@ Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeT
 
 ## 任务、项目与外部 App Server 工作
 
-`/sessions` 通过 `thread/list` 读取每个已配置 App Server Agent 的任务。对于 Codex，可发现同一 `CODEX_HOME` 下由 Codex Desktop、CLI、Agent Bot 或其他 App Server 客户端创建的任务；其他 Agent 通过同一协议暴露各自的任务存储。多 Agent 任务合并并全局排序后，每页显示 5 个；`Previous` 和 `Next` 会替换当前卡片内容而不是继续追加任务，同时保留搜索条件和全局任务序号。
+`/sessions` 通过 `thread/list` 读取每个已配置 App Server Agent 的任务。对于 Codex，可发现同一 `CODEX_HOME` 下由 Codex Desktop、CLI、Agent Bot 或其他 App Server 客户端创建的任务；其他 Agent 通过同一协议暴露各自的任务存储。任务会在分页前进行全局排序：当前任务最优先，其次是其他活跃任务，其余任务按最后活跃时间倒序排列。全局前 10 个任务只用于确定当前页成员；展示时再按项目首次出现顺序聚拢，每个项目内部继续按活跃时间倒序。展开任务后会直接显示最后一个用户 Prompt 的前 50 个 Unicode 字符，不再显示字段标签，之后是更新时间和操作菜单；运行时任务 ID、目录、加载状态等详情统一留在专门的 Status 视图中。`Previous` 和 `Next` 会替换当前卡片内容而不是继续追加任务，同时保留搜索条件以及与展示顺序一致的任务序号。
 
-每个任务条目都提供 `NewGroup` 和 `ForkGroup` 回调。回调数据保留所选任务 ID 与来源上下文，并使用飞书操作者的 `open_id` 邀请用户进入新群。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
+每个项目行通过一个紧凑菜单提供 `New` 和 `NewGroup`，每个任务仍保留原有的任务操作。卡片中只携带短操作令牌；所选任务 ID、来源上下文、搜索条件和页码按卡片消息 ID 持久化到 SQLite，并在飞书回调到达时还原，因此卡片体积保持稳定，服务重启后已有卡片仍可继续使用。创建新群时使用飞书操作者的 `open_id` 邀请用户。`NewGroup` 解析所选任务的项目和执行设置；`ForkGroup` 解析该任务最新可用的已完成 turn。
 
 所有 `agentbot task` 操作都支持 `--task <任务>`，并继续兼容原有的首个位置任务参数。在 Agent Bot 启动的 Agent 中，两者均省略时会通过 Codex 或 TraeX 的 App Server Thread ID 自动解析当前任务；在 Agent Bot 外执行时仍必须显式指定任务。CLI 通过 `agentbot task newgroup [任务] [标题] [--agent <标准名>] [--dir <目录> | --nodir]` 和 `agentbot task forkgroup [任务] [标题]` 提供相同的指定任务操作。两个命令都要求 Server 正在运行，并通过当前 Profile 的本地控制端点发送稳定的本地任务 ID。CLI 进程没有飞书操作者，因此 Server 会邀请 `feishu.userOpenId`，该值由初始化保存为 `FEISHU_USER_OPEN_ID`。NewGroup 默认继承指定任务的 Agent 和执行设置；`--agent <标准名>` 可选择另一个已配置的 Runtime，同时继续继承来源项目形态，并省略执行设置以采用目标 Runtime 自己的默认值。ForkGroup 使用来源任务最新可用的已完成 turn，并让来源任务的活动 turn 继续执行。两类控制响应都包含新群、群上下文、来源任务和新任务；`--json` 会输出不做本地化的结构化结果。
 
