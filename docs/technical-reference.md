@@ -82,15 +82,15 @@ Credential behavior:
 
 Initialization holds `~/.agent-bot/init.lock` so concurrent commands cannot create multiple apps, including commands that use different config paths. A lock left by a dead process is recovered on the next run, and credential temporary files left by an interrupted write are removed.
 
-When complete credentials are absent, initialization uses Feishu one-click registration and reports its verification URL as text and a QR code. In-progress registration codes are not resumed: if the process exits before the complete credential pair is persisted, the next run starts a new app registration. After credentials are persisted, initialization audits the currently published app version and can safely resume that audit after interruption.
+When complete credentials are absent, initialization uses Feishu one-click registration and prints its verification URL. In-progress registration codes are not resumed: if the process exits before the complete credential pair is persisted, the next run starts a new app registration. After credentials are persisted, initialization audits the currently published app version and can safely resume that audit after interruption.
 
 Missing app configuration is handled in three stages:
 
 1. Core configuration is requested and polled until basic messaging becomes available.
-2. Remaining optional configuration is requested. The CLI prints its QR code followed by the authorization URL, then immediately polls for up to five minutes. An interactive terminal offers only `Y` to skip optional authorization and continue; otherwise the user completes authorization in the browser while polling continues.
+2. Remaining optional configuration is requested. The CLI prints the authorization URL, then immediately polls for up to five minutes. An interactive terminal offers only `Y` to skip optional authorization and continue; otherwise the user completes authorization in the browser while polling continues.
 3. Only in all-group-message mode, the manually configured and published `im:message.group_msg` scope is requested last. Entering `Y` skips this step, and a timeout returns a partial result instead of failing initialization. Mention-only mode excludes the permission entirely.
 
-Configuration supported by the one-click launcher is encoded in its `addons` manifest. When all-group-message mode is selected, the manual `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints a QR code and this app-specific, pre-filtered Developer Console URL during the final stage:
+Configuration supported by the one-click launcher is encoded in its `addons` manifest. When all-group-message mode is selected, the manual `im:message.group_msg` scope is excluded from that manifest because Feishu does not add it through one-click configuration. Instead, the CLI prints this app-specific, pre-filtered Developer Console URL during the final stage:
 
 ```text
 https://open.feishu.cn/app/<appId>/auth?q=im%3Amessage.group_msg&op_from=openapi&token_type=tenant

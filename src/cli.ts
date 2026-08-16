@@ -79,7 +79,7 @@ import {
   type InitializationWelcomeResult,
 } from "./cli/InitializationWelcome.js";
 import { applyExplicitProfile, parseGlobalOptions } from "./cli/profile.js";
-import { printVerificationQrAndLink } from "./cli/VerificationOutput.js";
+import { printVerificationLink } from "./cli/VerificationOutput.js";
 import {
   startInitializedServer,
   startServer,
@@ -818,7 +818,7 @@ async function initializeFeishu(
       }
       credentials = await registerFeishuApp({
         signal: controller.signal,
-        onVerification: (challenge) => printFeishuVerification(challenge, options.json),
+        onVerification: (challenge) => printFeishuVerification(challenge),
       });
       writeFeishuCredentials(paths.env.path, credentials);
       status = "created";
@@ -839,7 +839,7 @@ async function initializeFeishu(
       manualPermissionSkipSignal: manualPermissionSkip.signal,
       optionalSkipSignal: optionalSkip.signal,
       onVerification: (challenge) => {
-        printFeishuConfigurationVerification(challenge, options.json);
+        printFeishuConfigurationVerification(challenge);
         if (challenge.kind === "manual_scope" && challenge.blocking) {
           skipListener?.close();
           skipListener = listenForManualPermissionSkip(() => manualPermissionSkip.abort());
@@ -1981,15 +1981,10 @@ function printServerStartResult(result: ServerStartResult): void {
   );
 }
 
-function printFeishuVerification(challenge: FeishuAppRegistrationChallenge, json: boolean): void {
-  printVerificationQrAndLink(
+function printFeishuVerification(challenge: FeishuAppRegistrationChallenge): void {
+  printVerificationLink(
     {
       verificationUrl: challenge.verificationUrl,
-      json,
-      qrInstruction: cliText(
-        "Scan this QR code with Lark to create the bot app:",
-        "使用飞书扫描此二维码以创建机器人应用：",
-      ),
     },
   );
   process.stderr.write(cliText(
@@ -2000,7 +1995,6 @@ function printFeishuVerification(challenge: FeishuAppRegistrationChallenge, json
 
 function printFeishuConfigurationVerification(
   challenge: FeishuConfigurationChallenge,
-  json: boolean,
 ): void {
   process.stderr.write(challenge.kind === "manual_scope"
     ? cliText(
@@ -2020,19 +2014,9 @@ function printFeishuConfigurationVerification(
   if (challenge.missing.callbacks.length > 0) {
     process.stderr.write(`${cliText("Callbacks: ", "回调：")}${challenge.missing.callbacks.join(", ")}\n`);
   }
-  printVerificationQrAndLink(
+  printVerificationLink(
     {
       verificationUrl: challenge.verificationUrl,
-      json,
-      qrInstruction: challenge.kind === "manual_scope"
-        ? cliText(
-            "Scan this QR code with Lark to open the filtered permission page:",
-            "使用飞书扫描此二维码以打开已筛选的权限页面：",
-          )
-        : cliText(
-            "Scan this QR code with Lark to complete the configuration:",
-            "使用飞书扫描此二维码以完成配置：",
-          ),
       linkLabel: challenge.kind === "manual_scope"
         ? cliText("Permission page", "权限页面")
         : undefined,

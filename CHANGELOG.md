@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Simplify `agentbot init` authorization by printing links only and removing terminal QR codes.
+
 ## [0.1.15-alpha.3] - 2026-08-16
 
 - Refine the Feishu `/sessions` card with globally ordered ten-task pages, compact restart-safe action menus, and latest user Prompt previews that also resolve Agent Bot tasks bound to other conversations.
