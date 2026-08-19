@@ -240,11 +240,12 @@ export interface DismissGroupCardView {
 }
 
 export interface ShellCommandCardView {
+  jobId?: string;
+  contextKey?: string;
   command: string;
   cwd: string;
-  stdout: string;
-  stderr: string;
-  status: "running" | "completed" | "failed" | "timed_out";
+  output: string;
+  status: "running" | "cancelling" | "completed" | "failed" | "cancelled" | "timed_out";
   exitCode?: number | null;
   elapsedMs: number;
   outputTruncated: boolean;
@@ -258,12 +259,7 @@ export class CardRenderer {
   }
 
   renderShellCommandCard(view: ShellCommandCardView): Record<string, unknown> {
-    const stdout = normalizeTerminalOutput(view.stdout).trimEnd();
-    const stderr = normalizeTerminalOutput(view.stderr).trimEnd();
-    const rawOutput = [
-      stdout,
-      stderr ? `[stderr]\n${stderr}` : "",
-    ].filter(Boolean).join("\n");
+    const rawOutput = normalizeTerminalOutput(view.output).trimEnd();
     const displayOutput = truncateMiddle(
       rawOutput,
       6_000,
@@ -273,15 +269,32 @@ export class CardRenderer {
     const output = displayOutput || (view.status === "running" ? "等待输出..." : "（无输出）");
     const status = shellCommandStatus(view);
     const outputWasTruncated = view.outputTruncated || rawOutput.length > 6_000;
+    const elements = [
+      markdown(codeBlock(`$  ${command}\n${output}`, 6_700)),
+      markdown([
+        `${inlineCode(view.cwd)} · ${status.label} · ${formatTurnDuration(view.elapsedMs)}`,
+        ...(outputWasTruncated ? ["输出过长，已保留开头和结尾并截断中间内容。"] : []),
+      ].join("\n")),
+    ];
+    if (view.status === "running" && view.jobId && view.contextKey) {
+      elements.push({
+        tag: "button",
+        text: { tag: "plain_text", content: "Cancel" },
+        type: "danger",
+        size: "small",
+        behaviors: [{
+          type: "callback",
+          value: {
+            action: "shell_command_cancel",
+            jobId: view.jobId,
+            contextKey: view.contextKey,
+          },
+        }],
+      });
+    }
     return sectionCard(
       status.title,
-      [
-        markdown(codeBlock(`$  ${command}\n${output}`, 6_700)),
-        markdown([
-          `${inlineCode(view.cwd)} · ${status.label} · ${formatTurnDuration(view.elapsedMs)}`,
-          ...(outputWasTruncated ? ["输出过长，已保留开头和结尾并截断中间内容。"] : []),
-        ].join("\n")),
-      ],
+      elements,
       status.template,
     );
   }
@@ -2052,9 +2065,64 @@ function renderToolDetails(tool: ToolState, projectCwd?: string): string {
   const displayCommand = tool.kind === "command"
     ? unwrapShellCommand(normalizedCommand) ?? normalizedCommand
     : normalizedCommand;
-  const commandText = truncateText(displayCommand, 600);
+  const commandText = truncateText(
+    tool.kind === "command" ? formatShellCommandForDisplay(displayCommand) : displayCommand,
+    600,
+  );
   const resultText = result ? truncateToolResult(normalizeTerminalOutput(result).trim()) : undefined;
   return codeBlock([`$ ${commandText}`, resultText].filter((part): part is string => part !== undefined).join("\n"), 2_003);
+}
+
+function formatShellCommandForDisplay(command: string): string {
+  const normalized = command.replace(/\r\n/g, "\n");
+  let result = "";
+  let quote: "'" | "\"" | undefined;
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index] ?? "";
+
+    if (quote) {
+      result += character;
+      if ((character === "\\" || character === "`") && quote === "\"") {
+        if (index + 1 < normalized.length) result += normalized[++index];
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === "'" || character === "\"") {
+      quote = character;
+      result += character;
+      continue;
+    }
+
+    if (character === "\\" || character === "`" || character === "^") {
+      result += character;
+      if (index + 1 < normalized.length) result += normalized[++index];
+      continue;
+    }
+
+    const operator = readShellDisplayOperator(normalized, index);
+    if (!operator) {
+      result += character;
+      continue;
+    }
+
+    result += operator;
+    index += operator.length - 1;
+    while (index + 1 < normalized.length && /\s/.test(normalized[index + 1] ?? "")) index += 1;
+    if (index + 1 < normalized.length) result += " \\\n  ";
+  }
+
+  return result;
+}
+
+function readShellDisplayOperator(command: string, index: number): string | undefined {
+  for (const operator of ["&&", "||", "|&", ";", "|"]) {
+    if (command.startsWith(operator, index)) return operator;
+  }
+  return undefined;
 }
 
 function normalizeTerminalOutput(value: string): string {
@@ -2166,6 +2234,12 @@ function shellCommandStatus(view: ShellCommandCardView): {
 } {
   if (view.status === "running") {
     return { title: "正在执行命令", label: "运行中", template: "blue" };
+  }
+  if (view.status === "cancelling") {
+    return { title: "正在取消命令", label: "正在取消", template: "orange" };
+  }
+  if (view.status === "cancelled") {
+    return { title: "命令已取消", label: "已取消", template: "grey" };
   }
   if (view.status === "timed_out") {
     return { title: "命令执行超时", label: "已超时（120s）", template: "orange" };

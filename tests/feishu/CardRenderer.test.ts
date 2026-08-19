@@ -57,8 +57,7 @@ describe("CardRenderer", () => {
     const card = new CardRenderer().renderShellCommandCard({
       command: "npm run noisy",
       cwd: "D:\\dev\\agent-bot",
-      stdout: `HEAD-${"x".repeat(7_000)}-TAIL`,
-      stderr: "",
+      output: `HEAD-${"x".repeat(7_000)}-TAIL`,
       status: "running",
       elapsedMs: 12_300,
       outputTruncated: false,
@@ -75,17 +74,18 @@ describe("CardRenderer", () => {
     expect(serialized).toContain("输出过长，已保留开头和结尾并截断中间内容");
   });
 
-  test("normalizes Windows, Linux, macOS, and carriage-return progress in native shell cards", () => {
+  test("normalizes cross-platform lines and carriage-return progress in merged shell output", () => {
     const card = new CardRenderer().renderShellCommandCard({
       command: "git clone repository",
       cwd: "/tmp/repository",
-      stdout: [
+      output: [
         "windows line\r\n",
         "linux line\n",
         "macOS progress 10%\r",
-        "macOS progress 20%\r",
+        "macOS progress 20%\n",
+        "remote progress 40%\r",
+        "remote progress 50%\r",
       ].join(""),
-      stderr: "remote progress 40%\rremote progress 50%\r",
       status: "running",
       elapsedMs: 1_000,
       outputTruncated: false,
@@ -96,7 +96,8 @@ describe("CardRenderer", () => {
       .join("\n");
 
     expect(content).toContain("windows line\nlinux line\nmacOS progress 20%");
-    expect(content).toContain("[stderr]\nremote progress 50%");
+    expect(content).toContain("remote progress 50%");
+    expect(content).not.toContain("[stderr]");
     expect(content).not.toContain("macOS progress 10%");
     expect(content).not.toContain("remote progress 40%");
     expect(content).not.toContain("\r");
@@ -1106,7 +1107,7 @@ describe("CardRenderer", () => {
 
     expect(panelTitle(panel ?? {})).toBe("⏳ Get-Content src/index.ts | Select-Object -First 20");
     expect(panelTitle(panel ?? {})).not.toMatch(/powershell|pwsh/i);
-    expect(details).toContain("$ Get-Content src/index.ts | Select-Object -First 20");
+    expect(details).toContain("$ Get-Content src/index.ts | \\\n  Select-Object -First 20");
     expect(details).not.toMatch(/powershell|pwsh/i);
   });
 
@@ -1142,8 +1143,28 @@ describe("CardRenderer", () => {
 
     expect(panelTitle(panel ?? {})).toBe(`⏳ ${expected}`);
     expect(panelTitle(panel ?? {})).not.toMatch(/(?:^|\s)(?:zsh|bash|sh)\b|\/bin\/|\/usr\/bin\/env|\s-l?c\b/i);
-    expect(details).toContain(`$ ${expected}`);
+    expect(details).toContain(`$ ${expected.replaceAll(" && ", " && \\\n  ")}`);
     expect(details).not.toContain(command);
+  });
+
+  test("wraps shell command separators in expanded tool details", () => {
+    const running = state();
+    const command = "git status --short; git remote -v | Select-String origin && npm test || Write-Output 'failed | keep; together'";
+    const tool = { id: "compound", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes("git status"));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(details).toContain([
+      "$ git status --short; \\",
+      "  git remote -v | \\",
+      "  Select-String origin && \\",
+      "  npm test || \\",
+      "  Write-Output 'failed | keep; together'",
+    ].join("\n"));
   });
 
   test("keeps POSIX shell invocations without a command-string flag intact", () => {

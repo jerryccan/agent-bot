@@ -71,7 +71,7 @@ export function executeShellCommand(
   });
 }
 
-function prepareShellCommand(command: string, platform: NodeJS.Platform): { command: string; args: string[] } {
+export function prepareShellCommand(command: string, platform: NodeJS.Platform): { command: string; args: string[] } {
   if (platform !== "win32") return { command: "/bin/sh", args: ["-lc", command] };
   const script = `$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); ${command}`;
   const encoded = Buffer.from(script, "utf16le").toString("base64");

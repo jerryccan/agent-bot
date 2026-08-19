@@ -161,6 +161,7 @@ function createApplication(dbPath: string, client: FakeClient) {
   const config = {
     agents: { codex: { kind: "app-server", title: "Codex", command: "codex", args: [], env: {} } },
     defaults: { agent: "codex", cwd: process.cwd() },
+    storage: { sqlitePath: dbPath },
   } as unknown as AppConfig;
   const controller = new ProxySessionController(config, store, new AgentRuntimeRegistry({ acp, codex }), router, logger);
   return {

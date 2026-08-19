@@ -11,7 +11,15 @@ import { OutboundRouter } from "../../src/presentation/OutboundRouter.js";
 import { ProxySessionController } from "../../src/proxy/ProxySessionController.js";
 import { AgentRuntimeRegistry } from "../../src/runtime/AgentRuntimeRegistry.js";
 import type { AgentRuntime, RemoteSessionSummary, RuntimeEvent, RuntimeGoal, RuntimeSession } from "../../src/runtime/types.js";
+import type {
+  ShellCommandJobManagerLike,
+  ShellCommandJobSnapshot,
+} from "../../src/shell/ShellCommandJobManager.js";
 import { StateStore } from "../../src/state/StateStore.js";
+import type {
+  ShellCommandOptions,
+  ShellCommandResult,
+} from "../../src/utils/executeShellCommand.js";
 
 vi.mock("../../src/feishu/GroupAvatarGenerator.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/feishu/GroupAvatarGenerator.js")>();
@@ -31,6 +39,112 @@ afterEach(() => {
 
 function message(text: string): IncomingMessage {
   return { messageId: `m-${text}`, contextKey: "chat_id:c1", text };
+}
+
+class FakeShellCommandJobManager implements ShellCommandJobManagerLike {
+  private sequence = 0;
+  private readonly jobs = new Map<string, ShellCommandJobSnapshot>();
+  private readonly presented = new Set<string>();
+  readonly requestCancellation = vi.fn(async (jobId: string) => {
+    const job = this.requireJob(jobId);
+    if (!["starting", "running", "cancelling"].includes(job.status)) return false;
+    this.jobs.set(jobId, { ...job, status: "cancelled", completedAt: Date.now(), updatedAt: Date.now() });
+    return true;
+  });
+
+  constructor(private readonly executor: (
+    command: string,
+    cwd: string,
+    options?: ShellCommandOptions,
+  ) => Promise<ShellCommandResult>) {}
+
+  async createJob(input: {
+    contextKey: string;
+    sourceMessageId?: string;
+    command: string;
+    cwd: string;
+  }): Promise<ShellCommandJobSnapshot> {
+    const id = `00000000-0000-4000-8000-${String(++this.sequence).padStart(12, "0")}`;
+    const createdAt = Date.now();
+    const job: ShellCommandJobSnapshot = {
+      version: 1,
+      id,
+      ...input,
+      createdAt,
+      startedAt: createdAt,
+      updatedAt: createdAt,
+      status: "starting",
+      output: "",
+      outputTruncated: false,
+    };
+    this.jobs.set(id, job);
+    return job;
+  }
+
+  async bindCard(jobId: string, cardMessageId: string): Promise<ShellCommandJobSnapshot> {
+    const job = { ...this.requireJob(jobId), cardMessageId };
+    this.jobs.set(jobId, job);
+    return job;
+  }
+
+  async startJob(jobId: string): Promise<void> {
+    const job = this.requireJob(jobId);
+    this.jobs.set(jobId, { ...job, status: "running", updatedAt: Date.now() });
+    void this.executor(job.command, job.cwd, {
+      onOutput: (output) => {
+        const current = this.requireJob(jobId);
+        this.jobs.set(jobId, {
+          ...current,
+          output: `${output.stdout}${output.stderr}`,
+          outputTruncated: output.outputTruncated,
+          updatedAt: Date.now(),
+        });
+      },
+    }).then((result) => {
+      const current = this.requireJob(jobId);
+      if (current.status === "cancelled") return;
+      const now = Date.now();
+      this.jobs.set(jobId, {
+        ...current,
+        output: `${result.stdout}${result.stderr}`,
+        outputTruncated: result.outputTruncated,
+        status: result.timedOut ? "failed" : result.exitCode === 0 ? "completed" : "failed",
+        exitCode: result.exitCode,
+        updatedAt: now,
+        completedAt: now,
+      });
+    }).catch((error: unknown) => void this.failJob(jobId, String(error)));
+  }
+
+  async failJob(jobId: string, error: string): Promise<void> {
+    const job = this.requireJob(jobId);
+    const now = Date.now();
+    this.jobs.set(jobId, { ...job, status: "failed", error, updatedAt: now, completedAt: now });
+  }
+
+  async readJob(jobId: string): Promise<ShellCommandJobSnapshot> {
+    return { ...this.requireJob(jobId) };
+  }
+
+  async listRecoverableJobs(): Promise<ShellCommandJobSnapshot[]> {
+    return [...this.jobs.values()]
+      .filter((job) => ["starting", "running", "cancelling"].includes(job.status) || !this.presented.has(job.id))
+      .map((job) => ({ ...job }));
+  }
+
+  async markPresented(jobId: string): Promise<void> {
+    this.presented.add(jobId);
+  }
+
+  seedJob(job: ShellCommandJobSnapshot): void {
+    this.jobs.set(job.id, { ...job });
+  }
+
+  private requireJob(jobId: string): ShellCommandJobSnapshot {
+    const job = this.jobs.get(jobId);
+    if (!job) throw new Error(`Missing fake shell command job: ${jobId}`);
+    return job;
+  }
 }
 
 function sessionOverflowActions(
@@ -375,6 +489,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
       ])),
     },
     defaults: { agent: "codex", cwd: process.cwd() },
+    storage: { sqlitePath: path.join(dir, "state.sqlite") },
   } as unknown as AppConfig;
   const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } as unknown as Logger;
   const restart = vi.fn(async () => undefined);
@@ -391,6 +506,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     { root: "C:\\", label: "Windows", driveType: "Fixed" },
     { root: "D:\\", driveType: "Fixed" },
   ]);
+  const shellCommandJobs = new FakeShellCommandJobManager(shellCommandExecutor);
   const controller = new ProxySessionController(
     config,
     store,
@@ -400,6 +516,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     { restart, supervised: true, cancelSafeRestart, rememberFeishuUserOpenId },
     shellCommandExecutor,
     windowsDriveLister,
+    shellCommandJobs,
   );
   cleanups.push(() => {
     controller.close();
@@ -420,6 +537,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     cancelSafeRestart,
     rememberFeishuUserOpenId,
     shellCommandExecutor,
+    shellCommandJobs,
     windowsDriveLister,
     config,
   };
@@ -1333,6 +1451,10 @@ describe("ProxySessionController", () => {
         }),
       }),
     );
+    await vi.waitFor(() => {
+      const latest = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+      expect(latest).toMatchObject({ header: { title: { content: "命令执行完成" } } });
+    }, { timeout: 3_500 });
     const card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(card).toMatchObject({ header: { title: { content: "命令执行完成" } } });
     const serialized = JSON.stringify(card);
@@ -1374,9 +1496,39 @@ describe("ProxySessionController", () => {
 
     finishCommand();
     await processing;
+    await vi.waitFor(() => {
+      const latest = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+      expect(latest).toMatchObject({ header: { title: { content: "命令执行完成" } } });
+    }, { timeout: 3_500 });
     const finalCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(finalCard).toMatchObject({ header: { title: { content: "命令执行完成" } } });
     expect(JSON.stringify(finalCard)).toContain("last chunk");
+  });
+
+  test("keeps the original bang-command reaction pending until the command reaches a terminal state", async () => {
+    const { controller, outbound, shellCommandExecutor } = fixture();
+    vi.mocked(outbound.addReaction!).mockResolvedValueOnce("reaction_on_it").mockResolvedValueOnce("reaction_done");
+    let finishCommand!: () => void;
+    (shellCommandExecutor as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { finishCommand = resolve; });
+      return {
+        stdout: "finished\n",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        outputTruncated: false,
+      };
+    });
+
+    await controller.onMessage(message("! long-reaction"));
+
+    expect(outbound.addReaction).toHaveBeenCalledWith("m-! long-reaction", "OnIt");
+    expect(outbound.addReaction).not.toHaveBeenCalledWith("m-! long-reaction", "DONE");
+
+    finishCommand();
+    await vi.waitFor(() => {
+      expect(outbound.addReaction).toHaveBeenCalledWith("m-! long-reaction", "DONE");
+    }, { timeout: 3_500 });
   });
 
   test("uses the configured default directory for bang commands without a current task", async () => {
@@ -1961,7 +2113,7 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("acknowledges a queued message before the previous slow operation completes", async () => {
+  test("starts another bang command without waiting for the previous command", async () => {
     const { controller, outbound, shellCommandExecutor } = fixture();
     let finishFirstCommand!: () => void;
     const firstCommand = new Promise<void>((resolve) => { finishFirstCommand = resolve; });
@@ -1988,11 +2140,80 @@ describe("ProxySessionController", () => {
       "m-! second-queued-command",
       "OnIt",
     );
-    expect(shellCommandExecutor).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(shellCommandExecutor).toHaveBeenCalledTimes(2));
+    await Promise.all([first, second]);
 
     finishFirstCommand();
-    await Promise.all([first, second]);
-    expect(shellCommandExecutor).toHaveBeenCalledTimes(2);
+  });
+
+  test("cancels a background shell command from its card", async () => {
+    const { controller, outbound, shellCommandExecutor, shellCommandJobs } = fixture();
+    (shellCommandExecutor as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise(() => undefined));
+
+    await controller.onMessage(message("! long-running"));
+    const initialCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(JSON.stringify(initialCard)).toContain('"action":"shell_command_cancel"');
+    expect(JSON.stringify(initialCard)).toContain("Cancel");
+
+    await controller.onCardAction({
+      actionId: "cancel-shell-command",
+      contextKey: "chat_id:c1",
+      messageId: "card",
+      value: {
+        action: "shell_command_cancel",
+        jobId: "00000000-0000-4000-8000-000000000001",
+        contextKey: "chat_id:c1",
+      },
+    });
+
+    expect(shellCommandJobs.requestCancellation).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000001",
+    );
+    const finalCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(finalCard).toMatchObject({ header: { title: { content: "命令已取消" } } });
+  });
+
+  test("reattaches to a running shell command card after Worker restart", async () => {
+    const { controller, outbound, shellCommandJobs } = fixture();
+    const startedAt = Date.now() - 5_000;
+    shellCommandJobs.seedJob({
+      version: 1,
+      id: "00000000-0000-4000-8000-000000000099",
+      contextKey: "chat_id:c1",
+      cardMessageId: "card_recovered_shell",
+      command: "long-command",
+      cwd: process.cwd(),
+      createdAt: startedAt,
+      startedAt,
+      updatedAt: Date.now(),
+      runnerPid: process.pid,
+      status: "running",
+      output: "recovered output",
+      outputTruncated: false,
+    });
+
+    await controller.recoverInterruptedTasks();
+
+    await vi.waitFor(() => {
+      const latest = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+      expect(latest?.[0]).toBe("card_recovered_shell");
+      expect(latest?.[1]).toMatchObject({ header: { title: { content: "正在执行命令" } } });
+    }, { timeout: 3_500 });
+    expect(JSON.stringify((outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1]))
+      .toContain("recovered output");
+  });
+
+  test("finalizes the shell command card when the background runner cannot start", async () => {
+    const { controller, outbound, shellCommandJobs } = fixture();
+    vi.spyOn(shellCommandJobs, "startJob").mockRejectedValueOnce(new Error("runner unavailable"));
+
+    await controller.onMessage(message("! cannot-start"));
+
+    await vi.waitFor(() => {
+      const latest = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+      expect(latest).toMatchObject({ header: { title: { content: "命令执行失败" } } });
+      expect(JSON.stringify(latest)).toContain("runner unavailable");
+    });
   });
 
   test("records base Feishu chats and treats every incoming message as activity", async () => {

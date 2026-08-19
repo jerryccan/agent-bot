@@ -48,6 +48,12 @@ import type {
   RuntimeSession,
 } from "../runtime/types.js";
 import {
+  isActiveShellCommandJob,
+  ShellCommandJobManager,
+  type ShellCommandJobManagerLike,
+  type ShellCommandJobSnapshot,
+} from "../shell/ShellCommandJobManager.js";
+import {
   StateStore,
   type CardActionBinding,
   type MessageReactionRecord,
@@ -63,7 +69,6 @@ import { normalizeTaskTitle } from "../utils/taskTitle.js";
 import {
   executeShellCommand,
   type ShellCommandOptions,
-  type ShellCommandOutputSnapshot,
   type ShellCommandResult,
 } from "../utils/executeShellCommand.js";
 
@@ -94,6 +99,12 @@ interface ForwardAttachmentReservation {
   registry: Map<string, PendingForwardAttachment>;
 }
 
+interface ShellCommandJobMonitor {
+  scheduler: CardUpdateScheduler<ShellCommandCardView>;
+  timer: NodeJS.Timeout;
+  refreshing: boolean;
+}
+
 const MESSAGE_RECEIVED_REACTION = "OnIt";
 const MESSAGE_COMPLETED_REACTION = "DONE";
 const MESSAGE_FAILED_REACTION = "ERROR";
@@ -105,7 +116,8 @@ const RESET_HISTORY_PAGE_SIZE = 10;
 const MAX_LLM_TURN_RETRIES = 3;
 const RECOVERY_ACTIVITY_WINDOW_MS = 5 * 60 * 1_000;
 const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
-const SHELL_COMMAND_ELAPSED_UPDATE_INTERVAL_MS = 3_000;
+const SHELL_COMMAND_JOB_POLL_INTERVAL_MS = 1_000;
+const SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS = 5_000;
 const FORWARD_ATTACHMENT_WINDOW_MS = 800;
 const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
 const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
@@ -150,6 +162,7 @@ const HELP_COMMAND_SECTIONS: Array<{
         usage: "[目录]",
         description: "浏览、发送文件，并从选定目录创建任务或群",
       },
+
       {
         command: "/forkgroup",
         usage: "[title]",
@@ -404,6 +417,7 @@ export class ProxySessionController {
   private readonly pendingMergedForwards = new Map<string, PendingForwardAttachment>();
   private readonly pendingResourceForwards = new Map<string, PendingForwardAttachment>();
   private readonly relatedReactionMessageIds = new Map<string, string[]>();
+  private readonly shellCommandJobMonitors = new Map<string, ShellCommandJobMonitor>();
   private readonly unsubscribe: Array<() => void> = [];
   private readonly recoveryActivityHeartbeat: NodeJS.Timeout;
   private startupRecovery?: Promise<void>;
@@ -418,6 +432,9 @@ export class ProxySessionController {
     private readonly lifecycle?: ProxyLifecycle,
     private readonly shellCommandExecutor: ShellCommandExecutor = executeShellCommand,
     private readonly windowsDriveLister: WindowsDriveLister = listWindowsDriveRoots,
+    private readonly shellCommandJobs: ShellCommandJobManagerLike = new ShellCommandJobManager(
+      path.join(path.dirname(config.storage.sqlitePath), "command-jobs"),
+    ),
   ) {
     for (const [, runtime] of this.runtimes.entries()) {
       this.unsubscribe.push(
@@ -708,7 +725,9 @@ export class ProxySessionController {
             message.userId,
             message,
           );
-          if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
+          if (!commandDefersReactionFinalization(command)) {
+            await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
+          }
         } catch (error) {
           await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
           await this.sendError(message.contextKey, error);
@@ -731,7 +750,9 @@ export class ProxySessionController {
             message.userId,
             message,
           );
-          if (!isPromptCommand(command)) await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
+          if (!commandDefersReactionFinalization(command)) {
+            await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
+          }
         } catch (error) {
           await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
           await this.sendError(message.contextKey, error);
@@ -786,6 +807,11 @@ export class ProxySessionController {
         } else if (kind === "turn_cancel") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.cancelSession(this.requireSession(contextKey, sessionId));
+        } else if (kind === "shell_command_cancel") {
+          await this.cancelShellCommandJob(
+            contextKey,
+            String(scopedAction.value.jobId ?? ""),
+          );
         } else if (kind === "turn_reset") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           await this.resetCurrentSessionToTurn(
@@ -1057,6 +1083,7 @@ export class ProxySessionController {
     this.relatedReactionMessageIds.clear();
     for (const timer of this.recoveryRetryTimers.values()) clearTimeout(timer);
     this.recoveryRetryTimers.clear();
+    for (const [jobId] of this.shellCommandJobMonitors) this.stopShellCommandJobMonitor(jobId);
     clearInterval(this.recoveryActivityHeartbeat);
   }
 
@@ -1700,11 +1727,12 @@ export class ProxySessionController {
     }
     switch (command.type) {
       case "shell":
-        await this.runShellCommand(contextKey, command.command);
+        await this.runShellCommand(contextKey, command.command, messageId);
         return;
       case "dir":
         await this.openDirectoryBrowser(contextKey, command.directory);
         return;
+
       case "new":
         if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "app-server") {
           throw new Error("/new --nodir 仅支持 App Server Agent。");
@@ -1872,6 +1900,7 @@ export class ProxySessionController {
   }
 
   private async runStartupRecovery(): Promise<void> {
+    await this.recoverShellCommandJobs();
     this.backfillTurnAttemptsForUpgrade();
     const attempts = this.store.listIncompleteTurnAttempts();
     const recoveryCutoff = Date.now() - RECOVERY_ACTIVITY_WINDOW_MS;
@@ -4510,106 +4539,155 @@ export class ProxySessionController {
     }
   }
 
-  private async runShellCommand(contextKey: string, command: string): Promise<void> {
+  private async runShellCommand(
+    contextKey: string,
+    command: string,
+    sourceMessageId?: string,
+  ): Promise<void> {
     const cwd = this.currentSession(contextKey)?.cwd ?? this.config.defaults.cwd;
-    const startedAt = Date.now();
-    let latestOutput: ShellCommandOutputSnapshot = {
-      stdout: "",
-      stderr: "",
-      outputTruncated: false,
-    };
-    let runningState: ShellCommandCardView = {
+    const created = await this.shellCommandJobs.createJob({ contextKey, sourceMessageId, command, cwd });
+    let cardMessageId: string | undefined;
+    const initialState: ShellCommandCardView = {
+      jobId: created.id,
+      contextKey,
       command,
       cwd,
-      ...latestOutput,
+      output: "",
+      outputTruncated: false,
       status: "running",
       elapsedMs: 0,
     };
-    const cardMessageId = await this.outbound.sendInteractiveCard(
-      contextKey,
-      this.cardRenderer.renderShellCommandCard(runningState),
-    );
-    const scheduler = cardMessageId
-      ? new CardUpdateScheduler<ShellCommandCardView>({
-          render: (state) => this.cardRenderer.renderShellCommandCard(state),
-          write: (card) => this.outbound.updateInteractiveCard(contextKey, cardMessageId, card),
-          onError: (error) => this.logger.warn(
-            { error, contextKey, messageId: cardMessageId },
-            "Failed to update a shell command card.",
-          ),
-        })
-      : undefined;
-    scheduler?.seed(runningState);
-    const elapsedTimer = scheduler ? setInterval(() => {
-      runningState = { ...runningState, elapsedMs: Date.now() - startedAt };
-      scheduler.update(runningState);
-    }, SHELL_COMMAND_ELAPSED_UPDATE_INTERVAL_MS) : undefined;
-    elapsedTimer?.unref?.();
-
-    const updateRunningOutput = (snapshot: ShellCommandOutputSnapshot): void => {
-      latestOutput = snapshot;
-      runningState = {
-        ...runningState,
-        ...snapshot,
-        elapsedMs: Date.now() - startedAt,
-      };
-      scheduler?.update(runningState);
-    };
-
-    let result: ShellCommandResult;
     try {
-      result = await this.shellCommandExecutor(command, cwd, { onOutput: updateRunningOutput });
+      cardMessageId = await this.outbound.sendInteractiveCard(
+        contextKey,
+        this.cardRenderer.renderShellCommandCard(initialState),
+      );
+      if (!cardMessageId) throw new Error("Failed to create the shell command card.");
+      const bound = await this.shellCommandJobs.bindCard(created.id, cardMessageId);
+      await this.shellCommandJobs.startJob(created.id);
+      this.monitorShellCommandJob(bound, initialState);
     } catch (error) {
-      if (elapsedTimer) clearInterval(elapsedTimer);
-      const failedCard = this.cardRenderer.renderShellCommandCard({
-        command,
-        cwd,
-        ...latestOutput,
-        stderr: [latestOutput.stderr.trimEnd(), runtimeErrorMessage(error)].filter(Boolean).join("\n"),
-        status: "failed",
-        elapsedMs: Date.now() - startedAt,
-      });
-      if (scheduler) {
+      await this.shellCommandJobs.failJob(created.id, runtimeErrorMessage(error)).catch(() => undefined);
+      if (cardMessageId) {
         try {
-          await scheduler.flush({
-            ...runningState,
-            stderr: [latestOutput.stderr.trimEnd(), runtimeErrorMessage(error)].filter(Boolean).join("\n"),
-            status: "failed",
-            elapsedMs: Date.now() - startedAt,
-          });
+          const failed = await this.shellCommandJobs.readJob(created.id);
+          await this.outbound.updateInteractiveCard(
+            contextKey,
+            cardMessageId,
+            this.cardRenderer.renderShellCommandCard(shellCommandJobCardView(failed)),
+          );
+          await this.shellCommandJobs.markPresented(created.id);
         } catch (cardError) {
           this.logger.warn(
-            { error: cardError, contextKey, messageId: cardMessageId },
-            "Failed to finalize a shell command card.",
+            { error: cardError, jobId: created.id, contextKey, messageId: cardMessageId },
+            "Failed to finalize a shell command card after the runner failed to start.",
           );
-        } finally {
-          scheduler.dispose();
         }
       } else {
-        await this.outbound.sendInteractiveCard(contextKey, failedCard);
+        await this.shellCommandJobs.markPresented(created.id).catch(() => undefined);
       }
       throw error;
     }
+  }
 
-    if (elapsedTimer) clearInterval(elapsedTimer);
-    const finalState: ShellCommandCardView = {
-      command,
-      cwd,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      status: result.timedOut ? "timed_out" : result.exitCode === 0 ? "completed" : "failed",
-      exitCode: result.exitCode,
-      elapsedMs: Date.now() - startedAt,
-      outputTruncated: result.outputTruncated,
+  private monitorShellCommandJob(
+    job: ShellCommandJobSnapshot,
+    seededState?: ShellCommandCardView,
+  ): void {
+    if (!job.cardMessageId || this.shellCommandJobMonitors.has(job.id)) return;
+    const scheduler = new CardUpdateScheduler<ShellCommandCardView>({
+      render: (state) => this.cardRenderer.renderShellCommandCard(state),
+      write: (card) => this.outbound.updateInteractiveCard(job.contextKey, job.cardMessageId!, card),
+      onError: (error) => this.logger.warn(
+        { error, jobId: job.id, contextKey: job.contextKey, messageId: job.cardMessageId },
+        "Failed to update a background shell command card.",
+      ),
+    });
+    if (seededState) scheduler.seed(seededState);
+    const monitor: ShellCommandJobMonitor = {
+      scheduler,
+      refreshing: false,
+      timer: setInterval(() => {
+        void this.refreshShellCommandJob(job.id);
+      }, SHELL_COMMAND_JOB_POLL_INTERVAL_MS),
     };
-    if (scheduler) {
-      try {
-        await scheduler.flush(finalState);
-      } finally {
-        scheduler.dispose();
+    monitor.timer.unref?.();
+    this.shellCommandJobMonitors.set(job.id, monitor);
+    void this.refreshShellCommandJob(job.id, seededState === undefined);
+  }
+
+  private async refreshShellCommandJob(jobId: string, critical = false): Promise<void> {
+    const monitor = this.shellCommandJobMonitors.get(jobId);
+    if (!monitor || monitor.refreshing) return;
+    monitor.refreshing = true;
+    try {
+      const job = await this.shellCommandJobs.readJob(jobId);
+      const view = shellCommandJobCardView(job);
+      if (isActiveShellCommandJob(job.status)) {
+        monitor.scheduler.update(view, critical ? "critical" : "normal");
+        return;
       }
-    } else {
-      await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderShellCommandCard(finalState));
+      await monitor.scheduler.flush(view);
+      if (job.sourceMessageId) {
+        await this.finalizeStandaloneMessageReaction(
+          job.sourceMessageId,
+          job.status === "completed" ? "completed" : job.status === "cancelled" ? "cancelled" : "failed",
+        );
+      }
+      await this.shellCommandJobs.markPresented(jobId);
+      this.stopShellCommandJobMonitor(jobId);
+    } catch (error) {
+      this.logger.warn({ error, jobId }, "Failed to refresh a background shell command job.");
+    } finally {
+      const current = this.shellCommandJobMonitors.get(jobId);
+      if (current) current.refreshing = false;
+    }
+  }
+
+  private stopShellCommandJobMonitor(jobId: string): void {
+    const monitor = this.shellCommandJobMonitors.get(jobId);
+    if (!monitor) return;
+    clearInterval(monitor.timer);
+    monitor.scheduler.dispose();
+    this.shellCommandJobMonitors.delete(jobId);
+  }
+
+  private async cancelShellCommandJob(contextKey: string, jobId: string): Promise<void> {
+    if (!jobId) throw new Error("命令任务无效，请使用最新的命令卡片。");
+    const job = await this.shellCommandJobs.readJob(jobId);
+    if (job.contextKey !== contextKey) throw new Error("该命令不属于当前会话。");
+    const requested = await this.shellCommandJobs.requestCancellation(jobId);
+    if (!requested) {
+      await this.outbound.sendText(contextKey, "该命令已经结束。");
+      return;
+    }
+    if (!this.shellCommandJobMonitors.has(jobId)) this.monitorShellCommandJob(job);
+    await this.refreshShellCommandJob(jobId, true);
+  }
+
+  private async recoverShellCommandJobs(): Promise<void> {
+    const jobs = await this.shellCommandJobs.listRecoverableJobs();
+    if (jobs.length > 0) {
+      this.logger.warn(
+        { jobIds: jobs.map((job) => job.id) },
+        "Recovering background shell command jobs after startup.",
+      );
+    }
+    for (const job of jobs) {
+      if (!job.cardMessageId || !this.outbound.canRoute(job.contextKey)) continue;
+      if (
+        job.status === "starting"
+        && job.runnerPid === undefined
+        && Date.now() - job.updatedAt >= SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS
+      ) {
+        try {
+          await this.shellCommandJobs.startJob(job.id);
+        } catch (error) {
+          await this.shellCommandJobs.failJob(job.id, runtimeErrorMessage(error)).catch(() => undefined);
+        }
+      }
+      const refreshed = await this.shellCommandJobs.readJob(job.id);
+      this.monitorShellCommandJob(refreshed);
     }
   }
 
@@ -4989,6 +5067,7 @@ export class ProxySessionController {
     }
     if (!stats.isFile()) throw new Error(`这不是普通文件：${filePath}`);
   }
+
 
   private async listSessions(
     contextKey: string,
@@ -6505,10 +6584,25 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["archive", "dismiss", "stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer"].includes(command.type)) return true;
+  if (["archive", "dismiss", "stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer", "shell"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (["model", "provider", "thinking", "permissions"].includes(command.type)) return true;
   return false;
+}
+
+function shellCommandJobCardView(job: ShellCommandJobSnapshot): ShellCommandCardView {
+  const status = job.status === "starting" ? "running" : job.status;
+  return {
+    jobId: job.id,
+    contextKey: job.contextKey,
+    command: job.command,
+    cwd: job.cwd,
+    output: [job.output.trimEnd(), job.error].filter(Boolean).join("\n"),
+    status,
+    exitCode: job.exitCode,
+    elapsedMs: Math.max(0, (job.completedAt ?? Date.now()) - job.startedAt),
+    outputTruncated: job.outputTruncated,
+  };
 }
 
 function commandRequiresCurrentSession(command: Command): boolean {
@@ -6696,8 +6790,8 @@ async function listWindowsDriveRoots(): Promise<WindowsDriveInfo[]> {
   return drives;
 }
 
-function isPromptCommand(command: Command): boolean {
-  return command.type === "prompt" || command.type === "nosteer";
+function commandDefersReactionFinalization(command: Command): boolean {
+  return command.type === "prompt" || command.type === "nosteer" || command.type === "shell";
 }
 
 function runtimePrompt(text: string, localImagePaths?: string[]): RuntimePrompt {
