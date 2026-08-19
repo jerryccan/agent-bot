@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15-alpha.5] - 2026-08-19
+
 - Wrap compound shell commands across readable lines with explicit `\` continuation markers in expanded Feishu thinking-card tool details.
 - Run Feishu `!` commands as persistent, unlimited-duration background jobs that do not block conversation queues, survive Worker restarts, preserve observed stdout/stderr order in one bounded output log, and can be cancelled from their cards.
 - Add `/file <path>` for sending a relative, absolute, or home-relative task file to the current Feishu conversation.
