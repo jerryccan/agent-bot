@@ -224,6 +224,7 @@ Send a message beginning with `/` to run a command. Use `/help` in Feishu for th
 | --------------------------------------------- | ------------------------------------ |
 | `/new [title] [--dir <path> \| --nodir]`      | Start a new task                     |
 | `/dir [path]`                                 | Browse files or start work in a directory |
+| `/file <file-path>`                           | Send a file to the current Feishu conversation |
 | `/sessions [keyword]`                         | Find and manage tasks                |
 | `/archive [task]`                             | Archive the current or selected task |
 | `/dismiss`                                    | Archive the current task and dissolve the group after confirmation |
@@ -253,6 +254,8 @@ In a group, `/mute` and `/mute on` make the bot process only messages that menti
 
 `/new` and `/newgroup` inherit the current Agent, project, and execution settings. Use `--dir` to choose another directory or `--nodir` to start without a project directory; `~` represents your home directory.
 
+`/file` accepts relative paths, absolute paths, and paths beginning with `~`; relative paths resolve from the current task directory.
+
 `/fork` and `/forkgroup` branch from completed work without interrupting a running turn. `/sessions` manages tasks across projects in pages of up to 10 tasks; use each project menu for `New` and `NewGroup`. Expanding a task directly shows the first 50 characters of its latest user Prompt, its update time, and task-specific actions. `/turns` restores conversation context without reverting local files.
 
 ## Local Commands
@@ -260,7 +263,7 @@ In a group, `/mute` and `/mute on` make the bot process only messages that menti
 Enter a message beginning with `!` directly in the Feishu chat box to run a local command in the current task directory.
 
 For example, `! ls` lists files in the current directory, and `! git status` shows the state of the current Git repository.
-The same output card refreshes while the command runs. Long output keeps its beginning and end while the middle is truncated.
+Local commands run in independent background processes without a time limit, so they do not block other messages or commands in the current conversation. The same output card refreshes while a command runs, preserves the observed order of normal and diagnostic output, and includes a `Cancel` action. Agent Bot resumes monitoring commands that are still running after a Worker restart. Long output keeps its beginning and end while the middle is truncated.
 
 ## Configuration And Data
 
