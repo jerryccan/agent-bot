@@ -3,6 +3,7 @@ export type Command =
   | { type: "new"; title?: string; cwd?: string; projectless?: boolean }
   | { type: "newgroup"; title?: string; cwd?: string; projectless?: boolean }
   | { type: "dir"; directory?: string }
+  | { type: "file"; filePath: string }
   | { type: "forkgroup"; title?: string }
   | { type: "fork"; sessionId?: string }
   | { type: "title"; title: string }

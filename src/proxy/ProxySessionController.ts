@@ -162,7 +162,12 @@ const HELP_COMMAND_SECTIONS: Array<{
         usage: "[目录]",
         description: "浏览、发送文件，并从选定目录创建任务或群",
       },
-
+      {
+        command: "/file",
+        usage: "&#60;文件路径&#62;",
+        description: "将指定文件发送到当前飞书会话",
+        requiresArgument: true,
+      },
       {
         command: "/forkgroup",
         usage: "[title]",
@@ -1732,7 +1737,9 @@ export class ProxySessionController {
       case "dir":
         await this.openDirectoryBrowser(contextKey, command.directory);
         return;
-
+      case "file":
+        await this.sendCurrentTaskFile(contextKey, command.filePath);
+        return;
       case "new":
         if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "app-server") {
           throw new Error("/new --nodir 仅支持 App Server Agent。");
@@ -5068,6 +5075,12 @@ export class ProxySessionController {
     if (!stats.isFile()) throw new Error(`这不是普通文件：${filePath}`);
   }
 
+  private async sendCurrentTaskFile(contextKey: string, requestedFilePath: string): Promise<void> {
+    const record = this.requireCurrentSession(contextKey);
+    const filePath = resolveUserPath(requestedFilePath, record.cwd);
+    await this.assertSendableFile(filePath);
+    await this.outbound.sendFile(contextKey, filePath);
+  }
 
   private async listSessions(
     contextKey: string,
@@ -6584,7 +6597,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["archive", "dismiss", "stop", "status", "restart", "mute", "help", "sessions", "dir", "goal", "nosteer", "shell"].includes(command.type)) return true;
+  if (["archive", "dismiss", "stop", "status", "restart", "mute", "help", "sessions", "dir", "file", "goal", "nosteer", "shell"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (["model", "provider", "thinking", "permissions"].includes(command.type)) return true;
   return false;
@@ -6606,7 +6619,7 @@ function shellCommandJobCardView(job: ShellCommandJobSnapshot): ShellCommandCard
 }
 
 function commandRequiresCurrentSession(command: Command): boolean {
-  if (["dismiss", "stop", "title", "turns", "model", "provider", "thinking", "permissions", "nosteer"].includes(command.type)) {
+  if (["dismiss", "stop", "title", "turns", "file", "model", "provider", "thinking", "permissions", "nosteer"].includes(command.type)) {
     return true;
   }
   if (command.type === "archive" || command.type === "fork") return command.sessionId === undefined;

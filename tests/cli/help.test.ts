@@ -91,6 +91,7 @@ describe("CLI help", () => {
       archive: "task archive",
       dir: "task dir",
       dismiss: "task dismiss",
+      file: "task file",
       fork: "task fork",
       forkgroup: "task forkgroup",
       goal: "task goal",

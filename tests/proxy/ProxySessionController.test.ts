@@ -1716,6 +1716,63 @@ describe("ProxySessionController", () => {
     expect(JSON.stringify(card)).toContain("inside.txt");
   });
 
+  test("sends relative, absolute, and home-relative files from the current task", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-file-command-"));
+    const reports = path.join(root, "reports");
+    fs.mkdirSync(reports);
+    const relativeFile = path.join(reports, "daily report.txt");
+    fs.writeFileSync(relativeFile, "relative");
+    tempDirs.push(root);
+
+    const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-file-absolute-"));
+    const absoluteFile = path.join(externalRoot, "absolute.txt");
+    fs.writeFileSync(absoluteFile, "absolute");
+    tempDirs.push(externalRoot);
+
+    const homeRoot = fs.mkdtempSync(path.join(os.homedir(), ".agent-bot-file-command-"));
+    const homeFile = path.join(homeRoot, "home.txt");
+    fs.writeFileSync(homeFile, "home");
+    tempDirs.push(homeRoot);
+
+    const { controller, outbound } = fixture();
+    await controller.onMessage(message(`/new --dir "${root}"`));
+
+    await controller.onMessage(message('/file "reports/daily report.txt"'));
+    expect(outbound.sendFile).toHaveBeenLastCalledWith("chat_id:c1", relativeFile);
+
+    await controller.onMessage(message(`/file "${absoluteFile}"`));
+    expect(outbound.sendFile).toHaveBeenLastCalledWith("chat_id:c1", absoluteFile);
+
+    await controller.onMessage(message(`/file ~/${path.basename(homeRoot)}/home.txt`));
+    expect(outbound.sendFile).toHaveBeenLastCalledWith("chat_id:c1", homeFile);
+  });
+
+  test("rejects file commands without a current task or a sendable file", async () => {
+    const { controller, outbound } = fixture();
+
+    await controller.onMessage(message("/file report.txt"));
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("当前没有任务"),
+    );
+    expect(outbound.sendFile).not.toHaveBeenCalled();
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-file-command-errors-"));
+    tempDirs.push(root);
+    await controller.onMessage(message(`/new --dir "${root}"`));
+    await controller.onMessage(message("/file missing.txt"));
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("文件不存在或无法访问"),
+    );
+
+    await controller.onMessage(message("/file ."));
+    expect(outbound.sendText).toHaveBeenLastCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("这不是普通文件"),
+    );
+  });
+
   test("renders the Windows drive selector as a virtual directory", async () => {
     const { controller, outbound, windowsDriveLister } = fixture();
 
@@ -7731,7 +7788,7 @@ describe("ProxySessionController", () => {
     for (const command of clickableCommands) {
       expect(serialized.split(`"command":"${command}"`)).toHaveLength(2);
     }
-    for (const command of ["!", "/title", "/queue", "/nosteer", "/goal"]) {
+    for (const command of ["!", "/file", "/title", "/queue", "/nosteer", "/goal"]) {
       expect(serialized).not.toContain(`"command":"${command}"`);
       expect(serialized).toContain(`**${command}**`);
     }

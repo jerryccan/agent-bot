@@ -63,6 +63,23 @@ describe("CommandRouter", () => {
     });
   });
 
+  test("parses relative, absolute, and home-relative file paths", () => {
+    expect(router.parse("/file report.txt")).toEqual({ type: "file", filePath: "report.txt" });
+    expect(router.parse('/file "D:\\work space\\report.pdf"')).toEqual({
+      type: "file",
+      filePath: "D:\\work space\\report.pdf",
+    });
+    expect(router.parse("/file D:\\work space\\report.pdf")).toEqual({
+      type: "file",
+      filePath: "D:\\work space\\report.pdf",
+    });
+    expect(router.parse("/file ~/reports/latest.txt")).toEqual({
+      type: "file",
+      filePath: "~/reports/latest.txt",
+    });
+    expect(() => router.parse("/file")).toThrow("请输入文件路径");
+  });
+
   test("parses current and specified task status", () => {
     expect(router.parse("/status")).toEqual({ type: "status" });
     expect(router.parse("/status sess_1")).toEqual({ type: "status", sessionId: "sess_1" });
@@ -290,7 +307,7 @@ describe("CommandRouter", () => {
       "命令前缀 /s 不唯一，可匹配：/sessions、/status、/stop、/switch",
     );
     expect(() => router.parse("/f")).toThrow(
-      "命令前缀 /f 不唯一，可匹配：/fork、/forkgroup",
+      "命令前缀 /f 不唯一，可匹配：/file、/fork、/forkgroup",
     );
     expect(router.parse("/re")).toEqual({ type: "restart" });
     expect(() => router.parse("/t")).toThrow(

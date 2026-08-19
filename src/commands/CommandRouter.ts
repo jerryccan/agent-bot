@@ -5,6 +5,7 @@ export const COMMAND_NAMES = [
   "archive",
   "dir",
   "dismiss",
+  "file",
   "fork",
   "forkgroup",
   "goal",
@@ -56,6 +57,11 @@ export class CommandRouter {
     switch (command) {
       case "dir":
         return { type: "dir", directory: args.join(" ").trim() || undefined };
+      case "file": {
+        const filePath = args.join(" ").trim();
+        if (!filePath) throw new Error("请输入文件路径，例如：/file ./report.pdf。");
+        return { type: "file", filePath };
+      }
       case "new":
         return parseNewCommand(args);
       case "newgroup":
