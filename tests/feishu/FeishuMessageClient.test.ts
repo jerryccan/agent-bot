@@ -333,7 +333,7 @@ describe("FeishuMessageClient", () => {
 
     await client.sendMarkdown(
       "chat_id:c1",
-      "answer\n\n----\n\n> Powered by [AgentBot](https://github.com/keyou/agent-bot)",
+      "answer\n\n----\n\n> Powered by [AgentBot](https://bytedance.larkoffice.com/docx/UTukdYBopojSivxRVeUcCXTtnid)",
     );
 
     const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
@@ -345,7 +345,8 @@ describe("FeishuMessageClient", () => {
           { tag: "hr" },
           {
             tag: "markdown",
-            content: "> Powered by [AgentBot](https://github.com/keyou/agent-bot)",
+            content:
+              "> Powered by [AgentBot](https://bytedance.larkoffice.com/docx/UTukdYBopojSivxRVeUcCXTtnid)",
             text_size: "notation",
           },
         ],
