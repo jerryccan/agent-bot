@@ -54,6 +54,16 @@ export async function inspectSupportedAgents(
   ]);
 }
 
+export function selectAgentMaintenanceActions(
+  inspections: SupportedAgentInspection[],
+): SupportedAgentInspection[] {
+  const hasInstalledAgent = inspections.some((inspection) => inspection.state !== "missing");
+  return inspections.filter((inspection) => (
+    inspection.action
+    && (!hasInstalledAgent || inspection.action.kind === "upgrade")
+  ));
+}
+
 export async function inspectSupportedAgent(
   id: SupportedAgentId,
   options: InspectSupportedAgentsOptions = {},

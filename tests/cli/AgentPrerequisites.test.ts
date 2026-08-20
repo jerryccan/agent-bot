@@ -3,8 +3,10 @@ import {
   compareSemanticVersions,
   inspectSupportedAgents,
   runSupportedAgentMaintenance,
+  selectAgentMaintenanceActions,
   type AgentCommandResult,
   type AgentCommandRunner,
+  type SupportedAgentInspection,
 } from "../../src/cli/AgentPrerequisites.js";
 
 describe("inspectSupportedAgents", () => {
@@ -133,6 +135,48 @@ describe("runSupportedAgentMaintenance", () => {
   });
 });
 
+describe("selectAgentMaintenanceActions", () => {
+  test("offers installations when no supported Agent is installed", () => {
+    const inspections = [
+      missingAgent("codex", "Codex"),
+      missingAgent("traex", "TraeX"),
+    ];
+
+    expect(selectAgentMaintenanceActions(inspections)).toEqual(inspections);
+  });
+
+  test("does not offer another Agent installation when one is already installed", () => {
+    const inspections: SupportedAgentInspection[] = [
+      {
+        id: "codex",
+        name: "Codex",
+        state: "ready",
+        installedVersion: "0.146.0",
+        latestVersion: "0.146.0",
+      },
+      missingAgent("traex", "TraeX"),
+    ];
+
+    expect(selectAgentMaintenanceActions(inspections)).toEqual([]);
+  });
+
+  test("keeps upgrades for installed Agents while hiding missing Agent installations", () => {
+    const codex: SupportedAgentInspection = {
+      id: "codex",
+      name: "Codex",
+      state: "outdated",
+      installedVersion: "0.145.0",
+      latestVersion: "0.146.0",
+      action: { kind: "upgrade", command: "codex update" },
+    };
+
+    expect(selectAgentMaintenanceActions([
+      codex,
+      missingAgent("traex", "TraeX"),
+    ])).toEqual([codex]);
+  });
+});
+
 describe("compareSemanticVersions", () => {
   test("orders stable and prerelease semantic versions", () => {
     expect(compareSemanticVersions("0.146.0", "0.145.9")).toBeGreaterThan(0);
@@ -148,4 +192,16 @@ function successfulCommand(stdout = ""): AgentCommandResult {
 
 function failedCommand(): AgentCommandResult {
   return { status: 1, stdout: "", stderr: "not found" };
+}
+
+function missingAgent(
+  id: "codex" | "traex",
+  name: string,
+): SupportedAgentInspection {
+  return {
+    id,
+    name,
+    state: "missing",
+    action: { kind: "install", command: `install-${id}` },
+  };
 }
