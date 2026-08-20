@@ -13,7 +13,7 @@ const tempDirectories: string[] = [];
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
-    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
   }
 });
 
@@ -65,6 +65,7 @@ describe("ShellCommandJobManager", () => {
     const cancelled = await waitForJob(manager, created.id, (job) => job.status === "cancelled");
     expect(cancelled.completedAt).toBeTypeOf("number");
     expect(await manager.requestCancellation(created.id)).toBe(false);
+    await waitForProcessExit(cancelled.childPid);
     await waitForProcessExit(cancelled.runnerPid);
   }, 45_000);
 });
