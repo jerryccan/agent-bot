@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-08-20
+
+- Promote 0.1.15-alpha.6 to the stable release channel.
+
 ## [0.1.15-alpha.6] - 2026-08-20
 
 - Allow separate configurable Project and Projectless Lark group-name templates with OS, Agent, project, task-title, and local date placeholders while preserving legacy defaults and task-title synchronization.
