@@ -7,6 +7,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - Allow separate configurable Project and Projectless Lark group-name templates with OS, Agent, project, task-title, and local date placeholders while preserving legacy defaults and task-title synchronization.
+- Point the AgentBot signature on final Lark replies to the public project website.
 
 ## [0.1.15-alpha.5] - 2026-08-19
 

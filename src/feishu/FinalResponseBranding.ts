@@ -1,5 +1,5 @@
 export const FINAL_RESPONSE_BRANDING =
-  "> Powered by [AgentBot](https://bytedance.larkoffice.com/docx/UTukdYBopojSivxRVeUcCXTtnid)";
+  "> Powered by [AgentBot](https://keyou.github.io/agent-bot/)";
 export const FINAL_RESPONSE_BRANDING_BLOCK = `----\n\n${FINAL_RESPONSE_BRANDING}`;
 
 export function splitFinalResponseBranding(markdown: string): {
