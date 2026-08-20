@@ -20,8 +20,15 @@ describe("release workflows", () => {
     expect(stepUses(publish.jobs.publish)).toContain("actions/download-artifact@v5");
     const publishCommand = stepRuns(publish.jobs.publish)
       .find((command) => command.startsWith("npm publish "));
-    expect(publishCommand).toContain("${PACKAGE_TARBALL}");
+    expect(publishCommand).toContain("./${PACKAGE_TARBALL}");
     expect(publishCommand).toContain("--ignore-scripts");
+  });
+
+  test("recovers an unpublished release tag after a failed publish attempt", () => {
+    const tagCommand = stepRuns(publish.jobs.publish)
+      .find((command) => command.includes("git tag --force"));
+    expect(tagCommand).toContain("git push --force origin");
+    expect(tagCommand).toContain('SHOULD_PUBLISH');
   });
 });
 

@@ -107,8 +107,9 @@ jobs:
           if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
             tag_sha=$(git rev-list -n 1 "${RELEASE_TAG}")
             if [[ "${SHOULD_PUBLISH}" == "true" && "${tag_sha}" != "${RELEASE_SHA}" ]]; then
-              echo "::error::${RELEASE_TAG} points to ${tag_sha}, expected ${RELEASE_SHA}."
-              exit 1
+              echo "${RELEASE_TAG} points to an unpublished release attempt; moving it to ${RELEASE_SHA}."
+              git tag --force "${RELEASE_TAG}" "${RELEASE_SHA}"
+              git push --force origin "refs/tags/${RELEASE_TAG}"
             fi
             echo "exists=true" >> "${GITHUB_OUTPUT}"
           elif [[ "${SHOULD_PUBLISH}" == "true" ]]; then
@@ -157,7 +158,7 @@ jobs:
         env:
           NPM_DIST_TAG: ${{ steps.package.outputs.npm_dist_tag }}
           PACKAGE_TARBALL: ${{ steps.package_artifact.outputs.path }}
-        run: npm publish "${PACKAGE_TARBALL}" --ignore-scripts --access public --tag "${NPM_DIST_TAG}"
+        run: npm publish "./${PACKAGE_TARBALL}" --ignore-scripts --access public --tag "${NPM_DIST_TAG}"
 
       - name: Create GitHub Release
         if: steps.release_tag.outputs.exists == 'true'
