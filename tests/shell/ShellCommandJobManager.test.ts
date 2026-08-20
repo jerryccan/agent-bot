@@ -49,6 +49,7 @@ describe("ShellCommandJobManager", () => {
 
     await manager.markPresented(created.id);
     expect(await manager.listRecoverableJobs()).toEqual([]);
+    await waitForProcessExit(completed.runnerPid);
   }, 45_000);
 
   test("cancels a running command process tree", async () => {
@@ -64,6 +65,7 @@ describe("ShellCommandJobManager", () => {
     const cancelled = await waitForJob(manager, created.id, (job) => job.status === "cancelled");
     expect(cancelled.completedAt).toBeTypeOf("number");
     expect(await manager.requestCancellation(created.id)).toBe(false);
+    await waitForProcessExit(cancelled.runnerPid);
   }, 45_000);
 });
 
@@ -110,4 +112,20 @@ async function waitForJob(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Timed out waiting for shell command job ${jobId}.`);
+}
+
+async function waitForProcessExit(pid: number | undefined): Promise<void> {
+  if (pid === undefined) return;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (!(typeof error === "object" && error !== null && "code" in error && error.code === "EPERM")) {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for shell command runner ${pid} to exit.`);
 }
