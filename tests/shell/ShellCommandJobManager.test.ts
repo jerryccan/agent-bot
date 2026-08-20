@@ -11,11 +11,11 @@ import {
 
 const tempDirectories: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const directory of tempDirectories.splice(0)) {
-    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+    await removeTemporaryDirectory(directory);
   }
-});
+}, 15_000);
 
 describe("ShellCommandJobManager", () => {
   test("runs independently and persists output for recovery", async () => {
@@ -129,4 +129,22 @@ async function waitForProcessExit(pid: number | undefined): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for shell command runner ${pid} to exit.`);
+}
+
+async function removeTemporaryDirectory(directory: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      await fs.promises.rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? error.code
+        : undefined;
+      if (!new Set(["EBUSY", "ENOTEMPTY", "EPERM"]).has(String(code)) || Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 }

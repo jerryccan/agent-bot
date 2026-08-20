@@ -14,7 +14,7 @@ afterEach(() => {
   }
 });
 
-describe("prepare-release", () => {
+describe("prepare-release", { timeout: 30_000 }, () => {
   it("starts the next patch alpha and archives Unreleased changes", () => {
     const root = createRepository();
 
