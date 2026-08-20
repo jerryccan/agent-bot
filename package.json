@@ -68,6 +68,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.2.1",
+    "@clack/prompts": "1.7.0",
     "@larksuiteoapi/node-sdk": "1.56.1",
     "@resvg/resvg-js": "2.6.2",
     "better-sqlite3": "12.11.1",

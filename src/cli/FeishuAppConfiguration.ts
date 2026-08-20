@@ -242,6 +242,67 @@ export async function ensureFeishuAppConfiguration(
   ));
 }
 
+export async function ensureFeishuGroupMessagePermission(
+  credentials: FeishuAppCredentials,
+  options: EnsureFeishuAppConfigurationOptions = {},
+): Promise<EnsureFeishuAppConfigurationResult> {
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const sleep = options.sleep ?? delay;
+  const pollIntervalMs = positiveInteger(options.pollIntervalMs) ?? DEFAULT_POLL_INTERVAL_MS;
+  const timeoutMs = positiveInteger(options.optionalTimeoutMs)
+    ?? DEFAULT_OPTIONAL_COMPLETION_TIMEOUT_MS;
+
+  let configuration: FeishuAppConfiguration;
+  try {
+    configuration = await readFeishuAppConfiguration(credentials, fetchImpl, options.signal);
+  } catch (error) {
+    if (!isPermissionError(error)) throw error;
+    configuration = emptyConfiguration();
+  }
+
+  const missing = manualMissingFeishuAppConfiguration(
+    missingFeishuAppConfiguration(configuration),
+  );
+  if (!hasMissingConfiguration(missing)) {
+    return {
+      status: "ready",
+      configuration,
+      added: emptyConfiguration(),
+      remaining: emptyConfiguration(),
+    };
+  }
+
+  await requestMissingFeishuConfiguration(
+    credentials.appId,
+    missing,
+    true,
+    options.onVerification,
+  );
+
+  let remaining = missing;
+  if (!options.manualPermissionSkipSignal?.aborted) {
+    const completed = await waitForManualFeishuConfiguration(
+      credentials,
+      configuration,
+      fetchImpl,
+      sleep,
+      pollIntervalMs,
+      timeoutMs,
+      options.signal,
+      options.manualPermissionSkipSignal,
+    );
+    configuration = completed.configuration;
+    remaining = manualMissingFeishuAppConfiguration(completed.remaining);
+  }
+
+  return {
+    status: hasMissingConfiguration(remaining) ? "partial" : "updated",
+    configuration,
+    added: resolvedMissingConfiguration(missing, remaining),
+    remaining,
+  };
+}
+
 async function requestMissingFeishuConfiguration(
   appId: string,
   missing: MissingFeishuAppConfiguration,

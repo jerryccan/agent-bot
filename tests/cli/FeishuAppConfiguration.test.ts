@@ -2,6 +2,7 @@ import { gunzipSync } from "node:zlib";
 import { describe, expect, test, vi } from "vitest";
 import {
   ensureFeishuAppConfiguration,
+  ensureFeishuGroupMessagePermission,
   missingFeishuAppConfiguration,
   REQUIRED_FEISHU_CALLBACKS,
   REQUIRED_FEISHU_EVENTS,
@@ -542,6 +543,73 @@ describe("ensureFeishuAppConfiguration", () => {
     controller.abort(new Error("Initialization was cancelled."));
 
     await expect(completion).rejects.toThrow("Initialization was cancelled");
+  });
+});
+
+describe("ensureFeishuGroupMessagePermission", () => {
+  test("requests only the manually published all-group-message permission", async () => {
+    const manualPermissionSkip = new AbortController();
+    const fetchMock = configurationFetch(() => ({
+      scopes: REQUIRED_FEISHU_SCOPES.filter((scope) => scope !== "im:message.group_msg"),
+      events: REQUIRED_FEISHU_EVENTS,
+      callbacks: REQUIRED_FEISHU_CALLBACKS,
+    }));
+    const challenges: FeishuConfigurationChallenge[] = [];
+
+    const result = await ensureFeishuGroupMessagePermission(credentials, {
+      fetch: fetchMock,
+      manualPermissionSkipSignal: manualPermissionSkip.signal,
+      onVerification: (challenge) => {
+        challenges.push(challenge);
+        manualPermissionSkip.abort();
+      },
+    });
+
+    expect(challenges).toEqual([
+      expect.objectContaining({
+        kind: "manual_scope",
+        blocking: true,
+        missing: {
+          scopes: ["im:message.group_msg"],
+          events: [],
+          callbacks: [],
+        },
+      }),
+    ]);
+    expect(result.status).toBe("partial");
+    expect(result.remaining).toEqual({
+      scopes: ["im:message.group_msg"],
+      events: [],
+      callbacks: [],
+    });
+  });
+
+  test("does not repeat common permission authorization", async () => {
+    const fetchMock = configurationFetch(() => ({
+      scopes: REQUIRED_FEISHU_SCOPES.filter(
+        (scope) => scope !== "im:message.group_msg" && scope !== "im:chat:create",
+      ),
+      events: ["im.message.receive_v1"],
+      callbacks: [],
+    }));
+    const manualPermissionSkip = new AbortController();
+    const challenges: FeishuConfigurationChallenge[] = [];
+
+    await ensureFeishuGroupMessagePermission(credentials, {
+      fetch: fetchMock,
+      manualPermissionSkipSignal: manualPermissionSkip.signal,
+      onVerification: (challenge) => {
+        challenges.push(challenge);
+        manualPermissionSkip.abort();
+      },
+    });
+
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0]?.missing).toEqual({
+      scopes: ["im:message.group_msg"],
+      events: [],
+      callbacks: [],
+    });
   });
 });
 

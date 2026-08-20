@@ -61,7 +61,7 @@ agentbot init
 
 Initialization detects Codex and TraeX and reports their installed versions. Missing or outdated Agents are listed with the appropriate install or upgrade commands. Agent Bot saves its configuration to `~/.agent-bot/config.yaml`.
 
-A fresh initialization first asks how group messages should be handled: receive every group message, or respond only when the bot is explicitly @ mentioned. It then presents two or three QR-code or link steps, depending on that choice.
+In an interactive terminal, initialization uses a guided flow for Agent selection, Lark bot creation, and permissions. After the ordinary one-click authorization is complete, the wizard asks how group messages should be handled. The final permission that requires manually publishing an app version appears only when receiving every group message is selected.
 
 1. **Create the bot.** This creates a Feishu app with the standard basic messaging configuration and saves its App ID, App Secret, and authorizing user. This step cannot be skipped because Agent Bot cannot connect to Feishu without it. Permissions already provided during creation are not repeated below.
 2. **Add the remaining permission, event, and callback.** This step adds only:

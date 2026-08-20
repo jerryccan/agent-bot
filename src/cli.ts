@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createInterface } from "node:readline";
 import { loadConfig, loadConfigWithoutEnvironmentMutation } from "./config/loadConfig.js";
 import { sendControlRequest, isServerReachable } from "./cli/LocalControlClient.js";
 import {
@@ -50,24 +49,31 @@ import {
 } from "./cli/FeishuAppRegistration.js";
 import {
   ensureFeishuAppConfiguration,
+  ensureFeishuGroupMessagePermission,
   type EnsureFeishuAppConfigurationResult,
   type FeishuConfigurationChallenge,
 } from "./cli/FeishuAppConfiguration.js";
+import {
+  feishuAffectedFeatures,
+  formatFeishuConfigurationFeatureIntroduction,
+} from "./cli/FeishuConfigurationFeatures.js";
 import { renderCliHelp } from "./cli/help.js";
 import { cliLanguage, cliText, localizeCliErrorMessage } from "./cli/i18n.js";
 import {
   inspectSupportedAgent,
   inspectSupportedAgents,
   runSupportedAgentMaintenance,
+  selectAgentMaintenanceActions,
   type SupportedAgentInspection,
 } from "./cli/AgentPrerequisites.js";
 import {
-  parseMaintenanceSelection,
-  resolveAgentConfigurationChoices,
-  resolveDefaultAgentChoice,
   selectableDefaultAgents,
-  type SelectableDefaultAgent,
 } from "./cli/DefaultAgentSelection.js";
+import {
+  InitializationPromptCancelledError,
+  InitUi,
+  shouldUseInteractiveInitialization,
+} from "./cli/InitUi.js";
 import { formatServerStatus, withConfiguredFeishuAppId } from "./cli/serverStatus.js";
 import { resolveSystemSkillsRoot, SkillRegistry, type SkillRegistrationStatus } from "./cli/SkillRegistry.js";
 import { readPackageVersion } from "./cli/packageVersion.js";
@@ -129,6 +135,10 @@ import {
 const args = process.argv.slice(2);
 
 void main(args).catch((error: unknown) => {
+  if (error instanceof InitializationPromptCancelledError) {
+    process.exitCode = 130;
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${cliText("Error: ", "错误：")}${localizeCliErrorMessage(message)}\n`);
   process.exitCode = 1;
@@ -291,12 +301,21 @@ interface InitializedAgent extends SupportedAgentInspection {
   };
 }
 
+interface FeishuInitializationContext {
+  result: InitCommandResult["feishu"];
+  credentials?: FeishuAppCredentials;
+}
+
 async function initCommand(
   input: string[],
   configPath: string | undefined,
 ): Promise<void> {
   const options = parseInitCommandOptions(input);
   const version = readPackageVersion();
+  const ui = new InitUi({
+    interactive: shouldUseInteractiveInitialization(options.json),
+  });
+  ui.start(cliText(`AgentBot ${version} setup`, `AgentBot ${version} 初始化`));
   const previousInitialization = readInitializationReceipt(agentBotHome());
   let initializationLock = options.reset
     ? acquireInitializationLock(agentBotHome())
@@ -306,18 +325,14 @@ async function initCommand(
   try {
     if (options.reset) await assertResetProfileServerStopped(configPath);
     paths = initializeAgentBot({ configPath, reset: options.reset });
-    if (!options.json) printInitializationPaths(paths);
-    const inspectedAgents = await initializeSupportedAgents(options.json);
+    if (!options.json) printInitializationPaths(paths, ui);
+    const inspectedAgents = await initializeSupportedAgents(options.json, ui);
     const defaultAgent = await configureAgentsAndDefault(
       paths.config.path,
       inspectedAgents,
       options.json,
       shouldConfigureAgentsDuringInitialization(paths.config.status),
-    );
-    const groupMessages = await configureGroupMessageResponse(
-      paths.config.path,
-      options.json,
-      shouldConfigureGroupMessagesDuringInitialization(paths.config.status),
+      ui,
     );
     const configuredAgents = readConfiguredAgentSelection(paths.config.path).agents.map((agent) => agent.name);
     const configuredAgentNames = new Set(configuredAgents);
@@ -327,20 +342,33 @@ async function initCommand(
     }));
     initializationLock ??= acquireInitializationLock(paths.home.path);
     cleanupFeishuCredentialTemporaryFiles(paths.env.path);
-    const feishu = await initializeFeishu(
+    const feishuContext = await initializeFeishu(
       paths,
       options,
-      groupMessages.mode === "all",
+      ui,
     );
+    const groupMessages = await configureGroupMessageResponse(
+      paths.config.path,
+      options.json,
+      shouldConfigureGroupMessagesDuringInitialization(paths.config.status),
+      ui,
+    );
+    const feishu = await completeFeishuGroupMessageSetup(
+      feishuContext,
+      groupMessages.mode,
+      ui,
+    );
+    ui.step(cliText("Installing the AgentBot Skill", "正在安装 AgentBot Skill"));
     const skill = bundledSkillRegistry().install();
     initialized = { ...paths, agents, configuredAgents, defaultAgent, groupMessages, feishu, skill };
   } finally {
     initializationLock?.release();
   }
 
-  if (!options.json) printInitializationResult(initialized);
+  if (!options.json) printInitializationResult(initialized, ui);
   if (!options.json && !options.skipFeishu) {
-    process.stdout.write(cliText("\nStarting Agent Bot server...\n", "\n正在启动 Agent Bot 服务...\n"));
+    if (ui.interactive) ui.step(cliText("Starting AgentBot", "正在启动 AgentBot"));
+    else process.stdout.write(cliText("\nStarting Agent Bot server...\n", "\n正在启动 Agent Bot 服务...\n"));
   }
   const server = await startInitializedServer({ skipFeishu: options.skipFeishu, configPath });
   const welcomeKind = resolveInitializationWelcomeKind({
@@ -379,41 +407,59 @@ async function initCommand(
   const result: InitCommandResult = { ...initialized, server, welcome };
   if (options.json) printJson(result);
   else {
-    printInitializationServerResult(server);
-    printInitializationWelcomeResult(welcome);
+    printInitializationServerResult(server, ui);
+    printInitializationWelcomeResult(welcome, ui);
+    ui.finish(cliText("AgentBot initialization completed", "AgentBot 初始化完成"));
   }
 }
 
-async function initializeSupportedAgents(json: boolean): Promise<InitializedAgent[]> {
+async function initializeSupportedAgents(json: boolean, ui: InitUi): Promise<InitializedAgent[]> {
   const output = json ? process.stderr : process.stdout;
-  output.write(cliText(
-    "\nAgent setup\nChecking Codex and TraeX...\n",
-    "\nAgent 设置\n正在检查 Codex 和 TraeX...\n",
-  ));
-  const inspections = await inspectSupportedAgents();
-  for (const inspection of inspections) printAgentInspection(inspection, output);
-  const actionable = inspections.filter((inspection) => inspection.action);
-  if (actionable.length === 0) return inspections;
-
-  output.write(cliText("\nAvailable actions:\n", "\n可执行的操作：\n"));
-  for (const [index, inspection] of actionable.entries()) {
+  if (ui.interactive) ui.step(cliText("Checking installed Agents", "正在检查已安装的 Agent"));
+  else {
     output.write(cliText(
-      `  ${index + 1}. ${inspection.action?.kind === "install" ? "Install" : "Upgrade"} ${inspection.name}: ${inspection.action?.command}\n`,
-      `  ${index + 1}. ${inspection.action?.kind === "install" ? "安装" : "升级"} ${inspection.name}：${inspection.action?.command}\n`,
+      "\nAgent setup\nChecking Codex and TraeX...\n",
+      "\nAgent 设置\n正在检查 Codex 和 TraeX...\n",
     ));
   }
+  const inspections = await inspectSupportedAgents();
+  for (const inspection of inspections) {
+    if (ui.interactive) printInteractiveAgentInspection(inspection, ui);
+    else printAgentInspection(inspection, output);
+  }
+  const actionable = selectAgentMaintenanceActions(inspections);
+  if (actionable.length === 0) return inspections;
 
   let selected = new Set<number>();
-  if (!process.stdin.isTTY) {
+  if (ui.interactive) {
+    selected = new Set(await ui.multiselect({
+      message: cliText("Choose Agent maintenance actions", "请选择 Agent 安装或升级操作"),
+      options: actionable.map((inspection, index) => ({
+        value: index,
+        label: cliText(
+          `${inspection.action?.kind === "install" ? "Install" : "Upgrade"} ${inspection.name}`,
+          `${inspection.action?.kind === "install" ? "安装" : "升级"} ${inspection.name}`,
+        ),
+        hint: inspection.action?.command,
+      })),
+      initialValues: [],
+      required: false,
+    }));
+    if (selected.size === 0) {
+      ui.info(cliText("Agent maintenance skipped", "已跳过 Agent 安装和升级"));
+    }
+  } else {
+    output.write(cliText("\nAvailable actions:\n", "\n可执行的操作：\n"));
+    for (const [index, inspection] of actionable.entries()) {
+      output.write(cliText(
+        `  ${index + 1}. ${inspection.action?.kind === "install" ? "Install" : "Upgrade"} ${inspection.name}: ${inspection.action?.command}\n`,
+        `  ${index + 1}. ${inspection.action?.kind === "install" ? "安装" : "升级"} ${inspection.name}：${inspection.action?.command}\n`,
+      ));
+    }
     output.write(cliText(
       "No interactive terminal is available. Run the commands above manually if needed.\n",
       "当前没有交互式终端，如有需要请手动执行上面的命令。\n",
     ));
-  } else {
-    selected = new Set(await promptForAgentMaintenance(actionable.length));
-    if (selected.size === 0) {
-      output.write(cliText("No Agent changes selected.\n", "已跳过 Agent 安装和升级。\n"));
-    }
   }
 
   const initialized: InitializedAgent[] = [];
@@ -426,25 +472,29 @@ async function initializeSupportedAgents(json: boolean): Promise<InitializedAgen
     if (!selected.has(actionIndex)) {
       initialized.push({
         ...inspection,
-        assistance: { status: process.stdin.isTTY ? "skipped" : "unavailable" },
+        assistance: { status: ui.interactive ? "skipped" : "unavailable" },
       });
       continue;
     }
 
-    output.write(cliText(
-      `\nRunning ${inspection.name} ${inspection.action.kind}: ${inspection.action.command}\n`,
-      `\n正在${inspection.action.kind === "install" ? "安装" : "升级"} ${inspection.name}：${inspection.action.command}\n`,
-    ));
+    const actionMessage = cliText(
+      `Running ${inspection.name} ${inspection.action.kind}: ${inspection.action.command}`,
+      `正在${inspection.action.kind === "install" ? "安装" : "升级"} ${inspection.name}：${inspection.action.command}`,
+    );
+    if (ui.interactive) ui.step(actionMessage);
+    else output.write(`\n${actionMessage}\n`);
     const maintenance = await runSupportedAgentMaintenance(inspection.id, inspection.action.kind);
     if (maintenance.status !== 0 || maintenance.error) {
       const error = maintenance.error ?? cliText(
         `Command exited with code ${maintenance.status ?? "unknown"}.`,
         `命令退出码为 ${maintenance.status ?? "未知"}。`,
       );
-      output.write(cliText(
-        `${inspection.name} ${inspection.action.kind} did not complete; initialization will continue.\n`,
-        `${inspection.name}${inspection.action.kind === "install" ? "安装" : "升级"}未完成，初始化将继续。\n`,
-      ));
+      const warning = cliText(
+        `${inspection.name} ${inspection.action.kind} did not complete; initialization will continue.`,
+        `${inspection.name}${inspection.action.kind === "install" ? "安装" : "升级"}未完成，初始化将继续。`,
+      );
+      if (ui.interactive) ui.warn(warning);
+      else output.write(`${warning}\n`);
       initialized.push({ ...inspection, assistance: { status: "failed", error } });
       continue;
     }
@@ -452,15 +502,19 @@ async function initializeSupportedAgents(json: boolean): Promise<InitializedAgen
     refreshCurrentProcessPath();
     const refreshed = await inspectSupportedAgent(inspection.id);
     if (refreshed.installedVersion) {
-      output.write(cliText(
-        `${inspection.name} is ready (${refreshed.installedVersion}).\n`,
-        `${inspection.name} 已就绪（${refreshed.installedVersion}）。\n`,
-      ));
+      const ready = cliText(
+        `${inspection.name} is ready (${refreshed.installedVersion}).`,
+        `${inspection.name} 已就绪（${refreshed.installedVersion}）。`,
+      );
+      if (ui.interactive) ui.success(ready);
+      else output.write(`${ready}\n`);
     } else {
-      output.write(cliText(
-        `${inspection.name} command completed, but the CLI is not visible in this process. Open a new terminal and run agentbot init again.\n`,
-        `${inspection.name} 命令已完成，但当前进程仍无法找到该 CLI。请打开新终端后重新运行 agentbot init。\n`,
-      ));
+      const warning = cliText(
+        `${inspection.name} command completed, but the CLI is not visible in this process. Open a new terminal and run agentbot init again.`,
+        `${inspection.name} 命令已完成，但当前进程仍无法找到该 CLI。请打开新终端后重新运行 agentbot init。`,
+      );
+      if (ui.interactive) ui.warn(warning);
+      else output.write(`${warning}\n`);
     }
     initialized.push({ ...refreshed, assistance: { status: "completed" } });
   }
@@ -472,6 +526,7 @@ async function configureAgentsAndDefault(
   inspections: InitializedAgent[],
   json: boolean,
   configureAgents: boolean,
+  ui: InitUi,
 ): Promise<InitCommandResult["defaultAgent"]> {
   const output = json ? process.stderr : process.stdout;
   const configured = readConfiguredAgentSelection(configPath);
@@ -486,10 +541,12 @@ async function configureAgentsAndDefault(
         "现有 Profile 没有有效的默认 Agent。请在 config.yaml 中设置 defaults.agent，然后重新运行 agentbot init。",
       ));
     }
-    output.write(cliText(
-      `Default Agent: ${configured.defaultAgent} (unchanged)\n`,
-      `默认 Agent：${configured.defaultAgent}（保持不变）\n`,
-    ));
+    const message = cliText(
+      `Default Agent: ${configured.defaultAgent} (unchanged)`,
+      `默认 Agent：${configured.defaultAgent}（保持不变）`,
+    );
+    if (ui.interactive) ui.info(message);
+    else output.write(`${message}\n`);
     return { name: configured.defaultAgent!, status: "existing" };
   }
 
@@ -502,34 +559,42 @@ async function configureAgentsAndDefault(
   }
 
   let selectedAgents = choices;
-  if (process.stdin.isTTY && choices.length > 1) {
-    output.write(cliText("\nSelect Agents to configure:\n", "\n请选择要配置的 Agent：\n"));
-    for (const [index, choice] of choices.entries()) {
-      output.write(`  ${index + 1}. ${choice.name} - ${choice.title} (${choice.installedVersion})\n`);
-    }
-    const selectedIndexes = await promptForConfiguredAgents(choices);
+  if (ui.interactive && choices.length > 1) {
+    const selectedIndexes = await ui.multiselect({
+      message: cliText("Choose Agents to configure", "请选择要配置的 Agent"),
+      options: choices.map((choice, index) => ({
+        value: index,
+        label: `${choice.name} - ${choice.title}`,
+        hint: choice.installedVersion,
+      })),
+      initialValues: choices.map((_, index) => index),
+      required: true,
+    });
     selectedAgents = selectedIndexes.flatMap((index) => choices[index] ? [choices[index]!] : []);
   }
 
   const selectedNames = selectedAgents.map((agent) => agent.name);
-  output.write(cliText(
-    `Configured Agents: ${selectedNames.join(", ")}\n`,
-    `已配置 Agent：${selectedNames.join("、")}\n`,
-  ));
+  const configuredMessage = cliText(
+    `Configured Agents: ${selectedNames.join(", ")}`,
+    `已配置 Agent：${selectedNames.join("、")}`,
+  );
+  if (ui.interactive) ui.success(configuredMessage);
+  else output.write(`${configuredMessage}\n`);
 
   let selectedDefault = selectedAgents[0]!;
   if (selectedAgents.length > 1) {
-    if (process.stdin.isTTY) {
-      output.write(cliText("\nSelect the default Agent:\n", "\n请选择默认 Agent：\n"));
-      for (const [index, choice] of selectedAgents.entries()) {
-        const current = choice.name === configured.defaultAgent
-          ? cliText(" [current]", " [当前]")
-          : "";
-        output.write(`  ${index + 1}. ${choice.name} - ${choice.title} (${choice.installedVersion})${current}\n`);
-      }
-      selectedDefault = selectedAgents[
-        await promptForDefaultAgent(selectedAgents, configured.defaultAgent)
-      ]!;
+    if (ui.interactive) {
+      const currentIndex = selectedAgents.findIndex((choice) => choice.name === configured.defaultAgent);
+      const selectedIndex = await ui.select({
+        message: cliText("Choose the default Agent", "请选择默认 Agent"),
+        options: selectedAgents.map((choice, index) => ({
+          value: index,
+          label: `${choice.name} - ${choice.title}`,
+          hint: choice.installedVersion,
+        })),
+        initialValue: currentIndex >= 0 ? currentIndex : 0,
+      });
+      selectedDefault = selectedAgents[selectedIndex]!;
     } else {
       selectedDefault = selectedAgents.find((agent) => agent.name === configured.defaultAgent)
         ?? selectedAgents[0]!;
@@ -537,10 +602,12 @@ async function configureAgentsAndDefault(
   }
 
   const updated = writeConfiguredAgentSelection(configPath, selectedNames, selectedDefault.name);
-  output.write(cliText(
-    `Default Agent: ${selectedDefault.name}${process.stdin.isTTY ? "" : " (selected automatically)"}\n`,
-    `默认 Agent：${selectedDefault.name}${process.stdin.isTTY ? "" : "（已自动选择）"}\n`,
-  ));
+  const defaultMessage = cliText(
+    `Default Agent: ${selectedDefault.name}${ui.interactive ? "" : " (selected automatically)"}`,
+    `默认 Agent：${selectedDefault.name}${ui.interactive ? "" : "（已自动选择）"}`,
+  );
+  if (ui.interactive) ui.success(defaultMessage);
+  else output.write(`${defaultMessage}\n`);
   return { name: selectedDefault.name, status: updated ? "selected" : "existing" };
 }
 
@@ -548,19 +615,47 @@ async function configureGroupMessageResponse(
   configPath: string,
   json: boolean,
   configure: boolean,
+  ui: InitUi,
 ): Promise<InitCommandResult["groupMessages"]> {
   const output = json ? process.stderr : process.stdout;
   if (!configure) {
-    return { mode: readGroupMessageResponseMode(configPath), status: "existing" };
+    const mode = readGroupMessageResponseMode(configPath);
+    if (ui.interactive) {
+      ui.info(cliText(
+        `Group message response: ${mode === "all" ? "receive all group messages" : "require an explicit @ mention"} (unchanged)`,
+        `群消息响应方式：${mode === "all" ? "接收所有群消息" : "必须明确 @ 机器人"}（保持不变）`,
+      ));
+    }
+    return { mode, status: "existing" };
   }
 
   let mode: GroupMessageResponseMode = "mention-only";
-  if (process.stdin.isTTY) {
-    output.write(cliText(
-      "\nChoose how Agent Bot responds to group messages:\n  1. Receive all group messages\n     The bot can respond without an @ mention. This requires an additional Lark permission.\n  2. Require an explicit @ mention\n     The additional all-group-message permission will not be requested.\n",
-      "\n请选择 Agent Bot 响应群消息的方式：\n  1. 接收所有群消息\n     无需 @ 机器人即可响应，需要额外开通飞书权限。\n  2. 明确 @ 机器人才能接收消息\n     不会申请“免 @ 机器人”所需的额外权限。\n",
-    ));
-    mode = await promptForGroupMessageResponseMode();
+  if (ui.interactive) {
+    mode = await ui.select({
+      message: cliText(
+        "Choose how AgentBot responds to group messages",
+        "请选择 AgentBot 响应群消息的方式",
+      ),
+      options: [
+        {
+          value: "mention-only",
+          label: cliText("Require an explicit @ mention", "必须明确 @ 机器人"),
+          hint: cliText(
+            "Recommended; no additional manual permission is required",
+            "推荐；不需要额外手动申请权限",
+          ),
+        },
+        {
+          value: "all",
+          label: cliText("Receive all group messages", "接收所有群消息"),
+          hint: cliText(
+            "Respond without @; requires a final manual Lark permission step",
+            "无需 @ 即可响应；最后需要手动开通飞书权限",
+          ),
+        },
+      ],
+      initialValue: "mention-only",
+    });
   } else {
     output.write(cliText(
       "No interactive terminal is available. Group messages will require an explicit @ mention, and the all-group-message permission will not be requested.\n",
@@ -569,169 +664,44 @@ async function configureGroupMessageResponse(
   }
 
   writeGroupMessageResponseMode(configPath, mode);
-  output.write(cliText(
-    `Group message response: ${mode === "all" ? "receive all group messages" : "require an explicit @ mention"}\n`,
-    `群消息响应方式：${mode === "all" ? "接收所有群消息" : "必须明确 @ 机器人"}\n`,
-  ));
+  const message = cliText(
+    `Group message response: ${mode === "all" ? "receive all group messages" : "require an explicit @ mention"}`,
+    `群消息响应方式：${mode === "all" ? "接收所有群消息" : "必须明确 @ 机器人"}`,
+  );
+  if (ui.interactive) ui.success(message);
+  else output.write(`${message}\n`);
   return { mode, status: "selected" };
 }
 
-function promptForGroupMessageResponseMode(): Promise<GroupMessageResponseMode> {
-  const readline = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (mode: GroupMessageResponseMode): void => {
-      settled = true;
-      readline.close();
-      resolve(mode);
-    };
-    const ask = (): void => {
-      readline.question(cliText(
-        "Select 1 or 2 [2]: ",
-        "请选择 1 或 2 [2]：",
-      ), (answer) => {
-        const normalized = answer.trim().toLowerCase();
-        if (normalized === "1") {
-          finish("all");
-          return;
-        }
-        if (normalized === "" || normalized === "2") {
-          finish("mention-only");
-          return;
-        }
-        process.stderr.write(cliText(
-          "Enter 1 to receive all group messages, or 2 to require an @ mention.\n",
-          "请输入 1 接收所有群消息，或输入 2 要求明确 @ 机器人。\n",
-        ));
-        ask();
-      });
-    };
-    listenForPromptCancellation(readline, () => {
-      settled = true;
-      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
-    }, () => settled);
-    ask();
-  });
-}
-
-function promptForAgentMaintenance(choiceCount: number): Promise<number[]> {
-  const readline = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (selection: number[]): void => {
-      settled = true;
-      readline.close();
-      resolve(selection);
-    };
-    const ask = (): void => {
-      readline.question(cliText(
-        "Enter action numbers separated by commas, type all, or press Enter to skip: ",
-        "请输入要执行的操作编号（多个用逗号分隔），输入 all 选择全部，直接回车跳过：",
-      ), (answer) => {
-        const selection = parseMaintenanceSelection(answer, choiceCount);
-        if (selection) {
-          finish(selection);
-          return;
-        }
-        process.stderr.write(cliText(
-          `Enter numbers from 1 to ${choiceCount}, all, or press Enter to skip.\n`,
-          `请输入 1 到 ${choiceCount} 之间的编号、all，或直接回车跳过。\n`,
-        ));
-        ask();
-      });
-    };
-    listenForPromptCancellation(readline, () => {
-      settled = true;
-      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
-    }, () => settled);
-    ask();
-  });
-}
-
-function promptForConfiguredAgents(choices: SelectableDefaultAgent[]): Promise<number[]> {
-  const readline = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (selection: number[]): void => {
-      settled = true;
-      readline.close();
-      resolve(selection);
-    };
-    const ask = (): void => {
-      readline.question(cliText(
-        "Enter numbers or Agent names separated by commas, type all, or press Enter for all: ",
-        "请输入 Agent 编号或标准名（多个用逗号分隔），输入 all 或直接回车选择全部：",
-      ), (answer) => {
-        const selection = resolveAgentConfigurationChoices(answer, choices);
-        if (selection) {
-          finish(selection);
-          return;
-        }
-        process.stderr.write(cliText(
-          `Select at least one Agent using numbers from 1 to ${choices.length} or standard names.\n`,
-          `请使用 1 到 ${choices.length} 之间的编号或标准名，至少选择一个 Agent。\n`,
-        ));
-        ask();
-      });
-    };
-    listenForPromptCancellation(readline, () => {
-      settled = true;
-      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
-    }, () => settled);
-    ask();
-  });
-}
-
-function promptForDefaultAgent(
-  choices: SelectableDefaultAgent[],
-  currentAgent?: string,
-): Promise<number> {
-  const readline = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (index: number): void => {
-      settled = true;
-      readline.close();
-      resolve(index);
-    };
-    const ask = (): void => {
-      const currentAvailable = choices.some((choice) => choice.name === currentAgent);
-      readline.question(cliText(
-        `Enter a number or Agent name${currentAvailable ? ` [${currentAgent}]` : ""}: `,
-        `请输入编号或 Agent 标准名${currentAvailable ? ` [${currentAgent}]` : ""}：`,
-      ), (answer) => {
-        const index = resolveDefaultAgentChoice(answer, choices, currentAgent);
-        if (index !== undefined) {
-          finish(index);
-          return;
-        }
-        process.stderr.write(cliText(
-          `Enter a number from 1 to ${choices.length} or an Agent standard name.\n`,
-          `请输入 1 到 ${choices.length} 之间的编号，或 Agent 标准名。\n`,
-        ));
-        ask();
-      });
-    };
-    listenForPromptCancellation(readline, () => {
-      settled = true;
-      reject(new Error(cliText("Initialization was cancelled.", "初始化已取消。")));
-    }, () => settled);
-    ask();
-  });
-}
-
-function listenForPromptCancellation(
-  readline: ReturnType<typeof createInterface>,
-  cancel: () => void,
-  isSettled: () => boolean,
+function printInteractiveAgentInspection(
+  inspection: SupportedAgentInspection,
+  ui: InitUi,
 ): void {
-  readline.once("SIGINT", () => {
-    if (!isSettled()) cancel();
-    readline.close();
-  });
-  readline.once("close", () => {
-    if (!isSettled()) cancel();
-  });
+  if (inspection.state === "missing") {
+    ui.info(cliText(
+      `${inspection.name}: not installed`,
+      `${inspection.name}：未安装`,
+    ));
+    return;
+  }
+  if (inspection.state === "outdated") {
+    ui.warn(cliText(
+      `${inspection.name}: ${inspection.installedVersion}; update available (${inspection.latestVersion})`,
+      `${inspection.name}：${inspection.installedVersion}；可升级到 ${inspection.latestVersion}`,
+    ));
+    return;
+  }
+  if (inspection.latestCheckFailed) {
+    ui.warn(cliText(
+      `${inspection.name}: ${inspection.installedVersion}; latest-version check unavailable`,
+      `${inspection.name}：${inspection.installedVersion}；无法检查最新版本`,
+    ));
+    return;
+  }
+  ui.success(cliText(
+    `${inspection.name}: ${inspection.installedVersion} (up to date)`,
+    `${inspection.name}：${inspection.installedVersion}（已是最新）`,
+  ));
 }
 
 function printAgentInspection(
@@ -776,30 +746,24 @@ function refreshCurrentProcessPath(): void {
 async function initializeFeishu(
   paths: InitializationResult,
   options: InitCommandOptions,
-  respondToAllGroupMessages: boolean,
-): Promise<InitCommandResult["feishu"]> {
+  ui: InitUi,
+): Promise<FeishuInitializationContext> {
   const existing = readFeishuCredentials(paths.env.path);
   if (options.skipFeishu) {
     return {
-      status: "skipped",
-      ...(existing.appId ? { appId: existing.appId } : {}),
-      ...(existing.appId && existing.appSecret
-        ? { userOpenIdStatus: existing.userOpenId ? "configured" as const : "pending" as const }
-        : {}),
+      result: {
+        status: "skipped",
+        ...(existing.appId ? { appId: existing.appId } : {}),
+        ...(existing.appId && existing.appSecret
+          ? { userOpenIdStatus: existing.userOpenId ? "configured" as const : "pending" as const }
+          : {}),
+      },
     };
   }
-  if (!options.json) {
-    process.stdout.write(cliText("\nLark setup\n", "\n飞书设置\n"));
-  }
+  if (ui.interactive) ui.step(cliText("Creating or connecting the Lark bot", "正在创建或连接飞书机器人"));
+  else if (!options.json) process.stdout.write(cliText("\nLark setup\n", "\n飞书设置\n"));
 
-  const controller = new AbortController();
-  const onInterrupt = (): void => controller.abort(new Error(cliText(
-    "Initialization was cancelled.",
-    "初始化已取消。",
-  )));
-  process.once("SIGINT", onInterrupt);
-  process.once("SIGTERM", onInterrupt);
-  try {
+  return withInitializationCancellation(async (signal) => {
     let credentials: FeishuAppCredentials;
     let status: Exclude<FeishuInitializationStatus, "skipped">;
     if (!shouldCreateFeishuApp(existing, options.reconfigureFeishu)) {
@@ -809,37 +773,134 @@ async function initializeFeishu(
         userOpenId: existing.userOpenId,
       };
       status = "existing";
-    } else {
-      if (existing.status === "incomplete" && !options.json) {
-        process.stdout.write(cliText(
-          "\nIncomplete Lark credentials were found. A new bot will be created.\n",
-          "\n发现不完整的飞书凭据，将创建一个新机器人。\n",
+      if (ui.interactive) {
+        ui.success(cliText(
+          `Using the existing Lark bot (${credentials.appId})`,
+          `正在使用已有飞书机器人（${credentials.appId}）`,
         ));
       }
+    } else {
+      if (existing.status === "incomplete" && !options.json) {
+        const message = cliText(
+          "Incomplete Lark credentials were found. A new bot will be created.",
+          "发现不完整的飞书凭据，将创建一个新机器人。",
+        );
+        if (ui.interactive) ui.warn(message);
+        else process.stdout.write(`\n${message}\n`);
+      }
       credentials = await registerFeishuApp({
-        signal: controller.signal,
-        onVerification: (challenge) => printFeishuVerification(challenge),
+        signal,
+        onVerification: (challenge) => printFeishuVerification(challenge, ui),
       });
       writeFeishuCredentials(paths.env.path, credentials);
       status = "created";
+      if (ui.interactive) {
+        ui.success(cliText(
+          `Lark bot created (${credentials.appId})`,
+          `飞书机器人已创建（${credentials.appId}）`,
+        ));
+      }
     }
 
-    if (!options.json) {
-      process.stdout.write(cliText(
-        "Checking app permissions, events, and callbacks...\n",
-        "正在检查应用权限、事件和回调...\n",
+    const checking = cliText(
+      "Checking one-click Lark permissions, events, and callbacks",
+      "正在检查可一键授权的飞书权限、事件和回调",
+    );
+    if (ui.interactive) ui.step(checking);
+    else if (!options.json) process.stdout.write(`${checking}...\n`);
+    const configuration = await runFeishuConfigurationInteraction(
+      signal,
+      ui,
+      (interaction) => ensureFeishuAppConfiguration(credentials, {
+        ...interaction,
+        respondToAllGroupMessages: false,
+      }),
+    );
+    if (ui.interactive) {
+      if (configuration.status === "partial") {
+        ui.warn(cliText(
+          "Some optional one-click Lark configuration was skipped or is not active yet",
+          "部分可选的一键飞书配置已跳过或尚未生效",
+        ));
+      } else {
+        ui.success(cliText(
+          "One-click Lark permissions, events, and callbacks are ready",
+          "可一键授权的飞书权限、事件和回调已就绪",
+        ));
+      }
+    }
+    return {
+      credentials,
+      result: {
+        status,
+        appId: credentials.appId,
+        userOpenIdStatus: credentials.userOpenId ? "configured" : "pending",
+        configuration,
+      },
+    };
+  });
+}
+
+async function completeFeishuGroupMessageSetup(
+  context: FeishuInitializationContext,
+  mode: GroupMessageResponseMode,
+  ui: InitUi,
+): Promise<InitCommandResult["feishu"]> {
+  if (mode !== "all" || !context.credentials) return context.result;
+
+  ui.step(cliText(
+    "Configuring permission for group messages without @ mentions",
+    "正在配置群消息免 @ 权限",
+  ));
+  const groupConfiguration = await withInitializationCancellation((signal) =>
+    runFeishuConfigurationInteraction(
+      signal,
+      ui,
+      (interaction) => ensureFeishuGroupMessagePermission(context.credentials!, interaction),
+    )
+  );
+  if (ui.interactive) {
+    if (groupConfiguration.status === "partial") {
+      ui.warn(cliText(
+        "The all-group-message permission is not active; group messages still require an @ mention",
+        "接收所有群消息权限尚未生效；群消息仍需 @ 机器人",
+      ));
+    } else {
+      ui.success(cliText(
+        "Group messages can be received without @ mentions",
+        "已可接收未 @ 机器人的群消息",
       ));
     }
-    const manualPermissionSkip = new AbortController();
-    const optionalSkip = new AbortController();
-    let skipListener: OptionalAuthorizationSkipListener | undefined;
-    const configuration = await ensureFeishuAppConfiguration(credentials, {
-      respondToAllGroupMessages,
-      signal: controller.signal,
+  }
+  return {
+    ...context.result,
+    configuration: mergeFeishuConfigurationResults(
+      context.result.configuration,
+      groupConfiguration,
+    ),
+  };
+}
+
+async function runFeishuConfigurationInteraction(
+  signal: AbortSignal,
+  ui: InitUi,
+  operation: (options: {
+    signal: AbortSignal;
+    manualPermissionSkipSignal: AbortSignal;
+    optionalSkipSignal: AbortSignal;
+    onVerification: (challenge: FeishuConfigurationChallenge) => void;
+  }) => Promise<EnsureFeishuAppConfigurationResult>,
+): Promise<EnsureFeishuAppConfigurationResult> {
+  const manualPermissionSkip = new AbortController();
+  const optionalSkip = new AbortController();
+  let skipListener: OptionalAuthorizationSkipListener | undefined;
+  try {
+    return await operation({
+      signal,
       manualPermissionSkipSignal: manualPermissionSkip.signal,
       optionalSkipSignal: optionalSkip.signal,
       onVerification: (challenge) => {
-        printFeishuConfigurationVerification(challenge);
+        printFeishuConfigurationVerification(challenge, ui);
         if (challenge.kind === "manual_scope" && challenge.blocking) {
           skipListener?.close();
           skipListener = listenForManualPermissionSkip(() => manualPermissionSkip.abort());
@@ -848,17 +909,56 @@ async function initializeFeishu(
           skipListener = listenForOptionalAuthorizationSkip(() => optionalSkip.abort());
         }
       },
-    }).finally(() => skipListener?.close());
-    return {
-      status,
-      appId: credentials.appId,
-      userOpenIdStatus: credentials.userOpenId ? "configured" : "pending",
-      configuration,
-    };
+    });
+  } finally {
+    skipListener?.close();
+  }
+}
+
+async function withInitializationCancellation<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const onInterrupt = (): void => controller.abort(new Error(cliText(
+    "Initialization was cancelled.",
+    "初始化已取消。",
+  )));
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onInterrupt);
+  try {
+    return await operation(controller.signal);
   } finally {
     process.removeListener("SIGINT", onInterrupt);
     process.removeListener("SIGTERM", onInterrupt);
   }
+}
+
+function mergeFeishuConfigurationResults(
+  first: EnsureFeishuAppConfigurationResult | undefined,
+  second: EnsureFeishuAppConfigurationResult,
+): EnsureFeishuAppConfigurationResult {
+  if (!first) return second;
+  const added = mergeFeishuConfigurationSets(first.added, second.added);
+  const remaining = mergeFeishuConfigurationSets(first.remaining, second.remaining);
+  const addedCount = added.scopes.length + added.events.length + added.callbacks.length;
+  const remainingCount = remaining.scopes.length + remaining.events.length + remaining.callbacks.length;
+  return {
+    status: remainingCount > 0 ? "partial" : addedCount > 0 ? "updated" : "ready",
+    configuration: second.configuration,
+    added,
+    remaining,
+  };
+}
+
+function mergeFeishuConfigurationSets(
+  first: FeishuConfigurationChallenge["missing"],
+  second: FeishuConfigurationChallenge["missing"],
+): FeishuConfigurationChallenge["missing"] {
+  return {
+    scopes: [...new Set([...first.scopes, ...second.scopes])],
+    events: [...new Set([...first.events, ...second.events])],
+    callbacks: [...new Set([...first.callbacks, ...second.callbacks])],
+  };
 }
 
 async function assertResetProfileServerStopped(configPath?: string): Promise<void> {
@@ -1850,7 +1950,21 @@ function printSkillStatus(status: SkillRegistrationStatus): void {
   }
 }
 
-function printInitializationPaths(result: InitializationResult): void {
+function printInitializationPaths(result: InitializationResult, ui: InitUi): void {
+  if (ui.interactive) {
+    const lines = [
+      ...(result.reset
+        ? [`${cliText("Reset backup", "重置备份")}: ${result.reset.backupPath}`]
+        : []),
+      `${cliText("Home directory", "主目录")}: ${result.home.path} (${initializationStatusLabel(result.home.status)})`,
+      `${cliText("Config file", "配置文件")}: ${result.config.path} (${initializationStatusLabel(result.config.status)})`,
+      `${cliText("Environment file", "环境文件")}: ${result.env.path} (${initializationStatusLabel(result.env.status)})`,
+      `${cliText("Data directory", "数据目录")}: ${result.data.path} (${initializationStatusLabel(result.data.status)})`,
+      `${cliText("Log directory", "日志目录")}: ${result.logs.path} (${initializationStatusLabel(result.logs.status)})`,
+    ];
+    ui.note(cliText("Profile", "Profile"), lines.join("\n"));
+    return;
+  }
   process.stdout.write(cliText(
     "Profile setup\n",
     "Profile 设置\n",
@@ -1865,7 +1979,44 @@ function printInitializationPaths(result: InitializationResult): void {
   process.stdout.write(`${cliText("Log directory: ", "日志目录：")}${result.logs.path} (${initializationStatusLabel(result.logs.status)})\n`);
 }
 
-function printInitializationResult(result: Omit<InitCommandResult, "server" | "welcome">): void {
+function printInitializationResult(
+  result: Omit<InitCommandResult, "server" | "welcome">,
+  ui: InitUi,
+): void {
+  if (ui.interactive) {
+    const feishuStatus = result.feishu.status === "created"
+      ? cliText(`created (${result.feishu.appId})`, `已创建（${result.feishu.appId}）`)
+      : result.feishu.status === "existing"
+        ? cliText(`existing (${result.feishu.appId})`, `已配置（${result.feishu.appId}）`)
+        : cliText("skipped", "已跳过");
+    const configuration = result.feishu.configuration;
+    const configurationStatus = configuration?.status === "partial"
+      ? cliText("partially configured", "部分配置未完成")
+      : configuration
+        ? cliText("ready", "已就绪")
+        : cliText("not checked", "未检查");
+    ui.note(cliText("Initialization summary", "初始化摘要"), [
+      `${cliText("Configured Agents", "已配置 Agent")}: ${result.configuredAgents.join(", ")}`,
+      `${cliText("Default Agent", "默认 Agent")}: ${result.defaultAgent.name}`,
+      `${cliText("Group messages", "群消息")}: ${result.groupMessages.mode === "all"
+        ? cliText("receive all", "接收所有消息")
+        : cliText("require @ mention", "需要 @ 机器人")}`,
+      `${cliText("Lark bot", "飞书机器人")}: ${feishuStatus}`,
+      `${cliText("Lark configuration", "飞书配置")}: ${configurationStatus}`,
+      `${cliText("AgentBot Skill", "AgentBot Skill")}: ${result.skill.status.targetPath}`,
+      `${cliText("Config file", "配置文件")}: ${result.config.path}`,
+    ].join("\n"));
+    if (configuration?.status === "partial") {
+      ui.warn(cliText(
+        "Initialization continued with some unavailable Lark features.",
+        "部分飞书功能尚不可用，但初始化已继续。",
+      ));
+      for (const feature of feishuAffectedFeatures(configuration.remaining)) {
+        ui.warn(`${cliText("Affected feature", "受影响功能")}: ${feature}`);
+      }
+    }
+    return;
+  }
   process.stdout.write(cliText(
     "\nAgent Bot initialization completed.\n",
     "\nAgent Bot 初始化完成。\n",
@@ -1932,44 +2083,60 @@ function printInitializationResult(result: Omit<InitCommandResult, "server" | "w
   process.stdout.write(`${cliText("Config file: ", "配置文件：")}${result.config.path}\n`);
 }
 
-function printInitializationServerResult(result: InitCommandResult["server"]): void {
+function printInitializationServerResult(result: InitCommandResult["server"], ui: InitUi): void {
   if (result.status === "skipped") {
-    process.stdout.write(cliText(
-      "Agent Bot server: skipped (Lark is not configured; Console mode is available)\n",
-      "Agent Bot 服务：已跳过（未配置飞书；可使用 Console 模式）\n",
-    ));
+    const message = cliText(
+      "Agent Bot server: skipped (Lark is not configured; Console mode is available)",
+      "Agent Bot 服务：已跳过（未配置飞书；可使用 Console 模式）",
+    );
+    if (ui.interactive) ui.warn(message);
+    else process.stdout.write(`${message}\n`);
     return;
   }
   if (result.status === "restart-scheduled") {
-    process.stdout.write(cliText(
-      "Agent Bot server: safe restart scheduled to load the current version.\n",
-      "Agent Bot 服务：已安排安全重启，以加载当前版本。\n",
-    ));
+    const message = cliText(
+      "Agent Bot server: safe restart scheduled to load the current version.",
+      "Agent Bot 服务：已安排安全重启，以加载当前版本。",
+    );
+    if (ui.interactive) ui.success(message);
+    else process.stdout.write(`${message}\n`);
     return;
   }
-  printServerStartResult(result);
+  if (ui.interactive) {
+    ui.success(result.status === "already-running"
+      ? cliText("Agent Bot server is already running.", "Agent Bot 服务已在运行。")
+      : cliText("Agent Bot server started.", "Agent Bot 服务已启动。"));
+  } else {
+    printServerStartResult(result);
+  }
 }
 
-function printInitializationWelcomeResult(result: InitializationWelcomeResult): void {
+function printInitializationWelcomeResult(result: InitializationWelcomeResult, ui: InitUi): void {
   if (result.status === "sent") {
-    process.stdout.write(cliText(
-      "Welcome card: sent to your Lark private chat.\n",
-      "欢迎卡片：已发送到你的飞书私聊。\n",
-    ));
+    const message = cliText(
+      "Welcome card: sent to your Lark private chat.",
+      "欢迎卡片：已发送到你的飞书私聊。",
+    );
+    if (ui.interactive) ui.success(message);
+    else process.stdout.write(`${message}\n`);
     return;
   }
   if (result.status === "failed") {
-    process.stderr.write(cliText(
-      `Warning: The private welcome card could not be sent: ${result.message}\n`,
-      `警告：无法发送私聊欢迎卡片：${result.message}\n`,
-    ));
+    const message = cliText(
+      `The private welcome card could not be sent: ${result.message}`,
+      `无法发送私聊欢迎卡片：${result.message}`,
+    );
+    if (ui.interactive) ui.warn(message);
+    else process.stderr.write(`${cliText("Warning: ", "警告：")}${message}\n`);
     return;
   }
   if (result.reason === "missing-user-open-id") {
-    process.stderr.write(cliText(
-      "Warning: The private welcome card was skipped because FEISHU_USER_OPEN_ID is not available. Send the bot a private message, then run agentbot init again.\n",
-      "警告：尚未获得 FEISHU_USER_OPEN_ID，无法发送私聊欢迎卡片。请先私聊机器人，再次运行 agentbot init。\n",
-    ));
+    const message = cliText(
+      "The private welcome card was skipped because FEISHU_USER_OPEN_ID is not available. Send the bot a private message, then run agentbot init again.",
+      "尚未获得 FEISHU_USER_OPEN_ID，无法发送私聊欢迎卡片。请先私聊机器人，再次运行 agentbot init。",
+    );
+    if (ui.interactive) ui.warn(message);
+    else process.stderr.write(`${cliText("Warning: ", "警告：")}${message}\n`);
   }
 }
 
@@ -1981,38 +2148,61 @@ function printServerStartResult(result: ServerStartResult): void {
   );
 }
 
-function printFeishuVerification(challenge: FeishuAppRegistrationChallenge): void {
+function printFeishuVerification(challenge: FeishuAppRegistrationChallenge, ui: InitUi): void {
+  if (ui.interactive) {
+    ui.note(
+      cliText("Create Lark bot", "创建飞书机器人"),
+      cliText(
+        "Open the link below and confirm creation. AgentBot will save the App ID and App Secret after Lark returns them.",
+        "请打开下方链接并确认创建。飞书返回 App ID 和 App Secret 后，AgentBot 会自动保存。",
+      ),
+    );
+  }
   printVerificationLink(
     {
       verificationUrl: challenge.verificationUrl,
     },
   );
-  process.stderr.write(cliText(
-    `The link expires in about ${Math.ceil(challenge.expiresIn / 60)} minutes. Waiting for confirmation...\n`,
-    `链接将在约 ${Math.ceil(challenge.expiresIn / 60)} 分钟后过期，正在等待确认...\n`,
-  ));
+  const waiting = cliText(
+    `The link expires in about ${Math.ceil(challenge.expiresIn / 60)} minutes. Waiting for confirmation...`,
+    `链接将在约 ${Math.ceil(challenge.expiresIn / 60)} 分钟后过期，正在等待确认...`,
+  );
+  if (ui.interactive) ui.info(waiting);
+  else process.stderr.write(`${waiting}\n`);
 }
 
 function printFeishuConfigurationVerification(
   challenge: FeishuConfigurationChallenge,
+  ui: InitUi,
 ): void {
-  process.stderr.write(challenge.kind === "manual_scope"
-    ? cliText(
-        "\nThe following Lark permission must be added manually in Developer Console:\n",
-        "\n必须在飞书开发者后台手动添加以下权限：\n",
-      )
-    : cliText(
-        "\nThe Lark app is missing the following configuration:\n",
-        "\n飞书应用缺少以下配置：\n",
-      ));
-  if (challenge.missing.scopes.length > 0) {
-    process.stderr.write(`${cliText("Scopes: ", "权限：")}${challenge.missing.scopes.join(", ")}\n`);
-  }
-  if (challenge.missing.events.length > 0) {
-    process.stderr.write(`${cliText("Events: ", "事件：")}${challenge.missing.events.join(", ")}\n`);
-  }
-  if (challenge.missing.callbacks.length > 0) {
-    process.stderr.write(`${cliText("Callbacks: ", "回调：")}${challenge.missing.callbacks.join(", ")}\n`);
+  const title = challenge.kind === "manual_scope"
+    ? cliText("Manual Lark permission", "手动开通飞书权限")
+    : cliText("Lark authorization required", "需要飞书授权");
+  const details = [
+    ...(challenge.missing.scopes.length > 0
+      ? [`${cliText("Scopes", "权限")}: ${challenge.missing.scopes.join(", ")}`]
+      : []),
+    ...(challenge.missing.events.length > 0
+      ? [`${cliText("Events", "事件")}: ${challenge.missing.events.join(", ")}`]
+      : []),
+    ...(challenge.missing.callbacks.length > 0
+      ? [`${cliText("Callbacks", "回调")}: ${challenge.missing.callbacks.join(", ")}`]
+      : []),
+    formatFeishuConfigurationFeatureIntroduction(challenge.missing).trim(),
+  ].filter(Boolean).join("\n");
+  if (ui.interactive) {
+    ui.note(title, details);
+  } else {
+    process.stderr.write(challenge.kind === "manual_scope"
+      ? cliText(
+          "\nThe following Lark permission must be added manually in Developer Console:\n",
+          "\n必须在飞书开发者后台手动添加以下权限：\n",
+        )
+      : cliText(
+          "\nThe Lark app is missing the following configuration:\n",
+          "\n飞书应用缺少以下配置：\n",
+        ));
+    process.stderr.write(`${details}\n`);
   }
   printVerificationLink(
     {
@@ -2023,27 +2213,32 @@ function printFeishuConfigurationVerification(
     },
   );
   if (challenge.kind === "manual_scope") {
-    process.stderr.write(cliText(
-      "Add the filtered permission, publish the app version, and complete tenant approval if required.\n",
-      "请添加已筛选的权限、发布应用版本，并在需要时完成租户管理员审批。\n",
-    ));
+    const guidance = cliText(
+      "Add the filtered permission, publish the app version, and complete tenant approval if required.",
+      "请添加已筛选的权限、发布应用版本，并在需要时完成租户管理员审批。",
+    );
+    if (ui.interactive) ui.info(guidance);
+    else process.stderr.write(`${guidance}\n`);
   }
+  let waiting: string;
   if (challenge.kind === "manual_scope") {
-    process.stderr.write(cliText(
-      "Waiting up to 5 minutes for this permission to appear in the published app version...\n",
-      "将等待最多 5 分钟，直到该权限出现在已发布的应用版本中...\n",
-    ));
+    waiting = cliText(
+      "Waiting up to 5 minutes for this permission to appear in the published app version...",
+      "将等待最多 5 分钟，直到该权限出现在已发布的应用版本中...",
+    );
   } else if (challenge.blocking) {
-    process.stderr.write(cliText(
-      "Waiting for the core scopes and message event to become active...\n",
-      "正在等待核心权限和消息事件生效...\n",
-    ));
+    waiting = cliText(
+      "Waiting for the core scopes and message event to become active...",
+      "正在等待核心权限和消息事件生效...",
+    );
   } else {
-    process.stderr.write(cliText(
-      "Waiting up to 5 minutes for these optional items to become active...\n",
-      "将等待最多 5 分钟，直到这些可选配置生效...\n",
-    ));
+    waiting = cliText(
+      "Waiting up to 5 minutes for these optional items to become active...",
+      "将等待最多 5 分钟，直到这些可选配置生效...",
+    );
   }
+  if (ui.interactive) ui.info(waiting);
+  else process.stderr.write(`${waiting}\n`);
 }
 
 function printFeishuConfigurationWarnings(missing: FeishuConfigurationChallenge["missing"]): void {
@@ -2060,56 +2255,9 @@ function printFeishuConfigurationWarnings(missing: FeishuConfigurationChallenge[
   if (missing.callbacks.length > 0) {
     process.stdout.write(`${cliText("Inactive callbacks: ", "未生效回调：")}${missing.callbacks.join(", ")}\n`);
   }
-  for (const feature of feishuFeatureWarnings(missing)) {
+  for (const feature of feishuAffectedFeatures(missing)) {
     process.stdout.write(`${cliText("Affected feature: ", "受影响功能：")}${feature}\n`);
   }
-}
-
-function feishuFeatureWarnings(missing: FeishuConfigurationChallenge["missing"]): string[] {
-  const scopes = new Set(missing.scopes);
-  const events = new Set(missing.events);
-  const callbacks = new Set(missing.callbacks);
-  const warnings: string[] = [];
-  if (scopes.has("im:message.group_msg")) {
-    warnings.push(cliText(
-      "responding to ordinary group messages that do not mention the bot",
-      "响应未 @ 机器人的普通群消息",
-    ));
-  }
-  if (scopes.has("im:chat:create")) {
-    warnings.push(cliText(
-      "creating Lark groups with /newgroup and /forkgroup",
-      "使用 /newgroup 和 /forkgroup 创建飞书群",
-    ));
-  }
-  if (scopes.has("im:chat:read") || events.has("im.chat.updated_v1")) {
-    warnings.push(cliText(
-      "synchronizing Agent Bot task titles after Lark group renames",
-      "飞书群重命名后同步 Agent Bot 任务标题",
-    ));
-  }
-  if (scopes.has("im:message.reactions:write_only")) {
-    warnings.push(cliText(
-      "showing message-processing status with reactions",
-      "使用 Reaction 显示消息处理状态",
-    ));
-  }
-  if (scopes.has("im:message:readonly")) {
-    warnings.push(cliText("reading images from user messages", "读取用户消息中的图片"));
-  }
-  if (scopes.has("im:resource")) {
-    warnings.push(cliText(
-      "uploading images, sending local images, or setting group avatars",
-      "上传图片、发送本地图片或设置群头像",
-    ));
-  }
-  if (scopes.has("im:message:update")) {
-    warnings.push(cliText("updating sent progress cards", "更新已发送的进度卡片"));
-  }
-  if (callbacks.has("card.action.trigger")) {
-    warnings.push(cliText("card buttons and interactive actions", "卡片按钮和交互操作"));
-  }
-  return warnings;
 }
 
 function initializationStatusLabel(status: InitializationStatus): string {
