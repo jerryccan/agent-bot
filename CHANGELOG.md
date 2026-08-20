@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16-alpha.1] - 2026-08-20
+
 - Stop offering to install another supported Agent during initialization when Codex or TraeX is already available.
 - Explain which Agent Bot feature each requested Lark permission, event, and callback enables before asking the user to authorize it during initialization.
 - Add a localized, colorized interactive initialization wizard and move the manually published all-group-message permission after bot creation and ordinary one-click authorization.
