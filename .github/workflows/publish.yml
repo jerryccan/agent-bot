@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
   id-token: write
 
@@ -45,8 +46,6 @@ jobs:
 
       - name: Use an npm CLI with trusted publishing support
         run: npm install --global npm@11
-
-      - run: npm ci
 
       - name: Inspect package version
         id: package
@@ -120,17 +119,45 @@ jobs:
             echo "exists=false" >> "${GITHUB_OUTPUT}"
           fi
 
-      - if: steps.package.outputs.should_publish == 'true'
-        run: npm run verify
+      - name: Download the package verified by CI
+        if: steps.package.outputs.should_publish == 'true' && github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v5
+        with:
+          name: npm-package
+          path: package-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - if: steps.package.outputs.should_publish == 'true'
-        run: npm run package:smoke
+      - name: Build a verified package for manual publishing
+        if: steps.package.outputs.should_publish == 'true' && github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run verify
+          npm run package:smoke
+          mkdir package-artifact
+          npm pack --ignore-scripts --pack-destination package-artifact
+
+      - name: Resolve the verified package
+        id: package_artifact
+        if: steps.package.outputs.should_publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t package_files < <(find package-artifact -maxdepth 1 -type f -name '*.tgz' -print)
+          if [[ ${#package_files[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one verified npm tarball, found ${#package_files[@]}."
+            exit 1
+          fi
+          echo "path=${package_files[0]}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish package
         if: steps.package.outputs.should_publish == 'true'
         env:
           NPM_DIST_TAG: ${{ steps.package.outputs.npm_dist_tag }}
-        run: npm publish --access public --tag "${NPM_DIST_TAG}"
+          PACKAGE_TARBALL: ${{ steps.package_artifact.outputs.path }}
+        run: npm publish "${PACKAGE_TARBALL}" --ignore-scripts --access public --tag "${NPM_DIST_TAG}"
 
       - name: Create GitHub Release
         if: steps.release_tag.outputs.exists == 'true'
