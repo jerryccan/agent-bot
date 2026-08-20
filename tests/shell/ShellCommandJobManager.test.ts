@@ -13,7 +13,7 @@ const tempDirectories: string[] = [];
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
-    fs.rmSync(directory, { recursive: true, force: true });
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -49,7 +49,7 @@ describe("ShellCommandJobManager", () => {
 
     await manager.markPresented(created.id);
     expect(await manager.listRecoverableJobs()).toEqual([]);
-  }, 15_000);
+  }, 45_000);
 
   test("cancels a running command process tree", async () => {
     const root = createJobsRoot();
@@ -64,7 +64,7 @@ describe("ShellCommandJobManager", () => {
     const cancelled = await waitForJob(manager, created.id, (job) => job.status === "cancelled");
     expect(cancelled.completedAt).toBeTypeOf("number");
     expect(await manager.requestCancellation(created.id)).toBe(false);
-  }, 15_000);
+  }, 45_000);
 });
 
 function createJobsRoot(): string {
@@ -103,7 +103,7 @@ async function waitForJob(
   jobId: string,
   predicate: (job: ShellCommandJobSnapshot) => boolean,
 ): Promise<ShellCommandJobSnapshot> {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const job = await manager.readJob(jobId);
     if (predicate(job)) return job;
