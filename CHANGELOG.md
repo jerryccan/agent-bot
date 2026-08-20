@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16-alpha.0] - 2026-08-20
+
 - Speed up releases by running ordinary tests in parallel, isolating real process tests, and publishing the exact npm tarball already verified by CI instead of rebuilding and retesting it.
 
 ## [0.1.15] - 2026-08-20
