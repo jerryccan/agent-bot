@@ -6,6 +6,12 @@ feishu:
   respondToOwnerOnly: true
   # Fresh init and init --reset ask whether group messages require an @ mention.
   respondToAllGroupMessages: true
+  # New-group templates. Supported placeholders: os, agent, project, taskname, date.
+  # Use {date:yyyy-MM-dd} to override dateFormat for one date placeholder.
+  groupNameFormat:
+    project: "[{agent}] [{project}] {taskname}"
+    projectless: "[{agent}] {taskname}"
+    dateFormat: "MM-dd"
   # Use "timeline" to temporarily restore the original thinking-card layout.
   thinkingCardLayout: "grouped"
 

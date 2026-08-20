@@ -17,6 +17,10 @@ const DEFAULT_CONFIG = `feishu:
   userOpenId: "\${FEISHU_USER_OPEN_ID}"
   respondToOwnerOnly: true
   respondToAllGroupMessages: true
+  groupNameFormat:
+    project: "[{agent}] [{project}] {taskname}"
+    projectless: "[{agent}] {taskname}"
+    dateFormat: "MM-dd"
   thinkingCardLayout: "grouped"
 
 console:

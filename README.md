@@ -214,7 +214,7 @@ agentbot task dismiss [task] --yes
 
 Inside an Agent started by Agent Bot, `[task]` defaults to the current task; use `--task <task>` to target another task explicitly. A regular terminal must supply a task. `task current` shows the automatically detected task details. A task reference can be a number from `task list`, a task ID, or an unambiguous task-ID prefix. Every Feishu task, fork, queue, Agent, Provider, model, thinking, permission, Goal, historical Turn, Reset, group mute, group dismissal, directory, file, shell, and restart operation has a CLI counterpart. Run `agentbot --help` for the complete list and options.
 
-`task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. Generated group names show at most the final two levels of the Project directory. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
+`task newgroup` creates a Feishu group and a new task. By default, it inherits the source task's Agent and execution settings. `--agent <standard-name>` selects another configured Agent; the source project shape is still inherited, while Provider, model, reasoning effort, and permission mode use the target Agent's own Runtime defaults. `--dir` overrides the project directory and supports `~`; `--nodir` forces a Projectless App Server task. Project and Projectless group names can be customized separately through `feishu.groupNameFormat`. `task forkgroup` forks from the source task's latest available completed turn without interrupting an active turn. Both commands require the Server to be running, invite the authorizing user saved in the Profile, leave the source conversation on its current task, and support `--json`.
 
 ## Feishu Commands
 
@@ -277,6 +277,8 @@ Agent Bot keeps user-owned files outside the repository:
 | `~/.agent-bot/logs/`       | Daily runtime logs          |
 
 Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yaml](config.example.yaml) for configuration examples.
+
+`feishu.groupNameFormat` defines separate name templates for new Project and Projectless groups, with variables for the operating system, Agent, project, task name, and date. See the [technical reference](docs/technical-reference.md#configuration-model) for the complete format.
 
 Agent processes inherit ordinary parent-process variables and their explicit `agents.<name>.env` settings. Before starting an Agent, Agent Bot removes inherited `FEISHU_*` credentials and internal `AGENT_BOT_*` state, then provides only namespaced, non-secret Profile and Lark identity context. `FEISHU_APP_SECRET` is never forwarded to an Agent process.
 

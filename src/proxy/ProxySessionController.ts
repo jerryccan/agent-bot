@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { createProjectlessWorkspace, detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import { resolveUserPath } from "../config/paths.js";
-import type { AppConfig } from "../config/schema.js";
+import { DEFAULT_GROUP_NAME_FORMAT, type AppConfig } from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
 import { baseChatContextKey, isThreadContextKey } from "../feishu/contextKey.js";
@@ -30,6 +30,11 @@ import {
 } from "../feishu/CardRenderer.js";
 import { CardUpdateScheduler } from "../feishu/CardUpdateScheduler.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
+import {
+  formatGroupNameDate,
+  formatNewGroupName,
+  parseTaskNameFromGroupName,
+} from "../feishu/GroupNameFormatter.js";
 import { normalizeFeishuPostText } from "../feishu/InboundText.js";
 import { allowsFeishuUser } from "../feishu/ownerAccess.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
@@ -3222,7 +3227,10 @@ export class ProxySessionController {
     executionSettings: SessionExecutionSettings,
   ): Promise<CreatedFeishuTaskGroup> {
     const explicitTitle = normalizeTaskTitle(requestedTitle);
-    const taskTitle = explicitTitle ?? `新任务 (${formatGroupDateSuffix(new Date())})`;
+    const taskTitle = explicitTitle ?? `新任务 (${formatGroupNameDate(
+      new Date(),
+      this.config.feishu?.groupNameFormat?.dateFormat ?? DEFAULT_GROUP_NAME_FORMAT.dateFormat,
+    )})`;
     const group = await this.createFeishuGroupContext(
       sourceContextKey,
       agentName,
@@ -3230,7 +3238,6 @@ export class ProxySessionController {
       userId,
       boundProjectCwd,
       "/newgroup",
-      false,
     );
 
     let task: SessionRecord;
@@ -3331,7 +3338,6 @@ export class ProxySessionController {
       userId,
       boundProjectCwd,
       "/forkgroup",
-      false,
     );
 
     let forked: ForkSessionResult;
@@ -3374,12 +3380,17 @@ export class ProxySessionController {
     userId: string | undefined,
     boundProjectCwd: string | undefined,
     commandName: "/newgroup" | "/forkgroup",
-    includeTimestamp: boolean,
   ): Promise<CreatedFeishuGroupContext> {
     if (!userId?.startsWith("ou_")) {
       throw new Error(`${commandName} 只能由具有 open_id 的飞书用户消息触发。`);
     }
-    const groupName = formatNewGroupName(agentName, boundProjectCwd, taskTitle, new Date(), includeTimestamp);
+    const groupName = formatNewGroupName({
+      agentName,
+      projectCwd: boundProjectCwd,
+      taskName: taskTitle,
+      date: new Date(),
+      format: this.config.feishu?.groupNameFormat,
+    });
     const group = await this.outbound.createGroup(sourceContextKey, {
       name: groupName,
       userOpenId: userId,
@@ -4713,14 +4724,26 @@ export class ProxySessionController {
     contextKey: string,
     event: ChatUpdatedEvent,
   ): Promise<void> {
-    const parsed = parseAgentGroupName(event.afterName);
-    if (!parsed) return;
     const context = this.store.getUserContext(contextKey);
     if (!context?.currentSessionId) return;
     const record = this.store.getSessionForContext(context.currentSessionId, contextKey);
     if (!record || record.status === "closed") return;
-    if (record.agentName.toLowerCase() !== parsed.agentName.toLowerCase()) return;
-    const title = normalizeTaskTitle(parsed.title);
+    const nameFormat = this.config.feishu?.groupNameFormat ?? DEFAULT_GROUP_NAME_FORMAT;
+    const projectCwd = detectProjectlessWorkspace(record.cwd) ? undefined : record.cwd;
+    const templateTitle = parseTaskNameFromGroupName({
+      agentName: record.agentName,
+      groupName: event.afterName,
+      projectCwd,
+      format: nameFormat,
+    });
+    const legacy = parseAgentGroupName(event.afterName);
+    const legacyTitle = legacy && record.agentName.toLowerCase() === legacy.agentName.toLowerCase()
+      ? legacy.title
+      : undefined;
+    if (isDefaultGroupNameFormat(nameFormat) && isLegacyGroupPrefixOnly(event.afterName)) return;
+    const title = normalizeTaskTitle(isDefaultGroupNameFormat(nameFormat)
+      ? legacyTitle ?? templateTitle
+      : templateTitle ?? legacyTitle);
     if (!title || title === record.title) return;
 
     const loaded = await this.loadSession(record);
@@ -6978,44 +7001,6 @@ function isRecoveryAttemptRecent(attempt: TurnAttemptRecord, cutoff: number): bo
   return Number.isFinite(updatedAt) && updatedAt >= cutoff;
 }
 
-function formatGroupDateSuffix(date: Date): string {
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${month}-${day}`;
-}
-
-function formatNewGroupName(
-  agentName: string,
-  projectCwd: string | undefined,
-  taskTitle: string,
-  date: Date,
-  includeTimestamp: boolean,
-): string {
-  const prefix = `[${agentName}] `;
-  const projectPrefix = projectCwd ? `${formatGroupProjectDirectory(projectCwd)} ` : "";
-  const titlePrefix = `${prefix}${projectPrefix}`;
-  const timestampSuffix = includeTimestamp ? ` (${formatGroupDateSuffix(date)})` : "";
-  const availableTitleLength = FEISHU_GROUP_NAME_MAX_LENGTH
-    - Array.from(titlePrefix).length
-    - Array.from(timestampSuffix).length;
-  const title = truncateTail(taskTitle, availableTitleLength);
-  return truncateTail(`${titlePrefix}${title}${timestampSuffix}`, FEISHU_GROUP_NAME_MAX_LENGTH);
-}
-
-const FEISHU_GROUP_NAME_MAX_LENGTH = 60;
-const GROUP_PROJECT_DIRECTORY_MAX_LENGTH = 15;
-
-function formatGroupProjectDirectory(projectCwd: string): string {
-  const value = abbreviateHomeDirectory(projectCwd);
-  const levels = value
-    .replace(/[\\/]+$/, "")
-    .split(/[\\/]+/)
-    .filter(Boolean)
-    .slice(-2);
-  const separator = value.includes("\\") ? path.win32.sep : path.posix.sep;
-  return `[${fitTrailingPathLevels(levels, GROUP_PROJECT_DIRECTORY_MAX_LENGTH, separator)}]`;
-}
-
 function abbreviateHomeDirectory(value: string): string {
   const homeDirectory = os.homedir();
   const valueIsWindows = isWindowsAbsolutePath(value);
@@ -7032,29 +7017,6 @@ function isWindowsAbsolutePath(value: string): boolean {
   return /^[a-z]:[\\/]|^\\\\/iu.test(value);
 }
 
-function fitTrailingPathLevels(levels: string[], maxLength: number, separator: string): string {
-  if (levels.length === 0) return "";
-  if (levels.length === 1) return truncatePathLevel(levels[0]!, maxLength);
-  const parent = levels[0]!;
-  const leaf = levels[1]!;
-  const joined = `${parent}${separator}${leaf}`;
-  if (Array.from(joined).length <= maxLength) return joined;
-  if (Array.from(leaf).length <= maxLength) return leaf;
-  return truncatePathLevel(leaf, maxLength);
-}
-
-function truncatePathLevel(value: string, maxLength: number): string {
-  return truncateTail(value, maxLength);
-}
-
-function truncateTail(value: string, maxLength: number): string {
-  const characters = Array.from(value);
-  if (characters.length <= maxLength) return value;
-  if (maxLength <= 0) return "";
-  if (maxLength <= 3) return ".".repeat(maxLength);
-  return `${characters.slice(0, maxLength - 3).join("")}...`;
-}
-
 function parseAgentGroupName(value: string): { agentName: string; title: string } | undefined {
   const match = /^\[([^[\]]+)\]\s+(.+)$/.exec(value.trim());
   const agentName = match?.[1]?.trim();
@@ -7063,6 +7025,15 @@ function parseAgentGroupName(value: string): { agentName: string; title: string 
   const projectPrefix = /^\[([^[\]]+)\](?:\s+(.+))?$/.exec(remainder);
   const title = projectPrefix ? projectPrefix[2]?.trim() : remainder;
   return agentName && title ? { agentName, title } : undefined;
+}
+
+function isDefaultGroupNameFormat(format: AppConfig["feishu"]["groupNameFormat"]): boolean {
+  return format.project === DEFAULT_GROUP_NAME_FORMAT.project
+    && format.projectless === DEFAULT_GROUP_NAME_FORMAT.projectless;
+}
+
+function isLegacyGroupPrefixOnly(value: string): boolean {
+  return /^\[[^[\]]+\]\s+\[[^[\]]+\]\s*$/u.test(value.trim());
 }
 
 function validateGoalObjective(objective: string): void {

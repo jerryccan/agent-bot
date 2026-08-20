@@ -31,6 +31,7 @@ describe("loadConfig", () => {
         [
           "appId",
           "appSecret",
+          "groupNameFormat",
           "respondToAllGroupMessages",
           "respondToOwnerOnly",
           "thinkingCardLayout",
@@ -41,6 +42,11 @@ describe("loadConfig", () => {
       );
       expect(config.feishu.respondToAllGroupMessages).toBe(true);
       expect(config.feishu.respondToOwnerOnly).toBe(true);
+      expect(config.feishu.groupNameFormat).toEqual({
+        project: "[{agent}] [{project}] {taskname}",
+        projectless: "[{agent}] {taskname}",
+        dateFormat: "MM-dd",
+      });
       expect(config.feishu.thinkingCardLayout).toBe("grouped");
       expect(config.agents.traex).toMatchObject({
         kind: "app-server",
@@ -70,6 +76,7 @@ describe("loadConfig", () => {
     });
     expect(config.feishu.respondToAllGroupMessages).toBe(true);
     expect(config.feishu.respondToOwnerOnly).toBe(true);
+    expect(config.feishu.groupNameFormat.project).toBe("[{agent}] [{project}] {taskname}");
     expect(config.feishu.thinkingCardLayout).toBe("grouped");
     expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
     expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
@@ -130,6 +137,53 @@ describe("loadConfig", () => {
 
     try {
       expect(loadConfig(configPath).feishu.thinkingCardLayout).toBe("timeline");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("loads custom project and Projectless group name formats", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-group-name-format-"));
+    const configPath = path.join(directory, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "feishu:",
+      "  groupNameFormat:",
+      "    project: '{os}-{agent}-{project}-{taskname}-{date}'",
+      "    projectless: '{os}-{agent}-{taskname}-{date:yyyyMMdd}'",
+      "    dateFormat: yyyy-MM-dd",
+      "agents:",
+      "  codex:",
+      "    kind: app-server",
+      "    title: Codex",
+      "    command: codex",
+    ].join("\n"));
+
+    try {
+      expect(loadConfig(configPath).feishu.groupNameFormat).toEqual({
+        project: "{os}-{agent}-{project}-{taskname}-{date}",
+        projectless: "{os}-{agent}-{taskname}-{date:yyyyMMdd}",
+        dateFormat: "yyyy-MM-dd",
+      });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects unknown group name placeholders and formats without a task name", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-invalid-group-name-format-"));
+    const configPath = path.join(directory, "config.yaml");
+    fs.writeFileSync(configPath, [
+      "feishu:",
+      "  groupNameFormat:",
+      "    project: '{agent}-{unknown}'",
+      "agents:",
+      "  codex:",
+      "    title: Codex",
+      "    command: codex",
+    ].join("\n"));
+
+    try {
+      expect(() => loadConfig(configPath)).toThrow(/taskname|Unsupported group name placeholder/u);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

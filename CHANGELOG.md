@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Allow separate configurable Project and Projectless Lark group-name templates with OS, Agent, project, task-title, and local date placeholders while preserving legacy defaults and task-title synchronization.
+
 ## [0.1.15-alpha.5] - 2026-08-19
 
 - Wrap compound shell commands across readable lines with explicit `\` continuation markers in expanded Feishu thinking-card tool details.

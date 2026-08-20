@@ -147,6 +147,10 @@ feishu:
   userOpenId: "${FEISHU_USER_OPEN_ID}"
   respondToOwnerOnly: true
   respondToAllGroupMessages: true
+  groupNameFormat:
+    project: "[{agent}] [{project}] {taskname}"
+    projectless: "[{agent}] {taskname}"
+    dateFormat: "MM-dd"
   thinkingCardLayout: "grouped"
 
 console:
@@ -184,6 +188,19 @@ logging:
 `feishu.respondToAllGroupMessages` defaults to `true` in the template, while first initialization and `init --reset` write the user's selected mode. Set it to `false` to ignore owner group messages unless they mention the current bot. The worker resolves the bot's Open ID at startup so mentioning another member does not trigger it. Owner private messages are unaffected. Initialization requests all-user group-message delivery only when this value is `true`; changing a mention-only Profile to `true` later requires rerunning `agentbot init` to add the permission.
 
 `/mute` and `/mute on` persist mention-only response mode for the current base group; `/mute off` disables it. The group timeline and every topic share this state. While muted, messages that do not mention the current bot are ignored before event claims, reactions, activity tracking, image downloads, command parsing, or Agent calls. The command that disables mute must itself mention the bot. Private chats do not support `/mute`.
+
+`feishu.groupNameFormat.project` and `projectless` control names created by NewGroup or ForkGroup for Project and Projectless tasks. Each template must contain exactly one `{taskname}` and may use these variables:
+
+| Variable | Value |
+| --- | --- |
+| `{os}` | Current system: `win` on Windows, `mac` on macOS, and `linux` on Linux |
+| `{agent}` | Configured Agent standard name, such as `codex` or `traex` |
+| `{project}` | At most the final two Project path levels, limited to 15 characters; normally omitted from the Projectless template |
+| `{taskname}` | New-task or fork-task title |
+| `{date}` | Local date and time rendered with `dateFormat` |
+| `{date:yyyy-MM-dd}` | A format override for this placeholder only |
+
+Date formats support `yyyy`/`yy` for year, `MM`/`M` for month, `dd`/`d` for day, `HH`/`H` for hour, `mm`/`m` for minute, and `ss`/`s` for second. Uppercase `YYYY`, `YY`, `DD`, and `D` are also accepted. Other characters are emitted literally. Feishu's 60-character group-name limit still applies; Agent Bot truncates `{taskname}` first so configured prefixes and suffixes remain visible. The defaults exactly preserve previous group names. Rerunning `agentbot init` adds this section to an existing config without replacing user settings.
 
 `feishu.thinkingCardLayout` defaults to `grouped`. The grouped renderer keeps Commentary and user steering messages visible, uses Commentary as the only execution-group boundary, uses only the latest native reasoning as each group title, and keeps every tool available inside the group. Command panels remove PowerShell launchers and POSIX command-string launchers such as `/bin/zsh -lc`, `/bin/bash -c`, and `/usr/bin/env sh -c` from both their titles and expanded command text without changing the command that is executed. Execution-group status is intentionally non-failing: while any child tool is running the group uses the running treatment, otherwise it settles to the neutral treatment; failed tools retain their own failure icon inside the group. Every execution panel is rendered with a collapsed default and a stable `element_id`; Agent Bot never changes the expanded flag based on tool status, user steering, or later Commentary, allowing the Feishu client to retain a user's manual expansion across full-card updates. Grouped pagination first renders complete tool panels, then fills pages from the newest end according to the rendered UTF-8 JSON size and component count. The activity area is limited to 24KB and 160 components, leaving headroom under Feishu's recommended 30KB card size and 200-component hard limit for the header, plan, files, and actions. Execution groups above eight tools are split into stable subpanels, but every tool keeps its expandable command, result, and image content. History pages are measured separately with complete native reasoning included. Set the option to `timeline` to use the unchanged original renderer and its 40-activity pages while the grouped layout is being refined.
 

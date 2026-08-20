@@ -109,6 +109,11 @@ function config(userOpenId?: string): AppConfig {
       ...(userOpenId ? { userOpenId } : {}),
       respondToOwnerOnly: true,
       respondToAllGroupMessages: true,
+      groupNameFormat: {
+        project: "[{agent}] [{project}] {taskname}",
+        projectless: "[{agent}] {taskname}",
+        dateFormat: "MM-dd",
+      },
       thinkingCardLayout: "grouped",
       useConsoleWhenMissingCredentials: false,
     },

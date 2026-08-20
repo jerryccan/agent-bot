@@ -147,6 +147,10 @@ feishu:
   userOpenId: "${FEISHU_USER_OPEN_ID}"
   respondToOwnerOnly: true
   respondToAllGroupMessages: true
+  groupNameFormat:
+    project: "[{agent}] [{project}] {taskname}"
+    projectless: "[{agent}] {taskname}"
+    dateFormat: "MM-dd"
   thinkingCardLayout: "grouped"
 
 console:
@@ -184,6 +188,19 @@ logging:
 `feishu.respondToAllGroupMessages` 在模板中默认为 `true`，第一次初始化和 `init --reset` 会按用户选择写入实际值。设为 `false` 后，拥有者未 @ 当前机器人的群消息也会被忽略；Worker 启动时会解析机器人的 Open ID，因此 @ 其他成员不会误触发。拥有者私聊不受影响。初始化只在该值为 `true` 时申请接收全部群消息的权限；仅 @ 响应的 Profile 后续改为 `true` 时，需要重新运行 `agentbot init` 补充权限。
 
 `/mute` 或 `/mute on` 会为当前基础群聊持久化仅 @ 响应模式，`/mute off` 会关闭。群正文及其所有话题共享该状态；静音期间未 @ 当前机器人的消息会在事件去重、reaction、活跃时间、图片下载、命令解析和 Agent 调用之前被忽略。关闭静音的命令本身也必须 @ 机器人。私聊不支持 `/mute`。
+
+`feishu.groupNameFormat.project` 和 `projectless` 分别控制 Project 与 Projectless 任务通过 NewGroup 或 ForkGroup 创建的群名。每个模板必须且只能包含一个 `{taskname}`，并可使用以下变量：
+
+| 变量 | 内容 |
+| --- | --- |
+| `{os}` | 当前系统：Windows 为 `win`、macOS 为 `mac`、Linux 为 `linux` |
+| `{agent}` | Agent 配置标准名，例如 `codex` 或 `traex` |
+| `{project}` | Project 目录末尾最多两级，最长 15 个字符；Projectless 模板通常不使用 |
+| `{taskname}` | 新任务或 Fork 任务的标题 |
+| `{date}` | 按 `dateFormat` 格式化的本地日期时间 |
+| `{date:yyyy-MM-dd}` | 只为当前位置指定日期格式，不修改全局 `dateFormat` |
+
+日期格式支持 `yyyy`/`yy` 年、`MM`/`M` 月、`dd`/`d` 日、`HH`/`H` 时、`mm`/`m` 分和 `ss`/`s` 秒，也兼容大写 `YYYY`、`YY`、`DD`、`D`。其他字符按原样输出。最终群名遵循飞书 60 字符限制；超长时优先截断 `{taskname}`，保留模板的前后固定部分。默认模板与旧版群名完全一致。重新运行 `agentbot init` 会为已有配置补齐这一配置段，不覆盖用户已有设置。
 
 `feishu.thinkingCardLayout` 默认为 `grouped`。分组渲染器保持 Commentary 和用户追加消息可见，只把 Commentary 作为执行组边界；每个执行组只用最新原生思考作为标题，展开后仍可查看组内全部工具。命令面板会从标题和展开后的命令正文中去掉 PowerShell 启动器，以及 `/bin/zsh -lc`、`/bin/bash -c`、`/usr/bin/env sh -c` 等 POSIX 命令字符串启动器，但不会修改实际执行的命令。执行组状态不会聚合为失败：存在运行中工具时使用运行中样式，否则回到中性样式；失败工具仍在组内保留自己的失败图标。所有执行面板都以折叠状态作为默认值，并使用稳定的 `element_id`；Agent Bot 不再根据工具状态、用户追加或后续 Commentary 改写展开属性，让飞书客户端能够在整卡更新时保留用户手动展开的状态。分组分页会先完整渲染工具面板，再根据生成内容的 UTF-8 JSON 大小和组件数量从最新端向前装页。活动区上限为 24KB 和 160 个组件，为飞书建议的 30KB 卡片大小及 200 个组件硬限制预留标题、计划、文件变更和操作按钮空间。超过 8 个工具的单个执行组会拆成标识稳定的子面板，但每个工具都继续保留可展开的命令、结果和图片内容。历史页会包含完整原生思考并独立测量。新版布局完善期间，可将该配置设为 `timeline` 使用保持不变的原版渲染器及其每页 40 条活动规则。
 

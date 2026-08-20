@@ -474,6 +474,13 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   tempDirs.push(dir);
   const store = new StateStore(path.join(dir, "state.sqlite"));
   const config = {
+    feishu: {
+      groupNameFormat: {
+        project: "[{agent}] [{project}] {taskname}",
+        projectless: "[{agent}] {taskname}",
+        dateFormat: "MM-dd",
+      },
+    },
     agents: {
       codex: { kind: "app-server", title: "Codex", command: "codex", args: [], env: {} },
       acp: { kind: "acp", title: "ACP", command: "acp", args: [], env: {} },
@@ -3925,6 +3932,27 @@ describe("ProxySessionController", () => {
     }));
   });
 
+  test("uses the configured Projectless group name format", async () => {
+    const { controller, outbound, config } = fixture();
+    config.feishu.groupNameFormat = {
+      project: "P-{agent}-{project}-{taskname}",
+      projectless: "{os}-{agent}-{taskname}-{date:yyyy}",
+      dateFormat: "MM-dd",
+    };
+
+    await controller.onMessage({
+      messageId: "custom-projectless-group-name",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Custom room --nodir",
+    });
+
+    expect((outbound.createGroup as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.name)
+      .toBe(`${process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux"}-codex-Custom room-${new Date().getFullYear()}`);
+  });
+
   test("reports a new task creation failure inside the already-created group", async () => {
     const { controller, runtime, outbound } = fixture();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-newgroup-home-"));
@@ -4203,6 +4231,26 @@ describe("ProxySessionController", () => {
     expect(store.getSession(sessionId)?.title).toBe("修复会话列表时间");
     expect(presenter.updateSessionTitle).toHaveBeenCalledWith(sessionId, "修复会话列表时间");
     expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已将当前任务标题修改为：修复会话列表时间");
+  });
+
+  test("renames the current task from a custom group name format", async () => {
+    const { controller, runtime, store, config } = fixture();
+    config.feishu.groupNameFormat = {
+      project: "Project {project} · {agent} · {taskname}",
+      projectless: "No project · {agent} · {taskname}",
+      dateFormat: "MM-dd",
+    };
+    await controller.onMessage(groupMessage("rename_custom_group", "old title"));
+    const sessionId = store.getUserContext("chat_id:rename_custom_group")!.currentSessionId!;
+
+    await controller.onChatUpdated({
+      chatId: "rename_custom_group",
+      beforeName: "No project · codex · old title",
+      afterName: "No project · codex · custom title",
+    });
+
+    expect(runtime.setTitle).toHaveBeenCalledWith(sessionId, "custom title");
+    expect(store.getSession(sessionId)?.title).toBe("custom title");
   });
 
   test("renames the group-bound current task when the Feishu group name changes", async () => {
