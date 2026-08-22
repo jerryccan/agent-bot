@@ -215,6 +215,23 @@ describe("CardRenderer", () => {
     });
   });
 
+  test("renders a superseded prompt queue without active callbacks", () => {
+    const card = new CardRenderer().renderPromptQueue({
+      sessionId: "session_1",
+      contextKey: "chat_id:c1",
+      phase: "superseded",
+      prompts: [{ id: "queue_1", text: "先运行全部测试" }],
+    });
+    const serialized = JSON.stringify(card);
+
+    expect(card).toMatchObject({
+      header: { title: { content: "排队 Prompt · 已停止" } },
+    });
+    expect(serialized).toContain("此卡片已由新的排队卡片替代");
+    expect(serialized).not.toContain("queued_prompt_cancel");
+    expect(serialized).not.toContain("Cancel");
+  });
+
   test("renders a callback-free startup status card with resumable task state", () => {
     const card = new CardRenderer().renderStartupStatus({
       startedAt: new Date("2026-07-15T05:45:00.000Z"),
@@ -414,6 +431,17 @@ describe("CardRenderer", () => {
     expect(JSON.stringify(cancelled)).toContain("已取消");
     expect(JSON.stringify(cancelled)).not.toContain(">Cancel</font>");
     expect(cancelled).toMatchObject({ header: { template: "grey" } });
+
+    const superseded = renderer.renderSafeRestartStatus({
+      scheduleId: 7,
+      reason: "更新卡片分页",
+      phase: "superseded",
+      pendingFinalDeliveries: 0,
+      waitingTasks: [],
+    });
+    expect(JSON.stringify(superseded)).toContain("已停止");
+    expect(JSON.stringify(superseded)).not.toContain(">Cancel</font>");
+    expect(superseded).toMatchObject({ header: { template: "grey" } });
 
     const restarting = renderer.renderSafeRestartStatus({
       scheduleId: 7,

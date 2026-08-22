@@ -58,9 +58,9 @@ export class SafeRestartScheduler {
   schedule(reason: string, notificationTarget?: RestartNotificationTarget): boolean {
     const newlyScheduled = !this.reason;
     if (newlyScheduled) {
-      this.scheduleId += 1;
       this.notificationTargets = [];
     }
+    this.scheduleId += 1;
     this.addNotificationTarget(notificationTarget, reason);
     this.reason = reason;
     this.idleSince = undefined;
@@ -109,12 +109,13 @@ export class SafeRestartScheduler {
   private async poll(): Promise<void> {
     const reason = this.reason;
     if (!reason) return;
+    const scheduleId = this.scheduleId;
     const state = this.options.readActivity();
     if (state.runningSessions > 0 || state.pendingFinalDeliveries > 0) {
       this.idleSince = undefined;
       this.idleInboundAt = undefined;
       await this.emitStatus({
-        scheduleId: this.scheduleId,
+        scheduleId,
         reason,
         notificationTargets: this.notificationTargetsSnapshot(),
         phase: state.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
@@ -128,7 +129,7 @@ export class SafeRestartScheduler {
       this.idleSince = Date.now();
       this.idleInboundAt = latestInboundAt;
       await this.emitStatus({
-        scheduleId: this.scheduleId,
+        scheduleId,
         reason,
         notificationTargets: this.notificationTargetsSnapshot(),
         phase: "countdown",
@@ -140,7 +141,7 @@ export class SafeRestartScheduler {
     const remainingMs = Math.max(0, quietPeriodMs - (Date.now() - this.idleSince));
     if (remainingMs > 0) {
       await this.emitStatus({
-        scheduleId: this.scheduleId,
+        scheduleId,
         reason,
         notificationTargets: this.notificationTargetsSnapshot(),
         phase: "countdown",
@@ -159,7 +160,7 @@ export class SafeRestartScheduler {
       this.idleInboundAt = undefined;
       if (confirmed.runningSessions > 0 || confirmed.pendingFinalDeliveries > 0) {
         await this.emitStatus({
-          scheduleId: this.scheduleId,
+          scheduleId,
           reason,
           notificationTargets: this.notificationTargetsSnapshot(),
           phase: confirmed.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
@@ -167,7 +168,7 @@ export class SafeRestartScheduler {
         });
       } else {
         await this.emitStatus({
-          scheduleId: this.scheduleId,
+          scheduleId,
           reason,
           notificationTargets: this.notificationTargetsSnapshot(),
           phase: "countdown",
@@ -177,7 +178,6 @@ export class SafeRestartScheduler {
       }
       return;
     }
-    const scheduleId = this.scheduleId;
     const notificationTargets = this.notificationTargetsSnapshot();
     this.clear();
     await this.emitStatus({
@@ -230,7 +230,7 @@ export class SafeRestartScheduler {
     this.notificationTargets[existingIndex] = {
       ...existing,
       reason: target.reason,
-      ...(!existing.replyMessageId && target.replyMessageId
+      ...(target.replyMessageId
         ? { replyMessageId: target.replyMessageId }
         : {}),
     };

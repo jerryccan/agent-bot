@@ -58,7 +58,7 @@ export interface InitializationWelcomeView {
 export interface SafeRestartStatusView {
   scheduleId: number;
   reason: string;
-  phase: "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting" | "cancelled";
+  phase: "waiting_tasks" | "waiting_delivery" | "countdown" | "restarting" | "cancelled" | "superseded";
   remainingMs?: number;
   pendingFinalDeliveries: number;
   waitingTasks: Array<{
@@ -70,6 +70,7 @@ export interface SafeRestartStatusView {
 export interface PromptQueueCardView {
   sessionId: string;
   contextKey: string;
+  phase?: "active" | "superseded";
   prompts: Array<{
     id: string;
     text: string;
@@ -665,7 +666,8 @@ export class CardRenderer {
   }
 
   renderPromptQueue(view: PromptQueueCardView): Record<string, unknown> {
-    const elements = view.prompts.length === 0
+    const superseded = view.phase === "superseded";
+    const elements: Record<string, unknown>[] = view.prompts.length === 0
       ? [markdown("队列为空")]
       : view.prompts.map((prompt, index) => ({
           tag: "column_set",
@@ -688,7 +690,7 @@ export class CardRenderer {
               tag: "column",
               width: "auto",
               vertical_align: "center",
-              elements: [{
+              elements: superseded ? [] : [{
                 tag: "button",
                 text: { tag: "plain_text", content: "Cancel" },
                 type: "default",
@@ -706,6 +708,9 @@ export class CardRenderer {
             },
           ],
         }));
+    if (superseded) {
+      elements.push({ tag: "hr" }, markdown("此卡片已由新的排队卡片替代。"));
+    }
     return {
       schema: "2.0",
       config: {
@@ -714,7 +719,10 @@ export class CardRenderer {
       },
       header: {
         template: "grey",
-        title: { tag: "plain_text", content: `排队 Prompt · ${view.prompts.length}` },
+        title: {
+          tag: "plain_text",
+          content: superseded ? "排队 Prompt · 已停止" : `排队 Prompt · ${view.prompts.length}`,
+        },
         padding: "8px 12px 8px 12px",
       },
       body: {
@@ -733,6 +741,8 @@ export class CardRenderer {
         ? "0s"
         : view.phase === "cancelled"
           ? "已取消"
+          : view.phase === "superseded"
+            ? "已停止"
         : "等待阻塞项清空后开始";
     const status = view.phase === "waiting_tasks"
       ? "🟠 等待任务完成"
@@ -742,7 +752,9 @@ export class CardRenderer {
           ? "🟡 空闲确认中"
           : view.phase === "restarting"
             ? "🔄 正在重启"
-            : "⚪ 已取消";
+            : view.phase === "cancelled"
+              ? "⚪ 已取消"
+              : "⚪ 已停止";
     const lines = [
       `**状态**：${status}`,
       `**重启原因**：${inlineCode(view.reason)}`,
@@ -761,7 +773,7 @@ export class CardRenderer {
     } else {
       elements.push({ tag: "hr" }, markdown("**当前等待的任务**：无"));
     }
-    if (view.phase !== "restarting" && view.phase !== "cancelled") {
+    if (view.phase !== "restarting" && view.phase !== "cancelled" && view.phase !== "superseded") {
       elements.push(
         { tag: "hr" },
         taskActionRow([{
@@ -775,7 +787,7 @@ export class CardRenderer {
     }
     const template = view.phase === "restarting"
       ? "blue"
-      : view.phase === "cancelled"
+      : view.phase === "cancelled" || view.phase === "superseded"
         ? "grey"
         : "orange";
     return sectionCard("Agent Bot 安全重启", elements, template);

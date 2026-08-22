@@ -332,6 +332,62 @@ describe("SafeRestartNotifier", () => {
     expect(JSON.stringify(updateInteractiveCard.mock.calls.at(-1)?.[1])).toContain("9s");
   });
 
+  test("stops the previous card before sending a new card for a repeated request", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-repeated-"));
+    directories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    const sendInteractiveCard = vi.fn(async (
+      _contextKey: string,
+      _card: Record<string, unknown>,
+    ) => (
+      sendInteractiveCard.mock.calls.length === 1 ? "om_first" : "om_second"
+    ));
+    const updateInteractiveCard = vi.fn(async (
+      _messageId: string,
+      _card: Record<string, unknown>,
+    ) => undefined);
+    const notifier = new SafeRestartNotifier(
+      store,
+      {
+        sendText: vi.fn(async () => "text"),
+        sendMarkdown: vi.fn(async () => "markdown"),
+        sendInteractiveCard,
+        updateInteractiveCard,
+      },
+      new CardRenderer(),
+      { warn: vi.fn() },
+      { initialCardDelayMs: 0 },
+    );
+
+    await notifier.update({
+      scheduleId: 1,
+      reason: "first request",
+      notificationTargets: [{ contextKey: "chat_id:private", reason: "first request" }],
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+    await notifier.update({
+      scheduleId: 2,
+      reason: "second request",
+      notificationTargets: [{ contextKey: "chat_id:private", reason: "second request" }],
+      phase: "waiting_tasks",
+      activity: { runningSessions: 1, pendingFinalDeliveries: 0 },
+    });
+
+    expect(sendInteractiveCard).toHaveBeenCalledTimes(2);
+    expect(updateInteractiveCard).toHaveBeenCalledOnce();
+    expect(updateInteractiveCard).toHaveBeenCalledWith("om_first", expect.any(Object));
+    const stopped = JSON.stringify(updateInteractiveCard.mock.calls[0]?.[1]);
+    const active = JSON.stringify(sendInteractiveCard.mock.calls[1]?.[1]);
+    expect(stopped).toContain("已停止");
+    expect(stopped).not.toContain(">Cancel</font>");
+    expect(active).toContain("second request");
+    expect(active).toContain('"scheduleId":"2"');
+    expect(updateInteractiveCard.mock.invocationCallOrder[0])
+      .toBeLessThan(sendInteractiveCard.mock.invocationCallOrder[1]!);
+  });
+
   test("serializes changed countdown cards instead of coalescing intermediate updates", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-restart-countdown-"));
     directories.push(directory);

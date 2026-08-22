@@ -2503,17 +2503,28 @@ export class ProxySessionController {
 
   private async presentPromptQueueCard(localSessionId: string, contextKey: string): Promise<void> {
     await this.serializePromptQueueCardWrite(localSessionId, async () => {
-      const card = this.renderPromptQueueCard(localSessionId, contextKey);
-      const existing = this.queuedPromptCards.get(localSessionId)?.get(contextKey);
+      const cards = this.queuedPromptCards.get(localSessionId);
+      const existing = cards?.get(contextKey);
       if (existing) {
         try {
-          await this.outbound.updateInteractiveCard(contextKey, existing, card);
-          return;
+          await this.outbound.updateInteractiveCard(
+            contextKey,
+            existing,
+            this.renderPromptQueueCard(localSessionId, contextKey, "superseded"),
+          );
         } catch (error) {
-          this.logger.warn({ error, localSessionId, contextKey, messageId: existing }, "Failed to update prompt queue card; sending a replacement.");
+          this.logger.warn(
+            { error, localSessionId, contextKey, messageId: existing },
+            "Failed to stop the previous prompt queue card; sending a replacement.",
+          );
         }
+        cards?.delete(contextKey);
+        if (cards?.size === 0) this.queuedPromptCards.delete(localSessionId);
       }
-      const messageId = await this.outbound.sendInteractiveCard(contextKey, card);
+      const messageId = await this.outbound.sendInteractiveCard(
+        contextKey,
+        this.renderPromptQueueCard(localSessionId, contextKey),
+      );
       if (messageId) this.rememberPromptQueueCard(localSessionId, contextKey, messageId);
     });
   }
@@ -2536,10 +2547,15 @@ export class ProxySessionController {
     });
   }
 
-  private renderPromptQueueCard(localSessionId: string, contextKey: string): Record<string, unknown> {
+  private renderPromptQueueCard(
+    localSessionId: string,
+    contextKey: string,
+    phase: "active" | "superseded" = "active",
+  ): Record<string, unknown> {
     return this.cardRenderer.renderPromptQueue({
       sessionId: localSessionId,
       contextKey,
+      phase,
       prompts: this.store.listQueuedPrompts(localSessionId).map((prompt) => ({
         id: prompt.promptId,
         text: prompt.displayPrompt ?? prompt.text,

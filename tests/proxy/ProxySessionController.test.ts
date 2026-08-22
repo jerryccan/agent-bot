@@ -6414,9 +6414,13 @@ describe("ProxySessionController", () => {
       "update docs",
       "report result",
     ]);
-    expect(outbound.sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(outbound.sendInteractiveCard).toHaveBeenCalledTimes(3);
     expect(outbound.updateInteractiveCard).toHaveBeenCalledTimes(2);
-    let card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    for (const call of (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(JSON.stringify(call[1])).toContain("排队 Prompt · 已停止");
+      expect(JSON.stringify(call[1])).not.toContain("queued_prompt_cancel");
+    }
+    let card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(JSON.stringify(card)).toContain("排队 Prompt · 3");
     expect(JSON.stringify(card).match(/Cancel/g)).toHaveLength(3);
 

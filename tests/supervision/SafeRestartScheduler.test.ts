@@ -45,6 +45,7 @@ describe("SafeRestartScheduler", () => {
     });
     expect(scheduler.schedule("first", {
       contextKey: "chat_id:first:thread_id:topic",
+      replyMessageId: "om_old_anchor",
     })).toBe(true);
     await vi.advanceTimersByTimeAsync(900);
     expect(scheduler.schedule("second", {
@@ -110,6 +111,31 @@ describe("SafeRestartScheduler", () => {
       phase: "countdown",
       remainingMs: 1_000,
     }));
+  });
+
+  test("assigns a new schedule id to each explicit safe restart request", async () => {
+    vi.useFakeTimers();
+    const onStatus = vi.fn();
+    const scheduler = new SafeRestartScheduler({
+      readActivity: () => ({ runningSessions: 1, pendingFinalDeliveries: 0 }),
+      onReady: vi.fn(),
+      onStatus,
+      quietPeriodMs: 1_000,
+      pollIntervalMs: 100,
+    });
+
+    expect(scheduler.schedule("first")).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ scheduleId: 1 }));
+
+    expect(scheduler.schedule("second")).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({
+      scheduleId: 2,
+      reason: "second",
+    }));
+    expect(await scheduler.cancelScheduled(1)).toBe(false);
+    expect(await scheduler.cancelScheduled(2)).toBe(true);
   });
 
   test("waits for each status delivery before publishing another countdown state", async () => {

@@ -17,6 +17,7 @@ export class SafeRestartNotifier {
   private readonly notificationTargets = new Map<string, RestartNotificationTarget>();
   private activeScheduleId?: number;
   private terminalScheduleId?: number;
+  private lastStatus?: SafeRestartStatus;
   private pendingInitialStatus?: SafeRestartStatus;
   private initialCardTimer?: NodeJS.Timeout;
   private queue = Promise.resolve();
@@ -40,12 +41,24 @@ export class SafeRestartNotifier {
       this.terminalScheduleId = Math.max(this.terminalScheduleId ?? 0, status.scheduleId);
     }
     if (this.activeScheduleId !== status.scheduleId) {
+      const previousStatus = this.lastStatus ?? this.pendingInitialStatus;
+      const previousMessageIds = [...this.messageIds];
+      const previousTargets = new Map(this.notificationTargets);
+      if (
+        previousStatus
+        && previousStatus.phase !== "cancelled"
+        && previousStatus.phase !== "restarting"
+        && previousMessageIds.length > 0
+      ) {
+        this.enqueueSupersededCards(previousStatus, previousMessageIds, previousTargets);
+      }
       this.activeScheduleId = status.scheduleId;
       this.messageIds.clear();
       this.cardHashes.clear();
       this.notificationTargets.clear();
       this.clearInitialCardTimer();
       this.pendingInitialStatus = status;
+      this.lastStatus = status;
       this.collectNotificationTargets(status);
       const delayMs = status.phase === "cancelled"
         ? 0
@@ -59,6 +72,7 @@ export class SafeRestartNotifier {
       }, delayMs);
       return Promise.resolve();
     }
+    this.lastStatus = status;
     this.collectNotificationTargets(status);
     if (this.pendingInitialStatus) {
       this.pendingInitialStatus = status;
@@ -149,14 +163,49 @@ export class SafeRestartNotifier {
         } else {
           created = await this.outbound.sendInteractiveCard(contextKey, card);
         }
-        if (created && this.activeScheduleId === status.scheduleId) {
-          this.messageIds.set(contextKey, created);
-          this.cardHashes.set(contextKey, cardHash);
+        if (created) {
+          if (this.activeScheduleId === status.scheduleId) {
+            this.messageIds.set(contextKey, created);
+            this.cardHashes.set(contextKey, cardHash);
+          } else {
+            await this.stopCard(created, status, reason ?? status.reason);
+          }
         }
       } catch (error) {
         this.logger.warn({ error, contextKey }, "Failed to send safe restart status card.");
       }
     }));
+  }
+
+  private enqueueSupersededCards(
+    status: SafeRestartStatus,
+    messageIds: Array<[string, string]>,
+    targets: Map<string, RestartNotificationTarget>,
+  ): void {
+    const queued = this.queue.catch(() => undefined).then(async () => {
+      await Promise.all(messageIds.map(async ([contextKey, messageId]) => {
+        const reason = targets.get(contextKey)?.reason ?? status.reason;
+        await this.stopCard(messageId, status, reason);
+      }));
+    });
+    this.queue = queued;
+  }
+
+  private async stopCard(messageId: string, status: SafeRestartStatus, reason: string): Promise<void> {
+    try {
+      await this.outbound.updateInteractiveCard(messageId, this.renderer.renderSafeRestartStatus({
+        scheduleId: status.scheduleId,
+        reason,
+        phase: "superseded",
+        pendingFinalDeliveries: status.activity.pendingFinalDeliveries,
+        waitingTasks: [],
+      }));
+    } catch (error) {
+      this.logger.warn(
+        { error, messageId, scheduleId: status.scheduleId },
+        "Failed to stop a superseded safe restart status card.",
+      );
+    }
   }
 
   private collectNotificationTargets(status: SafeRestartStatus): void {
