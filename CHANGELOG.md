@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16-alpha.2] - 2026-08-22
+
 - Replace repeated Prompt queue and safe-restart status cards with a fresh active card after stopping the previous card, so each command has a visible response and stale actions cannot affect the latest request.
 
 ## [0.1.16-alpha.1] - 2026-08-20
