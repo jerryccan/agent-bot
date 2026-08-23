@@ -5282,8 +5282,8 @@ export class ProxySessionController {
           reference: entry.reference,
           summary: `${offset + index + 1}. ${marker}${title} · ${entry.agentName}`,
           detailLines: [
-            cardText(lastUserPrompt),
-            `**更新时间**：${cardText(entry.updatedLabel)}`,
+            `**最新 Prompt**：${cardText(lastUserPrompt)}`,
+            `<font color='grey'>最近更新：${cardText(entry.updatedLabel)}</font>`,
           ],
           actions,
           current: entry.current,

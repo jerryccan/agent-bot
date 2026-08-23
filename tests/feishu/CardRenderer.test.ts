@@ -2203,8 +2203,8 @@ describe("CardRenderer", () => {
         reference: "agent-runtime:codex:thr_1",
         summary: "1. ✅ Improve sessions · codex",
         detailLines: [
-          "优化任务列表",
-          "**更新时间**：刚刚",
+          "**最新 Prompt**：优化任务列表",
+          "<font color='grey'>最近更新：刚刚</font>",
         ],
         actions: [{ text: "Status", value: { action: "session_status", sessionId: "thr_1" } }],
         current: true,
@@ -2233,9 +2233,11 @@ describe("CardRenderer", () => {
       },
       border: { color: "green" },
     });
+    expect(JSON.stringify(panel)).toContain("最新 Prompt");
     expect(JSON.stringify(panel)).toContain("优化任务列表");
     expect(JSON.stringify(panel)).not.toContain("最后一个用户 Prompt");
-    expect(JSON.stringify(panel)).toContain("更新时间");
+    expect(JSON.stringify(panel)).toContain("<font color='grey'>最近更新：刚刚</font>");
+    expect(JSON.stringify(panel)).not.toContain("**更新时间**");
     expect(JSON.stringify(panel)).not.toContain("任务 ID");
     expect(JSON.stringify(panel)).not.toContain("目录");
     expect(JSON.stringify(panel)).toContain('"tag":"overflow"');
@@ -2259,8 +2261,8 @@ describe("CardRenderer", () => {
         reference: `agent-runtime:codex:thr_${index + 1}`,
         summary: `${index + 1}. Task ${index + 1} · codex`,
         detailLines: [
-          `Review project ${index + 1} ${"x".repeat(50)}`,
-          "**更新时间**：2026/08/15 10:00:00",
+          `**最新 Prompt**：Review project ${index + 1} ${"x".repeat(50)}`,
+          "<font color='grey'>最近更新：2026/08/15 10:00:00</font>",
         ],
         actions: [
           { text: "Switch", value: { t: `switch-${index + 1}` } },
