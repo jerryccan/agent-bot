@@ -4851,7 +4851,43 @@ export class ProxySessionController {
     if (!current.remoteSessionId || !this.isCodexSession(current)) {
       throw new Error("当前任务不是可 Reset 的 App Server 任务。");
     }
-    const allTurns = this.store.listTaskTurnGraph(current.localSessionId);
+    const completedTurns = this.store.listTaskTurnGraph(current.localSessionId);
+    const completedTurnIds = new Set(completedTurns.map((turn) => turn.turnId));
+    const runningTurnId = current.lastTurnStatus === "running" && current.lastTurnId
+      && !completedTurnIds.has(current.lastTurnId)
+      ? current.lastTurnId
+      : undefined;
+    const persistedRunningSnapshot = runningTurnId
+      ? turnViewSnapshot(this.store.getTurnSnapshot(runningTurnId))
+      : undefined;
+    const runningAttempt = runningTurnId
+      ? this.store.findIncompleteTurnAttemptByTurnId(runningTurnId)
+      : undefined;
+    const attemptStartedAt = Date.parse(runningAttempt?.createdAt ?? "");
+    const runningSnapshot: TurnViewState | undefined = runningTurnId
+      ? persistedRunningSnapshot ?? {
+          sessionId: current.localSessionId,
+          turnId: runningTurnId,
+          prompt: runningAttempt?.promptText ?? current.title,
+          status: "running",
+          startedAt: Number.isFinite(attemptStartedAt) ? attemptStartedAt : Date.now(),
+          assistantText: "",
+          plan: [],
+          activities: [],
+          completedTools: [],
+          failedTools: [],
+          fileSummary: [],
+        }
+      : undefined;
+    const runningTurn = runningTurnId && runningSnapshot
+      ? {
+          turnId: runningTurnId,
+          parentTurnId: this.store.getTurnParent(runningTurnId, current.localSessionId),
+          snapshot: runningSnapshot,
+          updatedAt: runningAttempt?.updatedAt ?? new Date(runningSnapshot.startedAt).toISOString(),
+        }
+      : undefined;
+    const allTurns = runningTurn ? [runningTurn, ...completedTurns] : completedTurns;
     const graphRows = buildTurnGraphRows(allTurns.map((turn) => ({
       turnId: turn.turnId,
       parentTurnId: turn.parentTurnId,
@@ -4870,16 +4906,18 @@ export class ProxySessionController {
         100,
       );
       const isCurrent = current.lastTurnId === turn.turnId && current.lastTurnStatus === "completed";
+      const isRunning = runningTurnId === turn.turnId;
       return [{
         sequence: graph.sequence,
         graphNodeLine: graph.nodeLine,
         graphConnectorLine: graph.connectorLine,
         lines: [
-          `**${cardText(summary || "未记录对话内容")}**`,
-          `${formatResetTurnTime(snapshot.completedAt ?? snapshot.startedAt)} · ${cardCode(turn.turnId)}`,
+          cardText(summary || "未记录对话内容"),
+          `${formatResetTurnTime(snapshot.completedAt ?? snapshot.startedAt)} · ${cardText(turn.turnId)}`,
         ],
         current: isCurrent,
-        actions: isCurrent ? undefined : [{
+        running: isRunning,
+        actions: isCurrent || isRunning ? undefined : [{
           text: "Reset",
           value: {
             action: "turn_reset",
@@ -4915,7 +4953,9 @@ export class ProxySessionController {
     const card = this.cardRenderer.renderResetHistoryCard({
       entries,
       footerLines: [
-        `第 ${page + 1}/${totalPages} 页 · 共 ${total} 个已完成 turn`,
+        runningTurn
+          ? `第 ${page + 1}/${totalPages} 页 · 共 ${total} 个 turn（${completedTurns.length} 个已完成，1 个运行中）`
+          : `第 ${page + 1}/${totalPages} 页 · 共 ${total} 个已完成 turn`,
       ],
       pageActions,
     });

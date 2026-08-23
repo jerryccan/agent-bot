@@ -1318,6 +1318,57 @@ describe("ProxySessionController", () => {
     expect(resetSerialized).not.toContain('"turnId":"history_turn_1","contextKey"');
   });
 
+  test("shows the currently running turn at the top of the Turns card without Reset", async () => {
+    const { controller, outbound, store } = fixture();
+    await controller.onMessage(message("complete the parent turn"));
+    const task = store.listSessions("chat_id:c1")[0]!;
+    const parentTurnId = task.lastTurnId!;
+    store.saveTurnSnapshot(parentTurnId, task.localSessionId, {
+      sessionId: task.localSessionId,
+      turnId: parentTurnId,
+      prompt: "complete the parent turn",
+      status: "completed",
+      startedAt: Date.now() - 1_000,
+      completedAt: Date.now() - 500,
+      assistantText: "done",
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, "chat_id:c1");
+    const runningTurnId = "turn_running";
+    store.saveTurnParent(runningTurnId, task.localSessionId, parentTurnId);
+    store.saveTurnSnapshot(runningTurnId, task.localSessionId, {
+      sessionId: task.localSessionId,
+      turnId: runningTurnId,
+      prompt: "keep working on the active turn",
+      status: "tool_running",
+      startedAt: Date.now(),
+      assistantText: "",
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, "chat_id:c1");
+    store.updateSession(task.localSessionId, { status: "running" });
+    store.updateRuntimeSession(task.localSessionId, {
+      lastTurnId: runningTurnId,
+      lastTurnStatus: "running",
+    });
+
+    await controller.onMessage(message("/turns"));
+    const card = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("keep working on the active turn");
+    expect(serialized).toContain("⏳ 运行中");
+    expect(serialized).toContain("1 个已完成，1 个运行中");
+    expect(serialized.match(/"action":"turn_reset"/g)).toHaveLength(1);
+    expect(serialized.indexOf(runningTurnId)).toBeLessThan(serialized.indexOf(parentTurnId));
+  });
+
   test("creates, displays, edits, pauses, resumes, and clears a Codex goal", async () => {
     const { controller, runtime, outbound, store, listeners, presenter } = fixture();
 
@@ -4986,6 +5037,7 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
+    expect(serialized).toContain("最新 Prompt");
     expect(serialized).toContain(`${Array.from(latestPrompt).slice(0, 50).join("")}...`);
     expect(serialized).not.toContain(latestPrompt);
     expect(serialized).not.toContain("最后一个用户 Prompt");
@@ -5032,7 +5084,9 @@ describe("ProxySessionController", () => {
 
     const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(card);
+    expect(serialized).toContain("最新 Prompt");
     expect(serialized).toContain("Run the Amazon case until it matches CNGC");
+    expect(serialized).toContain("<font color='grey'>最近更新：");
     expect(serialized).not.toContain("暂无用户 Prompt");
   });
 

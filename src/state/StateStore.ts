@@ -1057,6 +1057,15 @@ export class StateStore {
     `).run(turnId, localSessionId, parentTurnId ?? null, new Date().toISOString());
   }
 
+  getTurnParent(turnId: string, localSessionId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT parent_turn_id
+      FROM turn_parent_links
+      WHERE turn_id = ? AND local_session_id = ?
+    `).get(turnId, localSessionId) as { parent_turn_id: string | null } | undefined;
+    return row?.parent_turn_id ?? undefined;
+  }
+
   findLatestCompletedTurnId(localSessionId: string, contextKey: string): string | undefined {
     const row = this.db
       .prepare(`

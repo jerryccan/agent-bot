@@ -992,13 +992,13 @@ describe("CardRenderer", () => {
           sequence: 1,
           graphNodeLine: "● 1",
           graphConnectorLine: "│",
-          lines: ["**1. First prompt**", "08/03 10:00 · `turn_2`"],
+          lines: ["First prompt", "08/03 10:00 · turn_2"],
           current: true,
         },
         {
           sequence: 2,
           graphNodeLine: "● 2",
-          lines: ["**2. Earlier prompt**", "08/03 09:00 · `turn_1`"],
+          lines: ["Earlier prompt", "08/03 09:00 · turn_1"],
           actions: [{ text: "Reset", value: { action: "turn_reset", turnId: "turn_1" } }],
         },
       ],
@@ -1016,7 +1016,6 @@ describe("CardRenderer", () => {
     expect(elements[0]).toMatchObject({ tag: "markdown", text_size: "notation" });
     expect(String(elements[0]?.content)).toContain("不会回退本地文件");
     expect(elements[1]).toEqual({ tag: "hr" });
-    expect(elements[2]).toEqual({ tag: "markdown", content: "**历史对话轮次**" });
     expect(JSON.stringify(rows[0])).toContain("<font color='green'>● 1</font>");
     expect(JSON.stringify(rows[0])).toContain("<font color='grey'>│</font>");
     expect(JSON.stringify(rows[1])).toContain("<font color='blue'>● 2</font>");
@@ -1024,10 +1023,34 @@ describe("CardRenderer", () => {
     for (const row of rows) {
       const columns = row.columns as Array<{ elements?: Array<Record<string, unknown>> }>;
       expect(columns[1]?.elements?.[0]).not.toHaveProperty("padding");
+      expect(columns[1]?.elements?.[0]?.content).not.toMatch(/^\*\*/);
+      expect(columns[1]?.elements?.[1]).toMatchObject({
+        content: expect.stringContaining("<font color='grey'>"),
+        text_size: "notation",
+      });
     }
     expect(card).toMatchObject({ header: { title: { content: "历史对话轮次" } } });
     expect(JSON.stringify(card)).toContain("✅ 当前");
     expect(JSON.stringify(card).match(/"action":"turn_reset"/g)).toHaveLength(1);
+  });
+
+  test("renders a running turn without a Reset action", () => {
+    const card = new CardRenderer().renderResetHistoryCard({
+      entries: [{
+        sequence: 1,
+        graphNodeLine: "● 1",
+        graphConnectorLine: "│",
+        lines: ["Active prompt", "08/03 10:00 · turn_active"],
+        running: true,
+      }],
+      footerLines: ["第 1/1 页 · 共 1 个 turn（0 个已完成，1 个运行中）"],
+      pageActions: [],
+    });
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain("<font color='orange'>● 1</font>");
+    expect(serialized).toContain("⏳ 运行中");
+    expect(serialized).not.toContain('"action":"turn_reset"');
   });
 
   test.each([

@@ -225,6 +225,7 @@ export interface ResetHistoryCardEntry extends TaskListCardEntry {
   sequence: number;
   graphNodeLine: string;
   graphConnectorLine?: string;
+  running?: boolean;
 }
 
 export interface ResetHistoryCardView {
@@ -1317,7 +1318,6 @@ export class CardRenderer {
         text_size: "notation",
       },
       { tag: "hr" },
-      markdown("**历史对话轮次**"),
     ];
     if (view.entries.length === 0) {
       elements.push(markdown("当前任务还没有成功完成的 turn。"));
@@ -1330,6 +1330,7 @@ export class CardRenderer {
           entry.lines,
           action,
           entry.current === true,
+          entry.running === true,
         ));
       });
     }
@@ -2580,9 +2581,10 @@ function resetHistoryEntryRow(
   lines: string[],
   action: TaskListCardAction | undefined,
   current: boolean,
+  running: boolean,
 ): Record<string, unknown> {
   const graph = [
-    `<font color='${current ? "green" : "blue"}'>${escapeCardHtml(graphNodeLine)}</font>`,
+    `<font color='${current ? "green" : running ? "orange" : "blue"}'>${escapeCardHtml(graphNodeLine)}</font>`,
     ...(graphConnectorLine
       ? [`<font color='grey'>${escapeCardHtml(graphConnectorLine)}</font>`]
       : []),
@@ -2607,7 +2609,13 @@ function resetHistoryEntryRow(
         width: "weighted",
         weight: 1,
         vertical_align: "top",
-        elements: [markdown(lines.join("\n"))],
+        elements: [
+          markdown(lines[0] ?? ""),
+          ...lines.slice(1).map((line) => ({
+            ...markdown(`<font color='grey'>${line}</font>`),
+            text_size: "notation",
+          })),
+        ],
       },
       {
         tag: "column",
@@ -2615,6 +2623,8 @@ function resetHistoryEntryRow(
         vertical_align: "top",
         elements: current
           ? [markdown("✅ 当前")]
+          : running
+            ? [markdown("⏳ 运行中")]
           : action
             ? [taskActionElement(action)]
             : [],
