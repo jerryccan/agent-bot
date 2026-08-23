@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16-alpha.3] - 2026-08-23
+
 - Clarify expanded task details in the sessions card with a latest-Prompt label and less prominent recent-update metadata.
 - Show the current running turn in the Turns card as a read-only graph node instead of hiding it until completion.
 - Reduce visual noise in the Turns card with regular-weight Prompts and subdued time and Turn ID metadata.
