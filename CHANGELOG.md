@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16-alpha.4] - 2026-08-26
+
 - Recover turns active within the preceding ten minutes after Worker or App Server transport failures, retry connection failures that happen before `turn/start` returns, preserve explicit user cancellation across restarts, and prevent disconnected CLI clients from crashing the Worker.
 - Decode fully quoted PowerShell and POSIX shell command payloads in thinking cards, including adjacent quote fragments, while preserving the original launcher when parsing is incomplete.
 - Keep the latest-page navigation action visible when a grouped thinking card has exactly one historical activity page.
