@@ -691,6 +691,8 @@ describe("CardRenderer", () => {
     expect(historyToolTitles).toContain("✅ Long tool 8");
     expect(historyToolTitles).not.toContain("✅ Long tool 9");
     expect(history).toContain("思考活动历史 · 1/2");
+    expect(history).toContain("最新页");
+    expect(history).toContain('"page":"latest"');
   });
 
   test("uses more pages for larger rendered results with the same tool count", () => {
@@ -1175,6 +1177,41 @@ describe("CardRenderer", () => {
     expect(panelTitle(panel ?? {})).toBe("✅ npm test -- --run if ($LASTEXITCODE -ne 0) { exit 1 }");
     expect(details).toContain("$ npm test -- --run\nif ($LASTEXITCODE -ne 0) { exit 1 }");
     expect(details).not.toMatch(/powershell|pwsh/i);
+  });
+
+  test("decodes adjacent shell-quoted PowerShell command fragments", () => {
+    const running = state();
+    const command = String.raw`"C:\Program Files\PowerShell\7\pwsh.exe" -Command 'Start-Sleep -Seconds 40; $ps=Get-CimInstance Win32_Process | Where-Object {$_.Name -eq '"'blazecache.exe' -and "'$_.CommandLine -like '"'*pull*--repo*./*--product*doubao*'}; [pscustomobject]@{Running=[bool]"'$ps;Pids=($ps.ProcessId -join '"',')} | Format-List; Get-Content '.cache\\m147_bua_update_build_20260824\\blazecache_pull.stderr.log' -Tail 28"`;
+    const tool = { id: "quoted-fragments", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes("Start-Sleep"));
+    const title = panelTitle(panel ?? {});
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(title).not.toMatch(/powershell|pwsh/i);
+    expect(title).not.toContain("\"'");
+    expect(details).toContain("$ Start-Sleep -Seconds 40; \\\n  $ps=Get-CimInstance Win32_Process | \\\n  Where-Object {$_.Name -eq 'blazecache.exe' -and $_.CommandLine -like '*pull*--repo*./*--product*doubao*'}; \\");
+    expect(details).toContain("[pscustomobject]@{Running=[bool]$ps;");
+    expect(details).not.toMatch(/powershell|pwsh/i);
+    expect(details).not.toContain("\"'");
+  });
+
+  test("keeps the shell launcher when a quoted command payload cannot be fully decoded", () => {
+    const running = state();
+    const command = "powershell.exe -Command 'Write-Output unterminated";
+    const tool = { id: "invalid-payload", title: command, kind: "command", status: "running" as const, command };
+    running.activities = [{ kind: "tool", id: tool.id, tool }];
+
+    const card = new CardRenderer().renderTurn(running);
+    const panel = collectObjects(card).find((item) =>
+      item.tag === "collapsible_panel" && panelTitle(item).includes("powershell.exe"));
+    const details = String(((panel?.elements as Array<{ content?: string }> | undefined)?.[0]?.content) ?? "");
+
+    expect(panelTitle(panel ?? {})).toContain(command);
+    expect(details).toContain(`$ ${command}`);
   });
 
   test.each([

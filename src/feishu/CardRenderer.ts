@@ -1004,7 +1004,7 @@ export class CardRenderer {
     const totalPages = usesHistoricalPrefixPages ? pages.length + 1 : pages.length;
     const page = Math.max(0, Math.min(Math.trunc(requestedPage), pages.length - 1));
     const actions: TaskListCardAction[] = [
-      ...(pages.length > 1 ? [{
+      ...(usesHistoricalPrefixPages || pages.length > 1 ? [{
         text: "最新页",
         value: { action: "activity_history", turnId: state.turnId, page: "latest" },
       }] : []),
@@ -2277,7 +2277,7 @@ function unwrapPowerShellCommand(command: string): string | undefined {
   if (!commandFlag) return undefined;
   const payload = args.slice(commandFlag.index + commandFlag[0].length).trim();
   if (!payload) return undefined;
-  return unwrapQuotedPayload(payload);
+  return unwrapShellPayload(payload);
 }
 
 function unwrapPosixShellCommand(command: string): string | undefined {
@@ -2308,7 +2308,7 @@ function unwrapPosixShellCommand(command: string): string | undefined {
   if (!commandFlag) return undefined;
   const payload = args.slice(commandFlag.index + commandFlag[0].length).trim();
   if (!payload) return undefined;
-  return unwrapQuotedPayload(payload);
+  return unwrapShellPayload(payload);
 }
 
 function readCommandWord(command: string, start: number): { value: string; end: number } | undefined {
@@ -2341,10 +2341,64 @@ function isPosixShell(executable: string): boolean {
     || executable === "fish";
 }
 
-function unwrapQuotedPayload(payload: string): string {
-  const quote = payload[0];
-  if ((quote === "\"" || quote === "'") && payload.at(-1) === quote) return payload.slice(1, -1).trim();
-  return payload;
+function unwrapShellPayload(payload: string): string | undefined {
+  if (payload[0] !== "\"" && payload[0] !== "'") return payload;
+  const decoded = decodeQuotedShellWord(payload)?.trim();
+  return decoded || undefined;
+}
+
+function decodeQuotedShellWord(value: string): string | undefined {
+  let result = "";
+  let quote: "'" | "\"" | undefined;
+  let sawQuote = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+
+    if (quote === "'") {
+      if (character === "'") quote = undefined;
+      else result += character;
+      continue;
+    }
+
+    if (quote === "\"") {
+      if (character === "\"") {
+        quote = undefined;
+        continue;
+      }
+      if (character === "\\") {
+        const next = value[index + 1];
+        if (next === "\n") {
+          index += 1;
+          continue;
+        }
+        if (next === "$" || next === "`" || next === "\"" || next === "\\") {
+          result += next;
+          index += 1;
+          continue;
+        }
+      }
+      result += character;
+      continue;
+    }
+
+    if (character === "'" || character === "\"") {
+      quote = character;
+      sawQuote = true;
+      continue;
+    }
+    if (/\s/.test(character)) return undefined;
+    if (character === "\\") {
+      const next = value[index + 1];
+      if (next === undefined) return undefined;
+      result += next;
+      index += 1;
+      continue;
+    }
+    result += character;
+  }
+
+  return sawQuote && quote === undefined ? result : undefined;
 }
 
 function codeBlock(value: string, maxLength: number): string {
