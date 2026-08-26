@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-08-26
+
+- Promote 0.1.16-alpha.4 to the stable release channel.
+
 ## [0.1.16-alpha.4] - 2026-08-26
 
 - Recover turns active within the preceding ten minutes after Worker or App Server transport failures, retry connection failures that happen before `turn/start` returns, preserve explicit user cancellation across restarts, and prevent disconnected CLI clients from crashing the Worker.
