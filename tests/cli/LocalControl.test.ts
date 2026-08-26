@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { afterEach, describe, expect, test } from "vitest";
 import { LocalControlServer } from "../../src/cli/LocalControlServer.js";
 import {
@@ -51,6 +52,37 @@ describe("local CLI control", () => {
       ok: false,
       message: "rejected",
     });
+  });
+
+  test("survives a client disconnect while a control request is still running", async () => {
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-disconnect-${process.pid}-${Date.now()}.sqlite`));
+    let releaseRequest!: () => void;
+    let markRequestStarted!: () => void;
+    let requestCount = 0;
+    const requestStarted = new Promise<void>((resolve) => { markRequestStarted = resolve; });
+    const server = new LocalControlServer(endpoint, async () => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        markRequestStarted();
+        await new Promise<void>((resolve) => { releaseRequest = resolve; });
+      }
+      return { ok: true };
+    });
+    servers.push(server);
+    await server.start();
+
+    const socket = net.createConnection(endpoint);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(`${JSON.stringify({ action: "health" })}\n`);
+    await requestStarted;
+    socket.destroy();
+    releaseRequest();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    await expect(isServerReachable(endpoint)).resolves.toBe(true);
   });
 
   test("distinguishes a reachable starting process from a ready server", async () => {

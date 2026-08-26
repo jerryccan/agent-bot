@@ -45,7 +45,7 @@ function fixture(title?: string, hasTurn = true) {
 }
 
 describe("SessionMetadataHydrator", () => {
-  test("restores and synchronizes a persisted running Codex turn during startup", async () => {
+  test("does not synchronize a persisted running turn before startup recovery", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-hydrator-running-"));
     directories.push(directory);
     const store = new StateStore(path.join(directory, "state.sqlite"));
@@ -78,18 +78,16 @@ describe("SessionMetadataHydrator", () => {
       getSession: vi.fn(() => undefined),
       resumeSession: vi.fn(async () => resumed),
       synchronizeSession: vi.fn(async () => resumed),
-      readSessionMetadata: vi.fn(async () => ({})),
+      readSessionMetadata: vi.fn(async () => ({ title: "Recovered title" })),
     };
     const runtimes = { forAgent: vi.fn(() => runtime) } as unknown as AgentRuntimeRegistry;
     const hydrator = new SessionMetadataHydrator(store, runtimes);
 
     await hydrator.hydrate(store.getSession("running")!);
 
-    expect(runtime.resumeSession).toHaveBeenCalledWith(expect.objectContaining({
-      remoteSessionId: "thread_running",
-      activeTurnId: "turn_running",
-    }));
-    expect(runtime.synchronizeSession).toHaveBeenCalledWith("running");
+    expect(runtime.resumeSession).not.toHaveBeenCalled();
+    expect(runtime.synchronizeSession).not.toHaveBeenCalled();
+    expect(runtime.readSessionMetadata).toHaveBeenCalledWith("thread_running");
     expect(store.getSession("running")?.title).toBe("Recovered title");
   });
 

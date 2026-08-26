@@ -119,7 +119,7 @@ const SESSION_PROMPT_PREVIEW_LENGTH = 50;
 const DIRECTORY_PAGE_SIZE = 15;
 const RESET_HISTORY_PAGE_SIZE = 10;
 const MAX_LLM_TURN_RETRIES = 3;
-const RECOVERY_ACTIVITY_WINDOW_MS = 5 * 60 * 1_000;
+const RECOVERY_ACTIVITY_WINDOW_MS = 10 * 60 * 1_000;
 const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
 const SHELL_COMMAND_JOB_POLL_INTERVAL_MS = 1_000;
 const SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS = 5_000;
@@ -1912,6 +1912,7 @@ export class ProxySessionController {
   }
 
   private async runStartupRecovery(): Promise<void> {
+    await this.finishPersistedCancellationRequests();
     await this.recoverShellCommandJobs();
     this.backfillTurnAttemptsForUpgrade();
     const attempts = this.store.listIncompleteTurnAttempts();
@@ -1940,6 +1941,40 @@ export class ProxySessionController {
       }
     }
     this.restorePersistedQueuedPrompts();
+  }
+
+  private async finishPersistedCancellationRequests(): Promise<void> {
+    for (const attempt of this.store.listCancellationRequestedTurnAttempts()) {
+      const session = this.store.getSession(attempt.localSessionId);
+      if (!attempt.turnId) {
+        this.store.updateTurnAttempt(attempt.attemptId, { status: "cancelled" });
+        if (session?.status === "starting" || session?.status === "running") {
+          this.store.updateSession(session.localSessionId, { status: "ready" });
+        }
+        continue;
+      }
+      if (session) {
+        this.outbound.registerSession(
+          session.localSessionId,
+          attempt.contextKey,
+          session.title,
+          session.cwd,
+          this.agentLabel(session.agentName),
+        );
+      }
+      try {
+        await this.handleRuntimeEvent({
+          type: "turn_cancelled",
+          sessionId: attempt.localSessionId,
+          turnId: attempt.turnId,
+        });
+      } catch (error) {
+        this.logger.warn(
+          { error, attemptId: attempt.attemptId, turnId: attempt.turnId },
+          "Failed to finish a persisted user-requested turn cancellation.",
+        );
+      }
+    }
   }
 
   private backfillTurnAttemptsForUpgrade(): void {
@@ -2001,7 +2036,7 @@ export class ProxySessionController {
         session.localSessionId,
         attempt.contextKey,
         oldCardTurnId,
-        "执行中断已超过 5 分钟，未自动恢复。",
+        "执行中断已超过 10 分钟，未自动恢复。",
       ).catch((error: unknown) => {
         this.logger.warn(
           { error, attemptId: attempt.attemptId, turnId: oldCardTurnId },
@@ -3082,28 +3117,80 @@ export class ProxySessionController {
       });
     }
     let turnId: string;
+    let runtimeText = text;
+    let cardPrompt = options.displayPrompt ?? text;
+    let retriedStart = false;
     try {
-      const pendingTurnId = await this.outbound.startPendingTurn(
-        loaded.record.localSessionId,
-        loaded.record.contextKey,
-        title,
-        replyTarget,
-        options.displayPrompt ?? text,
-      );
-      this.store.updateTurnAttempt(attemptId, { pendingTurnId: pendingTurnId ?? null });
-      turnId = await loaded.runtime.startTurn(
-        loaded.record.localSessionId,
-        runtimePrompt(text, localImagePaths),
-      );
-    } catch (error) {
-      this.store.updateTurnAttempt(attemptId, {
-        status: options.preserveAttemptOnFailure ? "recovering" : "failed",
-      });
-      await this.outbound.failPendingTurn(
-        loaded.record.localSessionId,
-        error instanceof Error ? error.message : String(error),
-      );
-      throw error;
+      while (true) {
+        let pendingTurnId: string | undefined;
+        try {
+          pendingTurnId = await this.outbound.startPendingTurn(
+            loaded.record.localSessionId,
+            loaded.record.contextKey,
+            title,
+            replyTarget,
+            cardPrompt,
+          );
+        } catch (error) {
+          this.store.updateTurnAttempt(attemptId, {
+            status: options.preserveAttemptOnFailure ? "recovering" : "failed",
+          });
+          throw error;
+        }
+        this.store.updateTurnAttempt(attemptId, { pendingTurnId: pendingTurnId ?? null });
+
+        try {
+          turnId = await loaded.runtime.startTurn(
+            loaded.record.localSessionId,
+            runtimePrompt(runtimeText, localImagePaths),
+          );
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const attempt = this.store.getTurnAttempt(attemptId);
+          const retryAttempt = attempt
+            && isRetryableLlmTurnFailure(message)
+            && attempt.retryCount < MAX_LLM_TURN_RETRIES
+            ? this.store.prepareUnstartedTurnAttemptRetry(attemptId)
+            : undefined;
+          if (!retryAttempt) {
+            const exhausted = attempt
+              && isRetryableLlmTurnFailure(message)
+              && attempt.retryCount >= MAX_LLM_TURN_RETRIES;
+            const finalMessage = exhausted
+              ? `${message}\n\n已自动重试 ${MAX_LLM_TURN_RETRIES} 次，仍未成功。`
+              : message;
+            this.store.updateTurnAttempt(attemptId, {
+              status: options.preserveAttemptOnFailure ? "recovering" : "failed",
+            });
+            await this.outbound.failPendingTurn(loaded.record.localSessionId, finalMessage);
+            if (finalMessage === message) throw error;
+            throw new Error(finalMessage, { cause: error });
+          }
+
+          retriedStart = true;
+          this.llmRetryingSessions.add(loaded.record.localSessionId);
+          this.store.audit(loaded.record.contextKey, "llm_turn_start_retry_started", {
+            attemptId,
+            retryNumber: retryAttempt.retryCount,
+            maxRetries: MAX_LLM_TURN_RETRIES,
+            error: message,
+          });
+          await this.outbound.failPendingTurn(
+            loaded.record.localSessionId,
+            `${message}\n\n检测到临时模型服务错误，正在自动重试（${retryAttempt.retryCount}/${MAX_LLM_TURN_RETRIES}）。`,
+          ).catch((presentationError: unknown) => {
+            this.logger.warn(
+              { error: presentationError, sessionId: loaded.record.localSessionId },
+              "Failed to finalize the pending thinking card before an LLM start retry.",
+            );
+          });
+          runtimeText = llmRetryRuntimePrompt(retryAttempt.promptText, retryAttempt.retryCount);
+          cardPrompt = llmRetryCardPrompt(options.displayPrompt ?? retryAttempt.promptText, retryAttempt.retryCount);
+        }
+      }
+    } finally {
+      if (retriedStart) this.llmRetryingSessions.delete(loaded.record.localSessionId);
     }
     const attempt = this.store.getTurnAttempt(attemptId);
     this.store.updateTurnAttempt(attemptId, {
@@ -3956,7 +4043,13 @@ export class ProxySessionController {
         await this.outbound.sendText(record.contextKey, "当前没有正在执行的任务。");
         return;
       }
-      await runtime.interruptRemoteTurn(record.remoteSessionId, turnId);
+      const cancellationAttempt = this.store.requestTurnAttemptCancellation(turnId);
+      try {
+        await runtime.interruptRemoteTurn(record.remoteSessionId, turnId);
+      } catch (error) {
+        if (cancellationAttempt) this.store.restoreTurnAttemptAfterCancellationFailure(cancellationAttempt);
+        throw error;
+      }
       this.store.audit(record.contextKey, "turn_interrupt_sent", {
         localSessionId: record.localSessionId,
         remoteSessionId: record.remoteSessionId,
@@ -3972,7 +4065,13 @@ export class ProxySessionController {
       await this.outbound.sendText(record.contextKey, "当前没有正在执行的任务。");
       return;
     }
-    await loaded.runtime.cancelTurn(record.localSessionId, turnId);
+    const cancellationAttempt = this.store.requestTurnAttemptCancellation(turnId);
+    try {
+      await loaded.runtime.cancelTurn(record.localSessionId, turnId);
+    } catch (error) {
+      if (cancellationAttempt) this.store.restoreTurnAttemptAfterCancellationFailure(cancellationAttempt);
+      throw error;
+    }
   }
 
   private async resetCurrentSessionToTurn(
@@ -7036,7 +7135,8 @@ function isRetryableLlmTurnFailure(message: string): boolean {
     /service unavailable|internal server error|bad gateway|gateway timeout/u,
     /(?:^|\D)(?:500|502|503|504)(?:\D|$)|upstream (?:error|failure|timeout)/u,
     /deadline exceeded|request timed out|request timeout|response timeout/u,
-    /connection (?:reset|closed|aborted)|network error|socket hang up/u,
+    /connection (?:reset|closed|aborted|disconnected)|network error|socket hang up/u,
+    /app server .*(?:closed|disconnected|exited|reset|aborted)/u,
     /stream (?:closed|disconnected|interrupted|error)/u,
     /\b(?:llm|model|provider|inference)\b.*\b(?:error|failed|failure|unavailable|timeout|timed out)\b/u,
   ].some((pattern) => pattern.test(normalized));

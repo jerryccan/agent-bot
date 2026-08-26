@@ -554,6 +554,7 @@ describe("ProxySessionController", () => {
   test("recovers an interrupted turn in its original topic with a fresh thinking card", async () => {
     const { controller, runtime, remoteSessions, outbound, presenter, store } = fixture();
     const contextKey = "chat_id:c1:thread_id:t1";
+    const recentAt = new Date(Date.now() - 6 * 60 * 1_000).toISOString();
     remoteSessions.push({
       id: "thr_recovery",
       cwd: process.cwd(),
@@ -600,6 +601,8 @@ describe("ProxySessionController", () => {
       replyMessageId: "om_original",
       turnId: "turn_interrupted",
       status: "running",
+      createdAt: recentAt,
+      updatedAt: recentAt,
     });
 
     await controller.recoverInterruptedTasks();
@@ -707,9 +710,9 @@ describe("ProxySessionController", () => {
     expect(store.getSession("session_shared_recovery")?.contextKey).toBe(privateContextKey);
   });
 
-  test("expires an interrupted turn inactive for more than five minutes without recovering it", async () => {
+  test("expires an interrupted turn inactive for more than ten minutes without recovering it", async () => {
     const { controller, runtime, outbound, presenter, store } = fixture();
-    const staleAt = new Date(Date.now() - 6 * 60 * 1_000).toISOString();
+    const staleAt = new Date(Date.now() - 11 * 60 * 1_000).toISOString();
     store.getOrCreateUserContext("chat_id:c1", "codex");
     store.createSession({
       localSessionId: "session_stale_recovery",
@@ -745,10 +748,51 @@ describe("ProxySessionController", () => {
       "session_stale_recovery",
       "chat_id:c1",
       "turn_stale_recovery",
-      "执行中断已超过 5 分钟，未自动恢复。",
+      "执行中断已超过 10 分钟，未自动恢复。",
     );
     expect(store.getTurnAttempt("attempt_stale_recovery")?.status).toBe("interrupted");
     expect(store.getSession("session_stale_recovery")).toMatchObject({
+      status: "ready",
+      lastTurnStatus: "cancelled",
+    });
+  });
+
+  test("finishes a persisted user-requested cancellation without recovering the task", async () => {
+    const { controller, runtime, presenter, store } = fixture();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "session_user_cancelled",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "running",
+    });
+    store.updateRuntimeSession("session_user_cancelled", {
+      runtimeKind: "codex",
+      remoteSessionId: "thr_user_cancelled",
+      lastTurnId: "turn_user_cancelled",
+      lastTurnStatus: "running",
+    });
+    store.createTurnAttempt({
+      attemptId: "attempt_user_cancelled",
+      localSessionId: "session_user_cancelled",
+      contextKey: "chat_id:c1",
+      promptText: "do not resume this",
+      turnId: "turn_user_cancelled",
+      status: "running",
+    });
+    store.requestTurnAttemptCancellation("turn_user_cancelled");
+
+    await controller.recoverInterruptedTasks();
+
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(presenter.onEvent).toHaveBeenCalledWith({
+      type: "turn_cancelled",
+      sessionId: "session_user_cancelled",
+      turnId: "turn_user_cancelled",
+    });
+    expect(store.getTurnAttempt("attempt_user_cancelled")?.status).toBe("cancelled");
+    expect(store.getSession("session_user_cancelled")).toMatchObject({
       status: "ready",
       lastTurnStatus: "cancelled",
     });
@@ -1009,6 +1053,54 @@ describe("ProxySessionController", () => {
       type: "turn_failed",
       turnId: failedTurnId,
       message: expect.stringContaining("已自动重试 3 次"),
+    }));
+  });
+
+  test("retries App Server connection failures before turn/start returns a turn id", async () => {
+    const { controller, runtime, store } = fixture();
+    const startTurn = runtime.startTurn as ReturnType<typeof vi.fn>;
+    startTurn
+      .mockRejectedValueOnce(new Error("App Server connection closed."))
+      .mockRejectedValueOnce(new Error("App Server connection closed."))
+      .mockRejectedValueOnce(new Error("App Server connection closed."));
+
+    await controller.onMessage(message("survive App Server startup crashes"));
+
+    expect(startTurn).toHaveBeenCalledTimes(4);
+    const session = store.listSessions("chat_id:c1")[0]!;
+    expect(store.findIncompleteTurnAttemptForSession(session.localSessionId)).toMatchObject({
+      retryCount: 3,
+      status: "running",
+      turnId: "turn_1",
+    });
+  });
+
+  test("retries an active turn when the App Server process disconnects", async () => {
+    const { controller, runtime, sessions, store, listeners } = fixture();
+    await controller.onMessage(message("continue after an App Server crash"));
+    const session = store.listSessions("chat_id:c1")[0]!;
+    (runtime.startTurn as ReturnType<typeof vi.fn>).mockImplementationOnce(async (sessionId: string) => {
+      sessions.get(sessionId)!.activeTurnId = "turn_after_disconnect";
+      for (const listener of listeners) {
+        listener({ type: "turn_started", sessionId, turnId: "turn_after_disconnect", startedAt: Date.now() });
+      }
+      return "turn_after_disconnect";
+    });
+    sessions.get(session.localSessionId)!.activeTurnId = undefined;
+
+    for (const listener of listeners) {
+      listener({
+        type: "turn_failed",
+        sessionId: session.localSessionId,
+        turnId: "turn_1",
+        message: "App Server disconnected: App Server exited (code=3221226505, signal=null).",
+      });
+    }
+
+    await vi.waitFor(() => expect(store.findIncompleteTurnAttemptForSession(session.localSessionId)).toMatchObject({
+      retryCount: 1,
+      status: "running",
+      turnId: "turn_after_disconnect",
     }));
   });
 
@@ -4539,10 +4631,11 @@ describe("ProxySessionController", () => {
   test("plain text steers an active turn, inserts it into the thinking card, and stop bypasses prompt completion", async () => {
     const { controller, runtime, outbound, presenter, store } = fixture();
     await controller.onMessage(message("build it"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    const attemptId = store.findIncompleteTurnAttemptForSession(sessionId)!.attemptId;
     await controller.onMessage(message("also update docs"));
     await controller.onMessage(message("/stop"));
 
-    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
     expect(runtime.steerTurn).toHaveBeenCalledWith(expect.any(String), "turn_1", "also update docs");
     expect(presenter.appendSteerMessage).toHaveBeenCalledWith(
       sessionId,
@@ -4555,6 +4648,21 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       "已向 Agent 发送 Interrupt 请求：turn_1",
     );
+    expect(store.getTurnAttempt(attemptId)?.status).toBe("cancelling");
+  });
+
+  test("restores a recoverable attempt when a user interrupt request fails", async () => {
+    const { controller, runtime, store } = fixture();
+    await controller.onMessage(message("keep working if stop fails"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    const attemptId = store.findIncompleteTurnAttemptForSession(sessionId)!.attemptId;
+    (runtime.interruptRemoteTurn as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("App Server control request failed"),
+    );
+
+    await controller.onMessage(message("/stop"));
+
+    expect(store.getTurnAttempt(attemptId)?.status).toBe("running");
   });
 
   test("reads a missing local turn from the current Codex task before interrupting", async () => {

@@ -897,6 +897,31 @@ describe("StateStore runtime metadata", () => {
     expect(second.getTurnAttempt("attempt_1")).toMatchObject({ turnId: "turn_2", status: "completed" });
   });
 
+  test("persists user cancellation intent separately from crash-recoverable attempts", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.createTurnAttempt({
+      attemptId: "attempt_cancel",
+      localSessionId: "session_cancel",
+      contextKey: "chat_id:c1",
+      promptText: "stop this task",
+      turnId: "turn_cancel",
+      status: "running",
+    });
+
+    const previous = store.requestTurnAttemptCancellation("turn_cancel");
+
+    expect(previous).toMatchObject({ status: "running" });
+    expect(store.listIncompleteTurnAttempts()).toEqual([]);
+    expect(store.listCancellationRequestedTurnAttempts()).toEqual([
+      expect.objectContaining({ attemptId: "attempt_cancel", status: "cancelling" }),
+    ]);
+    store.restoreTurnAttemptAfterCancellationFailure(previous!);
+    expect(store.getTurnAttempt("attempt_cancel")?.status).toBe("running");
+  });
+
   test("refreshes unfinished turn activity while throttling frequent persistence writes", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);
@@ -955,6 +980,26 @@ describe("StateStore runtime metadata", () => {
     expect(store.getMessageReaction("om_steer")).toMatchObject({ turnId: "turn_2", status: "pending" });
     expect(store.findTurnAnchorByMessageId("om_original")).toMatchObject({ turnId: "turn_2" });
     expect(store.findTurnAnchorByMessageId("om_steer")).toMatchObject({ turnId: "turn_2" });
+  });
+
+  test("increments retry state before a turn id has been assigned", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.createTurnAttempt({
+      attemptId: "attempt_start_retry",
+      localSessionId: "session_retry",
+      contextKey: "chat_id:c1",
+      promptText: "start reliably",
+      pendingTurnId: "pending_1",
+    });
+
+    expect(store.prepareUnstartedTurnAttemptRetry("attempt_start_retry")).toMatchObject({
+      pendingTurnId: undefined,
+      retryCount: 1,
+      status: "recovering",
+    });
   });
 
   test("claims an inbound event only once across store restarts", () => {

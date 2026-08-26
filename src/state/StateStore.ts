@@ -111,6 +111,7 @@ export type TurnAttemptStatus =
   | "accepted"
   | "running"
   | "recovering"
+  | "cancelling"
   | "completed"
   | "failed"
   | "cancelled"
@@ -633,6 +634,15 @@ export class StateStore {
     return rows.map(mapTurnAttempt);
   }
 
+  listCancellationRequestedTurnAttempts(): TurnAttemptRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM turn_attempts
+      WHERE status = 'cancelling'
+      ORDER BY created_at ASC, rowid ASC
+    `).all() as TurnAttemptRow[];
+    return rows.map(mapTurnAttempt);
+  }
+
   updateTurnAttempt(
     attemptId: string,
     patch: Partial<{
@@ -697,6 +707,19 @@ export class StateStore {
     return row ? mapTurnAttempt(row) : undefined;
   }
 
+  requestTurnAttemptCancellation(turnId: string): TurnAttemptRecord | undefined {
+    const existing = this.findIncompleteTurnAttemptByTurnId(turnId);
+    if (!existing) return undefined;
+    this.updateTurnAttempt(existing.attemptId, { status: "cancelling" });
+    return existing;
+  }
+
+  restoreTurnAttemptAfterCancellationFailure(attempt: TurnAttemptRecord): void {
+    const current = this.getTurnAttempt(attempt.attemptId);
+    if (current?.status !== "cancelling") return;
+    this.updateTurnAttempt(attempt.attemptId, { status: attempt.status });
+  }
+
   touchTurnAttempt(turnId: string, activityAt = new Date()): void {
     const timestamp = activityAt.toISOString();
     const throttleCutoff = new Date(activityAt.getTime() - 15_000).toISOString();
@@ -731,6 +754,17 @@ export class StateStore {
       pendingTurnId: null,
       turnId: null,
       recoveredFromTurnId: failedTurnId,
+      retryCount: existing.retryCount + 1,
+      status: "recovering",
+    });
+    return this.getTurnAttempt(attemptId);
+  }
+
+  prepareUnstartedTurnAttemptRetry(attemptId: string): TurnAttemptRecord | undefined {
+    const existing = this.getTurnAttempt(attemptId);
+    if (!existing || existing.turnId || !isIncompleteTurnAttemptStatus(existing.status)) return undefined;
+    this.updateTurnAttempt(attemptId, {
+      pendingTurnId: null,
       retryCount: existing.retryCount + 1,
       status: "recovering",
     });

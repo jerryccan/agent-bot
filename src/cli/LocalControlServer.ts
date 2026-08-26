@@ -18,6 +18,8 @@ export class LocalControlServer {
     if (process.platform !== "win32") fs.rmSync(this.endpoint, { force: true });
     const server = net.createServer((socket) => {
       socket.setEncoding("utf8");
+      // CLI callers may time out or be terminated while a long request is still running.
+      socket.on("error", () => undefined);
       let input = "";
       socket.on("data", (chunk: string) => {
         input += chunk;
@@ -55,7 +57,7 @@ export class LocalControlServer {
     } catch (error) {
       response = { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
-    socket.end(`${JSON.stringify(response)}\n`);
+    if (!socket.destroyed && socket.writable) socket.end(`${JSON.stringify(response)}\n`);
   }
 }
 
