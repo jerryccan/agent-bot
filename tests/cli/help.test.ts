@@ -10,7 +10,7 @@ describe("CLI help", () => {
     expect(help).toContain("Usage:");
     expect(help).toContain("Common commands:");
     expect(help).toContain("server restart [--task <task>]");
-    expect(help).toContain("Return safe-restart status");
+    expect(help).toContain("notify the source task or private chat");
     expect(help).toContain("agentbot [options] <command>");
     expect(help).toContain("Codex, TraeX, and compatible ACP agents");
     expect(help).toContain("Check and configure Agents; initialize the Lark app and service");
@@ -55,7 +55,7 @@ describe("CLI help", () => {
     expect(help).toContain("用法：");
     expect(help).toContain("常用命令：");
     expect(help).toContain("server restart [--task <任务>]");
-    expect(help).toContain("将安全重启状态发回任务所在会话");
+    expect(help).toContain("Agent 内通知来源任务，终端内通知私聊");
     expect(help).toContain("agentbot [选项] <命令>");
     expect(help).toContain("Codex、TraeX 和兼容 ACP 的 Agent");
     expect(help).toContain("检查并配置 Agent，初始化飞书应用和服务");

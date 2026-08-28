@@ -1246,6 +1246,10 @@ describe("CodexRuntime", () => {
       lastTurnCompletedToolCount: 1,
       lastTurnFailedToolCount: 1,
       lastTurnRunningToolCount: 0,
+      completedTurns: [expect.objectContaining({
+        id: "turn_external",
+        prompt: "Latest follow-up",
+      })],
     }));
     expect(client.requests.filter((request) => request.method === "thread/resume")).toHaveLength(0);
     expect(client.requests).toContainEqual({

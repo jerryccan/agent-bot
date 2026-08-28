@@ -751,6 +751,63 @@ describe("StateStore runtime metadata", () => {
       .toEqual(["turn_forked", "turn_anchor", "turn_root"]);
   });
 
+  test("imports remote completed Turn history without replacing richer local snapshots", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+    store.saveTurnSnapshot("turn_1", "source", {
+      sessionId: "source",
+      turnId: "turn_1",
+      prompt: "Local prompt",
+      status: "completed",
+      completedAt: 1_000,
+      finalResponse: "Local details",
+    }, "chat_id:source");
+
+    store.importCompletedTurnHistory({
+      localSessionId: "source",
+      contextKey: "chat_id:source",
+      agentName: "codex",
+      remoteSessionId: "thread_source",
+      turns: [
+        {
+          turnId: "turn_1",
+          snapshot: { turnId: "turn_1", prompt: "Remote prompt", status: "completed", completedAt: 1_000 },
+          updatedAt: new Date(1_000).toISOString(),
+        },
+        {
+          turnId: "turn_2",
+          snapshot: { turnId: "turn_2", prompt: "Second prompt", status: "completed", completedAt: 2_000 },
+          updatedAt: new Date(2_000).toISOString(),
+        },
+        {
+          turnId: "turn_3",
+          snapshot: { turnId: "turn_3", prompt: "Third prompt", status: "completed", completedAt: 3_000 },
+          updatedAt: new Date(3_000).toISOString(),
+        },
+      ],
+    });
+
+    expect(store.listTaskTurnGraph("source").map((turn) => ({
+      turnId: turn.turnId,
+      parentTurnId: turn.parentTurnId,
+    }))).toEqual([
+      { turnId: "turn_3", parentTurnId: "turn_2" },
+      { turnId: "turn_2", parentTurnId: "turn_1" },
+      { turnId: "turn_1", parentTurnId: undefined },
+    ]);
+    expect(store.getTurnSnapshot("turn_1")).toEqual(expect.objectContaining({
+      prompt: "Local prompt",
+      finalResponse: "Local details",
+    }));
+    expect(store.getTurnRuntimeOrigin("turn_3")).toMatchObject({
+      localSessionId: "source",
+      agentName: "codex",
+      remoteSessionId: "thread_source",
+    });
+  });
+
   test("repairs a missing parent recorded before crash recovery completed", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

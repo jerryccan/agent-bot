@@ -502,6 +502,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   const restart = vi.fn(async () => undefined);
   const cancelSafeRestart = vi.fn(async () => true);
   const rememberFeishuUserOpenId = vi.fn(async () => undefined);
+  const persistAgentExecutionDefaults = vi.fn(async () => undefined);
   const shellCommandExecutor = vi.fn(async () => ({
     stdout: "README.md\nsrc\ntests\n",
     stderr: "",
@@ -520,7 +521,13 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     new AgentRuntimeRegistry({ acp, codex: runtime, ...extraRuntimes }),
     outboundRouter,
     logger,
-    { restart, supervised: true, cancelSafeRestart, rememberFeishuUserOpenId },
+    {
+      restart,
+      supervised: true,
+      cancelSafeRestart,
+      rememberFeishuUserOpenId,
+      persistAgentExecutionDefaults,
+    },
     shellCommandExecutor,
     windowsDriveLister,
     shellCommandJobs,
@@ -543,6 +550,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     restart,
     cancelSafeRestart,
     rememberFeishuUserOpenId,
+    persistAgentExecutionDefaults,
     shellCommandExecutor,
     shellCommandJobs,
     windowsDriveLister,
@@ -1385,7 +1393,19 @@ describe("ProxySessionController", () => {
     expect(secondSerialized).toContain("<font color='blue'>Previous</font>");
     expect(secondSerialized).not.toContain("<font color='blue'>Next</font>");
 
-    await controller.onCardAction({
+    vi.mocked(outbound.updateInteractiveCard).mockClear();
+    const forkSession = vi.mocked(runtime.forkSession!);
+    const originalForkSession = forkSession.getMockImplementation()!;
+    let releaseReset!: () => void;
+    const resetGate = new Promise<void>((resolve) => {
+      releaseReset = resolve;
+    });
+    forkSession.mockImplementationOnce(async (input) => {
+      await resetGate;
+      return originalForkSession(input);
+    });
+
+    const resetAction = controller.onCardAction({
       actionId: "reset-history-to-turn-1",
       contextKey: "chat_id:c1",
       messageId: "om_reset_history",
@@ -1398,16 +1418,51 @@ describe("ProxySessionController", () => {
         page: "1",
       },
     });
+    await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalledTimes(1));
+    const resettingCard = vi.mocked(outbound.updateInteractiveCard).mock.calls[0]?.[1];
+    const resettingSerialized = JSON.stringify(resettingCard);
+    expect(resettingSerialized).toContain("⏳ 正在 Reset");
+    expect(resettingSerialized).toContain("正在 Reset 到所选轮次，请稍候…");
+    expect(resettingSerialized).not.toContain('"action":"turn_reset"');
+    expect(resettingSerialized).toContain('"action":"turn_reset_page"');
+
+    releaseReset();
+    await resetAction;
     expect(runtime.forkSession).toHaveBeenLastCalledWith(expect.objectContaining({
       localSessionId: task.localSessionId,
       lastTurnId: "history_turn_1",
     }));
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledTimes(2);
     const resetCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
     const resetSerialized = JSON.stringify(resetCard);
     expect(resetSerialized).toContain("✅ 当前");
     expect(resetSerialized).toContain("Prompt 2");
     expect(resetSerialized.match(/"action":"turn_reset"/g)).toHaveLength(1);
     expect(resetSerialized).not.toContain('"turnId":"history_turn_1","contextKey"');
+
+    vi.mocked(outbound.updateInteractiveCard).mockClear();
+    forkSession.mockRejectedValueOnce(new Error("reset failed"));
+    await controller.onCardAction({
+      actionId: "reset-history-failure",
+      contextKey: "chat_id:c1",
+      messageId: "om_reset_history",
+      value: {
+        action: "turn_reset",
+        cardView: "reset_history",
+        sessionId: task.localSessionId,
+        turnId: "history_turn_2",
+        contextKey: "chat_id:c1",
+        page: "1",
+      },
+    });
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(vi.mocked(outbound.updateInteractiveCard).mock.calls[0]?.[1]))
+      .toContain("⏳ 正在 Reset");
+    const restoredCard = JSON.stringify(vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1]);
+    expect(restoredCard).not.toContain("⏳ 正在 Reset");
+    expect(restoredCard).not.toContain("正在 Reset 到所选轮次，请稍候…");
+    expect(restoredCard).toContain('"action":"turn_reset"');
+    expect(restoredCard).toContain('"turnId":"history_turn_2"');
   });
 
   test("shows the currently running turn at the top of the Turns card without Reset", async () => {
@@ -3512,6 +3567,162 @@ describe("ProxySessionController", () => {
       "chat_id:c1",
       expect.stringMatching(/^已将当前任务 Fork 到飞书群：.+；新群当前任务为 并行修复（thr_1_fork）。$/),
     );
+
+  });
+
+  test("shows every inherited remote Turn in the new group's Turn card without local source snapshots", async () => {
+    const { controller, remoteSessions, store, outbound } = fixture();
+    const sourceSessionId = "source-without-turn-snapshot";
+    const sourceRemoteSessionId = "thr_external";
+    const sourceTurnId = "turn_external_3";
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: sourceSessionId,
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession(sourceSessionId, {
+      runtimeKind: "codex",
+      remoteSessionId: sourceRemoteSessionId,
+      title: "External source task",
+      lastTurnId: sourceTurnId,
+      lastTurnStatus: "completed",
+    });
+    store.setCurrentSession("chat_id:c1", sourceSessionId);
+    remoteSessions.push({
+      id: sourceRemoteSessionId,
+      title: "External source task",
+      preview: "Inspect the external task",
+      cwd: process.cwd(),
+      source: "codex-desktop",
+      status: "idle",
+      updatedAt: 1_777_000_000,
+      lastTurnId: sourceTurnId,
+      lastCompletedTurnId: sourceTurnId,
+      lastTurnStatus: "completed",
+      lastUserPrompt: "Inspect the external task",
+      completedTurns: [
+        { id: "turn_external_1", prompt: "Collect the evidence", startedAt: 1_000, completedAt: 2_000 },
+        { id: "turn_external_2", prompt: "Compare the results", startedAt: 3_000, completedAt: 4_000 },
+        { id: sourceTurnId, prompt: "Inspect the external task", startedAt: 5_000, completedAt: 6_000 },
+      ],
+    });
+    expect(store.getTurnSnapshot(sourceTurnId)).toBeUndefined();
+
+    await controller.onMessage({
+      messageId: "fork-external-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/forkgroup External branch",
+    });
+    await controller.onMessage({
+      messageId: "fork-external-group-turns",
+      contextKey: "chat_id:oc_new_group",
+      chatId: "oc_new_group",
+      chatType: "group",
+      text: "/turns",
+    });
+
+    const turnsCard = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(turnsCard);
+    expect(serialized).toContain("Inspect the external task");
+    expect(serialized).toContain("Compare the results");
+    expect(serialized).toContain("Collect the evidence");
+    expect(serialized).not.toContain("当前任务还没有成功完成的 turn");
+    const forkedSessionId = store.getUserContext("chat_id:oc_new_group")?.currentSessionId;
+    expect(store.listTaskTurnGraph(forkedSessionId!).map((turn) => turn.turnId)).toEqual([
+      "turn_external_3",
+      "turn_external_2",
+      "turn_external_1",
+    ]);
+  });
+
+  test("hydrates every inherited Turn when opening an Alpha 4 Fork task created before history import", async () => {
+    const { controller, runtime, remoteSessions, store, outbound } = fixture();
+    store.createSession({
+      localSessionId: "legacy_source",
+      contextKey: "chat_id:legacy_source",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("legacy_source", {
+      runtimeKind: "codex",
+      remoteSessionId: "thread_legacy_source",
+      lastTurnId: "legacy_turn_3",
+      lastTurnStatus: "completed",
+    });
+    store.getOrCreateUserContext("chat_id:legacy_fork", "codex");
+    store.createSession({
+      localSessionId: "legacy_fork",
+      contextKey: "chat_id:legacy_fork",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("legacy_fork", {
+      runtimeKind: "codex",
+      remoteSessionId: "thread_legacy_fork",
+      lastTurnId: "legacy_turn_3",
+      lastTurnStatus: "completed",
+    });
+    store.setCurrentSession("chat_id:legacy_fork", "legacy_fork");
+    store.audit("chat_id:legacy_fork", "session_forked", {
+      sourceLocalSessionId: "legacy_source",
+      sourceRemoteSessionId: "thread_legacy_source",
+      sourceTurnId: "legacy_turn_3",
+      forkedLocalSessionId: "legacy_fork",
+      forkedRemoteSessionId: "thread_legacy_fork",
+    });
+    remoteSessions.push({
+      id: "thread_legacy_source",
+      cwd: process.cwd(),
+      source: "codex-desktop",
+      status: "idle",
+      lastTurnId: "legacy_turn_3",
+      lastCompletedTurnId: "legacy_turn_3",
+      lastTurnStatus: "completed",
+      completedTurns: [
+        { id: "legacy_turn_1", prompt: "Legacy first", startedAt: 1_000, completedAt: 2_000 },
+        { id: "legacy_turn_2", prompt: "Legacy second", startedAt: 3_000, completedAt: 4_000 },
+        { id: "legacy_turn_3", prompt: "Legacy third", startedAt: 5_000, completedAt: 6_000 },
+      ],
+    });
+
+    await controller.onMessage({
+      messageId: "legacy-fork-turns",
+      contextKey: "chat_id:legacy_fork",
+      chatId: "legacy_fork",
+      chatType: "group",
+      text: "/turns",
+    });
+
+    expect(runtime.readRemoteSession).toHaveBeenCalledWith("thread_legacy_source");
+    expect(store.hasImportedForkTurnHistory("legacy_fork")).toBe(true);
+    expect(store.listTaskTurnGraph("legacy_fork").map((turn) => turn.turnId)).toEqual([
+      "legacy_turn_3",
+      "legacy_turn_2",
+      "legacy_turn_1",
+    ]);
+    const card = (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("Legacy first");
+    expect(serialized).toContain("Legacy second");
+    expect(serialized).toContain("Legacy third");
+
+    vi.mocked(runtime.readRemoteSession!).mockClear();
+    await controller.onMessage({
+      messageId: "legacy-fork-turns-again",
+      contextKey: "chat_id:legacy_fork",
+      chatId: "legacy_fork",
+      chatType: "group",
+      text: "/turns",
+    });
+    expect(runtime.readRemoteSession).not.toHaveBeenCalled();
   });
 
   test("uses the same generated branch title for forkgroup as fork", async () => {
@@ -7136,6 +7347,35 @@ describe("ProxySessionController", () => {
     expect(store.getUserContext("chat_id:origin")?.currentSessionId).toBe(created.localSessionId);
   });
 
+  test("uses the selected Agent defaults when a new task does not inherit execution settings", async () => {
+    const { controller, runtime, config, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "/new Source"));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    config.agents.acp!.defaults = {
+      modelProvider: "acp-provider",
+      model: "acp-model",
+      reasoningEffort: "medium",
+      permissionMode: "confirm",
+    };
+
+    const created = await controller.controlCreateTask(
+      sourceSessionId,
+      "ACP defaults",
+      undefined,
+      false,
+      "acp",
+    );
+
+    expect(created.agentName).toBe("acp");
+    expect(runtime.createSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      agentName: "acp",
+      modelProvider: "acp-provider",
+      model: "acp-model",
+      reasoningEffort: "medium",
+      permissionMode: "confirm",
+    }));
+  });
+
   test("supports targeted CLI Agent, execution setting, Goal, mute, shell, and directory controls", async () => {
     const { controller, runtime, outbound, shellCommandExecutor, store } = fixture();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-controls-"));
@@ -7321,7 +7561,7 @@ describe("ProxySessionController", () => {
   });
 
   test("switches Provider, Model, Thinking, and Permission through one tabbed card", async () => {
-    const { controller, runtime, outbound, store } = fixture();
+    const { controller, runtime, outbound, store, config, persistAgentExecutionDefaults } = fixture();
     await controller.onMessage(message("/new"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
 
@@ -7447,6 +7687,18 @@ describe("ProxySessionController", () => {
       reasoningEffort: "xhigh",
       permissionMode: "confirm",
     });
+    expect(persistAgentExecutionDefaults).toHaveBeenLastCalledWith("codex", {
+      modelProvider: "azure",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
+    expect(config.agents.codex!.defaults).toEqual({
+      modelProvider: "azure",
+      model: "gpt-next",
+      reasoningEffort: "xhigh",
+      permissionMode: "confirm",
+    });
     card = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     expect(JSON.stringify(card)).toContain("已切换为执行前确认模式");
   });
@@ -7526,7 +7778,8 @@ describe("ProxySessionController", () => {
     expect(outbound.updateInteractiveCard).toHaveBeenCalledWith("om_model", expect.any(Object));
     const updated = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
     const serialized = JSON.stringify(updated);
-    expect(serialized).toContain("思考强度已切换为 `xhigh`，从下一次请求生效");
+    expect(serialized).toContain("思考强度已切换为 `xhigh`");
+    expect(serialized).toContain("已保存为 `codex` Agent 的默认设置");
     expect(serialized).toContain('"tag":"markdown","content":"Thinking"');
     expect(serialized).toContain("✅ 当前");
     expect(serialized).toContain('"effort":"medium"');

@@ -350,6 +350,27 @@ test("uses ACP when agent kind is omitted", () => {
   const parsed = agentConfigSchema.parse({ title: "Example", command: "node" });
 
   expect(parsed.kind).toBe("acp");
+  expect(parsed.defaults).toEqual({});
+});
+
+test("parses per-Agent execution defaults", () => {
+  const parsed = agentConfigSchema.parse({
+    title: "Example",
+    command: "node",
+    defaults: {
+      modelProvider: "openai",
+      model: "gpt-next",
+      reasoningEffort: "high",
+      permissionMode: "confirm",
+    },
+  });
+
+  expect(parsed.defaults).toEqual({
+    modelProvider: "openai",
+    model: "gpt-next",
+    reasoningEffort: "high",
+    permissionMode: "confirm",
+  });
 });
 
 test("normalizes the previous Codex kind to App Server", () => {

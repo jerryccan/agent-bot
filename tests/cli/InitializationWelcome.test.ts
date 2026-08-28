@@ -124,6 +124,7 @@ function config(userOpenId?: string): AppConfig {
         command: "codex",
         args: ["app-server"],
         env: {},
+        defaults: {},
       },
       traex: {
         kind: "app-server",
@@ -131,6 +132,7 @@ function config(userOpenId?: string): AppConfig {
         command: "traecli",
         args: ["app-server"],
         env: {},
+        defaults: {},
       },
     },
     defaults: { agent: "codex", cwd: "." },

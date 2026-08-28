@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { SessionRecord } from "../../src/state/StateStore.js";
 import {
   resolveCurrentTaskFromEnvironment,
+  resolveRestartNotificationTask,
   resolveTaskCommandTarget,
 } from "../../src/cli/taskTarget.js";
 
@@ -49,6 +50,18 @@ describe("task CLI target resolution", () => {
   test("requires an explicit task outside Agent Bot", () => {
     expect(() => resolveTaskCommandTarget(sessions, [], "status", { env: {} }))
       .toThrow("requires a task number or task ID outside Agent Bot");
+  });
+
+  test("routes a hosted restart to its source task", () => {
+    expect(resolveRestartNotificationTask(sessions, undefined, hosted)).toBe(current);
+  });
+
+  test("keeps explicit restart targets above the hosted source task", () => {
+    expect(resolveRestartNotificationTask(sessions, "sess_first", hosted)).toBe(first);
+  });
+
+  test("leaves an ordinary terminal restart without a task target", () => {
+    expect(resolveRestartNotificationTask(sessions, undefined, {})).toBeUndefined();
   });
 
 });
