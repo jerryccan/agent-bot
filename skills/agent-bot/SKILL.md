@@ -102,7 +102,7 @@ agentbot task thinking [effort]
 agentbot task permissions [auto|confirm]
 ```
 
-Omit the value to inspect the current setting and available choices. `agent` changes the default Agent for future tasks in that conversation. The other settings affect the specified task from its next request.
+Omit the value to inspect the current setting and available choices. `agent` changes the default Agent for future tasks in that conversation. The other settings affect the specified task from its next request and become the saved defaults for that Agent.
 
 ## Goals And Turns
 
@@ -149,6 +149,8 @@ agentbot server stop
 Autostart is Profile-specific. Use `server autostart enable` for login startup, `server autostart enable --linger` on Linux only when the user explicitly requests startup before login, and `server autostart disable` to remove registration without stopping the current Server. Disabling Agent Bot autostart must not disable Linux user lingering because other services may use it.
 
 Use safe restart by default. Prefer `agentbot task restart` when hosted so the current task is resolved automatically. Use `--immediate` or `task restart --force` only when the user explicitly accepts interruption.
+
+A bare `agentbot server restart` invoked inside an Agent Bot-started Agent returns restart status to the source task conversation. The same command from an ordinary terminal uses the configured user's private chat. Add `--task <task>` only to override either default.
 
 Never use `taskkill`, `Stop-Process`, or equivalent commands for routine restart management.
 

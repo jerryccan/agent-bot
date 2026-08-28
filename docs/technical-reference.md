@@ -163,6 +163,8 @@ agents:
     command: "codex"
     args: ["app-server", "--enable", "goals", "--listen", "stdio://"]
     env: {}
+    defaults:
+      permissionMode: "auto"
 
   traex:
     kind: "app-server"
@@ -170,6 +172,8 @@ agents:
     command: "traex"
     args: ["app-server", "--listen", "stdio://"]
     env: {}
+    defaults:
+      permissionMode: "auto"
 
 defaults:
   agent: "codex"
@@ -279,9 +283,9 @@ Every `agentbot task` operation accepts `--task <task>` and retains the legacy l
 
 ## App Server Provider Settings
 
-Provider is a task-level setting stored as `model_provider` alongside model, reasoning effort, and permission mode. Agent Bot passes `modelProvider` through `thread/start`, `thread/resume`, and `thread/fork` whenever a task explicitly inherits or selects one. For a brand-new task with no inherited Provider, Agent Bot omits `modelProvider`; the selected App Server Agent uses its own effective default and returns the selected Provider in its thread response for persistence.
+Provider is stored on each task alongside model, reasoning effort, and permission mode. Each Agent can also keep these values under `agents.<name>.defaults`. New tasks start from the selected Agent's saved defaults, then override them with explicit or same-Agent inherited task settings. Agent Bot passes the resolved settings through `thread/start`, `thread/resume`, and `thread/fork` and persists the effective values returned by the runtime on the task.
 
-`/provider`, `/model`, `/thinking`, and `/permissions` open one Card 2.0 execution-settings surface with the matching tab active. All four commands reject arguments; tab navigation and setting changes use card callbacks only. Provider choices come from App Server `config/read`. A Provider change resumes the thread with the selected Provider and the current compatible model, reasoning effort, and permission mode. Model, reasoning, and permission choices update their focused setting immediately, refresh the same card in place, and apply from the next request.
+`/provider`, `/model`, `/thinking`, and `/permissions` open one Card 2.0 execution-settings surface with the matching tab active. All four commands reject arguments; tab navigation and setting changes use card callbacks only. Provider choices come from App Server `config/read`. A Provider change resumes the thread with the selected Provider and the current compatible model, reasoning effort, and permission mode. Every successful Provider, model, reasoning, or permission change updates the current task, atomically writes the complete effective setting group to that Agent's defaults in `config.yaml`, refreshes the same card in place, and applies from the next request. The equivalent CLI task-setting commands use the same persistence path.
 
 Agent Bot keeps a local routing key for Feishu cards and delivery state, but presents the owning App Server's task ID to users. It does not resume, steer, stop, or fork externally running Agent work without an explicit user action.
 
@@ -340,7 +344,7 @@ The Feishu `/restart` command uses this safe path by default; `/restart --force`
 
 A pending safe-restart schedule accumulates the exact notification route of every conversation that triggers it. Every inbound user message, including slash commands, marks its base private or group conversation active. Each enrolled route receives its own status card and final restarting acknowledgement and remains enrolled until the schedule ends. Repeated routes are deduplicated; when a topic route was first discovered without a message anchor, a later anchored trigger upgrades it. Topic requests retain the originating message ID and use a thread reply so restart updates cannot fall back to the group body. Each route also retains the reason supplied by that conversation, so a later request elsewhere cannot overwrite an earlier card with an unrelated reason. Before replacement, Agent Bot passes every complete route, including topic message anchors, through the replacement Supervisor and uses the same route for the post-restart startup card. The Supervisor retains the routes until the Worker has remained stable for 60 seconds, so an early crash-driven relaunch does not lose required recipients.
 
-Use `agentbot server restart --task <task>` when a CLI request belongs to a specific task. Task numbers, full IDs, and unambiguous ID prefixes are resolved before the control request is sent. Without `--task`, the Server infers the safe-restart status route only when all running tasks belong to one conversation; it rejects an ambiguous request spanning multiple running conversations. A CLI restart with no running task has no conversation owner for its waiting status.
+Use `agentbot server restart --task <task>` to override a CLI restart's notification target. Task numbers, full IDs, and unambiguous ID prefixes are resolved before the control request is sent. Without `--task`, an Agent Bot-started Agent resolves its source task through the injected Codex or TraeX App Server Thread ID and returns the status card to that task conversation. An ordinary terminal has no source task, so the Server sends the card to the configured `feishu.userOpenId` private chat. If no user Open ID is configured, that terminal request fails with an initialization hint instead of silently dropping the card.
 
 The first safe-restart status card is delayed by three seconds so a task's final response can usually arrive first. Status changes during that window are coalesced into the initial card. The delay does not block scheduler polling, and shutdown flushes any pending card immediately.
 

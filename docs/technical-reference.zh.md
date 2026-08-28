@@ -163,6 +163,8 @@ agents:
     command: "codex"
     args: ["app-server", "--enable", "goals", "--listen", "stdio://"]
     env: {}
+    defaults:
+      permissionMode: "auto"
 
   traex:
     kind: "app-server"
@@ -170,6 +172,8 @@ agents:
     command: "traex"
     args: ["app-server", "--listen", "stdio://"]
     env: {}
+    defaults:
+      permissionMode: "auto"
 
 defaults:
   agent: "codex"
@@ -279,9 +283,9 @@ Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeT
 
 ## App Server Provider 设置
 
-Provider 是任务级设置，以 `model_provider` 与模型、思考强度和权限模式一起持久化。任务明确继承或选择 Provider 时，Agent Bot 通过 `thread/start`、`thread/resume` 和 `thread/fork` 传递 `modelProvider`。全新任务没有可继承 Provider 时，Agent Bot 省略该参数，由所选 App Server Agent 使用自身生效的默认值，再从 thread 响应中读取实际 Provider 并保存。
+Provider 会与模型、思考强度和权限模式一起保存在任务中；每个 Agent 还可以在 `agents.<name>.defaults` 下分别保存这些默认值。新任务先读取所选 Agent 的默认值，再由显式设置或同 Agent 任务继承值覆盖。Agent Bot 会通过 `thread/start`、`thread/resume` 和 `thread/fork` 传递最终设置，并把运行时返回的实际值保存到任务。
 
-`/provider`、`/model`、`/thinking` 和 `/permissions` 打开同一张 Card 2.0 运行设置卡片，并激活对应的 tab。四个命令都拒绝参数，tab 切换和设置修改只通过卡片回调完成。Provider 选项来自 App Server 的 `config/read`；切换 Provider 时使用当前兼容的模型、思考强度和权限模式恢复 thread。模型、思考强度和权限选择会立即更新对应设置、就地刷新同一张卡片，并从下一次请求生效。
+`/provider`、`/model`、`/thinking` 和 `/permissions` 打开同一张 Card 2.0 运行设置卡片，并激活对应的 tab。四个命令都拒绝参数，tab 切换和设置修改只通过卡片回调完成。Provider 选项来自 App Server 的 `config/read`；切换 Provider 时使用当前兼容的模型、思考强度和权限模式恢复 thread。每次成功修改 Provider、模型、思考强度或权限后，Agent Bot 都会更新当前任务，把完整生效设置原子写入该 Agent 在 `config.yaml` 中的默认值，就地刷新卡片，并从下一次请求生效；对应 CLI 任务设置命令使用相同的持久化路径。
 
 Agent Bot 内部保留本地路由键以关联飞书卡片和投递状态，但对用户展示所属 App Server 的任务 ID。没有明确用户操作时，不会续写、steer、停止或分支其他客户端正在运行的 Agent 工作。
 
@@ -340,7 +344,7 @@ Supervisor、Worker、替换 Supervisor 和 Console Worker 默认启用 Node fat
 
 待执行的安全重启计划会收集每一个触发它的精确会话路由。收到任何用户消息时，包括斜杠命令，都会把所属基础私聊或群聊标为活跃。每个已加入的会话都会收到各自的状态卡片和真正开始重启前的提示，并一直保留到本次计划结束。同一路由会去重；如果话题路由最初缺少消息锚点，后续带锚点的触发会补全它。话题请求会保留原消息 ID，并通过话题回复发送，避免重启状态落到群主会话。每条路由还会保留该会话自己的重启原因，其他会话的后续请求不会用无关原因覆盖旧卡片。替换进程前，Agent Bot 会把包含话题消息锚点在内的完整路由经替换 Supervisor 传给 Worker，并用同一路由发送重启后的启动卡。Supervisor 会保留这些路由，直到 Worker 连续稳定运行 60 秒，避免启动阶段异常退出并重新拉起时丢失必发会话。
 
-当 CLI 重启属于某个具体任务时，使用 `agentbot server restart --task <任务>`。任务序号、完整 ID 和不冲突的 ID 前缀会在发送控制请求前解析。未传 `--task` 时，只有所有运行中任务都属于同一个会话，Server 才会自动推断安全重启状态的发送目标；如果同时有多个运行中的会话，请求会被拒绝。没有运行中任务的本地 CLI 重启没有等待状态所属会话。
+使用 `agentbot server restart --task <任务>` 可以覆盖 CLI 重启的通知目标。任务序号、完整 ID 和不冲突的 ID 前缀会在发送控制请求前解析。未传 `--task` 时，Agent Bot 启动的 Agent 会通过注入的 Codex 或 TraeX App Server Thread ID 解析来源任务，并把状态卡返回该任务会话；普通终端没有来源任务，因此 Server 把卡片发送到 `feishu.userOpenId` 对应的私聊。若普通终端执行时未配置用户 Open ID，请求会明确提示重新初始化，而不会静默丢失卡片。
 
 首次安全重启状态卡会延迟 3 秒发送，让任务最终回答尽可能先到达；延迟期间的状态变化会合并到首张卡片。该延迟不阻塞调度器轮询，真正关闭前会立即 flush 尚未发送的卡片。
 

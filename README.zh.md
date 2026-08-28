@@ -105,7 +105,7 @@ agentbot server stop
 agentbot server restart
 ```
 
-它会等待当前运行中的 Agent 任务完成后自动重启，确保所有任务都能正常执行。在飞书话题中触发时，重启状态和重启后的启动卡都会返回原话题。
+它会等待当前运行中的 Agent 任务完成后自动重启，确保所有任务都能正常执行。Agent 调用 CLI 时，状态卡返回其来源任务；普通终端调用时，状态卡发送到配置用户的私聊。传入 `--task <任务>` 可覆盖这两种默认目标。在飞书话题中触发时，重启状态和重启后的启动卡都会返回原话题。
 
 如需在用户登录后自动启动 Agent Bot：
 
@@ -214,7 +214,7 @@ agentbot task dismiss [任务] --yes
 
 在 Agent Bot 启动的 Agent 中，省略 `[任务]` 会自动使用当前任务；需要操作其他任务时可传入 `--task <任务>`。普通终端仍必须指定任务。`task current` 用于查看自动识别出的任务详情。任务引用可以是 `task list` 中的序号、任务 ID 或唯一的任务 ID 前缀。飞书中的任务、分支、排队、Agent、Provider、模型、思考强度、权限、Goal、历史 Turn、Reset、群静音、解散群、目录、文件、Shell 和重启能力都有对应的 CLI 命令；运行 `agentbot --help` 查看完整列表和参数。
 
-`task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 自己的 Runtime 默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。Project 与 Projectless 群名可在 `feishu.groupNameFormat` 中分别自定义。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
+`task newgroup` 会创建飞书群和新任务。默认继承源任务的 Agent 和运行设置；`--agent <标准名>` 可选择另一个已配置的 Agent，此时仍继承源任务的项目形态，但 Provider、模型、思考强度和权限模式使用目标 Agent 已保存的默认值。`--dir` 可覆盖项目目录并支持 `~`，`--nodir` 会强制创建 Projectless App Server 任务。Project 与 Projectless 群名可在 `feishu.groupNameFormat` 中分别自定义。`task forkgroup` 从源任务最新可用的已完成 turn 创建分支，不会中断正在执行的 turn。两个命令都要求 Server 正在运行，邀请 Profile 中保存的授权用户，不会切换源会话的当前任务，并支持 `--json`。
 
 ## 飞书命令
 
@@ -277,6 +277,8 @@ Agent Bot 将用户相关文件保存在仓库之外：
 | `~/.agent-bot/logs/`       | 按天切分的运行日志 |
 
 可通过 `AGENT_BOT_HOME` 修改用户数据目录。配置示例见 [config.example.yaml](config.example.yaml)。
+
+Provider、模型、思考强度和权限设置会作用于当前任务，同时保存到对应 Agent 的 `defaults` 中。以后创建没有同 Agent 设置可继承的新任务时，会使用这些默认值；每个已配置 Agent 分别保存自己的设置。
 
 `feishu.groupNameFormat` 可分别设置 Project 与 Projectless 新群的名称模板，支持系统、Agent、项目、任务名和日期变量。完整格式说明见[技术参考](docs/technical-reference.zh.md#配置模型)。
 
