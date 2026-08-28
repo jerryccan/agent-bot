@@ -5,7 +5,11 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { createProjectlessWorkspace, detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
 import { resolveUserPath } from "../config/paths.js";
-import { DEFAULT_GROUP_NAME_FORMAT, type AppConfig } from "../config/schema.js";
+import {
+  DEFAULT_GROUP_NAME_FORMAT,
+  type AgentExecutionDefaults,
+  type AppConfig,
+} from "../config/schema.js";
 import { CommandRouter } from "../commands/CommandRouter.js";
 import type { Command } from "../commands/commandTypes.js";
 import { baseChatContextKey, isThreadContextKey } from "../feishu/contextKey.js";
@@ -45,6 +49,7 @@ import type {
   AgentRuntime,
   ApprovalDecision,
   PermissionMode,
+  RemoteCompletedTurnSummary,
   RemoteSessionActivity,
   RemoteSessionSummary,
   RuntimeGoal,
@@ -323,12 +328,7 @@ interface ExecutionSettingsCardOptions extends ModelCardOptions {
   notice?: string;
 }
 
-interface SessionExecutionSettings {
-  modelProvider?: string;
-  model?: string;
-  reasoningEffort?: string;
-  permissionMode?: PermissionMode;
-}
+type SessionExecutionSettings = AgentExecutionDefaults;
 
 interface ProjectSessionReference {
   source?: SessionRecord;
@@ -352,6 +352,10 @@ interface ForkSessionPlan {
   reasoningEffort?: string;
   permissionMode: PermissionMode;
   lastTurnStatus?: SessionRecord["lastTurnStatus"];
+  sourceTurnPrompt?: string;
+  sourceTurnStartedAt?: number;
+  sourceTurnCompletedAt?: number;
+  sourceCompletedTurns?: RemoteCompletedTurnSummary[];
   sourceWasRunning: boolean;
   forkedFromHistoricalTurn: boolean;
 }
@@ -395,6 +399,10 @@ export interface ProxyLifecycle {
   restart(contextKey: string, force: boolean, replyTarget?: MessageReplyTarget): Promise<void>;
   cancelSafeRestart?(scheduleId: number): Promise<boolean>;
   rememberFeishuUserOpenId?(userOpenId: string): Promise<void> | void;
+  persistAgentExecutionDefaults?(
+    agentName: string,
+    defaults: AgentExecutionDefaults,
+  ): Promise<void> | void;
 }
 
 export type ShellCommandExecutor = (
@@ -419,6 +427,7 @@ export class ProxySessionController {
   private readonly queuedPromptCards = new Map<string, Map<string, string>>();
   private readonly queuedPromptCardWrites = new Map<string, Promise<void>>();
   private readonly sessionResets = new Map<string, Promise<void>>();
+  private readonly resetHistoryOperations = new Map<string, string>();
   private readonly lastSessionListings = new Map<string, string[]>();
   private readonly threadInitializations = new Map<string, Promise<void>>();
   private readonly llmRetryingSessions = new Set<string>();
@@ -824,17 +833,17 @@ export class ProxySessionController {
           );
         } else if (kind === "turn_reset") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
-          await this.resetCurrentSessionToTurn(
-            contextKey,
-            sessionId,
-            String(scopedAction.value.turnId ?? ""),
-          );
+          const turnId = String(scopedAction.value.turnId ?? "");
           if (scopedAction.value.cardView === "reset_history") {
-            await this.openResetHistory(contextKey, {
-              expectedSessionId: sessionId,
-              updateMessageId: requiredCardMessageId(scopedAction.messageId),
-              page: resetHistoryPageValue(scopedAction.value.page),
-            });
+            await this.resetFromHistoryCard(
+              contextKey,
+              sessionId,
+              turnId,
+              requiredCardMessageId(scopedAction.messageId),
+              resetHistoryPageValue(scopedAction.value.page),
+            );
+          } else {
+            await this.resetCurrentSessionToTurn(contextKey, sessionId, turnId);
           }
         } else if (kind === "turn_reset_page") {
           await this.openResetHistory(contextKey, {
@@ -1086,6 +1095,7 @@ export class ProxySessionController {
     this.queuedPromptCards.clear();
     this.queuedPromptCardWrites.clear();
     this.sessionResets.clear();
+    this.resetHistoryOperations.clear();
     for (const pending of this.pendingMergedForwards.values()) pending.resolveAttachment(undefined);
     this.pendingMergedForwards.clear();
     for (const pending of this.pendingResourceForwards.values()) pending.resolveAttachment(undefined);
@@ -1506,6 +1516,7 @@ export class ProxySessionController {
       this.store.updateRuntimeSession(record.localSessionId, { permissionMode: nextValue });
     }
     const session = this.store.getSession(record.localSessionId) ?? record;
+    if (setting) await this.persistAgentExecutionDefaults(session.localSessionId);
     const models = await loaded.runtime.listModels();
     const currentModel = models.find((candidate) => candidate.id === session.model)
       ?? models.find((candidate) => candidate.isDefault);
@@ -2827,6 +2838,21 @@ export class ProxySessionController {
     const model = remote?.model ?? source?.model;
     const reasoningEffort = source?.reasoningEffort;
     const permissionMode = source?.permissionMode ?? "auto";
+    const sourceTurnPrompt = truncateText(
+      latestUserPromptFromTurnView(snapshot)
+        ?? (lastTurnId === latestTurnId ? remote?.lastUserPrompt : undefined)
+        ?? remote?.preview
+        ?? source?.title
+        ?? remote?.title
+        ?? "Fork 来源轮次",
+      1_000,
+    );
+    const sourceTurnCompletedAt = snapshot?.completedAt
+      ?? snapshot?.startedAt
+      ?? (lastTurnId === latestTurnId
+        ? latestRemoteTimestamp(remote?.recencyAt, remote?.updatedAt)
+        : undefined)
+      ?? parseIsoTimestamp(source?.updatedAt);
 
     return {
       source,
@@ -2846,6 +2872,10 @@ export class ProxySessionController {
         : mapRemoteTurnStatus(remote?.lastTurnStatus)
         ?? forkedTurnStatus(snapshot?.status)
         ?? source?.lastTurnStatus,
+      sourceTurnPrompt,
+      sourceTurnStartedAt: snapshot?.startedAt ?? sourceTurnCompletedAt,
+      sourceTurnCompletedAt,
+      sourceCompletedTurns: remote?.completedTurns ?? [],
       sourceWasRunning: isRunning,
       forkedFromHistoricalTurn,
     };
@@ -2918,6 +2948,9 @@ export class ProxySessionController {
       || source.status === "running",
     );
     const forkTitle = normalizeTaskTitle(requestedTitle) ?? this.store.nextForkTitle(source.title);
+    const sourceTurnCompletedAt = snapshot?.completedAt
+      ?? snapshot?.startedAt
+      ?? parseIsoTimestamp(source.updatedAt);
 
     return {
       source,
@@ -2935,6 +2968,12 @@ export class ProxySessionController {
       lastTurnStatus: forkedTurnStatus(snapshot?.status)
         ?? (source.lastTurnId === lastTurnId ? source.lastTurnStatus : undefined)
         ?? "completed",
+      sourceTurnPrompt: truncateText(
+        latestUserPromptFromTurnView(snapshot) ?? source.title ?? "Fork 来源轮次",
+        1_000,
+      ),
+      sourceTurnStartedAt: snapshot?.startedAt ?? sourceTurnCompletedAt,
+      sourceTurnCompletedAt,
       sourceWasRunning,
       forkedFromHistoricalTurn: sourceWasRunning && source.lastTurnId !== lastTurnId,
     };
@@ -2944,6 +2983,7 @@ export class ProxySessionController {
     contextKey: string,
     plan: ForkSessionPlan,
   ): Promise<ForkSessionResult> {
+    const sourceCompletedTurns = await this.resolveForkSourceCompletedTurns(plan);
     const localSessionId = createId("sess");
     const record = this.store.createSession({
       localSessionId,
@@ -2979,7 +3019,6 @@ export class ProxySessionController {
         lastTurnId: plan.lastTurnId,
         lastTurnStatus: plan.lastTurnStatus,
       });
-      this.store.setCurrentSession(contextKey, localSessionId);
       this.outbound.registerSession(
         localSessionId,
         contextKey,
@@ -2987,14 +3026,25 @@ export class ProxySessionController {
         plan.cwd,
         this.agentLabel(plan.agentName),
       );
+      const sourceTurnHistoryCount = this.persistForkSourceHistory(
+        contextKey,
+        localSessionId,
+        plan,
+        sourceCompletedTurns,
+      );
       this.store.audit(contextKey, "session_forked", {
         sourceLocalSessionId: plan.source?.localSessionId,
         sourceRemoteSessionId: plan.remoteSessionId,
         sourceTurnId: plan.lastTurnId,
+        sourceTurnPrompt: plan.sourceTurnPrompt,
+        sourceTurnStartedAt: plan.sourceTurnStartedAt,
+        sourceTurnCompletedAt: plan.sourceTurnCompletedAt,
+        sourceTurnHistoryCount,
         sourceWasRunning: plan.sourceWasRunning,
         forkedLocalSessionId: localSessionId,
         forkedRemoteSessionId: forked.remoteSessionId,
       });
+      this.store.setCurrentSession(contextKey, localSessionId);
       return {
         record: this.store.getSession(localSessionId) ?? record,
         session: forked,
@@ -3002,6 +3052,146 @@ export class ProxySessionController {
     } catch (error) {
       this.store.updateSession(localSessionId, { status: "failed" });
       throw error;
+    }
+  }
+
+  private async resolveForkSourceCompletedTurns(
+    plan: ForkSessionPlan,
+  ): Promise<RemoteCompletedTurnSummary[]> {
+    let completedTurns = plan.sourceCompletedTurns;
+    if (completedTurns === undefined && plan.runtime.readRemoteSession) {
+      try {
+        completedTurns = (await plan.runtime.readRemoteSession(plan.remoteSessionId)).completedTurns ?? [];
+      } catch (error) {
+        this.logger.warn(
+          { error, remoteSessionId: plan.remoteSessionId, sourceTurnId: plan.lastTurnId },
+          "Failed to read the source task Turn history before Fork; keeping the Fork anchor fallback.",
+        );
+      }
+    }
+    if (!completedTurns?.length) return [];
+    const anchorIndex = completedTurns.findIndex((turn) => turn.id === plan.lastTurnId);
+    if (anchorIndex < 0) {
+      this.logger.warn(
+        { remoteSessionId: plan.remoteSessionId, sourceTurnId: plan.lastTurnId },
+        "The source task Turn history did not include the Fork anchor; keeping the Fork anchor fallback.",
+      );
+      return [];
+    }
+    return completedTurns.slice(0, anchorIndex + 1);
+  }
+
+  private persistForkSourceHistory(
+    contextKey: string,
+    forkedLocalSessionId: string,
+    plan: ForkSessionPlan,
+    completedTurns: RemoteCompletedTurnSummary[],
+  ): number {
+    if (completedTurns.length === 0) return 0;
+    const localSessionId = plan.source?.localSessionId ?? forkedLocalSessionId;
+    const historyContextKey = plan.source?.contextKey ?? contextKey;
+    const fallbackStart = plan.sourceTurnStartedAt
+      ?? plan.sourceTurnCompletedAt
+      ?? Date.now() - completedTurns.length;
+    return this.persistCompletedTurnHistory({
+      localSessionId,
+      contextKey: historyContextKey,
+      agentName: plan.agentName,
+      remoteSessionId: plan.remoteSessionId,
+      completedTurns,
+      fallbackStart,
+    });
+  }
+
+  private persistCompletedTurnHistory(input: {
+    localSessionId: string;
+    contextKey: string;
+    agentName: string;
+    remoteSessionId: string;
+    completedTurns: RemoteCompletedTurnSummary[];
+    fallbackStart: number;
+  }): number {
+    try {
+      this.store.importCompletedTurnHistory({
+        localSessionId: input.localSessionId,
+        contextKey: input.contextKey,
+        agentName: input.agentName,
+        remoteSessionId: input.remoteSessionId,
+        turns: input.completedTurns.map((turn, index) => {
+          const startedAt = turn.startedAt ?? input.fallbackStart + index;
+          const completedAt = turn.completedAt ?? startedAt;
+          return {
+            turnId: turn.id,
+            snapshot: {
+              sessionId: input.localSessionId,
+              turnId: turn.id,
+              prompt: turn.prompt ?? "未记录对话内容",
+              status: "completed",
+              startedAt,
+              completedAt,
+              assistantText: "",
+              plan: [],
+              activities: [],
+              completedTools: [],
+              failedTools: [],
+              fileSummary: [],
+            } satisfies TurnViewState,
+            updatedAt: new Date(completedAt).toISOString(),
+          };
+        }),
+      });
+      return input.completedTurns.length;
+    } catch (error) {
+      this.logger.warn(
+        { error, remoteSessionId: input.remoteSessionId },
+        "Failed to persist inherited Turn history after Fork; keeping the Fork anchor fallback.",
+      );
+      return 0;
+    }
+  }
+
+  private async hydrateLegacyForkTurnHistory(
+    contextKey: string,
+    current: SessionRecord,
+  ): Promise<void> {
+    const source = this.store.getForkHistorySource(current.localSessionId);
+    if (!source || source.sourceTurnHistoryCount !== undefined
+      || this.store.hasImportedForkTurnHistory(current.localSessionId)) return;
+    if (!source.sourceRemoteSessionId) return;
+    const runtime = this.runtimes.forAgent(current.agentName);
+    if (runtime.kind !== "codex" || !runtime.readRemoteSession) return;
+    try {
+      const remote = await runtime.readRemoteSession(source.sourceRemoteSessionId);
+      const completedTurns = remote.completedTurns ?? [];
+      const anchorIndex = completedTurns.findIndex((turn) => turn.id === source.sourceTurnId);
+      if (anchorIndex < 0) return;
+      const inheritedTurns = completedTurns.slice(0, anchorIndex + 1);
+      const sourceSession = source.sourceLocalSessionId
+        ? this.store.getSession(source.sourceLocalSessionId)
+        : undefined;
+      const imported = this.persistCompletedTurnHistory({
+        localSessionId: sourceSession?.localSessionId ?? current.localSessionId,
+        contextKey: sourceSession?.contextKey ?? contextKey,
+        agentName: current.agentName,
+        remoteSessionId: source.sourceRemoteSessionId,
+        completedTurns: inheritedTurns,
+        fallbackStart: source.sourceTurnStartedAt
+          ?? source.sourceTurnCompletedAt
+          ?? Date.now() - inheritedTurns.length,
+      });
+      if (imported > 0) {
+        this.store.audit(contextKey, "fork_turn_history_imported", {
+          forkedLocalSessionId: current.localSessionId,
+          sourceRemoteSessionId: source.sourceRemoteSessionId,
+          sourceTurnId: source.sourceTurnId,
+          importedTurnCount: imported,
+        });
+      }
+    } catch (error) {
+      this.logger.warn(
+        { error, localSessionId: current.localSessionId, sourceRemoteSessionId: source.sourceRemoteSessionId },
+        "Failed to hydrate legacy Fork Turn history; rendering the locally available history.",
+      );
     }
   }
 
@@ -3220,19 +3410,21 @@ export class ProxySessionController {
     executionSettings: SessionExecutionSettings = {},
   ): Promise<SessionRecord> {
     const agent = this.ensureAgent(agentName);
+    const resolvedExecutionSettings = mergeExecutionSettings(agent.defaults ?? {}, executionSettings);
     const localSessionId = createId("sess");
     const initialTitle = normalizeTaskTitle(requestedTitle ?? prompt ?? "");
     const sessionCwd = cwd === undefined && agent.kind === "app-server"
       ? createProjectlessWorkspace({ prompt: initialTitle }).cwd
       : path.resolve(cwd ?? this.config.defaults.cwd);
     const record = this.store.createSession({ localSessionId, contextKey, agentName, cwd: sessionCwd, status: "starting" });
-    if (initialTitle || executionSettings.modelProvider || executionSettings.model || executionSettings.reasoningEffort || executionSettings.permissionMode) {
+    if (initialTitle || resolvedExecutionSettings.modelProvider || resolvedExecutionSettings.model
+      || resolvedExecutionSettings.reasoningEffort || resolvedExecutionSettings.permissionMode) {
       this.store.updateRuntimeSession(localSessionId, {
         title: initialTitle,
-        modelProvider: executionSettings.modelProvider,
-        model: executionSettings.model,
-        reasoningEffort: executionSettings.reasoningEffort,
-        permissionMode: executionSettings.permissionMode,
+        modelProvider: resolvedExecutionSettings.modelProvider,
+        model: resolvedExecutionSettings.model,
+        reasoningEffort: resolvedExecutionSettings.reasoningEffort,
+        permissionMode: resolvedExecutionSettings.permissionMode,
       });
     }
     this.store.setCurrentSession(contextKey, localSessionId);
@@ -3253,10 +3445,10 @@ export class ProxySessionController {
         agentName,
         cwd: sessionCwd,
         title: initialTitle,
-        modelProvider: executionSettings.modelProvider,
-        model: executionSettings.model,
-        reasoningEffort: executionSettings.reasoningEffort,
-        permissionMode: executionSettings.permissionMode ?? "auto",
+        modelProvider: resolvedExecutionSettings.modelProvider,
+        model: resolvedExecutionSettings.model,
+        reasoningEffort: resolvedExecutionSettings.reasoningEffort,
+        permissionMode: resolvedExecutionSettings.permissionMode ?? "auto",
       });
       this.persistRuntimeSession(record, session, session.activeTurnId ? "running" : "ready");
       const saved = this.store.getSession(localSessionId) ?? record;
@@ -4091,6 +4283,53 @@ export class ProxySessionController {
     }
   }
 
+  private async resetFromHistoryCard(
+    contextKey: string,
+    sessionId: string,
+    turnId: string,
+    updateMessageId: string,
+    page: number,
+  ): Promise<void> {
+    if (!sessionId || !turnId) throw new Error("无效的 Reset 请求。请使用最新的历史轮次卡片重试。");
+    const existingTurnId = this.resetHistoryOperations.get(sessionId);
+    if (existingTurnId) {
+      await this.openResetHistory(contextKey, { expectedSessionId: sessionId, updateMessageId, page });
+      throw new Error("当前已有 Reset 正在执行，请稍候。");
+    }
+
+    this.resetHistoryOperations.set(sessionId, turnId);
+    try {
+      await this.openResetHistory(contextKey, { expectedSessionId: sessionId, updateMessageId, page });
+    } catch (error) {
+      if (this.resetHistoryOperations.get(sessionId) === turnId) {
+        this.resetHistoryOperations.delete(sessionId);
+      }
+      throw error;
+    }
+
+    try {
+      await this.resetCurrentSessionToTurn(contextKey, sessionId, turnId);
+    } catch (error) {
+      if (this.resetHistoryOperations.get(sessionId) === turnId) {
+        this.resetHistoryOperations.delete(sessionId);
+      }
+      try {
+        await this.openResetHistory(contextKey, { expectedSessionId: sessionId, updateMessageId, page });
+      } catch (refreshError) {
+        this.logger.warn(
+          { error: refreshError, contextKey, sessionId, turnId, updateMessageId },
+          "Failed to restore the Turns card after Reset failed.",
+        );
+      }
+      throw error;
+    }
+
+    if (this.resetHistoryOperations.get(sessionId) === turnId) {
+      this.resetHistoryOperations.delete(sessionId);
+    }
+    await this.openResetHistory(contextKey, { expectedSessionId: sessionId, updateMessageId, page });
+  }
+
   private async performCurrentSessionReset(
     contextKey: string,
     sessionId: string,
@@ -4430,12 +4669,13 @@ export class ProxySessionController {
       reasoningEffort: session.reasoningEffort ?? settings.effort,
       permissionMode: session.permissionMode,
     });
+    await this.persistAgentExecutionDefaults(loaded.record.localSessionId);
     const notice = [
       `Provider 已切换为 ${cardCode(session.modelProvider ?? settings.provider)}`,
       `模型 ${cardCode(session.model ?? settings.model)}`,
       `思考强度 ${cardCode(session.reasoningEffort ?? settings.effort)}`,
       `权限 ${cardCode(session.permissionMode)}`,
-      "从下一次请求生效。",
+      `并已保存为 ${cardCode(loaded.record.agentName)} Agent 的默认设置，从下一次请求生效。`,
     ].join("，");
     if (options.updateMessageId) {
       await this.openProviderSelector(contextKey, {
@@ -4505,6 +4745,7 @@ export class ProxySessionController {
       await loaded.runtime.setReasoningEffort(loaded.record.localSessionId, nextEffort);
     }
     this.store.updateRuntimeSession(loaded.record.localSessionId, { model, reasoningEffort: nextEffort });
+    await this.persistAgentExecutionDefaults(loaded.record.localSessionId);
     const effortMessage = nextEffort && nextEffort !== currentEffort
       ? `，思考强度已自动调整为 ${nextEffort}`
       : "";
@@ -4512,11 +4753,14 @@ export class ProxySessionController {
       await this.openExecutionSettings(contextKey, "model", {
         sessionId: loaded.record.localSessionId,
         updateMessageId: options.updateMessageId,
-        notice: `模型已切换为 ${cardCode(model)}${effortMessage}，从下一次请求生效。`,
+        notice: `模型已切换为 ${cardCode(model)}${effortMessage}，并已保存为 ${cardCode(loaded.record.agentName)} Agent 的默认设置，从下一次请求生效。`,
       });
       return;
     }
-    await this.outbound.sendText(contextKey, `模型已切换为 ${model}${effortMessage}，从下一次请求生效。`);
+    await this.outbound.sendText(
+      contextKey,
+      `模型已切换为 ${model}${effortMessage}，并已保存为 ${loaded.record.agentName} Agent 的默认设置，从下一次请求生效。`,
+    );
   }
 
   private async goal(contextKey: string, command: Extract<Command, { type: "goal" }>): Promise<void> {
@@ -4899,15 +5143,19 @@ export class ProxySessionController {
     }
     await loaded.runtime.setReasoningEffort(loaded.record.localSessionId, effort);
     this.store.updateRuntimeSession(loaded.record.localSessionId, { reasoningEffort: effort });
+    await this.persistAgentExecutionDefaults(loaded.record.localSessionId);
     if (options.updateMessageId) {
       await this.openExecutionSettings(contextKey, "thinking", {
         sessionId: loaded.record.localSessionId,
         updateMessageId: options.updateMessageId,
-        notice: `思考强度已切换为 ${cardCode(effort)}，从下一次请求生效。`,
+        notice: `思考强度已切换为 ${cardCode(effort)}，并已保存为 ${cardCode(loaded.record.agentName)} Agent 的默认设置，从下一次请求生效。`,
       });
       return;
     }
-    await this.outbound.sendText(contextKey, `思考强度已切换为 ${effort}，从下一次请求生效。`);
+    await this.outbound.sendText(
+      contextKey,
+      `思考强度已切换为 ${effort}，并已保存为 ${loaded.record.agentName} Agent 的默认设置，从下一次请求生效。`,
+    );
   }
 
   private async permissions(
@@ -4926,17 +5174,23 @@ export class ProxySessionController {
     await loaded.runtime.setPermissionMode(record.localSessionId, mode);
     loaded.session.permissionMode = mode;
     this.store.updateRuntimeSession(record.localSessionId, { permissionMode: mode });
+    await this.persistAgentExecutionDefaults(record.localSessionId);
     if (options.updateMessageId) {
       await this.openExecutionSettings(contextKey, "permission", {
         sessionId: loaded.record.localSessionId,
         updateMessageId: options.updateMessageId,
         notice: mode === "auto"
-          ? "已切换为自动执行模式，从下一次请求生效。"
-          : "已切换为执行前确认模式，从下一次请求生效。",
+          ? `已切换为自动执行模式，并已保存为 ${cardCode(loaded.record.agentName)} Agent 的默认设置，从下一次请求生效。`
+          : `已切换为执行前确认模式，并已保存为 ${cardCode(loaded.record.agentName)} Agent 的默认设置，从下一次请求生效。`,
       });
       return;
     }
-    await this.outbound.sendText(contextKey, mode === "auto" ? "已切换为自动执行模式。" : "已切换为执行前确认模式。");
+    await this.outbound.sendText(
+      contextKey,
+      mode === "auto"
+        ? `已切换为自动执行模式，并已保存为 ${loaded.record.agentName} Agent 的默认设置。`
+        : `已切换为执行前确认模式，并已保存为 ${loaded.record.agentName} Agent 的默认设置。`,
+    );
   }
 
   private async openResetHistory(
@@ -4950,6 +5204,7 @@ export class ProxySessionController {
     if (!current.remoteSessionId || !this.isCodexSession(current)) {
       throw new Error("当前任务不是可 Reset 的 App Server 任务。");
     }
+    await this.hydrateLegacyForkTurnHistory(contextKey, current);
     const completedTurns = this.store.listTaskTurnGraph(current.localSessionId);
     const completedTurnIds = new Set(completedTurns.map((turn) => turn.turnId));
     const runningTurnId = current.lastTurnStatus === "running" && current.lastTurnId
@@ -4996,6 +5251,7 @@ export class ProxySessionController {
     const page = Math.max(0, Math.min(Math.trunc(options.page ?? 0), totalPages - 1));
     const offset = page * RESET_HISTORY_PAGE_SIZE;
     const turns = allTurns.slice(offset, offset + RESET_HISTORY_PAGE_SIZE);
+    const resettingTurnId = this.resetHistoryOperations.get(current.localSessionId);
     const entries: ResetHistoryCardEntry[] = turns.flatMap((turn, index) => {
       const snapshot = turnViewSnapshot(turn.snapshot);
       if (!snapshot) return [];
@@ -5006,17 +5262,17 @@ export class ProxySessionController {
       );
       const isCurrent = current.lastTurnId === turn.turnId && current.lastTurnStatus === "completed";
       const isRunning = runningTurnId === turn.turnId;
+      const isResetting = resettingTurnId === turn.turnId;
       return [{
         sequence: graph.sequence,
         graphNodeLine: graph.nodeLine,
         graphConnectorLine: graph.connectorLine,
-        lines: [
-          cardText(summary || "未记录对话内容"),
-          `${formatResetTurnTime(snapshot.completedAt ?? snapshot.startedAt)} · ${cardText(turn.turnId)}`,
-        ],
+        lines: [cardText(summary || "未记录对话内容")],
+        timestamp: formatResetTurnTime(snapshot.completedAt ?? snapshot.startedAt),
         current: isCurrent,
         running: isRunning,
-        actions: isCurrent || isRunning ? undefined : [{
+        resetting: isResetting,
+        actions: isCurrent || isRunning || resettingTurnId ? undefined : [{
           text: "Reset",
           value: {
             action: "turn_reset",
@@ -5055,6 +5311,7 @@ export class ProxySessionController {
         runningTurn
           ? `第 ${page + 1}/${totalPages} 页 · 共 ${total} 个 turn（${completedTurns.length} 个已完成，1 个运行中）`
           : `第 ${page + 1}/${totalPages} 页 · 共 ${total} 个已完成 turn`,
+        ...(resettingTurnId ? ["正在 Reset 到所选轮次，请稍候…"] : []),
       ],
       pageActions,
     });
@@ -6179,6 +6436,21 @@ export class ProxySessionController {
     return agent;
   }
 
+  private async persistAgentExecutionDefaults(localSessionId: string): Promise<void> {
+    const session = this.store.getSession(localSessionId);
+    if (!session) throw new Error(`找不到任务：${localSessionId}`);
+    const agent = this.ensureAgent(session.agentName);
+    const observed: AgentExecutionDefaults = {
+      ...(session.modelProvider?.trim() ? { modelProvider: session.modelProvider } : {}),
+      ...(session.model?.trim() ? { model: session.model } : {}),
+      ...(session.reasoningEffort?.trim() ? { reasoningEffort: session.reasoningEffort } : {}),
+      ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
+    };
+    const defaults = { ...(agent.defaults ?? {}), ...observed };
+    await this.lifecycle?.persistAgentExecutionDefaults?.(session.agentName, defaults);
+    agent.defaults = defaults;
+  }
+
   private agentLabel(agentName: string): string {
     return this.ensureAgent(agentName).title;
   }
@@ -6244,6 +6516,18 @@ export class ProxySessionController {
 function threadForkAnchorMessageIds(message: IncomingMessage): string[] {
   return [...new Set([message.rootMessageId, message.parentMessageId]
     .filter((messageId): messageId is string => Boolean(messageId && messageId !== message.messageId)))];
+}
+
+function mergeExecutionSettings(
+  defaults: AgentExecutionDefaults,
+  overrides: SessionExecutionSettings,
+): SessionExecutionSettings {
+  return {
+    modelProvider: overrides.modelProvider ?? defaults.modelProvider,
+    model: overrides.model ?? defaults.model,
+    reasoningEffort: overrides.reasoningEffort ?? defaults.reasoningEffort,
+    permissionMode: overrides.permissionMode ?? defaults.permissionMode,
+  };
 }
 
 function sessionStatusLabel(status: SessionRecord["status"], activeTurnId?: string): string {
@@ -6735,6 +7019,12 @@ function mergeRemoteTaskStatus(record: SessionRecord, remote?: RemoteSessionSumm
 
 function normalizeRemoteTimestamp(value: number): number {
   return value >= 10_000_000_000 ? value : value * 1_000;
+}
+
+function parseIsoTimestamp(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function latestRemoteTimestamp(...values: Array<number | undefined>): number | undefined {

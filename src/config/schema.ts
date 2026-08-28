@@ -40,12 +40,20 @@ const agentKindSchema = z.union([
   z.literal("codex").transform(() => "app-server" as const),
 ]).default("acp");
 
+export const agentExecutionDefaultsSchema = z.object({
+  modelProvider: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  reasoningEffort: z.string().min(1).optional(),
+  permissionMode: z.enum(["auto", "confirm"]).optional(),
+}).default({});
+
 export const agentConfigSchema = z.object({
   kind: agentKindSchema,
   title: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
   env: envRecordSchema,
+  defaults: agentExecutionDefaultsSchema,
 });
 
 export const appConfigSchema = z.object({
@@ -84,6 +92,10 @@ export const appConfigSchema = z.object({
   }).default({ level: "info", path: DEFAULT_LOG_PATH }),
 });
 
-export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type AgentExecutionDefaults = z.infer<typeof agentExecutionDefaultsSchema>;
+type ParsedAgentConfig = z.infer<typeof agentConfigSchema>;
+export type AgentConfig = Omit<ParsedAgentConfig, "defaults"> & {
+  defaults?: AgentExecutionDefaults;
+};
 export type GroupNameFormatConfig = z.infer<typeof groupNameFormatSchema>;
 export type AppConfig = z.infer<typeof appConfigSchema>;

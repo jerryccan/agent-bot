@@ -6,6 +6,7 @@ import { controlEndpoint, type ControlRequest, type ControlResponse } from "./cl
 import { readPackageVersion } from "./cli/packageVersion.js";
 import { loadConfig } from "./config/loadConfig.js";
 import { persistFeishuUserOpenIdIfMissing } from "./config/FeishuUserOpenIdStore.js";
+import { writeAgentExecutionDefaults } from "./config/AgentExecutionDefaultsStore.js";
 import {
   agentBotHome,
   defaultConfigPath,
@@ -42,6 +43,7 @@ import {
 import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import type { RestartNotificationTarget } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
+import { privateRestartNotificationTarget } from "./supervision/restartNotificationTarget.js";
 import {
   nodeDiagnosticReportArguments,
   prepareCrashReportDirectory,
@@ -72,9 +74,10 @@ const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
 
 const configuredConfigPath = process.env.AGENT_BOT_CONFIG?.trim();
+const activeConfigPath = configuredConfigPath ? resolveUserPath(configuredConfigPath) : defaultConfigPath();
 const agentEnvironmentContext: AgentEnvironmentContext = {
   profilePath: agentBotHome(),
-  configPath: configuredConfigPath ? resolveUserPath(configuredConfigPath) : defaultConfigPath(),
+  configPath: activeConfigPath,
   larkAppId: config.feishu.appId,
   larkUserOpenId: config.feishu.userOpenId,
 };
@@ -155,6 +158,10 @@ const controller = new ProxySessionController(config, store, runtimes, outbound,
       { status: persisted.status },
       "Stored the default Lark user Open ID from the first private chat message.",
     );
+  },
+  persistAgentExecutionDefaults: (agentName, defaults) => {
+    const changed = writeAgentExecutionDefaults(activeConfigPath, agentName, defaults);
+    logger.info({ agentName, changed }, "Stored Agent execution defaults.");
   },
 });
 
@@ -362,7 +369,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       if (pendingSelfUpdatePlanPath) {
         return { ok: false, message: "An Agent Bot update is already pending." };
       }
-      const notificationTarget = inferControlRestartTarget(request.notificationSessionId);
+      const notificationTarget = inferServerRestartTarget(request.notificationSessionId);
       if (request.mode === "safe") {
         const newlyScheduled = safeRestart.schedule(request.reason, notificationTarget);
         return {
@@ -569,6 +576,14 @@ function inferControlRestartTarget(notificationSessionId?: string): RestartNotif
     ? runningSessions.find((candidate) => candidate.contextKey === contextKey)
     : undefined;
   return session ? restartNotificationTargetForSession(session) : undefined;
+}
+
+function inferServerRestartTarget(notificationSessionId?: string): RestartNotificationTarget {
+  if (notificationSessionId?.trim()) {
+    const target = inferControlRestartTarget(notificationSessionId);
+    if (target) return target;
+  }
+  return privateRestartNotificationTarget(config.feishu.userOpenId);
 }
 
 function restartNotificationTargetForSession(

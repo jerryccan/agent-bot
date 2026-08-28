@@ -81,6 +81,17 @@ export function resolveCurrentTaskFromEnvironment(
   ));
 }
 
+export function resolveRestartNotificationTask(
+  sessions: SessionRecord[],
+  explicitReference: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  language: CliLanguage = cliLanguage,
+): SessionRecord | undefined {
+  if (explicitReference) return resolveTask(sessions, explicitReference, language);
+  if (env.AGENT_BOT === "1") return resolveCurrentTaskFromEnvironment(sessions, env, language);
+  return undefined;
+}
+
 export function resolveTask(
   sessions: SessionRecord[],
   reference: string,

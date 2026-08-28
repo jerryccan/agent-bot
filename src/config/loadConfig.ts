@@ -38,6 +38,12 @@ agents:
       - "--listen"
       - "stdio://"
     env: {}
+    # Updated automatically by the Provider, Model, Thinking, and Permission settings.
+    defaults:
+      # modelProvider: "openai"
+      # model: "gpt-5"
+      # reasoningEffort: "high"
+      permissionMode: "auto"
 
   traex:
     kind: "app-server"
@@ -48,6 +54,8 @@ agents:
       - "--listen"
       - "stdio://"
     env: {}
+    defaults:
+      permissionMode: "auto"
 
 defaults:
   agent: "codex"

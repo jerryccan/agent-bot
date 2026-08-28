@@ -1112,6 +1112,18 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
   const lastText = [...(lastTurn?.items ?? [])]
     .reverse()
     .find((item) => typeof item.text === "string" && item.text.trim())?.text?.trim();
+  const completedTurns = (thread.turns ?? []).flatMap((turn) => {
+    if (turn.status !== "completed") return [];
+    const startedAt = remoteTurnStartedAt(turn);
+    return [{
+      id: turn.id,
+      prompt: extractTurnUserPrompt(turn),
+      startedAt,
+      completedAt: startedAt === undefined
+        ? undefined
+        : startedAt + Math.max(0, turn.durationMs ?? 0),
+    }];
+  });
   return {
     id: thread.id,
     title: normalizeTaskTitle(thread.name) ?? normalizeTaskTitle(thread.preview),
@@ -1136,23 +1148,39 @@ function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary
     lastTurnCompletedToolCount: toolCounts?.completed,
     lastTurnFailedToolCount: toolCounts?.failed,
     lastTurnRunningToolCount: toolCounts?.running,
+    completedTurns,
   };
 }
 
 function extractLastUserPrompt(turns: CodexTurnSnapshot[] | undefined): string | undefined {
   for (const turn of [...(turns ?? [])].reverse()) {
-    for (const item of [...(turn.items ?? [])].reverse()) {
-      if (item.type !== "userMessage") continue;
-      const text = item.content
-        ?.filter((content) => content.type === "text" && typeof content.text === "string")
-        .map((content) => content.text!.trim())
-        .filter(Boolean)
-        .join("\n\n")
-        || item.text?.trim();
-      if (text) return text;
-    }
+    const prompt = extractTurnUserPrompt(turn);
+    if (prompt) return prompt;
   }
   return undefined;
+}
+
+function extractTurnUserPrompt(turn: CodexTurnSnapshot): string | undefined {
+  for (const item of [...(turn.items ?? [])].reverse()) {
+    if (item.type !== "userMessage") continue;
+    const text = item.content
+      ?.filter((content) => content.type === "text" && typeof content.text === "string")
+      .map((content) => content.text!.trim())
+      .filter(Boolean)
+      .join("\n\n")
+      || item.text?.trim();
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function remoteTurnStartedAt(turn: CodexTurnSnapshot): number | undefined {
+  return remoteTimestampMs(turn.startedAt ?? undefined);
+}
+
+function remoteTimestampMs(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return value >= 10_000_000_000 ? value : value * 1_000;
 }
 
 function summarizeTurnTools(turn: CodexTurnSnapshot): {

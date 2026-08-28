@@ -225,7 +225,9 @@ export interface ResetHistoryCardEntry extends TaskListCardEntry {
   sequence: number;
   graphNodeLine: string;
   graphConnectorLine?: string;
+  timestamp?: string;
   running?: boolean;
+  resetting?: boolean;
 }
 
 export interface ResetHistoryCardView {
@@ -1328,9 +1330,11 @@ export class CardRenderer {
           entry.graphNodeLine,
           entry.graphConnectorLine,
           entry.lines,
+          entry.timestamp,
           action,
           entry.current === true,
           entry.running === true,
+          entry.resetting === true,
         ));
       });
     }
@@ -2633,16 +2637,30 @@ function resetHistoryEntryRow(
   graphNodeLine: string,
   graphConnectorLine: string | undefined,
   lines: string[],
+  timestamp: string | undefined,
   action: TaskListCardAction | undefined,
   current: boolean,
   running: boolean,
+  resetting: boolean,
 ): Record<string, unknown> {
+  const branchConnectorLine = graphConnectorLine && /[╱╲]/u.test(graphConnectorLine)
+    ? graphConnectorLine
+    : undefined;
   const graph = [
-    `<font color='${current ? "green" : running ? "orange" : "blue"}'>${escapeCardHtml(graphNodeLine)}</font>`,
-    ...(graphConnectorLine
-      ? [`<font color='grey'>${escapeCardHtml(graphConnectorLine)}</font>`]
+    `<font color='${current ? "green" : running || resetting ? "orange" : "blue"}'>${escapeCardHtml(graphNodeLine)}</font>`,
+    ...(branchConnectorLine
+      ? [`<font color='grey'>${escapeCardHtml(branchConnectorLine)}</font>`]
       : []),
   ].join("\n");
+  const trailingElements = current
+    ? [markdown("✅ 当前")]
+    : resetting
+      ? [markdown("⏳ 正在 Reset")]
+      : running
+        ? [markdown("⏳ 运行中")]
+        : action
+          ? [taskActionElement(action)]
+          : [];
   return {
     tag: "column_set",
     flex_mode: "none",
@@ -2664,25 +2682,22 @@ function resetHistoryEntryRow(
         weight: 1,
         vertical_align: "top",
         elements: [
-          markdown(lines[0] ?? ""),
+          markdown([
+            lines[0] ?? "",
+            ...(timestamp ? [`<font color='grey'>${escapeCardHtml(timestamp)}</font>`] : []),
+          ].join(" ")),
           ...lines.slice(1).map((line) => ({
             ...markdown(`<font color='grey'>${line}</font>`),
             text_size: "notation",
           })),
         ],
       },
-      {
+      ...(trailingElements.length > 0 ? [{
         tag: "column",
         width: "auto",
         vertical_align: "top",
-        elements: current
-          ? [markdown("✅ 当前")]
-          : running
-            ? [markdown("⏳ 运行中")]
-          : action
-            ? [taskActionElement(action)]
-            : [],
-      },
+        elements: trailingElements,
+      }] : []),
     ],
   };
 }

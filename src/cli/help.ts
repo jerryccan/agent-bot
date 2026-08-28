@@ -16,7 +16,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   server start                      在后台启动 Agent Bot
   server status                     显示服务、飞书 App ID、Agent 进程和安全重启状态
   server autostart <操作>           管理当前 Profile 的系统自启动
-  server restart [--task <任务>]    安排安全重启并将状态发回指定任务会话
+  server restart [--task <任务>]    安排安全重启；Agent 内通知来源任务，终端内通知私聊
   server stop                       停止 Agent Bot
   skills status                     显示内置 Skill 状态
   skills install                    安装内置 Skill
@@ -71,7 +71,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   --allow-downgrade                 明确允许安装较旧版本
 
 重启选项：
-  --task <任务>                     将安全重启状态发回任务所在会话
+  --task <任务>                     覆盖自动识别的来源任务或默认私聊
   --reason <原因>                   设置重启原因
   --immediate                       立即重启，可能中断任务
 
@@ -108,7 +108,7 @@ Common commands:
   server start                      Start Agent Bot in the background
   server status                     Show the server, Lark App ID, Agent processes, and safe-restart status
   server autostart <action>         Manage OS autostart for the selected Profile
-  server restart [--task <task>]    Schedule a safe restart and return status to the task's conversation
+  server restart [--task <task>]    Restart safely; notify the source task or private chat
   server stop                       Stop Agent Bot
   skills status                     Show the built-in Skill status
   skills install                    Install the built-in Skill
@@ -163,7 +163,7 @@ Update options:
   --allow-downgrade                 Explicitly allow an older version
 
 Restart options:
-  --task <task>                     Return safe-restart status to the task's conversation
+  --task <task>                     Override the inferred source task or default private chat
   --reason <reason>                 Set the restart reason
   --immediate                       Restart immediately and possibly interrupt tasks
 

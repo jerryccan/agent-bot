@@ -100,6 +100,7 @@ import {
 } from "./cli/taskListOutput.js";
 import {
   resolveCurrentTaskFromEnvironment,
+  resolveRestartNotificationTask,
   resolveTask,
   resolveTaskCommandTarget,
 } from "./cli/taskTarget.js";
@@ -1186,33 +1187,28 @@ function resolveRestartNotificationSessionId(sqlitePath: string, args: string[])
   const store = new StateStore(sqlitePath);
   try {
     const sessions = store.listAllSessions();
+    let explicitReference: string | undefined;
     if (args.includes("--task")) {
       const reference = optionValue(args, "--task")?.trim();
       if (!reference || reference.startsWith("--")) throw new Error(cliText(
         "server restart --task requires a task number or task ID.",
         "server restart --task 需要任务序号或任务 ID。",
       ));
-      const session = resolveTask(sessions, reference);
-      if (
-        isThreadContextKey(session.contextKey)
-        && !store.findLatestMessageIdForSession(session.localSessionId, session.contextKey)
-        && !store.findLatestMessageIdForContext(session.contextKey)
-      ) {
-        throw new Error(cliText(
-          "The task topic has no message anchor for restart notifications. Send /restart in that topic instead.",
-          "该任务话题没有可用于重启通知的消息锚点，请直接在该话题中发送 /restart。",
-        ));
-      }
-      return session.localSessionId;
+      explicitReference = reference;
     }
-    const runningContexts = new Set(
-      sessions.filter((session) => session.status === "running").map((session) => session.contextKey),
-    );
-    if (runningContexts.size > 1) throw new Error(cliText(
-      "Multiple conversations are running. Pass --task <task> so restart notifications return to the requester.",
-      "当前有多个会话正在运行。请传入 --task <任务>，确保重启通知返回发起会话。",
-    ));
-    return undefined;
+    const session = resolveRestartNotificationTask(sessions, explicitReference);
+    if (!session) return undefined;
+    if (
+      isThreadContextKey(session.contextKey)
+      && !store.findLatestMessageIdForSession(session.localSessionId, session.contextKey)
+      && !store.findLatestMessageIdForContext(session.contextKey)
+    ) {
+      throw new Error(cliText(
+        "The task topic has no message anchor for restart notifications. Send /restart in that topic instead.",
+        "该任务话题没有可用于重启通知的消息锚点，请直接在该话题中发送 /restart。",
+      ));
+    }
+    return session.localSessionId;
   } finally {
     store.close();
   }

@@ -106,6 +106,13 @@ export interface RuntimeSessionMetadata {
 
 export type RemoteSessionStatus = "active" | "idle" | "not_loaded" | "error";
 
+export interface RemoteCompletedTurnSummary {
+  id: string;
+  prompt?: string;
+  startedAt?: number;
+  completedAt?: number;
+}
+
 export interface RemoteSessionSummary {
   id: string;
   title?: string;
@@ -131,6 +138,7 @@ export interface RemoteSessionSummary {
   lastTurnCompletedToolCount?: number;
   lastTurnFailedToolCount?: number;
   lastTurnRunningToolCount?: number;
+  completedTurns?: RemoteCompletedTurnSummary[];
 }
 
 export interface RemoteSessionPage {

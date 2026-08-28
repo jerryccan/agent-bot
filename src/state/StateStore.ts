@@ -95,6 +95,23 @@ export interface CompletedTurnSnapshotRecord {
   updatedAt: string;
 }
 
+export interface ImportedCompletedTurnRecord {
+  turnId: string;
+  snapshot: unknown;
+  updatedAt: string;
+}
+
+export interface ForkHistorySourceRecord {
+  sourceLocalSessionId?: string;
+  sourceRemoteSessionId?: string;
+  sourceTurnId: string;
+  sourceTurnPrompt?: string;
+  sourceTurnStartedAt?: number;
+  sourceTurnCompletedAt?: number;
+  sourceTurnHistoryCount?: number;
+  createdAt: string;
+}
+
 export interface QueuedPromptRecord {
   promptId: string;
   localSessionId: string;
@@ -1091,6 +1108,45 @@ export class StateStore {
     `).run(turnId, localSessionId, parentTurnId ?? null, new Date().toISOString());
   }
 
+  importCompletedTurnHistory(input: {
+    localSessionId: string;
+    contextKey: string;
+    agentName: string;
+    remoteSessionId: string;
+    turns: ImportedCompletedTurnRecord[];
+  }): void {
+    const importHistory = this.db.transaction(() => {
+      let parentTurnId: string | undefined;
+      for (const turn of input.turns) {
+        this.db.prepare(`
+          INSERT OR IGNORE INTO turn_snapshots (
+            turn_id, local_session_id, context_key, snapshot_json, updated_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `).run(
+          turn.turnId,
+          input.localSessionId,
+          input.contextKey,
+          JSON.stringify(turn.snapshot),
+          turn.updatedAt,
+        );
+        this.db.prepare(`
+          INSERT OR IGNORE INTO turn_runtime_origins (
+            turn_id, local_session_id, agent_name, remote_session_id, created_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `).run(
+          turn.turnId,
+          input.localSessionId,
+          input.agentName,
+          input.remoteSessionId,
+          turn.updatedAt,
+        );
+        this.saveTurnParent(turn.turnId, input.localSessionId, parentTurnId);
+        parentTurnId = turn.turnId;
+      }
+    });
+    importHistory();
+  }
+
   getTurnParent(turnId: string, localSessionId: string): string | undefined {
     const row = this.db.prepare(`
       SELECT parent_turn_id
@@ -1219,6 +1275,41 @@ export class StateStore {
     return [...records.values()].sort(compareCompletedTurnSnapshots);
   }
 
+  getForkHistorySource(localSessionId: string): ForkHistorySourceRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT payload_json, created_at
+      FROM audit_events
+      WHERE event_type IN ('session_forked', 'thread_forked')
+        AND json_extract(payload_json, '$.forkedLocalSessionId') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(localSessionId) as { payload_json: string; created_at: string } | undefined;
+    if (!row) return undefined;
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    const sourceTurnId = stringValue(payload.sourceTurnId);
+    if (!sourceTurnId) return undefined;
+    return {
+      sourceLocalSessionId: stringValue(payload.sourceLocalSessionId),
+      sourceRemoteSessionId: stringValue(payload.sourceRemoteSessionId),
+      sourceTurnId,
+      sourceTurnPrompt: stringValue(payload.sourceTurnPrompt),
+      sourceTurnStartedAt: numberValue(payload.sourceTurnStartedAt),
+      sourceTurnCompletedAt: numberValue(payload.sourceTurnCompletedAt),
+      sourceTurnHistoryCount: numberValue(payload.sourceTurnHistoryCount),
+      createdAt: row.created_at,
+    };
+  }
+
+  hasImportedForkTurnHistory(localSessionId: string): boolean {
+    return Boolean(this.db.prepare(`
+      SELECT 1
+      FROM audit_events
+      WHERE event_type = 'fork_turn_history_imported'
+        AND json_extract(payload_json, '$.forkedLocalSessionId') = ?
+      LIMIT 1
+    `).get(localSessionId));
+  }
+
   private listCompletedTurnGraphRows(localSessionId: string): CompletedTurnSnapshotRecord[] {
     const rows = this.db.prepare(`
       SELECT ts.turn_id, tpl.parent_turn_id, ts.snapshot_json, ts.updated_at
@@ -1260,15 +1351,7 @@ export class StateStore {
   }
 
   private findForkSourceTurnId(localSessionId: string): string | undefined {
-    const row = this.db.prepare(`
-      SELECT json_extract(payload_json, '$.sourceTurnId') AS source_turn_id
-      FROM audit_events
-      WHERE event_type IN ('session_forked', 'thread_forked')
-        AND json_extract(payload_json, '$.forkedLocalSessionId') = ?
-      ORDER BY id DESC
-      LIMIT 1
-    `).get(localSessionId) as { source_turn_id: string | null } | undefined;
-    return row?.source_turn_id ?? undefined;
+    return this.getForkHistorySource(localSessionId)?.sourceTurnId;
   }
 
   private findCrossSessionParentTurnId(localSessionId: string): string | undefined {
@@ -2187,6 +2270,14 @@ function completedTurnTimestamp(record: CompletedTurnSnapshotRecord): number {
       ? snapshot.startedAt
       : Date.parse(record.updatedAt);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isIncompleteTurnAttemptStatus(status: TurnAttemptStatus): boolean {
