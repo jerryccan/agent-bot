@@ -2419,15 +2419,8 @@ function inlineCode(value: string): string {
 }
 
 function formatStartupTime(value: Date): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).format(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${value.getFullYear()}/${pad(value.getMonth() + 1)}/${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
 }
 
 function permissionModeLabel(mode?: PermissionMode): string {
