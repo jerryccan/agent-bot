@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.17-alpha.0] - 2026-08-28
+
 - Compact the Turns card into a Git-graph-style list, place subdued timestamps directly after Prompts, hide displayed Turn IDs, and reserve connector-only rows for real branch transitions.
 - Return safe-restart status cards to the source task when invoked by an Agent, use the configured user's private chat for ordinary terminal requests, and preserve explicit `--task` overrides.
 - Save Provider, model, reasoning effort, and permission defaults independently for each Agent whenever task settings change, and apply the selected Agent's saved defaults to new tasks without inherited settings.
