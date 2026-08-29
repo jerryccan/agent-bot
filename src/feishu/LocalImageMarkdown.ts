@@ -29,7 +29,7 @@ export async function renderMarkdownWithLocalImages(
       continue;
     }
 
-    appendMarkdown(elements, markdown.slice(cursor, matchIndex));
+    appendMarkdown(elements, markdownBeforeLocalImage(markdown, cursor, matchIndex, matchIndex + match[0].length));
     try {
       let upload = uploads.get(filePath);
       if (!upload) {
@@ -86,7 +86,28 @@ function unsupportedImageFallback(label: string, rawTarget: string): string {
     : `图片不可用：${label || "本地图片"}`;
 }
 
+function markdownBeforeLocalImage(
+  markdown: string,
+  cursor: number,
+  matchStart: number,
+  matchEnd: number,
+): string {
+  const lineStart = markdown.lastIndexOf("\n", matchStart - 1) + 1;
+  if (lineStart < cursor) return markdown.slice(cursor, matchStart);
+
+  const lineEndIndex = markdown.indexOf("\n", matchEnd);
+  const lineEnd = lineEndIndex === -1 ? markdown.length : lineEndIndex;
+  const beforeLink = markdown.slice(lineStart, matchStart);
+  const afterLink = markdown.slice(matchEnd, lineEnd);
+  const standaloneListMarker = /^[ \t]*(?:[-+*]|\d+[.)])[ \t]+$/u.test(beforeLink);
+  if (!standaloneListMarker || !/^[ \t]*\r?$/u.test(afterLink)) {
+    return markdown.slice(cursor, matchStart);
+  }
+
+  return markdown.slice(cursor, lineStart);
+}
+
 function appendMarkdown(elements: Array<Record<string, unknown>>, content: string): void {
-  if (!content) return;
+  if (!content.trim()) return;
   elements.push({ tag: "markdown", content });
 }

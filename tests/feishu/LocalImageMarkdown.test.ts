@@ -63,6 +63,55 @@ describe("renderMarkdownWithLocalImages", () => {
     expect(JSON.stringify(elements)).toContain("后文");
     expect(onUploadError).toHaveBeenCalledWith(error, path.resolve(image));
   });
+
+  test("removes empty list markers when standalone local image links become card images", async () => {
+    const first = createImage("cnki.png");
+    const second = createImage("nobel.png");
+    const markdown = [
+      "产物：",
+      "",
+      `- [知网截图](${markdownPath(first)})`,
+      `- [诺奖截图](${markdownPath(second)})`,
+      "",
+      "验证完成。",
+    ].join("\n");
+
+    const elements = await renderMarkdownWithLocalImages(
+      markdown,
+      async (filePath) => `key-${path.basename(filePath)}`,
+      vi.fn(),
+    );
+
+    expect(elements.map((element) => element.tag)).toEqual(["markdown", "img", "img", "markdown"]);
+    expect(elements[0]).toEqual({ tag: "markdown", content: "产物：\n\n" });
+    expect(elements[1]).toEqual(expect.objectContaining({
+      img_key: "key-cnki.png",
+      title: { tag: "plain_text", content: "知网截图" },
+    }));
+    expect(elements[2]).toEqual(expect.objectContaining({
+      img_key: "key-nobel.png",
+      title: { tag: "plain_text", content: "诺奖截图" },
+    }));
+    expect(elements[3]).toEqual({ tag: "markdown", content: "\n\n验证完成。" });
+    expect(JSON.stringify(elements)).not.toContain('"content":"- "');
+  });
+
+  test("keeps list markers when a local image link shares its line with other text", async () => {
+    const image = createImage("inline.png");
+    const markdown = `- 前文 [截图](${markdownPath(image)}) 后文`;
+
+    const elements = await renderMarkdownWithLocalImages(
+      markdown,
+      async () => "key-inline",
+      vi.fn(),
+    );
+
+    expect(elements).toEqual([
+      { tag: "markdown", content: "- 前文 " },
+      expect.objectContaining({ tag: "img", img_key: "key-inline" }),
+      { tag: "markdown", content: " 后文" },
+    ]);
+  });
 });
 
 function createImage(name: string): string {

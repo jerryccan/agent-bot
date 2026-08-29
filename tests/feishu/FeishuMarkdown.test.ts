@@ -79,23 +79,25 @@ describe("normalizeFeishuMarkdown", () => {
 
     expect(normalizeFeishuMarkdown(markdown, "D:\\dev\\agent-bot")).toBe([
       "[controller.ts:42](D:\\dev\\agent-bot\\src\\controller.ts:42)",
-      "[C:\\Users\\Admin\\sandbox_runtime\\runner.py:122](C:\\Users\\Admin\\sandbox_runtime\\runner.py:122)",
-      "[D:\\dev\\another-project\\sandbox_env_cache.cc:490](/D:/dev/another-project/sandbox_env_cache.cc:490)",
-      "[C:\\Users\\Admin\\runtime\\cell.py:248](file:///C:/Users/Admin/runtime/cell.py:248)",
+      "runner.py(`C:\\Users\\Admin\\sandbox_runtime\\runner.py:122`)",
+      "cache.cc(`D:\\dev\\another-project\\sandbox_env_cache.cc:490`)",
+      "cell.py(`C:\\Users\\Admin\\runtime\\cell.py:248`)",
     ].join("\n"));
   });
 
-  test("includes the parent directory for short file names inside a Windows project", () => {
+  test("shows file names for local file links inside a Windows project", () => {
     const markdown = [
       "[app.ts](D:\\dev\\agent-bot\\src\\app.ts:12)",
       "[index.ts](/D:/dev/agent-bot/src/index.ts:18)",
       "[README.md](D:\\dev\\agent-bot\\README.md:7)",
+      "[转换后的 Trace Markdown](D:/dev/agent-bot/.cache/runs/moa-trace.execution-timeline.md)",
     ].join("\n");
 
     expect(normalizeFeishuMarkdown(markdown, "D:\\dev\\agent-bot")).toBe([
-      "[src\\app.ts:12](D:\\dev\\agent-bot\\src\\app.ts:12)",
-      "[src\\index.ts:18](/D:/dev/agent-bot/src/index.ts:18)",
+      "[app.ts:12](D:\\dev\\agent-bot\\src\\app.ts:12)",
+      "[index.ts:18](/D:/dev/agent-bot/src/index.ts:18)",
       "[README.md:7](D:\\dev\\agent-bot\\README.md:7)",
+      "转换后的 Trace Markdown(`moa-trace.execution-timeline.md`)",
     ].join("\n"));
   });
 
@@ -108,15 +110,24 @@ describe("normalizeFeishuMarkdown", () => {
 
     expect(normalizeFeishuMarkdown(markdown, "/home/user/project")).toBe([
       "[worker.ts:12](/home/user/project/src/worker.ts:12)",
-      "[runtime/cell.py:248](/home/user/project/runtime/cell.py:248)",
-      "[/opt/shared/shared.ts:7](/opt/shared/shared.ts:7)",
+      "[cell.py:248](/home/user/project/runtime/cell.py:248)",
+      "shared.ts(`/opt/shared/shared.ts:7`)",
     ].join("\n"));
+  });
+
+  test("does not append the visible local path more than once", () => {
+    const markdown = "[转换后的 Trace Markdown](D:/dev/agent-bot/output.md)";
+    const normalized = normalizeFeishuMarkdown(markdown, "D:\\dev\\agent-bot");
+
+    expect(normalized).toBe("转换后的 Trace Markdown(`output.md`)");
+    expect(normalizeFeishuMarkdown(normalized, "D:\\dev\\agent-bot")).toBe(normalized);
   });
 
   test("does not duplicate references or rewrite web links, images, or fenced code", () => {
     const markdown = [
       "[worker.ts:42](/D:/project/worker.ts:42)",
       "[service](https://example.com/service:42)",
+      "[screenshot](/D:/project/screenshot.png)",
       "![diagram](/D:/project/diagram.png:42)",
       "```markdown",
       "[worker.ts](/D:/project/worker.ts:42)",

@@ -10,6 +10,7 @@ interface FenceState {
 const FENCE_OPENER = /^([ \t]*)((?:`{3,})|(?:~{3,}))(.*)$/;
 const MARKDOWN_LINK = /(!?)\[([^\]\r\n]*)\]\((<?[^)\r\n]+>?)\)/g;
 const LOCAL_FILE_LINE_REFERENCE = /(:\d+(?::\d+)?)$/;
+const LOCAL_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".tiff", ".bmp", ".ico"]);
 
 export function normalizeFeishuMarkdown(markdown: string, projectCwd?: string): string {
   const lines = markdown.match(/[^\r\n]*(?:\r\n|\n)|[^\r\n]+$/g) ?? [];
@@ -48,12 +49,21 @@ function includeLocalFileLineReferences(markdown: string, projectCwd?: string): 
 
     const target = unwrapMarkdownTarget(rawTarget.trim());
     if (!isLocalFileTarget(target)) return link;
+    if (isLocalImageTarget(target)) return link;
 
     const reference = LOCAL_FILE_LINE_REFERENCE.exec(target)?.[1];
     const projectPathLabel = projectCwd ? projectFilePathLabel(target, projectCwd, reference) : undefined;
-    const normalizedLabel = projectPathLabel
-      ?? (reference && !label.endsWith(reference) ? `${label}${reference}` : label);
-    return normalizedLabel === label ? link : `[${normalizedLabel}](${rawTarget})`;
+    if (!projectPathLabel) {
+      const normalizedLabel = reference && !label.endsWith(reference) ? `${label}${reference}` : label;
+      return normalizedLabel === label ? link : `[${normalizedLabel}](${rawTarget})`;
+    }
+
+    if (projectPathLabel === label) return link;
+    if (reference && projectPathLabel === `${label}${reference}`) {
+      return `[${projectPathLabel}](${rawTarget})`;
+    }
+
+    return label ? `${label}(${inlineCode(projectPathLabel)})` : inlineCode(projectPathLabel);
   });
 }
 
@@ -71,11 +81,7 @@ function projectFilePathLabel(
 
   const pathApi = usesWindowsPaths(filePath, projectCwd) ? path.win32 : path.posix;
   const parsed = pathApi.parse(filePath);
-  if (Array.from(parsed.name).length > 5) return undefined;
-
-  const parentName = pathApi.basename(pathApi.dirname(filePath));
-  if (!parentName) return undefined;
-  return `${parentName}${pathApi.sep}${parsed.base}${reference ?? ""}`;
+  return `${parsed.base}${reference ?? ""}`;
 }
 
 function localFilePath(target: string): string | undefined {
@@ -108,8 +114,24 @@ function displayAbsolutePath(filePath: string): string {
   return path.win32.normalize(filePath);
 }
 
+function inlineCode(value: string): string {
+  const longestDelimiter = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
+  const delimiter = "`".repeat(longestDelimiter + 1);
+  const padding = value.startsWith("`") || value.endsWith("`") ? " " : "";
+  return `${delimiter}${padding}${value}${padding}${delimiter}`;
+}
+
 function usesWindowsPaths(...values: string[]): boolean {
   return values.some((value) => /^\/?[a-z]:[\\/]/i.test(value) || /^\\\\/.test(value));
+}
+
+function isLocalImageTarget(target: string): boolean {
+  const reference = LOCAL_FILE_LINE_REFERENCE.exec(target)?.[1];
+  const targetWithoutReference = reference ? target.slice(0, -reference.length) : target;
+  const filePath = localFilePath(targetWithoutReference);
+  if (!filePath) return false;
+  const pathApi = usesWindowsPaths(filePath) ? path.win32 : path.posix;
+  return LOCAL_IMAGE_EXTENSIONS.has(pathApi.extname(filePath).toLowerCase());
 }
 
 function unwrapMarkdownTarget(target: string): string {
