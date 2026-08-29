@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import type { WSClient as LarkWsClient, WSConnectionStatus } from "@larksuiteoapi/node-sdk";
 import type { AppConfig } from "../config/schema.js";
 import { threadContextKey } from "./contextKey.js";
 import { resolveFeishuBotOpenId } from "./FeishuBotIdentity.js";
@@ -9,7 +10,12 @@ import type { CardAction, ChatUpdatedEvent, FeishuEventHandler, IncomingMessage 
 type BotOpenIdResolver = (appId: string, appSecret: string) => Promise<string>;
 type BotOpenIdListener = (botOpenId: string) => void;
 
+const LARK_WS_PING_TIMEOUT_SECONDS = 60;
+const LARK_WS_HANDSHAKE_TIMEOUT_MS = 60_000;
+
 export class FeishuConnector {
+  private wsClient?: LarkWsClient;
+
   constructor(
     private readonly config: AppConfig,
     private readonly handler: FeishuEventHandler,
@@ -39,7 +45,12 @@ export class FeishuConnector {
   }
 
   stop(): void {
-    // SDK connector currently relies on process lifetime.
+    this.wsClient?.close();
+    this.wsClient = undefined;
+  }
+
+  getConnectionStatus(): WSConnectionStatus | undefined {
+    return this.wsClient?.getConnectionStatus();
   }
 
   private async startFeishuWs(
@@ -48,7 +59,7 @@ export class FeishuConnector {
     botOpenId?: string,
     requireMention = false,
   ): Promise<void> {
-    const lark = (await import("@larksuiteoapi/node-sdk")) as Record<string, any>;
+    const lark = await import("@larksuiteoapi/node-sdk");
     const eventDispatcher = new lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data: unknown) => {
         const senderOpenId = getFeishuEvent(data)?.sender?.sender_id?.open_id;
@@ -117,12 +128,66 @@ export class FeishuConnector {
         };
       },
     });
-    const wsClient = new lark.WSClient({
+    let resolveInitialConnection!: () => void;
+    let rejectInitialConnection!: (error: Error) => void;
+    let initialConnectionSettled = false;
+    const initialConnection = new Promise<void>((resolve, reject) => {
+      resolveInitialConnection = resolve;
+      rejectInitialConnection = reject;
+    });
+    let wsClient: LarkWsClient | undefined;
+    wsClient = new lark.WSClient({
       appId,
       appSecret,
+      handshakeTimeoutMs: LARK_WS_HANDSHAKE_TIMEOUT_MS,
+      wsConfig: {
+        pingTimeout: LARK_WS_PING_TIMEOUT_SECONDS,
+      },
+      onReady: () => {
+        if (initialConnectionSettled) return;
+        initialConnectionSettled = true;
+        resolveInitialConnection();
+      },
+      onError: (error) => {
+        this.logger.error(
+          { error, connectionStatus: wsClient?.getConnectionStatus() },
+          "Feishu WebSocket connection failed.",
+        );
+        if (initialConnectionSettled) return;
+        initialConnectionSettled = true;
+        rejectInitialConnection(error);
+      },
+      onReconnecting: () => {
+        this.logger.warn(
+          { connectionStatus: wsClient?.getConnectionStatus() },
+          "Feishu WebSocket connection lost; reconnecting.",
+        );
+      },
+      onReconnected: () => {
+        this.logger.info("Feishu WebSocket connection restored.");
+      },
     });
-    await wsClient.start({ eventDispatcher });
-    this.logger.info("Feishu WebSocket connector started.");
+    this.wsClient = wsClient;
+    try {
+      await wsClient.start({ eventDispatcher });
+      const initialStatus = wsClient.getConnectionStatus();
+      if ((initialStatus.state === "idle" || initialStatus.state === "failed") && !initialConnectionSettled) {
+        throw new Error(`Feishu WebSocket failed to start (state: ${initialStatus.state}).`);
+      }
+      await initialConnection;
+      const connectedStatus = wsClient.getConnectionStatus();
+      if (connectedStatus.state !== "connected") {
+        throw new Error(`Feishu WebSocket failed to become ready (state: ${connectedStatus.state}).`);
+      }
+      this.logger.info(
+        { connectionStatus: connectedStatus },
+        "Feishu WebSocket connector started.",
+      );
+    } catch (error) {
+      wsClient.close({ force: true });
+      if (this.wsClient === wsClient) this.wsClient = undefined;
+      throw error;
+    }
   }
 
   private deferCardAction(action: CardAction, receivedAt: number): void {
