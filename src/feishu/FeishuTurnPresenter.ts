@@ -54,7 +54,7 @@ export interface FeishuTurnPresenterOptions {
 
 const MAX_FINAL_TABLES_PER_CARD = 5;
 const DEFAULT_ELAPSED_UPDATE_INTERVAL_MS = 3_000;
-const FINAL_RESPONSE_BRANDING_MIN_LENGTH = 1_000;
+const FINAL_RESPONSE_BRANDING_THRESHOLD = 600;
 
 interface TurnEntry {
   contextKey: string;
@@ -581,7 +581,7 @@ export class FeishuTurnPresenter {
 
 function brandedFinalChunks(response: string, maxLength: number): string[] {
   const chunks = splitMarkdown(response, maxLength, MAX_FINAL_TABLES_PER_CARD);
-  if (chunks.length <= 1 && response.length < FINAL_RESPONSE_BRANDING_MIN_LENGTH) return chunks;
+  if (chunks.length <= 1 && response.length <= FINAL_RESPONSE_BRANDING_THRESHOLD) return chunks;
 
   const last = chunks.pop();
   if (last === undefined) return chunks;

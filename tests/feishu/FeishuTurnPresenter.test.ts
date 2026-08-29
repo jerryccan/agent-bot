@@ -105,7 +105,7 @@ describe("FeishuTurnPresenter", () => {
 
   test("adds linked Agent Bot branding to a long final answer that still fits one chunk", async () => {
     const { presenter, outbound } = createFixture();
-    const answer = "x".repeat(1_000);
+    const answer = "x".repeat(601);
 
     await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
     await presenter.onEvent(completed(answer));
@@ -114,6 +114,17 @@ describe("FeishuTurnPresenter", () => {
     expect((outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe(
       `${answer}\n\n----\n\n> Powered by [AgentBot](https://keyou.github.io/agent-bot/)`,
     );
+  });
+
+  test("does not add Agent Bot branding to a final answer with at most 600 characters", async () => {
+    const { presenter, outbound } = createFixture();
+    const answer = "x".repeat(600);
+
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed(answer));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledOnce();
+    expect((outbound.sendMarkdown as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe(answer);
   });
 
   test("delivers completion after an earlier cancelled event for the same turn", async () => {
