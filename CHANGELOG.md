@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add a signed, read-only local HTTP viewer for files and directories referenced by Agent replies, with content-based previews, downward directory browsing, persistent per-Profile ports, and automatic wired, Wi-Fi, physical, then VPN address selection for LAN links.
+- Rewrite local file links in live, completed, detailed, and historical thinking cards through the local viewer without persisting temporary signed URLs, and classify file-browser entries from their content instead of filename extensions.
 - Replace the protocol-level Turn interrupt acknowledgement with a concise user-facing stopping message that explains the thinking card will update when the task stops.
 - Send the safe-restart card to the source task or configured private chat during `agentbot update`, and start the update immediately when the running service has no active tasks or pending final deliveries.
 - Preserve Markdown descriptions while showing local file paths, and remove empty list markers when standalone local image links become Feishu image components.

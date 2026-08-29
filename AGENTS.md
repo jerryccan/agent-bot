@@ -18,6 +18,7 @@ Primary user-facing behavior is documented in `README.md`. Keep that document in
 - `src/commands/` parses and routes Feishu slash commands.
 - `src/config/` loads and validates the user config, defaulting to `~/.agent-bot/config.yaml`, using Zod.
 - `src/feishu/` contains Feishu transport, message client, card rendering, and turn presentation.
+- `src/local-files/` provides the signed, read-only HTTP viewer for local files linked from Agent replies and thinking cards.
 - `src/presentation/` owns turn-state reduction, Markdown splitting, and outbound routing.
 - `src/proxy/` coordinates sessions, turns, steering, queues, forks, and command execution.
 - `src/runtime/` provides the shared runtime abstraction over ACP and App Server agents.

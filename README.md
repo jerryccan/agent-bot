@@ -278,6 +278,8 @@ Agent Bot keeps user-owned files outside the repository:
 
 Set `AGENT_BOT_HOME` to use another user-data directory. See [config.example.yaml](config.example.yaml) for configuration examples.
 
+Local non-image files and directories referenced in Agent replies become signed, read-only viewer links for source code, Markdown, logs, PDFs, common media files, or downward directory browsing. By default, links open only on the computer running Agent Bot. Setting `fileViewer.host` to `0.0.0.0` automatically selects a LAN address in wired, Wi-Fi, other physical, then VPN order. Use `fileViewer.publicBaseUrl` to override that address for a domain, HTTPS reverse proxy, or port mapping.
+
 Provider, model, reasoning effort, and permission choices apply to the current task and are also saved under that Agent's `defaults`. Future tasks that have no same-Agent settings to inherit start with those saved defaults; each configured Agent keeps its own values.
 
 `feishu.groupNameFormat` defines separate name templates for new Project and Projectless groups, with variables for the operating system, Agent, project, task name, and date. See the [technical reference](docs/technical-reference.md#configuration-model) for the complete format.

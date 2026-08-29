@@ -156,6 +156,12 @@ feishu:
 console:
   enabled: true
 
+fileViewer:
+  enabled: true
+  host: "127.0.0.1"
+  port: 0
+  # publicBaseUrl: "https://agentbot.example.com/files"
+
 agents:
   codex:
     kind: "app-server"
@@ -186,6 +192,8 @@ logging:
   level: "info"
   path: "./logs/agent-bot.log"
 ```
+
+`fileViewer` turns local non-image files and directories in final replies into signed, read-only HTTP links. The default `host: "127.0.0.1"` accepts connections only from the Agent Bot machine. With `0.0.0.0` or `::`, the server listens on every interface and automatically chooses a non-internal IPv4 link address in wired, Wi-Fi, other physical, then VPN order. Docker, Hyper-V, VMware, VirtualBox, WSL, loopback, and link-local interfaces are excluded; if no candidate remains, links fall back to loopback. `publicBaseUrl` has the highest priority and overrides automatic selection for domains, HTTPS reverse proxies, NAT, or port mappings. With `port: 0`, the first startup selects a free port and stores it in `<data>/file-viewer/port`; later restarts reuse it, while separate Profiles avoid a shared fixed port. The signing key is stored beside it as `secret`. File URLs can read only their signed absolute path. Directory URLs list direct children and allow downward navigation without exposing a parent-directory action. Text identity is detected from a content sample, and text pages preview the first 2 MiB with line anchors; images, PDFs, audio, and video use native browser previews; other binary files expose raw and download actions. Treat each signed URL as a bearer credential and do not share it publicly.
 
 `feishu.respondToOwnerOnly` defaults to `true`. It compares each message sender and card-action operator Open ID with `feishu.userOpenId`, ignoring non-owner input before durable event claims, reactions, downloads, commands, or Agent work. Set it to `false` to allow other users. If it is enabled without a configured owner Open ID, all Feishu messages and card actions are ignored; configure `FEISHU_USER_OPEN_ID` or temporarily disable the restriction to bootstrap from a private message.
 

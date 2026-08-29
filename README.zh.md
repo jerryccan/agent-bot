@@ -278,6 +278,8 @@ Agent Bot 将用户相关文件保存在仓库之外：
 
 可通过 `AGENT_BOT_HOME` 修改用户数据目录。配置示例见 [config.example.yaml](config.example.yaml)。
 
+回答中引用的本地非图片文件或目录会自动变成只读查看链接，可在浏览器中查看源码、Markdown、日志、PDF、常见媒体文件，或向下浏览目录内容。默认链接只在运行 Agent Bot 的电脑上打开；将 `fileViewer.host` 设为 `0.0.0.0` 后，会按有线、Wi-Fi、其他物理网卡、VPN 的顺序自动选择局域网地址。域名、HTTPS 反向代理或端口映射可通过 `fileViewer.publicBaseUrl` 覆盖自动地址。链接带有当前 Profile 独立的签名。
+
 Provider、模型、思考强度和权限设置会作用于当前任务，同时保存到对应 Agent 的 `defaults` 中。以后创建没有同 Agent 设置可继承的新任务时，会使用这些默认值；每个已配置 Agent 分别保存自己的设置。
 
 `feishu.groupNameFormat` 可分别设置 Project 与 Projectless 新群的名称模板，支持系统、Agent、项目、任务名和日期变量。完整格式说明见[技术参考](docs/technical-reference.zh.md#配置模型)。

@@ -156,6 +156,12 @@ feishu:
 console:
   enabled: true
 
+fileViewer:
+  enabled: true
+  host: "127.0.0.1"
+  port: 0
+  # publicBaseUrl: "https://agentbot.example.com/files"
+
 agents:
   codex:
     kind: "app-server"
@@ -186,6 +192,8 @@ logging:
   level: "info"
   path: "./logs/agent-bot.log"
 ```
+
+`fileViewer` 为最终回答中的本地非图片文件和目录生成带签名的只读 HTTP 链接。默认 `host: "127.0.0.1"`，只能从运行 Agent Bot 的机器访问。设为 `0.0.0.0` 或 `::` 时，服务会监听所有网卡，并从非内部 IPv4 地址中按有线、Wi-Fi、其他物理网卡、VPN 的顺序自动选择链接地址；Docker、Hyper-V、VMware、VirtualBox、WSL、回环和链路本地地址会被排除，没有候选地址时回退到本机环回地址。`publicBaseUrl` 的优先级最高，用于域名、HTTPS 反向代理、NAT 或端口映射。`port: 0` 会在第一次启动时选择空闲端口，并保存到 `<data>/file-viewer/port`，以后重启继续使用，同一机器上的多个 Profile 不会争用固定端口。签名密钥保存在同目录的 `secret` 文件中。文件 URL 只能读取签发时对应的绝对路径；目录 URL 会列出其直接子项并允许继续向下浏览，但不提供向父目录跳转。文本身份由内容采样识别，页面显示带行号的开头 2 MiB；图片、PDF、音视频使用浏览器原生预览，其他二进制文件提供原始打开和下载入口。签名 URL 是持有者凭证，不应公开分享。
 
 `feishu.respondToOwnerOnly` 默认为 `true`。每条消息的发送者及卡片操作人的 Open ID 都会与 `feishu.userOpenId` 比较；非拥有者输入会在持久化事件、添加 reaction、下载图片、执行命令或启动 Agent 前被忽略。设为 `false` 可允许其他用户。开启后若未配置拥有者 Open ID，所有飞书消息和卡片操作都会被忽略；需先配置 `FEISHU_USER_OPEN_ID`，或临时关闭限制后通过私聊完成补全。
 
