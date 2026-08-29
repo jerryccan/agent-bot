@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Start App Server processes from the stable Agent Bot profile directory instead of an incidental working directory, and refresh the affected thread once when a reattached external volume leaves stale directory state behind.
+- Add the linked AgentBot signature to final replies longer than 600 characters, while keeping it only on the last chunk of split replies.
+- Upgrade the official Lark Node SDK to 1.73.0, enable WebSocket zombie-connection and handshake watchdogs, wait for a real initial connection before reporting the server ready, log reconnect lifecycle transitions, and close the SDK client explicitly during shutdown.
+
 ## [0.1.17-alpha.0] - 2026-08-28
 
 - Keep startup-card time formatting fast and deterministic on Windows Node.js 22 runners.
