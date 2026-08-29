@@ -131,6 +131,7 @@ const SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS = 5_000;
 const FORWARD_ATTACHMENT_WINDOW_MS = 800;
 const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
 const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
+const TURN_STOP_REQUESTED_MESSAGE = "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。";
 const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
 const WINDOWS_DRIVES_DIRECTORY = "agentbot://windows-drives";
 const IMAGE_FILE_EXTENSIONS = new Set([
@@ -4247,7 +4248,7 @@ export class ProxySessionController {
         remoteSessionId: record.remoteSessionId,
         turnId,
       });
-      await this.outbound.sendText(record.contextKey, `已向 Agent 发送 Interrupt 请求：${turnId}`);
+      await this.outbound.sendText(record.contextKey, TURN_STOP_REQUESTED_MESSAGE);
       return;
     }
 
@@ -5903,7 +5904,7 @@ export class ProxySessionController {
       turnId,
       source: "sessions_card",
     });
-    await this.outbound.sendText(contextKey, `已向 Agent 发送 Interrupt 请求：${turnId}`);
+    await this.outbound.sendText(contextKey, TURN_STOP_REQUESTED_MESSAGE);
   }
 
   private async archiveSessionReference(

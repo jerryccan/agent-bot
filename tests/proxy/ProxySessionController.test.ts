@@ -2891,7 +2891,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_group_1", "turn_thr_group_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:group_1",
-      "已向 Agent 发送 Interrupt 请求：turn_thr_group_1",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
     );
     expect(sessions.get(second!)?.activeTurnId).toBe("turn_thr_group_2");
     expect(store.getOrCreateUserContext("chat_id:group_2", "codex").currentSessionId).toBe(second);
@@ -2966,7 +2966,7 @@ describe("ProxySessionController", () => {
     expect(outbound.replyText).toHaveBeenCalledWith(
       topicContextKey,
       { messageId: "om_topic_status_card", replyInThread: true },
-      "已向 Agent 发送 Interrupt 请求：turn_1",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
     );
   });
 
@@ -4857,7 +4857,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Agent 发送 Interrupt 请求：turn_1",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
     );
     expect(store.getTurnAttempt(attemptId)?.status).toBe("cancelling");
   });
@@ -4887,7 +4887,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Agent 发送 Interrupt 请求：turn_1",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
     );
   });
 
@@ -4907,7 +4907,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_from_another_client");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Agent 发送 Interrupt 请求：turn_from_another_client",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
     );
   });
 
@@ -4936,7 +4936,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("external_current", "turn_external_active");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "已向 Agent 发送 Interrupt 请求：turn_external_active",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
     );
   });
 
@@ -5641,7 +5641,10 @@ describe("ProxySessionController", () => {
 
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledOnce();
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("active_external", "turn_external");
-    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Agent 发送 Interrupt 请求：turn_external");
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+    );
     expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
     const serialized = JSON.stringify(updatedCard);
@@ -6958,7 +6961,10 @@ describe("ProxySessionController", () => {
     });
 
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
-    expect(outbound.sendText).toHaveBeenCalledWith("chat_id:c1", "已向 Agent 发送 Interrupt 请求：turn_1");
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+    );
   });
 
   test("supports local CLI task stop and title controls", async () => {

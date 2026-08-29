@@ -125,7 +125,7 @@ agentbot server autostart disable
 agentbot update
 ```
 
-正式版默认检查稳定通道，Alpha 版默认检查 Alpha 通道。也可以使用 `--stable`、`--alpha` 或 `--version <版本>` 明确选择。服务正在运行时，Agent Bot 会等待当前任务完成后更新并自动恢复服务；源码目录和 `npm link` 安装不会被自更新命令修改。
+正式版默认检查稳定通道，Alpha 版默认检查 Alpha 通道。也可以使用 `--stable`、`--alpha` 或 `--version <版本>` 明确选择。服务正在运行时，Agent Bot 会发送安全重启卡片，等待当前任务完成后更新并自动恢复服务；如果没有任务在执行，则立即重启更新。源码目录和 `npm link` 安装不会被自更新命令修改。
 
 如需手动替换全局包，请先停止正在运行的服务：
 

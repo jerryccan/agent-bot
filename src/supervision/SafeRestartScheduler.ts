@@ -35,6 +35,10 @@ export interface SafeRestartSchedulerOptions {
   pollIntervalMs?: number;
 }
 
+export interface SafeRestartScheduleOptions {
+  restartImmediatelyIfIdle?: boolean;
+}
+
 export class SafeRestartScheduler {
   private timer?: NodeJS.Timeout;
   private polling?: Promise<void>;
@@ -44,6 +48,7 @@ export class SafeRestartScheduler {
   private idleSince?: number;
   private idleInboundAt?: string;
   private scheduleId = 0;
+  private restartImmediatelyIfIdle = false;
 
   constructor(private readonly options: SafeRestartSchedulerOptions) {}
 
@@ -55,10 +60,17 @@ export class SafeRestartScheduler {
     return this.reason;
   }
 
-  schedule(reason: string, notificationTarget?: RestartNotificationTarget): boolean {
+  schedule(
+    reason: string,
+    notificationTarget?: RestartNotificationTarget,
+    options: SafeRestartScheduleOptions = {},
+  ): boolean {
     const newlyScheduled = !this.reason;
     if (newlyScheduled) {
       this.notificationTargets = [];
+      this.restartImmediatelyIfIdle = options.restartImmediatelyIfIdle === true;
+    } else if (options.restartImmediatelyIfIdle) {
+      this.restartImmediatelyIfIdle = true;
     }
     this.scheduleId += 1;
     this.addNotificationTarget(notificationTarget, reason);
@@ -104,6 +116,7 @@ export class SafeRestartScheduler {
     this.notificationTargets = [];
     this.idleSince = undefined;
     this.idleInboundAt = undefined;
+    this.restartImmediatelyIfIdle = false;
   }
 
   private async poll(): Promise<void> {
@@ -121,6 +134,10 @@ export class SafeRestartScheduler {
         phase: state.runningSessions > 0 ? "waiting_tasks" : "waiting_delivery",
         activity: state,
       });
+      return;
+    }
+    if (this.restartImmediatelyIfIdle) {
+      await this.restart(reason, scheduleId, state);
       return;
     }
     const quietPeriodMs = this.options.quietPeriodMs ?? 15_000;
@@ -178,6 +195,10 @@ export class SafeRestartScheduler {
       }
       return;
     }
+    await this.restart(reason, scheduleId, confirmed);
+  }
+
+  private async restart(reason: string, scheduleId: number, activity: ServerActivityState): Promise<void> {
     const notificationTargets = this.notificationTargetsSnapshot();
     this.clear();
     await this.emitStatus({
@@ -185,7 +206,7 @@ export class SafeRestartScheduler {
       reason,
       notificationTargets,
       phase: "restarting",
-      activity: confirmed,
+      activity,
       remainingMs: 0,
     });
     await this.options.onReady(reason, notificationTargets);

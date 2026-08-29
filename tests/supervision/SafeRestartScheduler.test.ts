@@ -34,6 +34,36 @@ describe("SafeRestartScheduler", () => {
     expect(scheduler.scheduled).toBe(false);
   });
 
+  test("publishes the restart card state before immediately restarting an idle update", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const onStatus = vi.fn(async () => { events.push("status"); });
+    const onReady = vi.fn(async () => { events.push("ready"); });
+    const scheduler = new SafeRestartScheduler({
+      readActivity: () => ({ runningSessions: 0, pendingFinalDeliveries: 0 }),
+      onReady,
+      onStatus,
+      quietPeriodMs: 15_000,
+      pollIntervalMs: 1_000,
+    });
+    const target = { contextKey: "user_open_id:ou_owner" };
+
+    scheduler.schedule("install update", target, { restartImmediatelyIfIdle: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onStatus).toHaveBeenCalledWith({
+      scheduleId: 1,
+      reason: "install update",
+      notificationTargets: [{ ...target, reason: "install update" }],
+      phase: "restarting",
+      activity: { runningSessions: 0, pendingFinalDeliveries: 0 },
+      remainingMs: 0,
+    });
+    expect(onReady).toHaveBeenCalledWith("install update", [{ ...target, reason: "install update" }]);
+    expect(events).toEqual(["status", "ready"]);
+    expect(scheduler.scheduled).toBe(false);
+  });
+
   test("keeps the latest global reason and each requesting conversation's own reason", async () => {
     vi.useFakeTimers();
     const onReady = vi.fn();

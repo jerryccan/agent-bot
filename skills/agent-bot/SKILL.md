@@ -144,7 +144,7 @@ agentbot server restart --task <task> --reason "<reason>"
 agentbot server stop
 ```
 
-`update` is only for npm-installed Agent Bot packages. It verifies the new package before waiting for a safe service stop and automatically restores the prior version if activation fails. It refuses source checkouts and `npm link` installations.
+`update` is only for npm-installed Agent Bot packages. It verifies the new package, sends a safe-restart card, waits for active tasks, and restarts immediately when the service is already idle. It automatically restores the prior version if activation fails. It refuses source checkouts and `npm link` installations.
 
 Autostart is Profile-specific. Use `server autostart enable` for login startup, `server autostart enable --linger` on Linux only when the user explicitly requests startup before login, and `server autostart disable` to remove registration without stopping the current Server. Disabling Agent Bot autostart must not disable Linux user lingering because other services may use it.
 

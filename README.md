@@ -125,7 +125,7 @@ The recommended way to update a global npm installation is:
 agentbot update
 ```
 
-Stable installations check the stable channel by default; Alpha installations stay on the Alpha channel. Use `--stable`, `--alpha`, or `--version <version>` to choose explicitly. When the service is running, Agent Bot waits for active tasks to finish, updates, and restores the service automatically. Source checkouts and `npm link` installations are never modified by self-update.
+Stable installations check the stable channel by default; Alpha installations stay on the Alpha channel. Use `--stable`, `--alpha`, or `--version <version>` to choose explicitly. When the service is running, Agent Bot sends a safe-restart card, waits for active tasks to finish, updates, and restores the service automatically. If no task is active, the update restarts the service immediately. Source checkouts and `npm link` installations are never modified by self-update.
 
 To replace the global package manually, stop the running service first:
 

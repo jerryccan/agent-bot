@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Replace the protocol-level Turn interrupt acknowledgement with a concise user-facing stopping message that explains the thinking card will update when the task stops.
+- Send the safe-restart card to the source task or configured private chat during `agentbot update`, and start the update immediately when the running service has no active tasks or pending final deliveries.
+
 ## [0.1.17-alpha.1] - 2026-08-29
 
 - Start App Server processes from the stable Agent Bot profile directory instead of an incidental working directory, and refresh the affected thread once when a reattached external volume leaves stale directory state behind.

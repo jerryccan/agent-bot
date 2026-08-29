@@ -215,7 +215,7 @@ function recoverPendingSelfUpdate(): void {
   if (!pending || pendingSelfUpdatePlanPath || restartRequested || safeRestart.scheduled) return;
   let notificationTarget: RestartNotificationTarget | undefined;
   try {
-    notificationTarget = inferControlRestartTarget(pending.plan.notificationSessionId);
+    notificationTarget = inferServerRestartTarget(pending.plan.notificationSessionId);
   } catch (error) {
     logger.warn({ error }, "Could not restore the self-update notification target; update recovery will continue.");
   }
@@ -223,6 +223,9 @@ function recoverPendingSelfUpdate(): void {
   safeRestart.schedule(
     pending.plan.reason ?? `Resume Agent Bot update to ${pending.plan.toVersion}`,
     notificationTarget,
+    {
+      restartImmediatelyIfIdle: isServerIdle(store.getServerActivityState()),
+    },
   );
   logger.warn(
     { planPath: pending.planPath, toVersion: pending.plan.toVersion },
@@ -390,12 +393,15 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
         return { ok: false, message: "A restart or update is already pending." };
       }
       assertSelfUpdatePlanPath(request.planPath, agentBotHome());
-      const notificationTarget = inferControlRestartTarget(request.notificationSessionId);
+      const notificationTarget = inferServerRestartTarget(request.notificationSessionId);
+      const restartImmediatelyIfIdle = isServerIdle(store.getServerActivityState());
       pendingSelfUpdatePlanPath = request.planPath;
-      safeRestart.schedule(request.reason, notificationTarget);
+      safeRestart.schedule(request.reason, notificationTarget, { restartImmediatelyIfIdle });
       return {
         ok: true,
-        message: "Agent Bot update scheduled after active tasks finish and the server becomes idle.",
+        message: restartImmediatelyIfIdle
+          ? "Agent Bot update will start immediately because the server is idle."
+          : "Agent Bot update scheduled after active tasks finish and the server becomes idle.",
       };
     }
     case "server_stop":
@@ -584,6 +590,10 @@ function inferServerRestartTarget(notificationSessionId?: string): RestartNotifi
     if (target) return target;
   }
   return privateRestartNotificationTarget(config.feishu.userOpenId);
+}
+
+function isServerIdle(activity: { runningSessions: number; pendingFinalDeliveries: number }): boolean {
+  return activity.runningSessions === 0 && activity.pendingFinalDeliveries === 0;
 }
 
 function restartNotificationTargetForSession(
