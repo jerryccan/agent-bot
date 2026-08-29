@@ -29,10 +29,12 @@ export class CodexProcessManager implements AppServerClientProvider {
   async getClient(): Promise<AppServerClient> {
     if (this.client) return this.client;
     this.version = undefined;
+    const environmentContext = this.environmentContext();
     const child = spawnStdioCommand(
       this.command,
       this.args,
-      agentBotEnvironment(process.env, this.env, this.environmentContext()),
+      agentBotEnvironment(process.env, this.env, environmentContext),
+      environmentContext.profilePath ?? os.homedir(),
     );
     this.child = child;
     const client = new AppServerConnection(child, this.logger.child({ component: "codex-app-server" }));

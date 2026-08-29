@@ -7,6 +7,36 @@ import { CodexRuntime, type AppServerClientProvider } from "../../src/codex/Code
 import { CodexLocalActivityDetector } from "../../src/codex/CodexLocalActivityDetector.js";
 
 describe("CodexRuntime", () => {
+  test("refreshes only the current thread and retries once when turn/start rejects a stale cwd", async () => {
+    const client = new FakeAppServerClient();
+    const testLogger = logger();
+    const runtime = new CodexRuntime(provider(client), testLogger);
+    await runtime.createSession({
+      localSessionId: "s1",
+      agentName: "codex",
+      cwd: "/Volumes/Work/project",
+      permissionMode: "auto",
+    });
+    client.turnStartErrors.push(new AppServerRequestError(
+      "turn/start",
+      -32602,
+      "invalid cwd: No such file or directory (os error 2)",
+    ));
+
+    await expect(runtime.startTurn("s1", "continue")).resolves.toBe("turn_1");
+
+    expect(client.requests.map((request) => request.method)).toEqual([
+      "thread/start",
+      "turn/start",
+      "thread/resume",
+      "turn/start",
+    ]);
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "s1", cwd: "/Volumes/Work/project" }),
+      "App Server rejected the task working directory; refreshing the current thread before retrying.",
+    );
+  });
+
   test("sends text and local images as Codex app-server user input blocks", async () => {
     const client = new FakeAppServerClient();
     const runtime = new CodexRuntime(provider(client), logger());
@@ -1396,6 +1426,7 @@ class FakeAppServerClient {
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
   listResult: unknown = { data: [], nextCursor: null };
   listErrors: Error[] = [];
+  turnStartErrors: Error[] = [];
   configResult: unknown = { config: { model_provider: "openai", model_providers: {} } };
   goalResult: RuntimeGoal | null = null;
   private notificationListener?: (method: string, params: unknown) => void;
@@ -1441,7 +1472,11 @@ class FakeAppServerClient {
       this.goalResult = null;
       return { cleared } as T;
     }
-    if (method === "turn/start") return { turn: { id: "turn_1", status: "inProgress" } } as T;
+    if (method === "turn/start") {
+      const error = this.turnStartErrors.shift();
+      if (error) throw error;
+      return { turn: { id: "turn_1", status: "inProgress" } } as T;
+    }
     if (method === "model/list") return { data: [{
       id: "gpt-test",
       displayName: "GPT Test",

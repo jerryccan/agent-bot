@@ -191,7 +191,7 @@ export class CodexRuntime implements AgentRuntime {
     const session = this.requireSession(sessionId);
     const client = await this.client();
     await this.ensureSessionResumed(session, client);
-    const response = await client.request<{ turn: { id: string } }>("turn/start", {
+    const start = () => client.request<{ turn: { id: string } }>("turn/start", {
       threadId: session.remoteSessionId,
       input: codexUserInput(prompt),
       cwd: session.cwd,
@@ -200,6 +200,19 @@ export class CodexRuntime implements AgentRuntime {
       summary: "auto",
       approvalPolicy: session.permissionMode === "auto" ? "never" : "on-request",
     }, SESSION_REQUEST_TIMEOUT_MS);
+    let response: { turn: { id: string } };
+    try {
+      response = await start();
+    } catch (error) {
+      if (!isInvalidWorkingDirectoryError(error)) throw error;
+      this.logger.warn(
+        { error, sessionId: session.localSessionId, cwd: session.cwd },
+        "App Server rejected the task working directory; refreshing the current thread before retrying.",
+      );
+      await this.resumeAppServerSession(session, client);
+      session.needsResume = false;
+      response = await start();
+    }
     if (session.activeTurnId !== response.turn.id) {
       this.adoptTurn(session, response.turn.id, Date.now());
     }
@@ -746,6 +759,11 @@ export class CodexRuntime implements AgentRuntime {
 
   private async ensureSessionResumed(session: CodexSession, client: AppServerClient): Promise<void> {
     if (!session.needsResume) return;
+    await this.resumeAppServerSession(session, client);
+    session.needsResume = false;
+  }
+
+  private async resumeAppServerSession(session: CodexSession, client: AppServerClient): Promise<void> {
     await client.request("thread/resume", {
       threadId: session.remoteSessionId,
       excludeTurns: true,
@@ -755,7 +773,6 @@ export class CodexRuntime implements AgentRuntime {
       ...threadLifecycleParams(session.cwd),
       ...permissionParams(session.permissionMode),
     }, SESSION_REQUEST_TIMEOUT_MS);
-    session.needsResume = false;
   }
 
   private async synchronizeSessionNow(sessionId: string): Promise<RuntimeSession> {
@@ -1082,6 +1099,12 @@ function isUnsupportedExcludeTurnsError(error: unknown): boolean {
   if (!details.toLowerCase().replaceAll(/[^a-z]/g, "").includes("excludeturns")) return false;
   return error.code === -32602
     || /unknown|unrecognized|unexpected|unsupported|not supported|experimental/i.test(details);
+}
+
+function isInvalidWorkingDirectoryError(error: unknown): boolean {
+  return error instanceof AppServerRequestError
+    && error.method === "turn/start"
+    && /invalid cwd/i.test(`${error.serverMessage} ${error.data === undefined ? "" : JSON.stringify(error.data)}`);
 }
 
 function isUnsupportedRecencySortError(error: unknown): boolean {

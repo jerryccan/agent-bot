@@ -77,6 +77,7 @@ describe("CodexProcessManager", () => {
       AGENT_BOT_LARK_BOT_OPEN_ID: "ou_bot",
     });
     expect(environment.FEISHU_APP_SECRET).toBeUndefined();
+    expect(mocks.spawnStdioCommand.mock.calls[0]?.[3]).toBe("C:\\Users\\tester\\.agent-bot");
 
     process.pushStdout({ id: 1, result: { userAgent: "codex" } });
     await client;

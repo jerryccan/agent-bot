@@ -20,9 +20,11 @@ export function spawnStdioCommand(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ): ChildProcessWithoutNullStreams {
   const prepared = prepareCommand(command, args);
   return spawn(prepared.command, prepared.args, {
+    cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
