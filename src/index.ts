@@ -44,6 +44,7 @@ import { SafeRestartScheduler } from "./supervision/SafeRestartScheduler.js";
 import type { RestartNotificationTarget } from "./supervision/SafeRestartScheduler.js";
 import { SafeRestartNotifier } from "./supervision/SafeRestartNotifier.js";
 import { privateRestartNotificationTarget } from "./supervision/restartNotificationTarget.js";
+import { LocalFileViewerServer } from "./local-files/LocalFileViewerServer.js";
 import {
   nodeDiagnosticReportArguments,
   prepareCrashReportDirectory,
@@ -72,6 +73,22 @@ const config = loadConfig();
 const transport = consoleOnly ? "console" : requireServerFeishuTransport(config.feishu);
 const logger = createLogger(config);
 const store = new StateStore(config.storage.sqlitePath);
+let localFileViewer: LocalFileViewerServer | undefined;
+if (config.fileViewer.enabled) {
+  const viewer = new LocalFileViewerServer({
+    host: config.fileViewer.host,
+    port: config.fileViewer.port,
+    publicBaseUrl: config.fileViewer.publicBaseUrl,
+    stateDirectory: path.join(path.dirname(config.storage.sqlitePath), "file-viewer"),
+  });
+  try {
+    const address = await viewer.start();
+    localFileViewer = viewer;
+    logger.info(address, "Local file viewer started.");
+  } catch (error) {
+    logger.warn({ error }, "Local file viewer failed to start; local file links will remain plain text.");
+  }
+}
 
 const configuredConfigPath = process.env.AGENT_BOT_CONFIG?.trim();
 const activeConfigPath = configuredConfigPath ? resolveUserPath(configuredConfigPath) : defaultConfigPath();
@@ -98,6 +115,7 @@ if (feishuOutbound) {
     normalIntervalMs: 2_000,
     criticalGapMs: 500,
     onError: (error) => logger.warn({ error }, "Failed to update Agent progress card."),
+    localFileUrl: (filePath, reference) => localFileViewer?.createFileUrl(filePath, reference),
   });
   routes.push({ matches: (contextKey) => !contextKey.startsWith("console:"), outbound: feishuOutbound, presenter });
   const defaultAgentName = config.defaults.agent!;
@@ -523,6 +541,7 @@ async function shutdown(
   ]);
   runtimes.close();
   await controlServer?.close().catch((error: unknown) => logger.warn({ error }, "Failed to close local control endpoint."));
+  await localFileViewer?.close().catch((error: unknown) => logger.warn({ error }, "Failed to close local file viewer."));
   store.close();
   if (restartReason) startReplacementSupervisor(restartReason, restartNotificationTargets);
   process.exit(exitCode);

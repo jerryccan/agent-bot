@@ -48,6 +48,11 @@ describe("loadConfig", () => {
         dateFormat: "MM-dd",
       });
       expect(config.feishu.thinkingCardLayout).toBe("grouped");
+      expect(config.fileViewer).toEqual({
+        enabled: true,
+        host: "127.0.0.1",
+        port: 0,
+      });
       expect(config.agents.traex).toMatchObject({
         kind: "app-server",
         title: "TraeX",
@@ -78,6 +83,11 @@ describe("loadConfig", () => {
     expect(config.feishu.respondToOwnerOnly).toBe(true);
     expect(config.feishu.groupNameFormat.project).toBe("[{agent}] [{project}] {taskname}");
     expect(config.feishu.thinkingCardLayout).toBe("grouped");
+    expect(config.fileViewer).toEqual({
+      enabled: true,
+      host: "127.0.0.1",
+      port: 0,
+    });
     expect(config.storage.sqlitePath).toBe(path.resolve("data/agent-bot.sqlite"));
     expect(config.logging.path).toBe(path.resolve("logs/agent-bot.log"));
   });

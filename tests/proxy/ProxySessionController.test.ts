@@ -1754,8 +1754,8 @@ describe("ProxySessionController", () => {
     const child = path.join(root, "child");
     fs.mkdirSync(child);
     fs.writeFileSync(path.join(root, "root.txt"), "root");
-    fs.writeFileSync(path.join(root, "logo.png"), "image");
-    fs.writeFileSync(path.join(root, "agentbot.exe"), "binary");
+    fs.writeFileSync(path.join(root, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]));
+    fs.writeFileSync(path.join(root, "agentbot.exe"), Buffer.from([0x4d, 0x5a, 0x00, 0x01]));
     fs.writeFileSync(path.join(child, "nested.txt"), "nested");
     const { controller, outbound } = fixture();
     await controller.onMessage(message(`/new --dir "${root}"`));
@@ -7386,7 +7386,9 @@ describe("ProxySessionController", () => {
     const { controller, runtime, outbound, shellCommandExecutor, store } = fixture();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-controls-"));
     fs.mkdirSync(path.join(project, "src"));
-    fs.writeFileSync(path.join(project, "logo.png"), "png");
+    fs.writeFileSync(path.join(project, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]));
+    fs.writeFileSync(path.join(project, "readable.bin"), "plain text despite its extension\n");
+    fs.writeFileSync(path.join(project, "binary.txt"), Buffer.from([0x00, 0x01, 0x02, 0x03]));
     tempDirs.push(project);
     await controller.onMessage(groupMessage("origin", `/new Source --dir "${project}"`));
     const sessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
@@ -7420,6 +7422,8 @@ describe("ProxySessionController", () => {
     expect(directory.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "src", kind: "directory" }),
       expect.objectContaining({ name: "logo.png", kind: "image" }),
+      expect.objectContaining({ name: "readable.bin", kind: "file" }),
+      expect.objectContaining({ name: "binary.txt", kind: "binary" }),
     ]));
     await expect(controller.controlSendTaskFile(sessionId, "logo.png")).resolves.toBe("file");
     expect(outbound.sendFile).toHaveBeenCalledWith("chat_id:origin", path.join(project, "logo.png"));

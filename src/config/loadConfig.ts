@@ -26,6 +26,16 @@ const DEFAULT_CONFIG = `feishu:
 console:
   enabled: true
 
+fileViewer:
+  enabled: true
+  # Use 0.0.0.0 to accept LAN connections and automatically prefer
+  # wired, Wi-Fi, other physical, then VPN addresses in generated links.
+  host: "127.0.0.1"
+  # 0 selects a free port once and reuses it for this Profile.
+  port: 0
+  # Overrides the automatically selected URL for domains or reverse proxies.
+  # publicBaseUrl: "https://agentbot.example.com/files"
+
 agents:
   codex:
     kind: "app-server"

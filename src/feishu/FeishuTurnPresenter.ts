@@ -8,7 +8,7 @@ import { splitMarkdown } from "../presentation/splitMarkdown.js";
 import type { TurnViewState } from "../presentation/turnViewTypes.js";
 import { CardRenderer } from "./CardRenderer.js";
 import { CardUpdateScheduler } from "./CardUpdateScheduler.js";
-import { normalizeFeishuMarkdown } from "./FeishuMarkdown.js";
+import { normalizeFeishuMarkdown, type LocalFileUrlResolver } from "./FeishuMarkdown.js";
 import type { FeishuOutbound, MessageReplyTarget } from "./types.js";
 import {
   FINAL_RESPONSE_BRANDING_BLOCK,
@@ -50,6 +50,7 @@ export interface FeishuTurnPresenterOptions {
   finalChunkLength?: number;
   onError?: (error: unknown) => void;
   finalRetryBackoffMs?: number[];
+  localFileUrl?: LocalFileUrlResolver;
 }
 
 const MAX_FINAL_TABLES_PER_CARD = 5;
@@ -215,7 +216,7 @@ export class FeishuTurnPresenter {
     }
     const delivery = this.store.getTurnDelivery(turnId);
     if (delivery?.progressMessageId) {
-      await this.outbound.updateInteractiveCard(delivery.progressMessageId, this.renderer.renderTurn(state));
+      await this.outbound.updateInteractiveCard(delivery.progressMessageId, this.renderTurn(state));
     }
   }
 
@@ -332,7 +333,7 @@ export class FeishuTurnPresenter {
       await this.outbound.sendText(contextKey, "未找到这次执行的详情。可能已被清理。");
       return;
     }
-    await this.outbound.sendInteractiveCard(contextKey, this.renderer.renderTurnDetails(snapshot));
+    await this.outbound.sendInteractiveCard(contextKey, this.renderTurnDetails(snapshot));
   }
 
   async showActivityPage(
@@ -355,9 +356,9 @@ export class FeishuTurnPresenter {
           entry.scheduler.invalidateRenderedCard();
           await entry.scheduler.flush(entry.state);
         } else if (targetMessageId) {
-          await this.outbound.updateInteractiveCard(targetMessageId, this.renderer.renderTurn(entry.state));
+          await this.outbound.updateInteractiveCard(targetMessageId, this.renderTurn(entry.state));
         } else {
-          await this.outbound.sendInteractiveCard(contextKey, this.renderer.renderTurn(entry.state));
+          await this.outbound.sendInteractiveCard(contextKey, this.renderTurn(entry.state));
         }
         return;
       }
@@ -366,7 +367,7 @@ export class FeishuTurnPresenter {
         entry.historySnapshot = entry.state;
         await entry.scheduler?.flush();
       }
-      const card = this.renderer.renderActivityHistory(entry.historySnapshot, page);
+      const card = this.renderActivityHistory(entry.historySnapshot, page);
       if (targetMessageId) await this.outbound.updateInteractiveCard(targetMessageId, card);
       else await this.outbound.sendInteractiveCard(contextKey, card);
       return;
@@ -375,8 +376,8 @@ export class FeishuTurnPresenter {
     const snapshot = this.store.getTurnSnapshot(turnId);
     if (!isTurnViewState(snapshot)) throw new Error("未找到这次执行的活动历史。");
     const card = page === "latest"
-      ? this.renderer.renderTurn(snapshot)
-      : this.renderer.renderActivityHistory(snapshot, page);
+      ? this.renderTurn(snapshot)
+      : this.renderActivityHistory(snapshot, page);
     if (messageId) await this.outbound.updateInteractiveCard(messageId, card);
     else await this.outbound.sendInteractiveCard(contextKey, card);
   }
@@ -428,7 +429,7 @@ export class FeishuTurnPresenter {
 
   private async initializeEntry(entry: TurnEntry): Promise<void> {
     const sentState = entry.state;
-    const card = this.renderer.renderTurn(sentState);
+    const card = this.renderTurn(sentState);
     const delivery = this.store.getTurnDelivery(sentState.turnId);
     const persistedMessageId = delivery?.progressMessageId;
     if (delivery?.finalDelivered && !persistedMessageId) return;
@@ -449,7 +450,7 @@ export class FeishuTurnPresenter {
     if (!messageId) return;
     this.store.saveTurnDelivery(entry.state.turnId, { progressMessageId: messageId });
     entry.scheduler = new CardUpdateScheduler<TurnViewState>({
-      render: (state) => this.renderer.renderTurn(state),
+      render: (state) => this.renderTurn(state),
       write: (card) => this.outbound.updateInteractiveCard(messageId, card),
       normalIntervalMs: this.options.normalIntervalMs,
       criticalGapMs: this.options.criticalGapMs,
@@ -459,6 +460,18 @@ export class FeishuTurnPresenter {
     this.startElapsedUpdates(entry);
     if (entry.state !== sentState) entry.scheduler.update(entry.state, "critical");
     await this.syncThinkingCardReaction(entry);
+  }
+
+  private renderTurn(state: TurnViewState): Record<string, unknown> {
+    return this.renderer.renderTurn(normalizeTurnCardMarkdown(state, this.options.localFileUrl));
+  }
+
+  private renderTurnDetails(state: TurnViewState): Record<string, unknown> {
+    return this.renderer.renderTurnDetails(normalizeTurnCardMarkdown(state, this.options.localFileUrl));
+  }
+
+  private renderActivityHistory(state: TurnViewState, page: number): Record<string, unknown> {
+    return this.renderer.renderActivityHistory(normalizeTurnCardMarkdown(state, this.options.localFileUrl), page);
   }
 
   private startElapsedUpdates(entry: TurnEntry): void {
@@ -539,7 +552,7 @@ export class FeishuTurnPresenter {
     if (delivery?.finalDelivered || !state.finalResponse) return;
     const finalChunkLength = this.options.finalChunkLength ?? 4_000;
     const chunks = brandedFinalChunks(
-      normalizeFeishuMarkdown(state.finalResponse, state.projectCwd),
+      normalizeFeishuMarkdown(state.finalResponse, state.projectCwd, this.options.localFileUrl),
       finalChunkLength,
     );
     const messageIds = [...(delivery?.finalMessageIds ?? [])];
@@ -577,6 +590,23 @@ export class FeishuTurnPresenter {
       }
     }
   }
+}
+
+function normalizeTurnCardMarkdown(
+  state: TurnViewState,
+  localFileUrl: LocalFileUrlResolver | undefined,
+): TurnViewState {
+  if (!localFileUrl) return state;
+  const normalize = (value: string): string => normalizeFeishuMarkdown(value, state.projectCwd, localFileUrl);
+  return {
+    ...state,
+    assistantText: normalize(state.assistantText),
+    ...(state.progressText !== undefined ? { progressText: normalize(state.progressText) } : {}),
+    plan: state.plan.map((step) => ({ ...step, text: normalize(step.text) })),
+    activities: state.activities.map((activity) => activity.kind === "tool"
+      ? activity
+      : { ...activity, text: normalize(activity.text) }),
+  };
 }
 
 function brandedFinalChunks(response: string, maxLength: number): string[] {

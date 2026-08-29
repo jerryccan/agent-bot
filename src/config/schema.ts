@@ -62,6 +62,15 @@ export const appConfigSchema = z.object({
       enabled: z.boolean().default(true),
     })
     .default({ enabled: true }),
+  fileViewer: z.object({
+    enabled: z.boolean().default(true),
+    host: z.string().min(1).default("127.0.0.1"),
+    port: z.number().int().min(0).max(65_535).default(0),
+    publicBaseUrl: z.string().url().refine(
+      (value) => ["http:", "https:"].includes(new URL(value).protocol),
+      "fileViewer.publicBaseUrl must use http or https.",
+    ).optional(),
+  }).default({ enabled: true, host: "127.0.0.1", port: 0 }),
   feishu: z.object({
     transport: z.enum(["auto", "sdk", "console"]).default("auto"),
     appId: z.string().optional(),

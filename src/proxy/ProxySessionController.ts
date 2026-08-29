@@ -41,6 +41,7 @@ import {
 } from "../feishu/GroupNameFormatter.js";
 import { normalizeFeishuPostText } from "../feishu/InboundText.js";
 import { allowsFeishuUser } from "../feishu/ownerAccess.js";
+import { classifyFileContent } from "../local-files/LocalFileViewerServer.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
 import { buildTurnGraphRows } from "../presentation/turnGraph.js";
@@ -136,12 +137,6 @@ const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
 const WINDOWS_DRIVES_DIRECTORY = "agentbot://windows-drives";
 const IMAGE_FILE_EXTENSIONS = new Set([
   ".avif", ".bmp", ".gif", ".heic", ".heif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp",
-]);
-const BINARY_FILE_EXTENSIONS = new Set([
-  ".7z", ".a", ".apk", ".avi", ".bin", ".bz2", ".class", ".dat", ".db", ".deb", ".dll", ".dmg", ".doc", ".docx",
-  ".dylib", ".eot", ".exe", ".flac", ".gz", ".ico", ".ipa", ".iso", ".jar", ".lib", ".mdb", ".mkv", ".mov", ".mp3",
-  ".mp4", ".msi", ".o", ".obj", ".ogg", ".otf", ".pdf", ".ppt", ".pptx", ".rar", ".rpm", ".so", ".sqlite", ".tar",
-  ".ttf", ".wav", ".webm", ".woff", ".woff2", ".xls", ".xlsx", ".xz", ".zip", ".zst",
 ]);
 
 interface HelpCommandDefinition {
@@ -1676,9 +1671,10 @@ export class ProxySessionController {
     await this.assertBrowsableDirectory(directory);
     const entries = (await fs.readdir(directory, { withFileTypes: true }))
       .map((entry) => ({
+        dirent: entry,
         name: entry.name,
         path: path.join(directory, entry.name),
-        kind: directoryBrowserEntryKind(entry),
+        kind: entry.isDirectory() ? "directory" as const : "file" as const,
       }))
       .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory")
         || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
@@ -1691,7 +1687,15 @@ export class ProxySessionController {
       page,
       totalPages,
       totalEntries: entries.length,
-      entries: entries.slice(page * DIRECTORY_PAGE_SIZE, (page + 1) * DIRECTORY_PAGE_SIZE),
+      entries: entries
+        .slice(page * DIRECTORY_PAGE_SIZE, (page + 1) * DIRECTORY_PAGE_SIZE)
+        .map((entry) => ({
+          name: entry.name,
+          path: entry.path,
+          kind: entry.kind === "directory"
+            ? "directory" as const
+            : directoryBrowserEntryKind(entry.dirent, entry.path),
+        })),
     };
   }
 
@@ -5348,9 +5352,10 @@ export class ProxySessionController {
     }
     const entries = directoryEntries
       .map((entry) => ({
+        dirent: entry,
         name: entry.name,
         path: path.join(directory, entry.name),
-        kind: directoryBrowserEntryKind(entry),
+        kind: entry.isDirectory() ? "directory" as const : "file" as const,
       }))
       .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory")
         || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
@@ -5378,8 +5383,9 @@ export class ProxySessionController {
       ...parentEntries,
       ...entries
       .slice(offset, offset + pageSize)
-      .map((entry): DirectoryBrowserCardEntry => entry.kind === "directory"
-        ? {
+      .map((entry): DirectoryBrowserCardEntry => {
+        if (entry.kind === "directory") {
+          return {
             name: entry.name,
             kind: entry.kind,
             openAction: {
@@ -5390,10 +5396,11 @@ export class ProxySessionController {
                 contextKey,
               },
             },
-          }
-        : {
+          };
+        }
+        return {
             name: entry.name,
-            kind: entry.kind,
+            kind: directoryBrowserEntryKind(entry.dirent, entry.path),
             openAction: {
               text: entry.name,
               value: {
@@ -5402,7 +5409,8 @@ export class ProxySessionController {
                 contextKey,
               },
             },
-          }),
+          };
+      }),
     ];
     const navigationActions = directoryPaginationActions(directory, page, totalPages, contextKey);
     const directoryCount = entries.filter((entry) => entry.kind === "directory").length;
@@ -7115,12 +7123,16 @@ function isWindowsDriveRoot(directory: string): boolean {
   return /^[a-z]:\\$/iu.test(path.win32.normalize(directory));
 }
 
-function directoryBrowserEntryKind(entry: Dirent): DirectoryBrowserCardEntry["kind"] {
+function directoryBrowserEntryKind(entry: Dirent, filePath: string): DirectoryBrowserCardEntry["kind"] {
   if (entry.isDirectory()) return "directory";
+  try {
+    if (classifyFileContent(filePath).kind === "text") return "file";
+  } catch {
+    return "file";
+  }
   const extension = path.extname(entry.name).toLowerCase();
   if (IMAGE_FILE_EXTENSIONS.has(extension)) return "image";
-  if (BINARY_FILE_EXTENSIONS.has(extension)) return "binary";
-  return "file";
+  return "binary";
 }
 
 function directoryActionPath(value: unknown): string {

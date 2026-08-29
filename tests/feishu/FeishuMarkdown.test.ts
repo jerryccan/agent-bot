@@ -123,6 +123,26 @@ describe("normalizeFeishuMarkdown", () => {
     expect(normalizeFeishuMarkdown(normalized, "D:\\dev\\agent-bot")).toBe(normalized);
   });
 
+  test("replaces local file targets with signed viewer URLs while preserving readable path labels", () => {
+    const markdown = [
+      "[app.ts](D:\\dev\\agent-bot\\src\\app.ts:12)",
+      "[转换后的 Trace Markdown](D:/dev/agent-bot/.cache/moa-trace.execution-timeline.md)",
+      "[报告](<D:/dev/agent-bot/output/report (final).md>)",
+      "[runner.py](C:\\Users\\Admin\\runtime\\runner.py:122)",
+    ].join("\n");
+    const resolver = (filePath: string, reference?: string): string => {
+      const name = filePath.replaceAll("\\", "/").split("/").at(-1);
+      return `http://127.0.0.1:3210/view/${encodeURIComponent(name ?? "file")}?sig=signed${reference ? `#L${reference.slice(1).split(":")[0]}` : ""}`;
+    };
+
+    expect(normalizeFeishuMarkdown(markdown, "D:\\dev\\agent-bot", resolver)).toBe([
+      "[app.ts:12](http://127.0.0.1:3210/view/app.ts?sig=signed#L12)",
+      "[转换后的 Trace Markdown](http://127.0.0.1:3210/view/moa-trace.execution-timeline.md?sig=signed)(`moa-trace.execution-timeline.md`)",
+      "[报告](http://127.0.0.1:3210/view/report%20(final).md?sig=signed)(`report (final).md`)",
+      "[runner.py](http://127.0.0.1:3210/view/runner.py?sig=signed#L122)(`C:\\Users\\Admin\\runtime\\runner.py:122`)",
+    ].join("\n"));
+  });
+
   test("does not duplicate references or rewrite web links, images, or fenced code", () => {
     const markdown = [
       "[worker.ts:42](/D:/project/worker.ts:42)",

@@ -82,6 +82,73 @@ describe("FeishuTurnPresenter", () => {
     );
   });
 
+  test("uses the local file viewer resolver for final answer links", async () => {
+    const outbound: FeishuOutbound = {
+      sendText: vi.fn(async () => "text_1"),
+      sendMarkdown: vi.fn(async () => "final_1"),
+      sendInteractiveCard: vi.fn(async () => "progress_1"),
+      updateInteractiveCard: vi.fn(async () => undefined),
+    };
+    const store = new MemoryStore();
+    const presenter = new FeishuTurnPresenter(outbound, store, undefined, {
+      criticalGapMs: 0,
+      localFileUrl: (_filePath, reference) => `http://127.0.0.1:3210/view/file?sig=signed${reference ? "#L10" : ""}`,
+    });
+    presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\agent-bot");
+
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent(completed("[inside.ts](D:\\dev\\agent-bot\\src\\inside.ts:10)"));
+
+    expect(outbound.sendMarkdown).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "[inside.ts:10](http://127.0.0.1:3210/view/file?sig=signed#L10)",
+      expect.stringMatching(/^codex-final-/),
+    );
+  });
+
+  test("uses the local file viewer resolver for live and historical thinking-card links", async () => {
+    const outbound: FeishuOutbound = {
+      sendText: vi.fn(async () => "text_1"),
+      sendMarkdown: vi.fn(async () => "final_1"),
+      sendInteractiveCard: vi.fn(async () => "progress_1"),
+      updateInteractiveCard: vi.fn(async () => undefined),
+    };
+    const store = new MemoryStore();
+    const presenter = new FeishuTurnPresenter(outbound, store, undefined, {
+      criticalGapMs: 0,
+      localFileUrl: () => "http://127.0.0.1:3210/view/log?sig=signed",
+    });
+    presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\agent-bot");
+
+    await presenter.onEvent({ type: "turn_started", sessionId: "s1", turnId: "turn_1", startedAt: Date.now() });
+    await presenter.onEvent({
+      type: "progress",
+      sessionId: "s1",
+      turnId: "turn_1",
+      activityId: "commentary:log",
+      text: "日志：[compact_snapshot_text_20260830.log](D:\\dev\\agent-bot\\compact_snapshot_text_20260830.log)",
+    });
+    await presenter.flushAll();
+
+    const liveCard = JSON.stringify(
+      (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1],
+    );
+    expect(liveCard).toContain("http://127.0.0.1:3210/view/log?sig=signed");
+    expect(JSON.stringify(store.getTurnSnapshot("turn_1"))).not.toContain("http://127.0.0.1:3210");
+
+    await presenter.showDetails("chat_id:c1", "turn_1");
+    const detailsCard = JSON.stringify(
+      (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1],
+    );
+    expect(detailsCard).toContain("http://127.0.0.1:3210/view/log?sig=signed");
+
+    await presenter.showActivityPage("chat_id:c1", "turn_1", 0, "history_card");
+    const historyCard = JSON.stringify(
+      (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1],
+    );
+    expect(historyCard).toContain("http://127.0.0.1:3210/view/log?sig=signed");
+  });
+
   test("adds Agent Bot branding only to the last chunk of a long final answer", async () => {
     const { outbound, store } = createFixture();
     const presenter = new FeishuTurnPresenter(outbound, store, undefined, {

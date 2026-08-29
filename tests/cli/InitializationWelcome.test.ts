@@ -102,6 +102,7 @@ describe("initialization welcome", () => {
 function config(userOpenId?: string): AppConfig {
   return {
     console: { enabled: true },
+    fileViewer: { enabled: true, host: "127.0.0.1", port: 0 },
     feishu: {
       transport: "sdk",
       appId: "cli_app",

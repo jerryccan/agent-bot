@@ -18,6 +18,18 @@ feishu:
 console:
   enabled: true
 
+# Signed, read-only pages for local files referenced in Agent replies.
+fileViewer:
+  enabled: true
+  # The safe default only accepts connections from this computer.
+  # Use 0.0.0.0 to accept LAN connections. Generated links then prefer
+  # wired, Wi-Fi, other physical, and finally VPN interface addresses.
+  host: "127.0.0.1"
+  # 0 selects a free port once and reuses it for this Profile.
+  port: 0
+  # Override automatic selection for a domain, HTTPS proxy, or port mapping.
+  # publicBaseUrl: "https://agentbot.example.com/files"
+
 agents:
   codex:
     kind: "app-server"

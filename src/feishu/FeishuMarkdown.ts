@@ -8,11 +8,17 @@ interface FenceState {
 }
 
 const FENCE_OPENER = /^([ \t]*)((?:`{3,})|(?:~{3,}))(.*)$/;
-const MARKDOWN_LINK = /(!?)\[([^\]\r\n]*)\]\((<?[^)\r\n]+>?)\)/g;
+const MARKDOWN_LINK = /(!?)\[([^\]\r\n]*)\]\((<[^>\r\n]+>|[^)\r\n]+)\)/g;
 const LOCAL_FILE_LINE_REFERENCE = /(:\d+(?::\d+)?)$/;
 const LOCAL_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".tiff", ".bmp", ".ico"]);
 
-export function normalizeFeishuMarkdown(markdown: string, projectCwd?: string): string {
+export type LocalFileUrlResolver = (filePath: string, reference?: string) => string | undefined;
+
+export function normalizeFeishuMarkdown(
+  markdown: string,
+  projectCwd?: string,
+  localFileUrl?: LocalFileUrlResolver,
+): string {
   const lines = markdown.match(/[^\r\n]*(?:\r\n|\n)|[^\r\n]+$/g) ?? [];
   let fence: FenceState | undefined;
 
@@ -22,7 +28,7 @@ export function normalizeFeishuMarkdown(markdown: string, projectCwd?: string): 
 
     if (!fence) {
       const opener = FENCE_OPENER.exec(body);
-      if (!opener?.[2]) return `${includeLocalFileLineReferences(body, projectCwd)}${ending}`;
+      if (!opener?.[2]) return `${includeLocalFileLineReferences(body, projectCwd, localFileUrl)}${ending}`;
 
       const indent = opener[1] ?? "";
       const delimiter = opener[2];
@@ -43,7 +49,11 @@ export function normalizeFeishuMarkdown(markdown: string, projectCwd?: string): 
   }).join("");
 }
 
-function includeLocalFileLineReferences(markdown: string, projectCwd?: string): string {
+function includeLocalFileLineReferences(
+  markdown: string,
+  projectCwd?: string,
+  localFileUrl?: LocalFileUrlResolver,
+): string {
   return markdown.replace(MARKDOWN_LINK, (link, imageMarker: string, label: string, rawTarget: string) => {
     if (imageMarker) return link;
 
@@ -52,18 +62,25 @@ function includeLocalFileLineReferences(markdown: string, projectCwd?: string): 
     if (isLocalImageTarget(target)) return link;
 
     const reference = LOCAL_FILE_LINE_REFERENCE.exec(target)?.[1];
+    const targetWithoutReference = reference ? target.slice(0, -reference.length) : target;
+    const filePath = localFilePath(targetWithoutReference);
+    const viewerUrl = filePath ? localFileUrl?.(filePath, reference) : undefined;
     const projectPathLabel = projectCwd ? projectFilePathLabel(target, projectCwd, reference) : undefined;
     if (!projectPathLabel) {
       const normalizedLabel = reference && !label.endsWith(reference) ? `${label}${reference}` : label;
+      if (viewerUrl) return `[${normalizedLabel}](${viewerUrl})`;
       return normalizedLabel === label ? link : `[${normalizedLabel}](${rawTarget})`;
     }
 
-    if (projectPathLabel === label) return link;
+    if (projectPathLabel === label) return viewerUrl ? `[${label}](${viewerUrl})` : link;
     if (reference && projectPathLabel === `${label}${reference}`) {
-      return `[${projectPathLabel}](${rawTarget})`;
+      return `[${projectPathLabel}](${viewerUrl ?? rawTarget})`;
     }
 
-    return label ? `${label}(${inlineCode(projectPathLabel)})` : inlineCode(projectPathLabel);
+    if (!label) return viewerUrl ? `[${projectPathLabel}](${viewerUrl})` : inlineCode(projectPathLabel);
+    return viewerUrl
+      ? `[${label}](${viewerUrl})(${inlineCode(projectPathLabel)})`
+      : `${label}(${inlineCode(projectPathLabel)})`;
   });
 }
 
