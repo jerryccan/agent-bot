@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.17-alpha.2] - 2026-08-29
+
 - Add a signed, read-only local HTTP viewer for files and directories referenced by Agent replies, with content-based previews, downward directory browsing, persistent per-Profile ports, and automatic wired, Wi-Fi, physical, then VPN address selection for LAN links.
 - Rewrite local file links in live, completed, detailed, and historical thinking cards through the local viewer without persisting temporary signed URLs, and classify file-browser entries from their content instead of filename extensions.
 - Replace the protocol-level Turn interrupt acknowledgement with a concise user-facing stopping message that explains the thinking card will update when the task stops.
