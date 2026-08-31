@@ -180,6 +180,40 @@ describe("StartupNotifier", () => {
     expect(replyInteractiveCard).toHaveBeenCalledOnce();
   });
 
+  test("replies in a private-chat thread that requested the restart", async () => {
+    const store = createStore();
+    store.getOrCreateUserContext("chat_id:private", "codex");
+    store.getOrCreateUserContext("chat_id:private:thread_id:topic", "codex");
+    store.recordChatContext("chat_id:private", "p2p");
+    const sendInteractiveCard = vi.fn(async () => "om_private_startup");
+    const replyInteractiveCard = vi.fn(async () => "om_topic_startup");
+    const notifier = new StartupNotifier(
+      store,
+      createOutbound(sendInteractiveCard, replyInteractiveCard),
+      new CardRenderer(),
+      { warn: vi.fn() },
+      options,
+    );
+
+    await notifier.notify(
+      new Date("2026-07-15T05:45:00.000Z"),
+      "private topic restart",
+      [{
+        contextKey: "chat_id:private:thread_id:topic",
+        replyMessageId: "om_topic_request",
+      }],
+    );
+
+    expect(sendInteractiveCard).toHaveBeenCalledOnce();
+    expect(sendInteractiveCard).toHaveBeenCalledWith("chat_id:private", expect.any(Object));
+    expect(replyInteractiveCard).toHaveBeenCalledOnce();
+    expect(replyInteractiveCard).toHaveBeenCalledWith(
+      "chat_id:private:thread_id:topic",
+      { messageId: "om_topic_request", replyInThread: true },
+      expect.any(Object),
+    );
+  });
+
   test("renders a current projectless task from the session workspace instead of the global default", async () => {
     const store = createStore();
     store.getOrCreateUserContext("chat_id:c1", "codex");

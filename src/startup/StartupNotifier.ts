@@ -48,8 +48,13 @@ export class StartupNotifier {
           .filter((chat) => !isThreadContextKey(chat.contextKey))
           .map((chat) => [chat.contextKey, chat]),
       );
+      const knownPrivateChats = new Map(
+        this.store.listChatContexts("p2p")
+          .filter((chat) => !isThreadContextKey(chat.contextKey))
+          .map((chat) => [chat.contextKey, chat]),
+      );
       const targetsByContext = new Map<string, StartupNotificationTarget>();
-      for (const chat of this.store.listChatContexts("p2p")) {
+      for (const chat of knownPrivateChats.values()) {
         targetsByContext.set(chat.contextKey, {
           contextKey: chat.contextKey,
           context: this.store.getUserContext(chat.contextKey),
@@ -71,10 +76,11 @@ export class StartupNotifier {
         if (!contextKey) continue;
         if (isThreadContextKey(contextKey)) {
           const baseContextKey = baseChatContextKey(contextKey);
-          if (!knownGroups.has(baseContextKey)) continue;
+          const parentChat = knownGroups.get(baseContextKey) ?? knownPrivateChats.get(baseContextKey);
+          if (!parentChat) continue;
           const replyMessageId = target.replyMessageId?.trim();
           if (replyMessageId) {
-            if (!explicitBaseContextKeys.has(baseContextKey)) {
+            if (parentChat.chatType === "group" && !explicitBaseContextKeys.has(baseContextKey)) {
               targetsByContext.delete(baseContextKey);
             }
             targetsByContext.set(contextKey, {
@@ -83,7 +89,6 @@ export class StartupNotifier {
               context: this.store.getUserContext(contextKey),
             });
           } else {
-            const group = knownGroups.get(baseContextKey)!;
             targetsByContext.set(baseContextKey, {
               contextKey: baseContextKey,
               context: this.store.getUserContext(baseContextKey),
