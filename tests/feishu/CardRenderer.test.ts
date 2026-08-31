@@ -584,7 +584,7 @@ describe("CardRenderer", () => {
     expect(serialized).not.toContain("第一段原生思考");
 
     const history = JSON.stringify(renderer.renderActivityHistory(running, 0));
-    expect(history).toContain("第一段原生思考");
+    expect(history).not.toContain("第一段原生思考");
     expect(history).toContain("第二段原生思考");
     expect(history).toContain("运行完整测试");
   });
@@ -644,7 +644,7 @@ describe("CardRenderer", () => {
     const history = JSON.stringify(renderer.renderActivityHistory(running, 0));
     expect(history).toContain("思考活动历史 · 1/1");
     expect(history).toContain("Commentary 1");
-    expect(history).toContain("Reasoning 1.1");
+    expect(history).not.toMatch(/Reasoning 1\.1(?!9)/);
     expect(history).toContain("Reasoning 1.19");
     expect(history).toContain("Commentary 7");
   });

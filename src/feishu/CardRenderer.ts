@@ -995,8 +995,7 @@ export class CardRenderer {
         usesHistoricalPrefixPages ? historyGroups : allGroups,
         state.projectCwd,
         {
-        fullActivityText: true,
-        includeReasoningHistory: true,
+          fullActivityText: true,
         },
       )
       : activityPages(activities);
@@ -1024,7 +1023,6 @@ export class CardRenderer {
     elements.push(...(grouped
       ? renderGroupedActivityGroups(pages[page] as GroupedTurnActivity[] | undefined ?? [], state.projectCwd, {
         fullActivityText: true,
-        includeReasoningHistory: true,
       })
       : renderActivities(pages[page] as TurnActivity[] | undefined ?? [], state.projectCwd, true)));
     return sectionCard(`思考活动历史 · ${page + 1}/${totalPages}`, elements.length > 0 ? elements : [markdown("无")]);
@@ -1463,7 +1461,6 @@ function renderGroupedTurnElements(
   const visible = groupedLiveActivityPage(livePages, state.projectCwd);
   const historyPages = groupedActivityPagesFromGroups(visible.historyGroups, state.projectCwd, {
     fullActivityText: true,
-    includeReasoningHistory: true,
   });
   if (state.plan.length > 0) elements.push(planPanel(state.plan));
   if (historyPages.length > 0) {
@@ -1623,7 +1620,6 @@ type GroupedTurnActivity =
       kind: "execution";
       id: string;
       latestReasoning?: Extract<TurnActivity, { kind: "reasoning" }>;
-      reasonings: Array<Extract<TurnActivity, { kind: "reasoning" }>>;
       tools: ToolState[];
     };
 
@@ -1632,7 +1628,6 @@ function renderGroupedActivityGroups(
   projectCwd?: string,
   options: {
     fullActivityText?: boolean;
-    includeReasoningHistory?: boolean;
   } = {},
 ): Record<string, unknown>[] {
   return groups.flatMap((group) => {
@@ -1641,12 +1636,10 @@ function renderGroupedActivityGroups(
       return renderActivity(group.activity, projectCwd, options.fullActivityText === true);
     }
     if (group.tools.length === 0) {
-      const reasonings = options.includeReasoningHistory
-        ? group.reasonings
-        : group.latestReasoning ? [group.latestReasoning] : [];
+      const reasonings = group.latestReasoning ? [group.latestReasoning] : [];
       return renderReasoningGroup(reasonings);
     }
-    return [executionActivityPanel(group, projectCwd, options.includeReasoningHistory === true)];
+    return [executionActivityPanel(group, projectCwd)];
   });
 }
 
@@ -1660,12 +1653,11 @@ function groupTurnActivities(activities: TurnActivity[]): GroupedTurnActivity[] 
     for (let index = 0; index < segment.length; index += 1) {
       const activity = segment[index]!;
       if (isRawReasoning(activity)) {
-        execution ??= { kind: "execution", id: activity.id, reasonings: [], tools: [] };
-        execution.reasonings.push(activity);
+        execution ??= { kind: "execution", id: activity.id, tools: [] };
         execution.latestReasoning = activity;
         executionPosition = index;
       } else if (activity.kind === "tool") {
-        execution ??= { kind: "execution", id: activity.id, reasonings: [], tools: [] };
+        execution ??= { kind: "execution", id: activity.id, tools: [] };
         execution.tools.push(activity.tool);
         executionPosition = index;
       }
@@ -1700,13 +1692,9 @@ function isCommentaryActivity(activity: TurnActivity): boolean {
 function executionActivityPanel(
   group: Extract<GroupedTurnActivity, { kind: "execution" }>,
   projectCwd: string | undefined,
-  includeReasoningHistory = false,
 ): Record<string, unknown> {
   const status = executionActivityStatus(group.tools);
-  const elements = [
-    ...(includeReasoningHistory ? renderReasoningGroup(group.reasonings) : []),
-    ...group.tools.map((tool) => toolPanel(tool, projectCwd)),
-  ];
+  const elements = group.tools.map((tool) => toolPanel(tool, projectCwd));
   return collapsiblePanel(
     executionActivityTitle(group, status),
     elements,
@@ -1790,7 +1778,6 @@ function groupedActivityPages(
   projectCwd?: string,
   renderOptions: {
     fullActivityText?: boolean;
-    includeReasoningHistory?: boolean;
   } = {},
 ): GroupedTurnActivity[][] {
   const groups = groupTurnActivities(activities).flatMap(splitGroupedExecutionActivity);
@@ -1802,7 +1789,6 @@ function groupedActivityPagesFromGroups(
   projectCwd?: string,
   renderOptions: {
     fullActivityText?: boolean;
-    includeReasoningHistory?: boolean;
   } = {},
 ): GroupedTurnActivity[][] {
   if (groups.length === 0) return [];
@@ -1827,7 +1813,6 @@ function groupedActivityPageFits(
   projectCwd: string | undefined,
   renderOptions: {
     fullActivityText?: boolean;
-    includeReasoningHistory?: boolean;
   },
 ): boolean {
   const elements = renderGroupedActivityGroups(groups, projectCwd, renderOptions);
@@ -1921,7 +1906,6 @@ function splitGroupedExecutionActivity(group: GroupedTurnActivity): GroupedTurnA
       kind: "execution",
       id: index === 0 ? group.id : tools[0]?.id ?? `${group.id}:${index}`,
       ...(isLast && group.latestReasoning ? { latestReasoning: group.latestReasoning } : {}),
-      reasonings: isLast ? group.reasonings : [],
       tools,
     });
   }
