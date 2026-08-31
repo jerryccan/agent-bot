@@ -125,6 +125,7 @@ const SESSION_PROMPT_PREVIEW_LENGTH = 50;
 const DIRECTORY_PAGE_SIZE = 15;
 const RESET_HISTORY_PAGE_SIZE = 10;
 const MAX_LLM_TURN_RETRIES = 3;
+const QUEUED_PROMPT_RETRY_DELAY_MS = 5_000;
 const RECOVERY_ACTIVITY_WINDOW_MS = 10 * 60 * 1_000;
 const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
 const SHELL_COMMAND_JOB_POLL_INTERVAL_MS = 1_000;
@@ -132,7 +133,7 @@ const SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS = 5_000;
 const FORWARD_ATTACHMENT_WINDOW_MS = 800;
 const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
 const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
-const TURN_STOP_REQUESTED_MESSAGE = "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。";
+const TURN_STOP_REQUESTED_MESSAGE = "已发送停止信号，任务会自动停止。";
 const REMOTE_SESSION_REFERENCE_PREFIX = "agent-runtime:";
 const WINDOWS_DRIVES_DIRECTORY = "agentbot://windows-drives";
 const IMAGE_FILE_EXTENSIONS = new Set([
@@ -428,6 +429,7 @@ export class ProxySessionController {
   private readonly threadInitializations = new Map<string, Promise<void>>();
   private readonly llmRetryingSessions = new Set<string>();
   private readonly retriedFailureTurnIds = new Set<string>();
+  private readonly queuedPromptRetryTimers = new Map<string, NodeJS.Timeout>();
   private readonly recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingMergedForwards = new Map<string, PendingForwardAttachment>();
   private readonly pendingResourceForwards = new Map<string, PendingForwardAttachment>();
@@ -1097,6 +1099,8 @@ export class ProxySessionController {
     for (const pending of this.pendingResourceForwards.values()) pending.resolveAttachment(undefined);
     this.pendingResourceForwards.clear();
     this.relatedReactionMessageIds.clear();
+    for (const timer of this.queuedPromptRetryTimers.values()) clearTimeout(timer);
+    this.queuedPromptRetryTimers.clear();
     for (const timer of this.recoveryRetryTimers.values()) clearTimeout(timer);
     this.recoveryRetryTimers.clear();
     for (const [jobId] of this.shellCommandJobMonitors) this.stopShellCommandJobMonitor(jobId);
@@ -3993,12 +3997,34 @@ export class ProxySessionController {
   }
 
   private scheduleNextQueuedPrompt(sessionId: string): Promise<void> {
+    const retryTimer = this.queuedPromptRetryTimers.get(sessionId);
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      this.queuedPromptRetryTimers.delete(sessionId);
+    }
     const previous = this.queuedPromptStarts.get(sessionId) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(() => this.startNextQueuedPromptIfIdle(sessionId));
     this.queuedPromptStarts.set(sessionId, next);
     return next.finally(() => {
       if (this.queuedPromptStarts.get(sessionId) === next) this.queuedPromptStarts.delete(sessionId);
     });
+  }
+
+  private scheduleQueuedPromptRetry(sessionId: string): void {
+    if (this.queuedPromptRetryTimers.has(sessionId)) return;
+    if (this.store.countQueuedPrompts(sessionId) === 0) return;
+    const timer = setTimeout(() => {
+      this.queuedPromptRetryTimers.delete(sessionId);
+      void this.scheduleNextQueuedPrompt(sessionId).catch((error: unknown) => {
+        this.logger.warn(
+          { error, errorMessage: runtimeErrorMessage(error), sessionId },
+          "Failed to retry queued prompt start.",
+        );
+        this.scheduleQueuedPromptRetry(sessionId);
+      });
+    }, QUEUED_PROMPT_RETRY_DELAY_MS);
+    timer.unref?.();
+    this.queuedPromptRetryTimers.set(sessionId, timer);
   }
 
   private async startNextQueuedPromptIfIdle(sessionId: string): Promise<void> {
@@ -4028,10 +4054,22 @@ export class ProxySessionController {
       );
       if (prompt.messageId) await this.bindMessageReactionToTurn(prompt.messageId, sessionId, turnId);
     } catch (error) {
-      this.logger.warn({ error, sessionId }, "Failed to start queued prompt.");
-      if (prompt?.messageId) await this.finalizeStandaloneMessageReaction(prompt.messageId, "failed");
-      if (prompt) await this.sendError(prompt.contextKey, error);
-      if (prompt && this.store.countQueuedPrompts(sessionId) > 0) {
+      this.logger.warn(
+        {
+          error,
+          errorMessage: runtimeErrorMessage(error),
+          phase: prompt ? "start" : "preflight",
+          sessionId,
+        },
+        "Failed to start queued prompt.",
+      );
+      if (!prompt) {
+        this.scheduleQueuedPromptRetry(sessionId);
+        return;
+      }
+      if (prompt.messageId) await this.finalizeStandaloneMessageReaction(prompt.messageId, "failed");
+      await this.sendError(prompt.contextKey, error);
+      if (this.store.countQueuedPrompts(sessionId) > 0) {
         queueMicrotask(() => void this.scheduleNextQueuedPrompt(sessionId));
       }
     }

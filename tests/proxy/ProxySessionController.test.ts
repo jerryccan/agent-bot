@@ -2891,7 +2891,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_group_1", "turn_thr_group_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:group_1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
     expect(sessions.get(second!)?.activeTurnId).toBe("turn_thr_group_2");
     expect(store.getOrCreateUserContext("chat_id:group_2", "codex").currentSessionId).toBe(second);
@@ -2966,7 +2966,7 @@ describe("ProxySessionController", () => {
     expect(outbound.replyText).toHaveBeenCalledWith(
       topicContextKey,
       { messageId: "om_topic_status_card", replyInThread: true },
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
   });
 
@@ -4857,7 +4857,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
     expect(store.getTurnAttempt(attemptId)?.status).toBe("cancelling");
   });
@@ -4887,7 +4887,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
   });
 
@@ -4907,7 +4907,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_from_another_client");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
   });
 
@@ -4936,7 +4936,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("external_current", "turn_external_active");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
   });
 
@@ -5643,7 +5643,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("active_external", "turn_external");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
     expect(outbound.updateInteractiveCard).toHaveBeenCalledOnce();
     const updatedCard = (outbound.updateInteractiveCard as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
@@ -6845,6 +6845,40 @@ describe("ProxySessionController", () => {
     expect(store.countQueuedPrompts(sessionId)).toBe(0);
   });
 
+  test("retries a queued prompt when its idle preflight check fails", async () => {
+    vi.useFakeTimers();
+    const { controller, runtime, sessions, remoteSessions, store } = fixture();
+    try {
+      await controller.onMessage(message("active turn"));
+      const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+      sessions.get(sessionId)!.activeTurnId = undefined;
+      Object.assign(remoteSessions.find((remote) => remote.id === "thr_1")!, {
+        status: "idle",
+        lastTurnStatus: "completed",
+      });
+      (runtime.inspectRemoteSessionActivity as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("App Server request timed out: thread/read"),
+      );
+
+      await controller.controlQueueTaskPrompt(sessionId, "retry after preflight timeout");
+
+      expect(runtime.startTurn).toHaveBeenCalledOnce();
+      expect(store.listQueuedPrompts(sessionId).map((prompt) => prompt.text)).toEqual([
+        "retry after preflight timeout",
+      ]);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runtime.startTurn).toHaveBeenCalledTimes(2);
+      expect((runtime.startTurn as ReturnType<typeof vi.fn>).mock.calls[1]?.[1])
+        .toBe("retry after preflight timeout");
+      expect(store.countQueuedPrompts(sessionId)).toBe(0);
+    } finally {
+      controller.close();
+      vi.useRealTimers();
+    }
+  });
+
   test("refuses to switch or resume a task that is running in another Codex client", async () => {
     const { controller, runtime, remoteSessions, store, outbound } = fixture();
     const external: RemoteSessionSummary = {
@@ -6963,7 +6997,7 @@ describe("ProxySessionController", () => {
     expect(runtime.interruptRemoteTurn).toHaveBeenCalledWith("thr_1", "turn_1");
     expect(outbound.sendText).toHaveBeenCalledWith(
       "chat_id:c1",
-      "正在停止当前任务，请稍候。状态卡片将在任务停止后自动更新。",
+      "已发送停止信号，任务会自动停止。",
     );
   });
 
