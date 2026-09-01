@@ -6,6 +6,7 @@ import hljs from "highlight.js/lib/common";
 import dos from "highlight.js/lib/languages/dos";
 import dockerfile from "highlight.js/lib/languages/dockerfile";
 import powershell from "highlight.js/lib/languages/powershell";
+import MarkdownIt from "markdown-it";
 import {
   selectPreferredNetworkAddress,
   type NetworkConnectionKind,
@@ -19,9 +20,26 @@ const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTENT_SAMPLE_BYTES = 64 * 1024;
 const MAX_SYNTAX_HIGHLIGHT_BYTES = 512 * 1024;
 const DIRECTORY_PAGE_SIZE = 100;
+const MARKDOWN_EXTENSIONS = new Set([".markdown", ".md", ".mdown", ".mkd", ".mkdn"]);
 hljs.registerLanguage("dos", dos);
 hljs.registerLanguage("dockerfile", dockerfile);
 hljs.registerLanguage("powershell", powershell);
+
+const MARKDOWN_RENDERER = new MarkdownIt({
+  breaks: false,
+  html: false,
+  linkify: true,
+  typographer: false,
+  highlight(value, language) {
+    const highlighted = language && hljs.getLanguage(language)
+      ? hljs.highlight(value, { language, ignoreIllegals: true }).value
+      : escapeHtml(value);
+    const languageAttribute = language && hljs.getLanguage(language)
+      ? ` class="language-${escapeAttribute(language)}"`
+      : "";
+    return `<pre class="markdown-code-block hljs"><code${languageAttribute}>${highlighted}</code></pre>`;
+  },
+});
 
 const HIGHLIGHT_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
   ".bash": "bash", ".bat": "dos", ".c": "c", ".cc": "cpp", ".cmd": "dos", ".cpp": "cpp",
@@ -46,8 +64,30 @@ const VIEWER_CLIENT_SCRIPT = `(() => {
   const metadata = document.getElementById("viewer-metadata");
   const header = document.getElementById("viewer-header");
   const title = document.getElementById("viewer-title");
+  const viewSwitch = document.getElementById("viewer-view-switch");
+  const viewButtons = Array.from(document.querySelectorAll("[data-view-mode-button]"));
   if (!content || !metadata || !header || !title) return;
   const filePath = title.dataset.filePath || title.textContent || "";
+
+  const syncViewMode = () => {
+    const mode = document.body.dataset.viewMode === "code" ? "code" : "rendered";
+    for (const button of viewButtons) {
+      const active = button.dataset.viewModeButton === mode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", String(active));
+    }
+    for (const panel of content.querySelectorAll("[data-view-panel]")) {
+      panel.setAttribute("aria-hidden", String(panel.dataset.viewPanel !== mode));
+    }
+  };
+  const setViewMode = (mode) => {
+    document.body.dataset.viewMode = mode === "code" ? "code" : "rendered";
+    syncViewMode();
+    if (mode === "code") requestAnimationFrame(positionHashTarget);
+  };
+  for (const button of viewButtons) {
+    button.addEventListener("click", () => setViewMode(button.dataset.viewModeButton));
+  }
 
   title.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
@@ -83,6 +123,8 @@ const VIEWER_CLIENT_SCRIPT = `(() => {
   const positionHashTarget = () => {
     highlightHashTarget()?.scrollIntoView({ block: "start" });
   };
+  if (/^#L\\d+$/u.test(window.location.hash)) document.body.dataset.viewMode = "code";
+  syncViewMode();
   updateHeaderOffset();
   if (typeof ResizeObserver === "function") {
     new ResizeObserver(updateHeaderOffset).observe(header);
@@ -107,6 +149,7 @@ const VIEWER_CLIENT_SCRIPT = `(() => {
     const codeScrollLeft = content.querySelector(".code")?.scrollLeft ?? 0;
     content.innerHTML = nextContent;
     metadata.innerHTML = nextMetadata;
+    syncViewMode();
     highlightHashTarget();
     restoreScroll(top, left, atBottom, codeScrollLeft);
   };
@@ -116,6 +159,7 @@ const VIEWER_CLIENT_SCRIPT = `(() => {
     try {
       const update = JSON.parse(event.data);
       if (typeof update.content === "string" && typeof update.metadata === "string") {
+        if (viewSwitch) viewSwitch.hidden = update.viewMode !== "markdown";
         replaceContent(update.content, update.metadata);
       }
     } catch {
@@ -157,6 +201,7 @@ interface DirectoryViewerEntry {
 interface RenderedFileSnapshot {
   content: string;
   metadata: string[];
+  viewMode?: "markdown";
 }
 
 export interface LocalFileViewerServerOptions {
@@ -423,6 +468,7 @@ export class LocalFileViewerServer {
         { href: downloadUrl.toString(), label: "下载" },
       ],
       content: snapshot.content,
+      viewMode: snapshot.viewMode,
       liveUpdates: {
         eventsUrl: eventsUrl.toString(),
         scriptPath: `${this.basePath}/assets/viewer.js`.replace(/\/{2,}/gu, "/"),
@@ -442,7 +488,10 @@ export class LocalFileViewerServer {
     let content: string;
     if (classification.kind === "text") {
       const preview = readTextPreview(filePath, stat.size, classification.encoding);
-      content = `${preview.truncated ? '<div class="notice">文件较大，仅显示开头 2 MiB。可使用下方按钮查看或下载完整文件。</div>' : ""}${renderText(preview.text, filePath)}`;
+      const previewContent = isMarkdownFile(filePath)
+        ? renderMarkdownDocument(preview.text, filePath)
+        : renderText(preview.text, filePath);
+      content = `${preview.truncated ? '<div class="notice">文件较大，仅显示开头 2 MiB。可使用下方按钮查看或下载完整文件。</div>' : ""}${previewContent}`;
     } else if (contentType.startsWith("image/")) {
       content = `<div class="media"><img src="${escapeAttribute(rawUrl.toString())}" alt="${escapeAttribute(fileName)}"></div>`;
     } else if (contentType === "application/pdf") {
@@ -457,6 +506,9 @@ export class LocalFileViewerServer {
     return {
       content,
       metadata: [formatFileSize(stat.size), stat.mtime.toLocaleString()],
+      ...(classification.kind === "text" && isMarkdownFile(filePath)
+        ? { viewMode: "markdown" as const }
+        : {}),
     };
   }
 
@@ -485,6 +537,7 @@ export class LocalFileViewerServer {
         writeServerSentEvent(response, "update", JSON.stringify({
           content: snapshot.content,
           metadata: renderMetadata(snapshot.metadata),
+          viewMode: snapshot.viewMode ?? null,
         }));
       } catch {
         writeServerSentEvent(response, "unavailable", JSON.stringify({
@@ -637,11 +690,18 @@ function renderViewerPage(input: {
   metadata: string[];
   actions: Array<{ href: string; label: string }>;
   content: string;
+  viewMode?: "markdown";
   liveUpdates?: { eventsUrl: string; scriptPath: string };
 }): string {
   const metadata = renderMetadata(input.metadata);
   const actions = input.actions.length > 0
     ? `<nav class="actions">${input.actions.map((action) => `<a href="${escapeAttribute(action.href)}">${escapeHtml(action.label)}</a>`).join("")}</nav>`
+    : "";
+  const viewSwitch = input.viewMode === "markdown"
+    ? '<div class="view-switch" id="viewer-view-switch" role="tablist" aria-label="预览模式"><button class="is-active" type="button" role="tab" aria-selected="true" data-view-mode-button="rendered">预览</button><button type="button" role="tab" aria-selected="false" data-view-mode-button="code">代码</button></div>'
+    : "";
+  const toolbar = viewSwitch || actions
+    ? `<div class="toolbar">${viewSwitch}${actions}</div>`
     : "";
   const liveAttributes = input.liveUpdates
     ? ` data-events-url="${escapeAttribute(input.liveUpdates.eventsUrl)}"`
@@ -661,10 +721,15 @@ function renderViewerPage(input: {
     body { margin: 0; background: #f5f7fa; color: #1f2329; }
     header { position: sticky; top: 0; z-index: 2; padding: 7px 12px; background: rgba(255,255,255,.96); border-bottom: 1px solid #dfe3e8; }
     h1 { margin: 0; cursor: text; font: 600 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
-    .meta { display: flex; gap: 10px; align-items: center; min-height: 26px; margin-top: 3px; color: #646a73; font-size: 11px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; min-height: 26px; margin-top: 3px; color: #646a73; font-size: 11px; }
     .metadata-values { display: contents; }
-    .actions { margin-left: auto; display: flex; gap: 8px; }
+    .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .actions { display: flex; gap: 8px; }
     .actions a { color: #1456f0; text-decoration: none; padding: 3px 7px; border: 1px solid #c9d0db; border-radius: 4px; background: #fff; }
+    .view-switch { display: inline-flex; padding: 2px; border: 1px solid #c9d0db; border-radius: 5px; background: #f2f3f5; }
+    .view-switch[hidden] { display: none; }
+    .view-switch button { min-width: 46px; padding: 2px 8px; border: 0; border-radius: 3px; background: transparent; color: #646a73; cursor: pointer; font: inherit; }
+    .view-switch button.is-active { background: #fff; color: #1456f0; box-shadow: 0 1px 3px rgba(31,35,41,.16); }
     main { padding: 0; }
     .notice, .unsupported { margin: 8px; padding: 10px 12px; border: 1px solid #f3cf8f; background: #fff7e6; border-radius: 5px; }
     .code { margin: 0; padding: 6px 0; overflow: auto; border: 0; border-radius: 0; background: #fff; color: #1f2329; font-size: 13px; line-height: 1.5; tab-size: 2; }
@@ -681,6 +746,28 @@ function renderViewerPage(input: {
     .hljs-addition { background: #e6ffed; }
     .hljs-emphasis { font-style: italic; }
     .hljs-strong { font-weight: 700; }
+    body[data-view-mode="rendered"] [data-view-panel="code"], body[data-view-mode="code"] [data-view-panel="rendered"] { display: none; }
+    .markdown-body { max-width: 980px; margin: 0 auto; padding: 20px 28px 48px; background: #fff; font-size: 15px; line-height: 1.72; overflow-wrap: anywhere; }
+    .markdown-body > :first-child { margin-top: 0; }
+    .markdown-body > :last-child { margin-bottom: 0; }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { margin: 1.45em 0 .6em; line-height: 1.28; }
+    .markdown-body h1 { padding-bottom: .35em; border-bottom: 1px solid #dfe3e8; font-size: 2em; }
+    .markdown-body h2 { padding-bottom: .3em; border-bottom: 1px solid #eceff3; font-size: 1.5em; }
+    .markdown-body h3 { font-size: 1.25em; }
+    .markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body blockquote, .markdown-body table, .markdown-body pre { margin: 0 0 1em; }
+    .markdown-body ul, .markdown-body ol { padding-left: 1.8em; }
+    .markdown-body li + li { margin-top: .28em; }
+    .markdown-body blockquote { margin-left: 0; padding: .15em 1em; border-left: 4px solid #c9d0db; color: #646a73; }
+    .markdown-body a { color: #1456f0; text-decoration: none; }
+    .markdown-body a:hover { text-decoration: underline; }
+    .markdown-body code { padding: .14em .35em; border-radius: 4px; background: #f2f3f5; font-family: var(--viewer-code-font); font-size: .9em; }
+    .markdown-body .markdown-code-block { margin: 0 0 1em; padding: 14px 16px; overflow: auto; border-radius: 6px; background: #f6f8fa; line-height: 1.55; }
+    .markdown-body .markdown-code-block code { padding: 0; background: transparent; font-size: 13px; }
+    .markdown-body table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+    .markdown-body th, .markdown-body td { padding: 7px 12px; border: 1px solid #dfe3e8; text-align: left; }
+    .markdown-body th { background: #f5f7fa; }
+    .markdown-body img { max-width: 100%; height: auto; }
+    .markdown-body hr { height: 1px; margin: 1.5em 0; border: 0; background: #dfe3e8; }
     .media { display: grid; place-items: center; min-height: 220px; }
     .media img, .media video { max-width: 100%; max-height: calc(100vh - 70px); }
     .media audio { width: min(720px, 100%); }
@@ -704,7 +791,19 @@ function renderViewerPage(input: {
       .meta, .pagination { color: #a6a9ad; }
       .actions a, .pagination a { color: #8ab4ff; }
       .actions a { border-color: #55585c; background: #292a2d; }
+      .view-switch { border-color: #55585c; background: #292a2d; }
+      .view-switch button { color: #a6a9ad; }
+      .view-switch button.is-active { background: #3a3b3d; color: #8ab4ff; box-shadow: none; }
       .code, .directory-list { background: #202124; color: #e8eaed; border-color: #3a3b3d; }
+      .markdown-body { background: #202124; color: #e8eaed; }
+      .markdown-body h1, .markdown-body h2 { border-color: #3a3b3d; }
+      .markdown-body blockquote { color: #a6a9ad; border-color: #55585c; }
+      .markdown-body a { color: #8ab4ff; }
+      .markdown-body code { background: #303134; }
+      .markdown-body .markdown-code-block { background: #282a2d; }
+      .markdown-body th, .markdown-body td { border-color: #55585c; }
+      .markdown-body th { background: #292a2d; }
+      .markdown-body hr { background: #3a3b3d; }
       .directory-entry { border-color: #3a3b3d; }
       .directory-entry:hover { background: #292f3d; }
       .line-number { color: #8b9098; border-color: #3a3b3d; }
@@ -720,10 +819,10 @@ function renderViewerPage(input: {
     }
   </style>
 </head>
-<body${liveAttributes}>
+<body${input.viewMode === "markdown" ? ' data-view-mode="rendered"' : ""}${liveAttributes}>
   <header id="viewer-header">
     <h1 id="viewer-title" data-file-path="${escapeAttribute(input.filePath)}">${escapeHtml(input.filePath)}</h1>
-    <div class="meta"><span class="metadata-values" id="viewer-metadata">${metadata}</span>${actions}</div>
+    <div class="meta"><span class="metadata-values" id="viewer-metadata">${metadata}</span>${toolbar}</div>
   </header>
   <main id="viewer-content">${input.content}</main>
   ${liveScript}
@@ -974,6 +1073,14 @@ function renderText(value: string, filePath: string): string {
     const lineNumber = index + 1;
     return `<span class="line" id="L${lineNumber}"><a class="line-number" href="#L${lineNumber}">${lineNumber}</a>${line}</span>`;
   }).join("")}</code></pre>`;
+}
+
+function renderMarkdownDocument(value: string, filePath: string): string {
+  return `<article class="markdown-body" data-view-panel="rendered">${MARKDOWN_RENDERER.render(value)}</article><section data-view-panel="code">${renderText(value, filePath)}</section>`;
+}
+
+function isMarkdownFile(filePath: string): boolean {
+  return MARKDOWN_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function syntaxLanguageFor(filePath: string): string | undefined {

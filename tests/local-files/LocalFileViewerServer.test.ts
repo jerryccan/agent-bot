@@ -69,6 +69,45 @@ describe("LocalFileViewerServer", () => {
     expect(page).toContain('<code class="language-typescript">');
   });
 
+  test("renders Markdown by default and keeps a code view with line anchors", async () => {
+    const directory = createTemporaryDirectory();
+    const filePath = path.join(directory, "README.md");
+    fs.writeFileSync(filePath, [
+      "# Agent Bot",
+      "",
+      "Use **Markdown** safely.",
+      "",
+      "```ts",
+      "const ready = true;",
+      "```",
+      "",
+      "<script>alert('unsafe')</script>",
+      "",
+    ].join("\n"), "utf8");
+    const server = await startServer(directory);
+
+    const fileUrl = server.createFileUrl(filePath)!;
+    const page = await (await fetch(fileUrl)).text();
+    expect(page).toContain('<body data-view-mode="rendered"');
+    expect(page).toContain('id="viewer-view-switch"');
+    expect(page).toContain('data-view-mode-button="rendered">预览</button>');
+    expect(page).toContain('data-view-mode-button="code">代码</button>');
+    expect(page).toContain('<article class="markdown-body" data-view-panel="rendered"><h1>Agent Bot</h1>');
+    expect(page).toContain("Use <strong>Markdown</strong> safely.");
+    expect(page).toContain('<pre class="markdown-code-block hljs"><code class="language-ts">');
+    expect(page).toContain('&lt;script&gt;alert(\'unsafe\')&lt;/script&gt;');
+    expect(page).not.toContain("<script>alert('unsafe')</script>");
+    expect(page).toContain('<section data-view-panel="code"><pre class="code hljs">');
+    expect(page).toContain('id="L1"');
+
+    const script = await (await fetch(new URL("/assets/viewer.js", fileUrl))).text();
+    expect(script).toContain('document.body.dataset.viewMode === "code" ? "code" : "rendered"');
+    expect(script).toContain('button.addEventListener("click"');
+    expect(script).toContain('document.body.dataset.viewMode = mode === "code" ? "code" : "rendered"');
+    expect(script).toContain('if (/^#L\\d+$/u.test(window.location.hash)) document.body.dataset.viewMode = "code"');
+    expect(script).toContain('viewSwitch.hidden = update.viewMode !== "markdown"');
+  });
+
   test("keeps absolute paths readable while escaping query delimiters", async () => {
     const directory = createTemporaryDirectory();
     const nestedDirectory = path.join(directory, "folder & notes");

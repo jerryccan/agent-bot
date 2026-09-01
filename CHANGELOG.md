@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Render Markdown files by default in the local viewer, with a compact preview/code switch that preserves syntax-highlighted line anchors and live SSE updates.
+
 ## [0.1.17] - 2026-08-31
 
 - Use compact `/preview/<token>?path=<absolute-path>` local viewer URLs with readable forward-slash Windows paths and path-bound short tokens while preserving legacy links; add server-side highlighting, an enforced cross-platform monospace code font stack, copy-safe path selection, and header-aware highlighted line anchors that append the selected line number to the path, stream file changes through SSE without losing the reader's scroll position, reduce viewer spacing, and keep the absolute path visible in the header.
