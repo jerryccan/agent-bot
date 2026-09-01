@@ -1748,6 +1748,45 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("uses the source task directory for bang commands in an unbound anchored topic", async () => {
+    const { controller, runtime, store, listeners, shellCommandExecutor } = fixture();
+    const cwd = path.resolve("test-workspaces", "topic-shell-project");
+    await controller.onMessage(message(`/new --dir "${cwd}"`));
+    await controller.onMessage({
+      messageId: "om_topic_shell_source",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      text: "prepare the source task",
+    });
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    for (const listener of listeners) {
+      listener({
+        type: "turn_completed",
+        sessionId: sourceSessionId!,
+        turnId: "turn_1",
+        finalResponse: "source complete",
+      });
+    }
+
+    const topicContextKey = "chat_id:c1:thread_id:omt_topic_shell";
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      "omt_topic_shell",
+      "om_topic_shell_source",
+      "! git status",
+    ));
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(store.getUserContext(topicContextKey)?.currentSessionId).toBeUndefined();
+    expect(shellCommandExecutor).toHaveBeenCalledWith(
+      "git status",
+      cwd,
+      expect.objectContaining({ onOutput: expect.any(Function) }),
+    );
+  });
+
   test("browses the current task directory and navigates into a child directory in place", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-dir-browser-"));
     tempDirs.push(root);

@@ -1757,7 +1757,7 @@ export class ProxySessionController {
     }
     switch (command.type) {
       case "shell":
-        await this.runShellCommand(contextKey, command.command, messageId);
+        await this.runShellCommand(contextKey, command.command, messageId, incomingMessage);
         return;
       case "dir":
         await this.openDirectoryBrowser(contextKey, command.directory);
@@ -4963,8 +4963,9 @@ export class ProxySessionController {
     contextKey: string,
     command: string,
     sourceMessageId?: string,
+    incomingMessage?: IncomingMessage,
   ): Promise<void> {
-    const cwd = this.currentSession(contextKey)?.cwd ?? this.config.defaults.cwd;
+    const cwd = this.shellCommandCwd(contextKey, incomingMessage);
     const created = await this.shellCommandJobs.createJob({ contextKey, sourceMessageId, command, cwd });
     let cardMessageId: string | undefined;
     const initialState: ShellCommandCardView = {
@@ -5008,6 +5009,28 @@ export class ProxySessionController {
       }
       throw error;
     }
+  }
+
+  private shellCommandCwd(contextKey: string, incomingMessage?: IncomingMessage): string {
+    const current = this.currentSession(contextKey);
+    if (current) return current.cwd;
+
+    if (incomingMessage?.threadContext) {
+      const anchor = threadForkAnchorMessageIds(incomingMessage)
+        .map((messageId) => this.store.findTurnAnchorByMessageId(messageId))
+        .find((candidate) => candidate !== undefined);
+      const source = anchor?.contextKey
+        ? this.store.getSessionForContext(anchor.localSessionId, anchor.contextKey)
+        : anchor
+          ? this.store.getSession(anchor.localSessionId)
+          : undefined;
+      const sourceContextKey = anchor?.contextKey ?? source?.contextKey;
+      if (source && sourceContextKey && baseChatContextKey(sourceContextKey) === baseChatContextKey(contextKey)) {
+        return source.cwd;
+      }
+    }
+
+    return this.config.defaults.cwd;
   }
 
   private monitorShellCommandJob(

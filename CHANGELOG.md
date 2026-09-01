@@ -6,6 +6,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Run bang commands in an unbound Lark topic from the source task's project directory instead of falling back to the Agent Bot Profile directory.
 - Render Markdown files by default in the local viewer, with a compact preview/code switch that preserves syntax-highlighted line anchors and live SSE updates.
 
 ## [0.1.17] - 2026-08-31
