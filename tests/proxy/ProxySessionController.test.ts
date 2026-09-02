@@ -3609,6 +3609,63 @@ describe("ProxySessionController", () => {
 
   });
 
+  test("forkgroup uses the locally persisted completed Turn without reading a running task's full history", async () => {
+    const { controller, runtime, sessions, remoteSessions, store, outbound } = fixture();
+    await controller.onMessage(message("completed source work"));
+    const sourceSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(sourceSessionId).toBeDefined();
+    store.saveTurnSnapshot("turn_1", sourceSessionId!, {
+      sessionId: sourceSessionId!,
+      turnId: "turn_1",
+      prompt: "completed source work",
+      status: "completed",
+      startedAt: 1,
+      completedAt: 10,
+    }, "chat_id:c1");
+
+    sessions.get(sourceSessionId!)!.activeTurnId = "turn_running";
+    Object.assign(remoteSessions.find((session) => session.id === "thr_1")!, {
+      status: "active",
+      lastTurnId: "turn_running",
+      lastTurnStatus: "inProgress",
+    });
+    store.saveTurnSnapshot("turn_running", sourceSessionId!, {
+      sessionId: sourceSessionId!,
+      turnId: "turn_running",
+      status: "running",
+      startedAt: 20,
+    }, "chat_id:c1");
+    store.updateSession(sourceSessionId!, { status: "running" });
+    store.updateRuntimeSession(sourceSessionId!, {
+      lastTurnId: "turn_running",
+      lastTurnStatus: "running",
+    });
+    vi.mocked(runtime.readRemoteSession!).mockRejectedValue(
+      new Error("App Server request timed out: thread/read"),
+    );
+
+    await controller.onMessage({
+      messageId: "fork-running-group-with-local-history",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/forkgroup fix build",
+    });
+
+    expect(runtime.readRemoteSession).not.toHaveBeenCalled();
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: "thr_1",
+      lastTurnId: "turn_1",
+      title: "fix build",
+    }));
+    expect(outbound.createGroup).toHaveBeenCalledOnce();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      expect.stringContaining("已从当前任务最近已完成轮次创建分支。"),
+    );
+  });
+
   test("shows every inherited remote Turn in the new group's Turn card without local source snapshots", async () => {
     const { controller, remoteSessions, store, outbound } = fixture();
     const sourceSessionId = "source-without-turn-snapshot";

@@ -2817,10 +2817,35 @@ export class ProxySessionController {
     if (!runtime.readRemoteSession && !source) {
       throw new Error("当前 App Server Agent 不支持读取指定任务。");
     }
-    remote ??= runtime.readRemoteSession
-      ? await runtime.readRemoteSession(remoteSessionId)
-      : undefined;
-    const latestTurnId = remote?.lastTurnId ?? source?.lastTurnId;
+    const persistedCompletedTurns = source ? this.localForkCompletedTurns(source) : [];
+    const sourceLastSnapshot = turnViewSnapshot(
+      source?.lastTurnId ? this.store.getTurnSnapshot(source.lastTurnId) : undefined,
+    );
+    const localCompletedTurns = persistedCompletedTurns.length > 0
+      ? persistedCompletedTurns
+      : source?.lastTurnId
+          && (source.lastTurnStatus === "completed" || sourceLastSnapshot?.status === "completed")
+        ? [{
+            id: source.lastTurnId,
+            prompt: latestUserPromptFromTurnView(sourceLastSnapshot) ?? source.title,
+            startedAt: sourceLastSnapshot?.startedAt ?? parseIsoTimestamp(source.updatedAt),
+            completedAt: sourceLastSnapshot?.completedAt
+              ?? sourceLastSnapshot?.startedAt
+              ?? parseIsoTimestamp(source.updatedAt),
+          }]
+        : [];
+    if (!remote && runtime.readRemoteSession && (!source || persistedCompletedTurns.length === 0)) {
+      try {
+        remote = await runtime.readRemoteSession(remoteSessionId);
+      } catch (error) {
+        if (localCompletedTurns.length === 0) throw error;
+        this.logger.warn(
+          { error, contextKey, remoteSessionId, sourceTurnId: localCompletedTurns.at(-1)?.id },
+          "Failed to read the complete source task before Fork; using the locally persisted completed Turn.",
+        );
+      }
+    }
+    const latestTurnId = remote?.lastTurnId ?? source?.lastTurnId ?? localCompletedTurns.at(-1)?.id;
     const latestSnapshot = turnViewSnapshot(latestTurnId ? this.store.getTurnSnapshot(latestTurnId) : undefined);
     const isRunning = remote
       ? isRemoteSessionActive(remote)
@@ -2829,7 +2854,9 @@ export class ProxySessionController {
         || source?.lastTurnStatus === "running"
         || isTurnStillRunning(latestSnapshot?.status),
       );
-    const lastTurnId = isRunning ? remote?.lastCompletedTurnId : latestTurnId;
+    const lastTurnId = remote?.lastCompletedTurnId
+      ?? (remote?.lastTurnStatus === "completed" ? remote.lastTurnId : undefined)
+      ?? localCompletedTurns.at(-1)?.id;
     if (!lastTurnId) {
       if (isRunning) {
         throw new Error(`${sourceLabel}正在执行，且还没有已完成轮次可供 fork。请等待当前轮次完成后重试。`);
@@ -2837,7 +2864,9 @@ export class ProxySessionController {
       throw new Error(`${sourceLabel}还没有可供 fork 的轮次。请先完成至少一轮对话。`);
     }
     const snapshot = turnViewSnapshot(this.store.getTurnSnapshot(lastTurnId));
-    const forkedFromHistoricalTurn = isRunning && lastTurnId !== latestTurnId;
+    const forkedFromHistoricalTurn = lastTurnId !== latestTurnId;
+    const completedTurn = (remote?.completedTurns ?? localCompletedTurns)
+      .find((turn) => turn.id === lastTurnId);
 
     const cwd = remote?.cwd || source?.cwd;
     if (!cwd) throw new Error("指定的 App Server 任务没有可用的工作目录，暂时不能 fork。");
@@ -2849,6 +2878,7 @@ export class ProxySessionController {
     const permissionMode = source?.permissionMode ?? "auto";
     const sourceTurnPrompt = truncateText(
       latestUserPromptFromTurnView(snapshot)
+        ?? completedTurn?.prompt
         ?? (lastTurnId === latestTurnId ? remote?.lastUserPrompt : undefined)
         ?? remote?.preview
         ?? source?.title
@@ -2858,6 +2888,8 @@ export class ProxySessionController {
     );
     const sourceTurnCompletedAt = snapshot?.completedAt
       ?? snapshot?.startedAt
+      ?? completedTurn?.completedAt
+      ?? completedTurn?.startedAt
       ?? (lastTurnId === latestTurnId
         ? latestRemoteTimestamp(remote?.recencyAt, remote?.updatedAt)
         : undefined)
@@ -2876,18 +2908,31 @@ export class ProxySessionController {
       model,
       reasoningEffort,
       permissionMode,
-      lastTurnStatus: forkedFromHistoricalTurn
-        ? "completed"
-        : mapRemoteTurnStatus(remote?.lastTurnStatus)
-        ?? forkedTurnStatus(snapshot?.status)
-        ?? source?.lastTurnStatus,
+      lastTurnStatus: "completed",
       sourceTurnPrompt,
       sourceTurnStartedAt: snapshot?.startedAt ?? sourceTurnCompletedAt,
       sourceTurnCompletedAt,
-      sourceCompletedTurns: remote?.completedTurns ?? [],
+      sourceCompletedTurns: remote?.completedTurns
+        ?? (persistedCompletedTurns.length > 0 ? [] : localCompletedTurns),
       sourceWasRunning: isRunning,
       forkedFromHistoricalTurn,
     };
+  }
+
+  private localForkCompletedTurns(source: SessionRecord): RemoteCompletedTurnSummary[] {
+    return this.store.listTaskTurnGraph(source.localSessionId)
+      .slice()
+      .reverse()
+      .map((record) => {
+        const snapshot = turnViewSnapshot(record.snapshot);
+        const startedAt = snapshot?.startedAt ?? parseIsoTimestamp(record.updatedAt);
+        return {
+          id: record.turnId,
+          prompt: latestUserPromptFromTurnView(snapshot),
+          startedAt,
+          completedAt: snapshot?.completedAt ?? startedAt,
+        };
+      });
   }
 
   private async prepareForkGroupSession(
