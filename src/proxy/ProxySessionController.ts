@@ -5010,7 +5010,7 @@ export class ProxySessionController {
     sourceMessageId?: string,
     incomingMessage?: IncomingMessage,
   ): Promise<void> {
-    const cwd = this.shellCommandCwd(contextKey, incomingMessage);
+    const cwd = await this.shellCommandCwd(contextKey, incomingMessage);
     const created = await this.shellCommandJobs.createJob({ contextKey, sourceMessageId, command, cwd });
     let cardMessageId: string | undefined;
     const initialState: ShellCommandCardView = {
@@ -5056,12 +5056,13 @@ export class ProxySessionController {
     }
   }
 
-  private shellCommandCwd(contextKey: string, incomingMessage?: IncomingMessage): string {
+  private async shellCommandCwd(contextKey: string, incomingMessage?: IncomingMessage): Promise<string> {
     const current = this.currentSession(contextKey);
     if (current) return current.cwd;
 
     if (incomingMessage?.threadContext) {
-      const anchor = threadForkAnchorMessageIds(incomingMessage)
+      const anchorMessageIds = threadForkAnchorMessageIds(incomingMessage);
+      const anchor = anchorMessageIds
         .map((messageId) => this.store.findTurnAnchorByMessageId(messageId))
         .find((candidate) => candidate !== undefined);
       const source = anchor?.contextKey
@@ -5073,6 +5074,19 @@ export class ProxySessionController {
       if (source && sourceContextKey && baseChatContextKey(sourceContextKey) === baseChatContextKey(contextKey)) {
         return source.cwd;
       }
+
+      for (const messageId of anchorMessageIds) {
+        const commandJob = await this.shellCommandJobs.findJobByCardMessageId(messageId);
+        if (commandJob && baseChatContextKey(commandJob.contextKey) === baseChatContextKey(contextKey)) {
+          return commandJob.cwd;
+        }
+      }
+
+      const baseContextKey = baseChatContextKey(contextKey);
+      const baseSession = this.currentSession(baseContextKey);
+      if (baseSession) return baseSession.cwd;
+      const boundProjectCwd = this.store.getUserContext(baseContextKey)?.boundProjectCwd;
+      if (boundProjectCwd) return boundProjectCwd;
     }
 
     return this.config.defaults.cwd;

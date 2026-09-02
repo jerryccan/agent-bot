@@ -52,6 +52,7 @@ export interface ShellCommandJobSnapshot extends ShellCommandJobSpec, Omit<Shell
 export interface ShellCommandJobManagerLike {
   createJob(input: Pick<ShellCommandJobSpec, "contextKey" | "sourceMessageId" | "command" | "cwd">): Promise<ShellCommandJobSnapshot>;
   bindCard(jobId: string, cardMessageId: string): Promise<ShellCommandJobSnapshot>;
+  findJobByCardMessageId(cardMessageId: string): Promise<ShellCommandJobSnapshot | undefined>;
   startJob(jobId: string): Promise<void>;
   failJob(jobId: string, error: string): Promise<void>;
   readJob(jobId: string): Promise<ShellCommandJobSnapshot>;
@@ -68,6 +69,7 @@ export interface ShellCommandJobManagerOptions {
 export class ShellCommandJobManager implements ShellCommandJobManagerLike {
   private readonly runnerEntry: string;
   private readonly spawnRunner: (entry: string, jobDirectory: string) => Promise<void>;
+  private readonly jobIdByCardMessageId = new Map<string, string>();
 
   constructor(
     private readonly jobsRoot: string,
@@ -102,7 +104,35 @@ export class ShellCommandJobManager implements ShellCommandJobManagerLike {
     const jobDirectory = this.jobDirectory(jobId);
     const spec = await readJson<ShellCommandJobSpec>(path.join(jobDirectory, JOB_SPEC_FILE));
     await writeJsonAtomic(path.join(jobDirectory, JOB_SPEC_FILE), { ...spec, cardMessageId });
+    this.jobIdByCardMessageId.set(cardMessageId, jobId);
     return this.readJob(jobId);
+  }
+
+  async findJobByCardMessageId(cardMessageId: string): Promise<ShellCommandJobSnapshot | undefined> {
+    const cachedJobId = this.jobIdByCardMessageId.get(cardMessageId);
+    if (cachedJobId) {
+      try {
+        return await this.readJob(cachedJobId);
+      } catch {
+        this.jobIdByCardMessageId.delete(cardMessageId);
+      }
+    }
+
+    const entries = await fs.readdir(this.jobsRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const spec = await readJson<ShellCommandJobSpec>(path.join(this.jobsRoot, entry.name, JOB_SPEC_FILE));
+        if (spec.cardMessageId) this.jobIdByCardMessageId.set(spec.cardMessageId, spec.id);
+        if (spec.cardMessageId === cardMessageId) return this.readJob(spec.id);
+      } catch {
+        // Ignore partially written or unrelated job directories while rebuilding the card index.
+      }
+    }
+    return undefined;
   }
 
   async startJob(jobId: string): Promise<void> {

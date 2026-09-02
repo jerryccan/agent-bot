@@ -18,6 +18,27 @@ afterEach(async () => {
 }, 15_000);
 
 describe("ShellCommandJobManager", () => {
+  test("finds a persisted job by its command card message ID", async () => {
+    const root = createJobsRoot();
+    const manager = testManager(root);
+    const created = await manager.createJob({
+      contextKey: "chat_id:test",
+      command: "git status",
+      cwd: process.cwd(),
+    });
+    await manager.bindCard(created.id, "card_persisted");
+
+    const recovered = await testManager(root).findJobByCardMessageId("card_persisted");
+
+    expect(recovered).toMatchObject({
+      id: created.id,
+      cardMessageId: "card_persisted",
+      cwd: process.cwd(),
+      command: "git status",
+    });
+    expect(await testManager(root).findJobByCardMessageId("card_missing")).toBeUndefined();
+  });
+
   test("runs independently and persists output for recovery", async () => {
     const root = createJobsRoot();
     const manager = testManager(root);

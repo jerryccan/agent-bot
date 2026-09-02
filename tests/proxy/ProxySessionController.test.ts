@@ -87,6 +87,11 @@ class FakeShellCommandJobManager implements ShellCommandJobManagerLike {
     return job;
   }
 
+  async findJobByCardMessageId(cardMessageId: string): Promise<ShellCommandJobSnapshot | undefined> {
+    const job = [...this.jobs.values()].find((candidate) => candidate.cardMessageId === cardMessageId);
+    return job ? { ...job } : undefined;
+  }
+
   async startJob(jobId: string): Promise<void> {
     const job = this.requireJob(jobId);
     this.jobs.set(jobId, { ...job, status: "running", updatedAt: Date.now() });
@@ -1781,6 +1786,27 @@ describe("ProxySessionController", () => {
     expect(runtime.forkSession).not.toHaveBeenCalled();
     expect(store.getUserContext(topicContextKey)?.currentSessionId).toBeUndefined();
     expect(shellCommandExecutor).toHaveBeenCalledWith(
+      "git status",
+      cwd,
+      expect.objectContaining({ onOutput: expect.any(Function) }),
+    );
+  });
+
+  test("uses the source command directory for bang commands replying to a command card", async () => {
+    const { controller, shellCommandExecutor } = fixture();
+    const cwd = path.resolve("test-workspaces", "topic-shell-command-project");
+    await controller.onMessage(message(`/new --dir "${cwd}"`));
+    await controller.onMessage(message("! git stash"));
+
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      "omt_topic_shell_command",
+      "card",
+      "! git status",
+    ));
+
+    expect(shellCommandExecutor).toHaveBeenLastCalledWith(
       "git status",
       cwd,
       expect.objectContaining({ onOutput: expect.any(Function) }),
