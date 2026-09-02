@@ -284,8 +284,11 @@ function toIncomingMessage(
 }
 
 function mentionsOpenId(value: unknown, openId: string): boolean {
-  return Array.isArray(value) && value.some((mention) =>
-    isRecord(mention) && mention.id === openId);
+  return Array.isArray(value) && value.some((mention) => {
+    if (!isRecord(mention)) return false;
+    if (mention.id === openId || mention.open_id === openId) return true;
+    return isRecord(mention.id) && mention.id.open_id === openId;
+  });
 }
 
 function parseMessageContent(

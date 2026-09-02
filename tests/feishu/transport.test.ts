@@ -718,7 +718,12 @@ test("marks current-bot mentions while all group messages remain enabled", async
       chat_type: "group",
       message_type: "text",
       content: JSON.stringify({ text: "@_user_1 /status" }),
-      mentions: [{ key: "@_user_1", id: "ou_current_bot", id_type: "open_id" }],
+      mentions: [{
+        key: "@_user_1",
+        id: { open_id: "ou_current_bot" },
+        mentioned_type: "bot",
+        name: "Agent Bot",
+      }],
     },
     sender: { sender_id: { open_id: "ou_member" } },
   });
@@ -728,6 +733,46 @@ test("marks current-bot mentions while all group messages remain enabled", async
     messageId: "om_all_messages_mention",
     mentionedBot: true,
     text: "/status",
+  }));
+});
+
+test("keeps legacy flat mention IDs compatible", async () => {
+  const config = {
+    feishu: {
+      transport: "sdk",
+      appId: "cli_app",
+      appSecret: "secret",
+      respondToAllGroupMessages: true,
+      useConsoleWhenMissingCredentials: true,
+    },
+  } as AppConfig;
+  const handler = { onMessage: vi.fn(), onCardAction: vi.fn() };
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+  const connector = new FeishuConnector(
+    config,
+    handler,
+    logger,
+    async () => "ou_current_bot",
+    vi.fn(),
+  );
+
+  await connector.start();
+  await larkSdkMock.handlers["im.message.receive_v1"]({
+    message: {
+      message_id: "om_legacy_flat_mention",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: "@_user_1 /status" }),
+      mentions: [{ key: "@_user_1", id: "ou_current_bot", id_type: "open_id" }],
+    },
+    sender: { sender_id: { open_id: "ou_member" } },
+  });
+
+  await vi.waitFor(() => expect(handler.onMessage).toHaveBeenCalledOnce());
+  expect(handler.onMessage).toHaveBeenCalledWith(expect.objectContaining({
+    messageId: "om_legacy_flat_mention",
+    mentionedBot: true,
   }));
 });
 

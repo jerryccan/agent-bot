@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Recognize current-bot mentions from the nested identity payload used by current Lark SDK events while preserving legacy flat mention IDs, so muted groups still accept explicitly mentioned commands.
+
 ## [0.1.18-alpha.0] - 2026-09-01
 
 - Run bang commands in an unbound Lark topic from the source task's project directory instead of falling back to the Agent Bot Profile directory.
