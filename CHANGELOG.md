@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.18-alpha.1] - 2026-09-02
+
 - Recognize current-bot mentions from the nested identity payload used by current Lark SDK events while preserving legacy flat mention IDs, so muted groups still accept explicitly mentioned commands.
 - Fork from locally persisted completed Turns without waiting for a full remote task read, preserving a usable source Turn when the App Server task is active or its history request fails.
 - Run bang commands in topics rooted at historical command cards from the card's persisted project directory, with the current group task as a fallback instead of the Agent Bot Profile directory.
