@@ -1318,6 +1318,115 @@ describe("CodexRuntime", () => {
     }));
   });
 
+  test("reads paginated thread history through thread/turns/list", async () => {
+    const client = new FakeAppServerClient();
+    client.readErrors.push(new AppServerRequestError(
+      "thread/read",
+      -32602,
+      "paginated threads do not support thread/read(includeTurns=true)",
+    ));
+    client.readResult = {
+      thread: {
+        id: "paginated_thread",
+        name: "Paginated task",
+        cwd: "D:\\work\\paginated",
+        source: "vscode",
+        status: { type: "notLoaded" },
+        turns: [],
+      },
+    };
+    client.turnListResults.push(
+      {
+        data: [{
+          id: "turn_1",
+          status: "completed",
+          items: [{ type: "userMessage", content: [{ type: "text", text: "First request" }] }],
+        }],
+        nextCursor: "page_2",
+      },
+      {
+        data: [{
+          id: "turn_2",
+          status: "completed",
+          items: [{ type: "userMessage", content: [{ type: "text", text: "Latest request" }] }],
+        }],
+        nextCursor: null,
+      },
+    );
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.readRemoteSession("paginated_thread")).resolves.toEqual(expect.objectContaining({
+      id: "paginated_thread",
+      lastTurnId: "turn_2",
+      lastCompletedTurnId: "turn_2",
+      lastUserPrompt: "Latest request",
+      completedTurns: [
+        expect.objectContaining({ id: "turn_1", prompt: "First request" }),
+        expect.objectContaining({ id: "turn_2", prompt: "Latest request" }),
+      ],
+    }));
+    expect(client.requests).toEqual(expect.arrayContaining([
+      {
+        method: "thread/read",
+        params: { threadId: "paginated_thread", includeTurns: true },
+      },
+      {
+        method: "thread/read",
+        params: { threadId: "paginated_thread", includeTurns: false },
+      },
+      {
+        method: "thread/turns/list",
+        params: {
+          threadId: "paginated_thread",
+          limit: 100,
+          sortDirection: "asc",
+          itemsView: "full",
+        },
+      },
+      {
+        method: "thread/turns/list",
+        params: {
+          threadId: "paginated_thread",
+          cursor: "page_2",
+          limit: 100,
+          sortDirection: "asc",
+          itemsView: "full",
+        },
+      },
+    ]));
+  });
+
+  test("reads metadata without Turns for an unmaterialized thread", async () => {
+    const client = new FakeAppServerClient();
+    client.readErrors.push(new AppServerRequestError(
+      "thread/read",
+      -32602,
+      "thread empty_thread is not materialized yet; includeTurns is unavailable before first user message",
+    ));
+    client.readResult = {
+      thread: {
+        id: "empty_thread",
+        name: "Empty task",
+        cwd: "D:\\work\\empty",
+        source: "appServer",
+        status: { type: "notLoaded" },
+        turns: [],
+      },
+    };
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.readRemoteSession("empty_thread")).resolves.toEqual(expect.objectContaining({
+      id: "empty_thread",
+      title: "Empty task",
+      completedTurns: [],
+    }));
+    expect(client.requests).toContainEqual({
+      method: "thread/read",
+      params: { threadId: "empty_thread", includeTurns: false },
+    });
+    expect(client.requests.some((request) => request.method === "thread/turns/list")).toBe(false);
+  });
+
   test("falls back to updated_at when an App Server rejects recency_at sorting", async () => {
     const client = new FakeAppServerClient();
     client.listErrors.push(new AppServerRequestError(
@@ -1424,6 +1533,8 @@ class FakeAppServerClient {
   forkResult: unknown = { thread: { id: "thr_forked", turns: [] }, model: "gpt-test", reasoningEffort: "medium" };
   forkErrors: Error[] = [];
   readResult: unknown = { thread: { id: "thr_1", name: null, preview: "" } };
+  readErrors: Error[] = [];
+  turnListResults: unknown[] = [];
   listResult: unknown = { data: [], nextCursor: null };
   listErrors: Error[] = [];
   turnStartErrors: Error[] = [];
@@ -1445,7 +1556,14 @@ class FakeAppServerClient {
       if (error) throw error;
       return this.forkResult as T;
     }
-    if (method === "thread/read") return this.readResult as T;
+    if (method === "thread/read") {
+      const error = this.readErrors.shift();
+      if (error) throw error;
+      return this.readResult as T;
+    }
+    if (method === "thread/turns/list") {
+      return (this.turnListResults.shift() ?? { data: [], nextCursor: null }) as T;
+    }
     if (method === "thread/list") {
       const error = this.listErrors.shift();
       if (error) throw error;

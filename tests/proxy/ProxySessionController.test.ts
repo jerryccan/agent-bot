@@ -3979,6 +3979,26 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("reports an unmaterialized external task as having no completed Turn to fork", async () => {
+    const { controller, runtime, remoteSessions, outbound } = fixture();
+    remoteSessions.push({
+      id: "empty_external_task",
+      title: "Empty external task",
+      cwd: "D:\\work\\empty-external",
+      source: "app-server",
+      status: "not_loaded",
+      completedTurns: [],
+    });
+
+    await controller.onMessage(message("/fork empty_external_task"));
+
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      "指定任务还没有可供 fork 的轮次。请先完成至少一轮对话。",
+    );
+  });
+
   test("resolves a fork source by its latest sessions-list sequence number", async () => {
     const { controller, runtime, remoteSessions, store } = fixture();
     remoteSessions.push(

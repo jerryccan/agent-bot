@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fork paginated Codex tasks through the App Server `thread/turns/list` API, and report an unmaterialized empty task as having no completed Turn instead of exposing raw `thread/read(includeTurns=true)` errors.
+
 ## [0.1.18-alpha.1] - 2026-09-02
 
 - Recognize current-bot mentions from the nested identity payload used by current Lark SDK events while preserving legacy flat mention IDs, so muted groups still accept explicitly mentioned commands.

@@ -39,6 +39,7 @@ const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
 const SESSION_REQUEST_TIMEOUT_MS = 60_000;
 const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const SYNC_REQUEST_TIMEOUT_MS = 5_000;
+const THREAD_TURN_PAGE_SIZE = 100;
 // A timed-out fork keeps running in App Server and can create an orphan thread.
 // Wait for its response; connection closure still rejects the request.
 const FORK_REQUEST_TIMEOUT_MS = 0;
@@ -291,11 +292,8 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async readRemoteSession(remoteSessionId: string): Promise<RemoteSessionSummary> {
-    const response = await (await this.client()).request<ThreadReadResponse>(
-      "thread/read",
-      { threadId: remoteSessionId, includeTurns: true },
-      SYNC_REQUEST_TIMEOUT_MS,
-    );
+    const client = await this.client();
+    const response = await this.readThreadWithTurns(client, remoteSessionId);
     const summary = remoteSessionSummary(response.thread);
     const activeThreads = await this.localActivityDetector?.activeThreads([remoteSessionId]);
     const activeSummary = activeThreads ? markLocallyDetectedActive(summary, activeThreads) : summary;
@@ -304,6 +302,71 @@ export class CodexRuntime implements AgentRuntime {
       ...activeSummary,
       ...settings?.get(remoteSessionId),
     };
+  }
+
+  private async readThreadWithTurns(
+    client: AppServerClient,
+    remoteSessionId: string,
+  ): Promise<ThreadReadResponse> {
+    try {
+      return await client.request<ThreadReadResponse>(
+        "thread/read",
+        { threadId: remoteSessionId, includeTurns: true },
+        SYNC_REQUEST_TIMEOUT_MS,
+      );
+    } catch (error) {
+      const paginated = isPaginatedThreadReadError(error);
+      if (!paginated && !isUnmaterializedThreadReadError(error)) throw error;
+
+      const metadata = await client.request<ThreadReadResponse>(
+        "thread/read",
+        { threadId: remoteSessionId, includeTurns: false },
+        SYNC_REQUEST_TIMEOUT_MS,
+      );
+      if (!paginated) return { thread: { ...metadata.thread, turns: [] } };
+
+      return {
+        thread: {
+          ...metadata.thread,
+          turns: await this.listThreadTurns(client, remoteSessionId),
+        },
+      };
+    }
+  }
+
+  private async listThreadTurns(
+    client: AppServerClient,
+    remoteSessionId: string,
+  ): Promise<CodexTurnSnapshot[]> {
+    const turns: CodexTurnSnapshot[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const response = await client.request<ThreadTurnsListResponse>(
+        "thread/turns/list",
+        {
+          threadId: remoteSessionId,
+          ...(cursor ? { cursor } : {}),
+          limit: THREAD_TURN_PAGE_SIZE,
+          sortDirection: "asc",
+          itemsView: "full",
+        },
+        SYNC_REQUEST_TIMEOUT_MS,
+      );
+      turns.push(...response.data);
+      const nextCursor = response.nextCursor ?? undefined;
+      if (!nextCursor) break;
+      if (seenCursors.has(nextCursor)) {
+        this.logger.warn(
+          { remoteSessionId, cursor: nextCursor },
+          "App Server repeated a thread Turn pagination cursor; stopping pagination.",
+        );
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    } while (cursor);
+    return turns;
   }
 
   async inspectRemoteSessionActivity(remoteSessionId: string): Promise<RemoteSessionActivity> {
@@ -984,6 +1047,11 @@ interface ThreadListResponse {
   nextCursor?: string | null;
 }
 
+interface ThreadTurnsListResponse {
+  data: CodexTurnSnapshot[];
+  nextCursor?: string | null;
+}
+
 interface CodexThreadSnapshot {
   id: string;
   name?: string | null;
@@ -1117,6 +1185,27 @@ function isUnsupportedRecencySortError(error: unknown): boolean {
   const details = `${error.serverMessage} ${data}`;
   return /recency_at/i.test(details)
     && /unknown|unrecognized|unexpected|unsupported|not supported|invalid/i.test(details);
+}
+
+function isPaginatedThreadReadError(error: unknown): boolean {
+  const details = appServerErrorDetails(error);
+  return /paginated threads?[^\n]*do(?:es)? not support[^\n]*thread\/read[^\n]*includeTurns\s*=\s*true/i.test(details);
+}
+
+function isUnmaterializedThreadReadError(error: unknown): boolean {
+  const details = appServerErrorDetails(error);
+  return /thread[^\n]*(?:not materialized|not loaded)[^\n]*includeTurns[^\n]*(?:unavailable|before first user message)/i
+    .test(details);
+}
+
+function appServerErrorDetails(error: unknown): string {
+  if (!(error instanceof AppServerRequestError)) return error instanceof Error ? error.message : String(error);
+  const data = typeof error.data === "string"
+    ? error.data
+    : error.data === undefined
+      ? ""
+      : JSON.stringify(error.data);
+  return `${error.message} ${error.serverMessage} ${data}`;
 }
 
 function remoteSessionSummary(thread: CodexThreadSnapshot): RemoteSessionSummary {
