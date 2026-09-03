@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.18-alpha.2] - 2026-09-03
+
 - Fork paginated Codex tasks through the App Server `thread/turns/list` API, and report an unmaterialized empty task as having no completed Turn instead of exposing raw `thread/read(includeTurns=true)` errors.
 
 ## [0.1.18-alpha.1] - 2026-09-02
