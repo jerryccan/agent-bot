@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Remove PowerShell terminal-title, hyperlink, and other control sequences from command output cards so invisible terminal metadata is not rendered as stray characters in Lark.
+
 ## [0.1.18-alpha.2] - 2026-09-03
 
 - Fork paginated Codex tasks through the App Server `thread/turns/list` API, and report an unmaterialized empty task as having no completed Turn instead of exposing raw `thread/read(includeTurns=true)` errors.

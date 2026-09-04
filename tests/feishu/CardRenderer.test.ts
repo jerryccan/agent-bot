@@ -103,6 +103,34 @@ describe("CardRenderer", () => {
     expect(content).not.toContain("\r");
   });
 
+  test("removes terminal title and hyperlink control sequences from shell output", () => {
+    const card = new CardRenderer().renderShellCommandCard({
+      command: "node task.mjs",
+      cwd: "D:\\dev\\agent-bot",
+      output: [
+        "load shell init\n",
+        "\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007",
+        "{\n  \"ok\": false\n}\n",
+        "\u001b]8;;https://example.com\u001b\\link\u001b]8;;\u001b\\\n",
+        "\u0000plain output",
+      ].join(""),
+      status: "failed",
+      elapsedMs: 2_700,
+      exitCode: 1,
+      outputTruncated: false,
+    });
+    const content = collectObjects(card)
+      .filter((item) => item.tag === "markdown")
+      .map((item) => String(item.content ?? ""))
+      .join("\n");
+
+    expect(content).toContain("load shell init\n{\n  \"ok\": false");
+    expect(content).toContain("link\nplain output");
+    expect(content).not.toContain("pwsh.exe");
+    expect(content).not.toContain("example.com");
+    expect(content).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+  });
+
   test("keeps auto-sized execution-setting tabs on one dot-separated row", () => {
     const card = new CardRenderer().renderExecutionSettings({
       sessionId: "session_1",
