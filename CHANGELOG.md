@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-09-04
+
+- Promote 0.1.18-alpha.3 to the stable release channel.
+
 ## [0.1.18-alpha.3] - 2026-09-04
 
 - Remove PowerShell terminal-title, hyperlink, and other control sequences from command output cards so invisible terminal metadata is not rendered as stray characters in Lark.
