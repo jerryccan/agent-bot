@@ -29,6 +29,19 @@ export function localizeCliErrorMessage(
   return message;
 }
 
+export function controlFailureMessage(
+  message: string | undefined,
+  language: CliLanguage = cliLanguage,
+): string {
+  const detail = message?.trim();
+  if (detail) return detail;
+  return cliText(
+    "Agent Bot control operation failed. Check the server logs for details.",
+    "Agent Bot 控制操作失败，请查看服务日志了解详情。",
+    language,
+  );
+}
+
 function systemLocale(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().locale || "en";

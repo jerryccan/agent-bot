@@ -4746,6 +4746,111 @@ describe("ProxySessionController", () => {
     );
   });
 
+  test("creates a group attached to an existing external Session without creating or forking a task", async () => {
+    const { controller, runtime, remoteSessions, outbound, presenter, store } = fixture();
+    remoteSessions.push({
+      id: "019f-existing",
+      title: "Existing Codex work",
+      cwd: process.cwd(),
+      source: "codex",
+      status: "idle",
+      lastTurnId: "turn_existing",
+      lastTurnStatus: "completed",
+    });
+
+    await controller.onMessage({
+      messageId: "attach-existing-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup Review room --session codex://threads/019f-existing",
+    });
+
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(outbound.createGroup).toHaveBeenCalledWith({
+      name: expect.stringContaining("Review room"),
+      userOpenId: "ou_current_user",
+      avatarPng: expect.any(Uint8Array),
+    });
+    const taskId = store.getUserContext("chat_id:oc_new_group")?.currentSessionId;
+    expect(taskId).toBeDefined();
+    expect(store.getSession(taskId!)).toMatchObject({
+      contextKey: "chat_id:oc_new_group",
+      remoteSessionId: "019f-existing",
+      title: "Existing Codex work",
+      lastTurnId: "turn_existing",
+      lastTurnStatus: "completed",
+    });
+    expect(presenter.registerSession).toHaveBeenCalledWith(
+      taskId,
+      "chat_id:oc_new_group",
+      "Existing Codex work",
+      process.cwd(),
+      "Codex",
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      expect.stringContaining("不会创建或 Fork 新任务"),
+    );
+  });
+
+  test("rejects newgroup session mode before creating a group when the external Session is active", async () => {
+    const { controller, runtime, remoteSessions, outbound } = fixture();
+    remoteSessions.push({
+      id: "019f-active",
+      title: "Active Codex work",
+      cwd: process.cwd(),
+      source: "codex",
+      status: "active",
+      lastTurnId: "turn_active",
+      lastTurnStatus: "inProgress",
+    });
+
+    await controller.onMessage({
+      messageId: "attach-active-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup --session 019f-active",
+    });
+
+    expect(outbound.createGroup).not.toHaveBeenCalled();
+    expect(runtime.createSession).not.toHaveBeenCalled();
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("正在外部 Agent 中执行"),
+    );
+  });
+
+  test("rejects an already-bound Session without creating another group", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("/new Existing local task"));
+    const taskId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+
+    await controller.onMessage({
+      messageId: "attach-bound-group",
+      contextKey: "chat_id:c1",
+      chatId: "c1",
+      chatType: "p2p",
+      userId: "ou_current_user",
+      text: "/newgroup --session thr_1",
+    });
+
+    expect(outbound.createGroup).not.toHaveBeenCalled();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("不能重复创建群"),
+    );
+    expect(runtime.createSession).toHaveBeenCalledTimes(1);
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(store.getUserContext("chat_id:c1")?.currentSessionId).toBe(taskId);
+    expect(store.getSession(taskId)?.contextKey).toBe("chat_id:c1");
+  });
+
   test("opens the unified Agent tab without a current task and switches the default in place", async () => {
     const { controller, outbound, store } = fixture();
 
@@ -7966,6 +8071,121 @@ describe("ProxySessionController", () => {
     expect(runtime.createSession).toHaveBeenCalledTimes(2);
   });
 
+  test("creates a CLI newgroup for an existing Session without creating or forking one", async () => {
+    const { controller, runtime, remoteSessions, outbound, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start CLI source task"));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    remoteSessions.push({
+      id: "019f-cli-existing",
+      title: "Existing CLI work",
+      cwd: process.cwd(),
+      source: "codex",
+      status: "idle",
+      lastTurnId: "turn_cli_existing",
+      lastTurnStatus: "completed",
+    });
+
+    const created = await controller.controlCreateTaskGroup(
+      sourceSessionId,
+      "CLI existing room",
+      "ou_cli_user",
+      undefined,
+      false,
+      undefined,
+      { sessionId: "codex://threads/019f-cli-existing" },
+    );
+
+    expect(runtime.createSession).toHaveBeenCalledTimes(1);
+    expect(runtime.forkSession).not.toHaveBeenCalled();
+    expect(created).toMatchObject({
+      sourceLocalSessionId: sourceSessionId,
+      group: { contextKey: "chat_id:oc_new_group" },
+      task: {
+        contextKey: "chat_id:oc_new_group",
+        remoteSessionId: "019f-cli-existing",
+        title: "Existing CLI work",
+      },
+    });
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:oc_new_group",
+      expect.stringContaining("不会创建或 Fork 新任务"),
+    );
+  });
+
+  test("serializes concurrent group attachments for the same existing Session", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start CLI source task"));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    remoteSessions.push({
+      id: "019f-concurrent-attach",
+      title: "Concurrent existing work",
+      cwd: process.cwd(),
+      source: "codex",
+      status: "idle",
+    });
+
+    const results = await Promise.allSettled([
+      controller.controlCreateTaskGroup(
+        sourceSessionId,
+        "First room",
+        "ou_cli_user",
+        undefined,
+        false,
+        undefined,
+        { sessionId: "019f-concurrent-attach" },
+      ),
+      controller.controlCreateTaskGroup(
+        sourceSessionId,
+        "Second room",
+        "ou_cli_user",
+        undefined,
+        false,
+        undefined,
+        { sessionId: "019f-concurrent-attach" },
+      ),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejection = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    expect(String(rejection.reason)).toContain("不能重复创建群");
+    expect(outbound.createGroup).toHaveBeenCalledTimes(1);
+    expect(store.listAllSessions().filter((task) => task.remoteSessionId === "019f-concurrent-attach"))
+      .toHaveLength(1);
+  });
+
+  test("rolls back the new group when the external Session becomes active before persistence", async () => {
+    const { controller, remoteSessions, outbound, store } = fixture();
+    await controller.onMessage(groupMessage("origin", "start CLI source task"));
+    const sourceSessionId = store.getUserContext("chat_id:origin")!.currentSessionId!;
+    const remote: RemoteSessionSummary = {
+      id: "019f-active-during-group-create",
+      title: "External work",
+      cwd: process.cwd(),
+      source: "codex",
+      status: "idle",
+    };
+    remoteSessions.push(remote);
+    (outbound.createGroup as ReturnType<typeof vi.fn>).mockImplementationOnce(async (input) => {
+      remote.status = "active";
+      remote.lastTurnStatus = "inProgress";
+      return { chatId: "oc_active_race", name: input.name };
+    });
+
+    await expect(controller.controlCreateTaskGroup(
+      sourceSessionId,
+      "Race room",
+      "ou_cli_user",
+      undefined,
+      false,
+      undefined,
+      { sessionId: remote.id },
+    )).rejects.toThrow("正在外部 Agent 中执行");
+
+    expect(outbound.deleteGroup).toHaveBeenCalledWith("oc_active_race");
+    expect(store.listAllSessions().some((task) => task.remoteSessionId === remote.id)).toBe(false);
+    expect(store.getChatContext("chat_id:oc_active_race")).toBeUndefined();
+  });
+
   test("lets CLI newgroup override the project directory and expand home shorthand", async () => {
     const { controller, runtime, outbound, store } = fixture();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-cli-newgroup-home-"));
@@ -9088,6 +9308,7 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("/reset");
     expect(serialized).toContain("Reset 对话上下文");
     expect(serialized).not.toContain("/attach");
+    expect(serialized).not.toContain("/attachgroup");
     expect(serialized).not.toContain("/detach");
     expect(serialized).not.toContain("/cancel");
     expect(serialized).not.toContain("/close");

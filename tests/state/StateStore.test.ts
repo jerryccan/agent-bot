@@ -432,6 +432,36 @@ describe("StateStore runtime metadata", () => {
       .toHaveLength(2);
   });
 
+  test("atomically creates a task with its remote Session identity", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    store.createSession({
+      localSessionId: "attached",
+      contextKey: "chat_id:first",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+      runtimeKind: "codex",
+      remoteSessionId: "shared_remote",
+      title: "Attached task",
+    });
+
+    expect(() => store.createSession({
+      localSessionId: "duplicate",
+      contextKey: "chat_id:second",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+      runtimeKind: "codex",
+      remoteSessionId: "shared_remote",
+    })).toThrow();
+    expect(store.getSession("duplicate")).toBeUndefined();
+    expect(store.getSessionForContext("duplicate", "chat_id:second")).toBeUndefined();
+  });
+
   test("migrates duplicate remote tasks into one canonical task with multiple context links", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

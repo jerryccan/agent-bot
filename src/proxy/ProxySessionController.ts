@@ -214,8 +214,8 @@ const HELP_COMMAND_SECTIONS: Array<{
       },
       {
         command: "/newgroup",
-        usage: "[title] [--dir &#60;cwd&#62; | --nodir]",
-        description: "创建飞书群和新任务",
+        usage: "[title] [--dir &#60;cwd&#62; | --nodir] [--session &#60;ID&#62;]",
+        description: "创建飞书群和新任务，或关联已有 App Server Session",
       },
       {
         command: "/dir",
@@ -454,6 +454,11 @@ export interface ControlTaskReleaseResult {
   blockingTaskCount: number;
 }
 
+interface PreparedSessionAttachment {
+  agentName: string;
+  remote: RemoteSessionSummary;
+}
+
 export interface ProxyLifecycle {
   supervised?: boolean;
   restart(contextKey: string, force: boolean, replyTarget?: MessageReplyTarget): Promise<void>;
@@ -500,6 +505,7 @@ export class ProxySessionController {
   private readonly relatedReactionMessageIds = new Map<string, string[]>();
   private readonly shellCommandJobMonitors = new Map<string, ShellCommandJobMonitor>();
   private readonly appServerReleaseSchedules = new Map<string, AppServerReleaseSchedule>();
+  private readonly sessionAttachmentOperations = new Map<string, Promise<void>>();
   private nextAppServerReleaseScheduleId = 1;
   private readonly unsubscribe: Array<() => void> = [];
   private readonly recoveryActivityHeartbeat: NodeJS.Timeout;
@@ -1426,7 +1432,28 @@ export class ProxySessionController {
     requestedProjectCwd?: string,
     forceProjectless = false,
     requestedAgentName?: string,
+    existingSession?: { sessionId: string },
   ): Promise<ControlTaskGroupResult> {
+    if (existingSession) {
+      if (requestedProjectCwd !== undefined || forceProjectless || requestedAgentName !== undefined) {
+        throw new Error("task newgroup cannot combine --session with --agent, --dir, or --nodir.");
+      }
+      const source = this.requireControlSession(localSessionId);
+      const sourceContextKey = this.controlSessionContextKey(source);
+      const replyTarget = this.controlSessionReplyTarget(source);
+      const created = await this.outbound.withReplyTarget(sourceContextKey, replyTarget, () =>
+        this.createFeishuGroupForExistingSession(
+          sourceContextKey,
+          existingSession.sessionId,
+          requestedTitle,
+          userOpenId,
+        ));
+      return {
+        sourceLocalSessionId: source.localSessionId,
+        group: created.group,
+        task: created.task,
+      };
+    }
     const source = this.store.getSession(localSessionId);
     if (!source || source.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
     const agentName = requestedAgentName?.trim() || source.agentName;
@@ -1959,6 +1986,15 @@ export class ProxySessionController {
         );
         return;
       case "newgroup":
+        if (command.sessionId) {
+          await this.createFeishuGroupForExistingSession(
+            contextKey,
+            command.sessionId,
+            command.title,
+            userId,
+          );
+          return;
+        }
         if (command.projectless && this.ensureAgent(context.defaultAgent).kind !== "app-server") {
           throw new Error("/newgroup --nodir 仅支持 App Server Agent。");
         }
@@ -3897,6 +3933,162 @@ export class ProxySessionController {
       `已创建飞书群：${group.name}，并创建新任务 ${taskDescription}。`,
     );
     return { group, task };
+  }
+
+  private async createFeishuGroupForExistingSession(
+    sourceContextKey: string,
+    reference: string,
+    requestedTitle: string | undefined,
+    userId: string | undefined,
+  ): Promise<CreatedFeishuTaskGroup> {
+    if (!userId?.startsWith("ou_")) {
+      throw new Error("/newgroup --session 只能由具有 open_id 的飞书用户消息触发。");
+    }
+    const initial = await this.prepareSessionAttachment(reference);
+    const attachmentKey = agentRemoteKey(initial.agentName, initial.remote.id);
+    return this.serializeSessionAttachment(attachmentKey, async () => {
+      const prepared = await this.prepareSessionAttachment(
+        remoteSessionReference(initial.agentName, initial.remote.id),
+      );
+      return this.createFeishuGroupForPreparedSession(
+        sourceContextKey,
+        prepared,
+        requestedTitle,
+        userId,
+      );
+    });
+  }
+
+  private async createFeishuGroupForPreparedSession(
+    sourceContextKey: string,
+    prepared: PreparedSessionAttachment,
+    requestedTitle: string | undefined,
+    userId: string,
+  ): Promise<CreatedFeishuTaskGroup> {
+    const taskTitle = normalizeTaskTitle(requestedTitle)
+      ?? prepared.remote.title
+      ?? prepared.remote.preview
+      ?? prepared.remote.id;
+    const boundProjectCwd = detectProjectlessWorkspace(prepared.remote.cwd)
+      ? undefined
+      : prepared.remote.cwd;
+    const group = await this.createFeishuGroupContext(
+      sourceContextKey,
+      prepared.agentName,
+      taskTitle,
+      userId,
+      boundProjectCwd,
+      "/newgroup",
+    );
+
+    let task: SessionRecord;
+    try {
+      const refreshed = await this.prepareSessionAttachment(
+        remoteSessionReference(prepared.agentName, prepared.remote.id),
+      );
+      task = this.persistSessionAttachment(group.contextKey, refreshed);
+      this.outbound.registerSession(
+        task.localSessionId,
+        group.contextKey,
+        task.title,
+        task.cwd,
+        this.agentLabel(task.agentName),
+      );
+    } catch (error) {
+      this.store.removeChatContext(group.contextKey);
+      try {
+        await this.outbound.deleteGroup(group.contextKey, group.chatId);
+      } catch (deleteError) {
+        this.logger.warn(
+          { error: deleteError, chatId: group.chatId },
+          "Failed to remove a Lark group after attaching its task failed.",
+        );
+      }
+      throw error;
+    }
+
+    const taskDescription = task.title
+      ? task.title + "（" + task.remoteSessionId + "）"
+      : task.remoteSessionId ?? task.localSessionId;
+    await this.outbound.sendText(
+      group.contextKey,
+      [
+        "群已创建，并已关联已有任务。",
+        "当前任务：" + taskDescription,
+        "当前 Project 目录：" + (boundProjectCwd ?? "未绑定（Projectless）"),
+        "后续消息会继续这个 Session，不会创建或 Fork 新任务。",
+      ].join("\n"),
+    );
+    await this.outbound.sendText(
+      sourceContextKey,
+      "已创建飞书群：" + group.name + "，并关联已有任务 " + taskDescription + "。",
+    );
+    return { group, task };
+  }
+
+  private async serializeSessionAttachment<T>(
+    key: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.sessionAttachmentOperations.get(key) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(() => undefined, () => undefined);
+    this.sessionAttachmentOperations.set(key, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.sessionAttachmentOperations.get(key) === tail) {
+        this.sessionAttachmentOperations.delete(key);
+      }
+    }
+  }
+
+  private async prepareSessionAttachment(reference: string): Promise<PreparedSessionAttachment> {
+    const normalizedReference = normalizeAppServerSessionReference(reference);
+    const direct = this.store.getSession(normalizedReference);
+    if (direct?.status === "closed") throw new Error("找不到任务：" + normalizedReference);
+    const local = direct ?? this.findStoredSessionByReference(normalizedReference);
+    if (local) {
+      throw new Error("这个任务已关联 Agent Bot 会话（" + local.contextKey + "），不能重复创建群。");
+    }
+    const resolved = await this.resolveRemoteCodexSession(normalizedReference);
+    const agentName = resolved.agentName;
+    const remote = resolved.remote;
+    if (isRemoteSessionActive(remote)) {
+      throw new Error("这个任务正在外部 Agent 中执行。Agent Bot 不会接管或追加消息，请等待外部执行完成。");
+    }
+    if (!remote.cwd) throw new Error("这个 App Server 任务没有可用的工作目录，暂时无法关联新群。");
+
+    return { agentName, remote };
+  }
+
+  private persistSessionAttachment(
+    contextKey: string,
+    prepared: PreparedSessionAttachment,
+  ): SessionRecord {
+    const localSessionId = createId("sess");
+    const task = this.store.createSession({
+      localSessionId,
+      contextKey,
+      agentName: prepared.agentName,
+      cwd: prepared.remote.cwd,
+      status: "ready",
+      runtimeKind: "codex",
+      remoteSessionId: prepared.remote.id,
+      title: prepared.remote.title ?? prepared.remote.preview,
+      modelProvider: prepared.remote.modelProvider,
+      model: prepared.remote.model,
+      reasoningEffort: prepared.remote.reasoningEffort,
+      permissionMode: prepared.remote.permissionMode ?? "auto",
+      lastTurnId: prepared.remote.lastTurnId,
+      lastTurnStatus: mapRemoteTurnStatus(prepared.remote.lastTurnStatus),
+    });
+    this.store.setCurrentSession(contextKey, localSessionId);
+    this.store.audit(contextKey, "session_attached_to_group", {
+      localSessionId: task.localSessionId,
+      remoteSessionId: prepared.remote.id,
+    });
+    return this.store.getSessionForContext(task.localSessionId, contextKey) ?? { ...task, contextKey };
   }
 
   private async forkCurrentSessionToFeishuGroup(
@@ -7767,6 +7959,17 @@ function parseRemoteSessionReference(reference: string): { agentName: string; re
     return agentName && remoteSessionId ? { agentName, remoteSessionId } : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function normalizeAppServerSessionReference(reference: string): string {
+  const trimmed = reference.trim();
+  const match = /^codex:\/\/threads\/([^/?#]+)\/?(?:[?#].*)?$/i.exec(trimmed);
+  if (!match) return trimmed;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return match[1]!;
   }
 }
 

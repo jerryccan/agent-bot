@@ -1,7 +1,13 @@
 export type Command =
   | { type: "shell"; command: string }
   | { type: "new"; title?: string; cwd?: string; projectless?: boolean }
-  | { type: "newgroup"; title?: string; cwd?: string; projectless?: boolean }
+  | {
+      type: "newgroup";
+      title?: string;
+      cwd?: string;
+      projectless?: boolean;
+      sessionId?: string;
+    }
   | { type: "dir"; directory?: string }
   | { type: "file"; filePath: string }
   | { type: "forkgroup"; title?: string }

@@ -91,10 +91,11 @@ Create a separate Feishu group:
 
 ```powershell
 agentbot task newgroup [title] [--agent <name>] [--dir <cwd> | --nodir]
+agentbot task newgroup [title] --session <session-id>
 agentbot task forkgroup [title]
 ```
 
-Choose `new` or `newgroup` for fresh context. Choose `fork` or `forkgroup` when the new task must retain conversation history through the latest completed Turn. Forking must not interrupt an active source turn.
+Choose `new` or `newgroup` for fresh context. Use `newgroup --session` to create a group for an unbound existing App Server Session without creating or forking a task. Active Sessions and Sessions already bound to a Feishu conversation cannot be attached. Choose `fork` or `forkgroup` when the new task must retain conversation history through the latest completed Turn; forking must not interrupt an active source turn.
 
 ## Change Settings
 

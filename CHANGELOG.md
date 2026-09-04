@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Extend Feishu `/newgroup` and CLI `agentbot task newgroup` with `--session <session-id>` to create a group for an unbound existing App Server Session without creating or forking a task.
+
 ## [0.1.20-alpha.0] - 2026-09-05
 
 - Require explicit confirmation on App Server release cards instead of releasing automatically, and list the currently running or queued task names while waiting.

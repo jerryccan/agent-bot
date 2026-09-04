@@ -861,6 +861,15 @@ export class StateStore {
     agentName: string;
     cwd: string;
     status: SessionStatus;
+    runtimeKind?: "acp" | "codex";
+    remoteSessionId?: string;
+    title?: string;
+    modelProvider?: string;
+    model?: string;
+    reasoningEffort?: string;
+    permissionMode?: "auto" | "confirm";
+    lastTurnId?: string;
+    lastTurnStatus?: string;
   }): SessionRecord {
     const now = new Date().toISOString();
     const create = this.db.transaction(() => {
@@ -872,16 +881,34 @@ export class StateStore {
           agent_name,
           cwd,
           acp_session_id,
+          runtime_kind,
+          remote_session_id,
+          title,
+          model_provider,
+          model,
+          reasoning_effort,
+          permission_mode,
+          last_turn_id,
+          last_turn_status,
           status,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       ).run(
         input.localSessionId,
         input.contextKey,
         input.agentName,
         input.cwd,
+        input.runtimeKind ?? null,
+        input.remoteSessionId ?? null,
+        input.title ?? null,
+        input.modelProvider ?? null,
+        input.model ?? null,
+        input.reasoningEffort ?? null,
+        input.permissionMode ?? null,
+        input.lastTurnId ?? null,
+        input.lastTurnStatus ?? null,
         input.status,
         now,
         now,

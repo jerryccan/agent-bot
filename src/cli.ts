@@ -59,7 +59,12 @@ import {
   formatFeishuConfigurationFeatureIntroduction,
 } from "./cli/FeishuConfigurationFeatures.js";
 import { renderCliHelp } from "./cli/help.js";
-import { cliLanguage, cliText, localizeCliErrorMessage } from "./cli/i18n.js";
+import {
+  cliLanguage,
+  cliText,
+  controlFailureMessage,
+  localizeCliErrorMessage,
+} from "./cli/i18n.js";
 import {
   inspectSupportedAgent,
   inspectSupportedAgents,
@@ -1584,29 +1589,42 @@ async function taskCommand(input: string[]): Promise<void> {
       const target = resolveTaskCommandTarget(allSessions, rest, action);
       const options = parseTaskNewGroupOptions([target.session.localSessionId, ...target.args]);
       const session = target.session;
-      const targetAgentName = options.agentName ?? session.agentName;
-      const targetAgent = config.agents[targetAgentName];
-      if (!targetAgent) {
-        throw new Error(cliText(
-          `Unknown Agent standard name: ${targetAgentName}.`,
-          `未知的 Agent 标准名：${targetAgentName}。`,
-        ));
-      }
-      if (options.projectless && targetAgent.kind !== "app-server") {
-        throw new Error(cliText(
-          "task newgroup --nodir is only available for App Server agents.",
-          "task newgroup --nodir 仅适用于 App Server Agent。",
-        ));
+      if (!options.sessionId) {
+        const targetAgentName = options.agentName ?? session.agentName;
+        const targetAgent = config.agents[targetAgentName];
+        if (!targetAgent) {
+          throw new Error(cliText(
+            `Unknown Agent standard name: ${targetAgentName}.`,
+            `未知的 Agent 标准名：${targetAgentName}。`,
+          ));
+        }
+        if (options.projectless && targetAgent.kind !== "app-server") {
+          throw new Error(cliText(
+            "task newgroup --nodir is only available for App Server agents.",
+            "task newgroup --nodir 仅适用于 App Server Agent。",
+          ));
+        }
       }
       requireCliGroupUser(config.feishu.userOpenId);
-      const response = await sendControlRequest(controlEndpoint(config.storage.sqlitePath), {
-        action: "task_new_group",
-        localSessionId: session.localSessionId,
-        ...(options.title ? { title: options.title } : {}),
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        ...(options.agentName ? { agentName: options.agentName } : {}),
-        ...(options.projectless ? { projectless: true } : {}),
-      }, 120_000);
+      const response = await sendControlRequest(
+        controlEndpoint(config.storage.sqlitePath),
+        options.sessionId
+          ? {
+              action: "task_new_group_session",
+              localSessionId: session.localSessionId,
+              sessionId: options.sessionId,
+              ...(options.title ? { title: options.title } : {}),
+            }
+          : {
+              action: "task_new_group",
+              localSessionId: session.localSessionId,
+              ...(options.title ? { title: options.title } : {}),
+              ...(options.cwd ? { cwd: options.cwd } : {}),
+              ...(options.agentName ? { agentName: options.agentName } : {}),
+              ...(options.projectless ? { projectless: true } : {}),
+            },
+        120_000,
+      );
       const result = taskGroupControlData(response);
       if (options.json) printJson(result);
       else printTaskGroupResult(result, "newgroup");
@@ -2297,16 +2315,7 @@ function initializationStatusLabel(status: InitializationStatus): string {
 
 function ensureOk(response: ControlResponse): void {
   if (response.ok) return;
-  const message = response.message?.trim();
-  const matchesLanguage = cliLanguage === "zh"
-    ? Boolean(message && /[一-龥]/u.test(message))
-    : Boolean(message && !/[一-龥]/u.test(message));
-  throw new Error(matchesLanguage
-    ? message!
-    : cliText(
-        "Agent Bot control operation failed. Check the server logs for details.",
-        "Agent Bot 控制操作失败，请查看服务日志了解详情。",
-      ));
+  throw new Error(controlFailureMessage(response.message));
 }
 
 function requireCliGroupUser(userOpenId: string | undefined): asserts userOpenId is string {
