@@ -344,11 +344,17 @@ function fixture(
     }),
     getSession: vi.fn((id) => sessions.get(id)),
     readSessionMetadata: vi.fn(async () => ({})),
-    listRemoteSessions: vi.fn(async ({ searchTerm, limit = 20 }: { searchTerm?: string; limit?: number } = {}) => {
+    listRemoteSessions: vi.fn(async ({
+      searchTerm,
+      cursor,
+      limit = 20,
+    }: { searchTerm?: string; cursor?: string; limit?: number } = {}) => {
       const matches = remoteSessions.filter((session) => !searchTerm || session.title?.includes(searchTerm));
+      const offset = cursor ? Number.parseInt(cursor, 10) : 0;
+      const nextOffset = offset + limit;
       return {
-        sessions: matches.slice(0, limit),
-        nextCursor: matches.length > limit ? "next" : undefined,
+        sessions: matches.slice(offset, nextOffset),
+        nextCursor: matches.length > nextOffset ? String(nextOffset) : undefined,
       };
     }),
     readRemoteSession: vi.fn(async (id: string) => {
@@ -1495,6 +1501,68 @@ describe("ProxySessionController", () => {
     expect(restoredCard).not.toContain("正在 Reset 到所选轮次，请稍候…");
     expect(restoredCard).toContain('"action":"turn_reset"');
     expect(restoredCard).toContain('"turnId":"history_turn_2"');
+  });
+
+  test("hydrates missing completed Turns from App Server before rendering the Turns card", async () => {
+    const { controller, runtime, remoteSessions, outbound, store } = fixture();
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "partial_turn_history",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: "D:\\work\\partial-history",
+      status: "ready",
+    });
+    store.updateRuntimeSession("partial_turn_history", {
+      runtimeKind: "codex",
+      remoteSessionId: "remote_partial_history",
+      lastTurnId: "remote_turn_3",
+      lastTurnStatus: "completed",
+    });
+    store.setCurrentSession("chat_id:c1", "partial_turn_history");
+    store.saveTurnSnapshot("remote_turn_3", "partial_turn_history", {
+      sessionId: "partial_turn_history",
+      turnId: "remote_turn_3",
+      prompt: "Locally preserved latest Prompt",
+      status: "completed",
+      startedAt: 3_000,
+      completedAt: 3_100,
+      assistantText: "Rich local response",
+      plan: [],
+      activities: [],
+      completedTools: [],
+      failedTools: [],
+      fileSummary: [],
+    }, "chat_id:c1");
+    remoteSessions.push({
+      id: "remote_partial_history",
+      title: "Partially indexed task",
+      cwd: "D:\\work\\partial-history",
+      source: "appServer",
+      status: "idle",
+      lastTurnId: "remote_turn_3",
+      lastTurnStatus: "completed",
+      completedTurns: [
+        { id: "remote_turn_1", prompt: "Missing first Prompt", startedAt: 1_000, completedAt: 1_100 },
+        { id: "remote_turn_2", prompt: "Missing second Prompt", startedAt: 2_000, completedAt: 2_100 },
+        { id: "remote_turn_3", prompt: "Remote replacement Prompt", startedAt: 3_000, completedAt: 3_100 },
+      ],
+    });
+
+    await controller.onMessage(message("/turns"));
+
+    expect(runtime.readRemoteSession).toHaveBeenCalledWith("remote_partial_history");
+    const card = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("Missing first Prompt");
+    expect(serialized).toContain("Missing second Prompt");
+    expect(serialized).toContain("Locally preserved latest Prompt");
+    expect(serialized).not.toContain("Remote replacement Prompt");
+    expect(store.listTaskTurnGraph("partial_turn_history").map((turn) => turn.turnId)).toEqual([
+      "remote_turn_3",
+      "remote_turn_2",
+      "remote_turn_1",
+    ]);
   });
 
   test("shows the currently running turn at the top of the Turns card without Reset", async () => {
@@ -5727,6 +5795,53 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("未加载");
     expect(serialized).not.toContain("Agent / 任务 ID");
     expect(serialized).not.toContain("**目录**");
+  });
+
+  test("follows App Server cursors to list unbound Codex tasks from later remote pages", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    const remoteTasks = Array.from({ length: 12 }, (_, index): RemoteSessionSummary => ({
+      id: `unbound_${index + 1}`,
+      title: `Unbound task ${index + 1}`,
+      cwd: "D:\\work\\unbound",
+      source: "appServer",
+      status: "idle",
+      updatedAt: 100 - index,
+    }));
+    vi.mocked(runtime.listRemoteSessions!).mockImplementation(async ({ cursor, limit = 20 } = {}) => {
+      const offset = cursor ? Number.parseInt(cursor, 10) : 0;
+      const pageSize = Math.min(limit, 4);
+      const nextOffset = offset + pageSize;
+      return {
+        sessions: remoteTasks.slice(offset, nextOffset),
+        nextCursor: remoteTasks.length > nextOffset ? String(nextOffset) : undefined,
+      };
+    });
+
+    await controller.onMessage(message("/sessions"));
+
+    const firstCard = vi.mocked(outbound.sendInteractiveCard).mock.calls[0]?.[1];
+    expect(JSON.stringify(firstCard)).toContain("10. Unbound task 10 · codex");
+    expect(runtime.listRemoteSessions).toHaveBeenCalledWith({ searchTerm: undefined, cursor: "8", limit: 2 });
+    expect(sessionOverflowActions(firstCard, store)).toContainEqual(expect.objectContaining({
+      action: "session_page",
+      page: "1",
+    }));
+
+    await controller.onCardAction({
+      actionId: "sessions-next-unbound-page",
+      contextKey: "chat_id:c1",
+      messageId: "om_sessions",
+      value: { action: "session_page", page: "1" },
+    });
+
+    const secondCard = vi.mocked(outbound.updateInteractiveCard).mock.calls[0]?.[1];
+    const secondPage = JSON.stringify(secondCard);
+    expect(secondPage).toContain("11. Unbound task 11 · codex");
+    expect(secondPage).toContain("12. Unbound task 12 · codex");
+    expect(sessionOverflowActions(secondCard, store, "om_sessions")).toContainEqual(expect.objectContaining({
+      action: "session_switch",
+      sessionId: "agent-runtime:codex:unbound_11",
+    }));
   });
 
   test("shows the latest persisted user Prompt for an Agent Bot task", async () => {

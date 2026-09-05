@@ -1288,7 +1288,11 @@ describe("CodexRuntime", () => {
     });
     expect(client.requests).toContainEqual(expect.objectContaining({
       method: "thread/list",
-      params: expect.objectContaining({ searchTerm: "Desktop", limit: 10 }),
+      params: expect.objectContaining({
+        searchTerm: "Desktop",
+        limit: 10,
+        sourceKinds: ["cli", "vscode", "exec", "appServer"],
+      }),
     }));
   });
 

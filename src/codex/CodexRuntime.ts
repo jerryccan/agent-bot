@@ -41,6 +41,7 @@ const SESSION_REQUEST_TIMEOUT_MS = 60_000;
 const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const SYNC_REQUEST_TIMEOUT_MS = 5_000;
 const THREAD_TURN_PAGE_SIZE = 100;
+const USER_RESUMABLE_THREAD_SOURCE_KINDS = ["cli", "vscode", "exec", "appServer"] as const;
 // A timed-out fork keeps running in App Server and can create an orphan thread.
 // Wait for its response; connection closure still rejects the request.
 const FORK_REQUEST_TIMEOUT_MS = 0;
@@ -290,6 +291,7 @@ export class CodexRuntime implements AgentRuntime {
         limit: input.limit ?? 20,
         sortKey,
         sortDirection: "desc",
+        sourceKinds: USER_RESUMABLE_THREAD_SOURCE_KINDS,
         archived: false,
         searchTerm: input.searchTerm,
       },

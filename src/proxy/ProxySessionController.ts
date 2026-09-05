@@ -59,6 +59,7 @@ import type {
   PermissionMode,
   RemoteCompletedTurnSummary,
   RemoteSessionActivity,
+  RemoteSessionPage,
   RemoteSessionSummary,
   RuntimeGoal,
   RuntimeEvent,
@@ -153,6 +154,7 @@ const SESSION_PAGE_SIZE = 10;
 const SESSION_PROMPT_PREVIEW_LENGTH = 50;
 const DIRECTORY_PAGE_SIZE = 15;
 const RESET_HISTORY_PAGE_SIZE = 10;
+const REMOTE_TURN_HISTORY_REFRESH_INTERVAL_MS = 30_000;
 const MAX_LLM_TURN_RETRIES = 3;
 const QUEUED_PROMPT_RETRY_DELAY_MS = 5_000;
 const RECOVERY_ACTIVITY_WINDOW_MS = 10 * 60 * 1_000;
@@ -454,6 +456,7 @@ export class ProxySessionController {
   private readonly queuedPromptCardWrites = new Map<string, Promise<void>>();
   private readonly sessionResets = new Map<string, Promise<void>>();
   private readonly resetHistoryOperations = new Map<string, string>();
+  private readonly remoteTurnHistoryRefreshes = new Map<string, number>();
   private readonly lastSessionListings = new Map<string, string[]>();
   private readonly threadInitializations = new Map<string, Promise<void>>();
   private readonly llmRetryingSessions = new Set<string>();
@@ -1205,6 +1208,7 @@ export class ProxySessionController {
     this.queuedPromptCardWrites.clear();
     this.sessionResets.clear();
     this.resetHistoryOperations.clear();
+    this.remoteTurnHistoryRefreshes.clear();
     for (const pending of this.pendingMergedForwards.values()) pending.resolveAttachment(undefined);
     this.pendingMergedForwards.clear();
     for (const pending of this.pendingResourceForwards.values()) pending.resolveAttachment(undefined);
@@ -3418,6 +3422,39 @@ export class ProxySessionController {
     }
   }
 
+  private async hydrateRemoteTurnHistory(
+    contextKey: string,
+    current: SessionRecord,
+  ): Promise<void> {
+    if (!current.remoteSessionId) return;
+    const refreshedAt = this.remoteTurnHistoryRefreshes.get(current.localSessionId);
+    if (refreshedAt !== undefined && Date.now() - refreshedAt < REMOTE_TURN_HISTORY_REFRESH_INTERVAL_MS) return;
+    const forkSource = this.store.getForkHistorySource(current.localSessionId);
+    if (forkSource?.sourceTurnId === current.lastTurnId
+      && this.store.hasImportedForkTurnHistory(current.localSessionId)) return;
+    const runtime = this.runtimes.forAgent(current.agentName);
+    if (runtime.kind !== "codex" || !runtime.readRemoteSession) return;
+    try {
+      const remote = await runtime.readRemoteSession(current.remoteSessionId);
+      this.remoteTurnHistoryRefreshes.set(current.localSessionId, Date.now());
+      const completedTurns = remote.completedTurns ?? [];
+      if (completedTurns.length === 0) return;
+      this.persistCompletedTurnHistory({
+        localSessionId: current.localSessionId,
+        contextKey,
+        agentName: current.agentName,
+        remoteSessionId: current.remoteSessionId,
+        completedTurns,
+        fallbackStart: parseIsoTimestamp(current.createdAt) ?? Date.now() - completedTurns.length,
+      });
+    } catch (error) {
+      this.logger.warn(
+        { error, localSessionId: current.localSessionId, remoteSessionId: current.remoteSessionId },
+        "Failed to hydrate App Server Turn history; rendering the locally available history.",
+      );
+    }
+  }
+
   private async createProjectSessionFromReference(contextKey: string, reference: string): Promise<void> {
     const resolved = await this.resolveProjectSessionReference(contextKey, reference);
     const created = await this.createSession(
@@ -5500,6 +5537,7 @@ export class ProxySessionController {
       throw new Error("当前任务不是可 Reset 的 App Server 任务。");
     }
     await this.hydrateLegacyForkTurnHistory(contextKey, current);
+    await this.hydrateRemoteTurnHistory(contextKey, current);
     const completedTurns = this.store.listTaskTurnGraph(current.localSessionId);
     const completedTurnIds = new Set(completedTurns.map((turn) => turn.turnId));
     const runningTurnId = current.lastTurnStatus === "running" && current.lastTurnId
@@ -5834,7 +5872,7 @@ export class ProxySessionController {
     await Promise.all(this.runtimes.entries("codex").map(async ([agentName, runtime]) => {
       if (!runtime.listRemoteSessions) return;
       try {
-        const result = await runtime.listRemoteSessions({ searchTerm, limit: fetchLimit });
+        const result = await this.listRemoteSessionsThroughCursor(runtime, searchTerm, fetchLimit);
         remoteSessions.push(...result.sessions.map((session) => ({ agentName, session })));
         remoteHasMore ||= Boolean(result.nextCursor);
       } catch (error) {
@@ -6044,6 +6082,42 @@ export class ProxySessionController {
         this.store.retainCardActionBindings(messageId, bindings.map((binding) => binding.token));
       }
     }
+  }
+
+  private async listRemoteSessionsThroughCursor(
+    runtime: AgentRuntime,
+    searchTerm: string | undefined,
+    limit: number,
+  ): Promise<RemoteSessionPage> {
+    const sessions: RemoteSessionSummary[] = [];
+    const seenSessionIds = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    while (sessions.length < limit) {
+      const page = await runtime.listRemoteSessions!({
+        searchTerm,
+        ...(cursor ? { cursor } : {}),
+        limit: limit - sessions.length,
+      });
+      for (const session of page.sessions) {
+        if (seenSessionIds.has(session.id)) continue;
+        seenSessionIds.add(session.id);
+        sessions.push(session);
+      }
+
+      const nextCursor = page.nextCursor?.trim() || undefined;
+      if (!nextCursor) return { sessions };
+      if (sessions.length >= limit) return { sessions, nextCursor };
+      if (seenCursors.has(nextCursor)) {
+        this.logger.warn({ cursor: nextCursor }, "App Server repeated a thread/list cursor; stopping pagination.");
+        return { sessions };
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    return { sessions };
   }
 
   private async refreshSessionsCardFromAction(
