@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.20-alpha.0] - 2026-09-05
+
 - Require explicit confirmation on App Server release cards instead of releasing automatically, and list the currently running or queued task names while waiting.
 
 ## [0.1.19] - 2026-09-05
