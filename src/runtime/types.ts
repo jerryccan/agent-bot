@@ -217,6 +217,7 @@ export interface ReasoningEffortOption {
 export interface AgentRuntime {
   readonly kind: RuntimeKind;
   getProcessInfo?(): AgentProcessInfo;
+  getThreadWriterLockPath?(remoteSessionId: string): string | undefined;
   createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSessionInput): Promise<RuntimeSession>;
   forkSession?(input: ForkRuntimeSessionInput): Promise<RuntimeSession>;

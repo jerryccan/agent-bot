@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
 import { createProjectlessWorkspace, detectProjectlessWorkspace } from "../codex/ProjectlessWorkspace.js";
+import {
+  SystemThreadWriterProcessController,
+  type ThreadWriterProcess,
+  type ThreadWriterProcessController,
+} from "../codex/ThreadWriterProcess.js";
 import { resolveUserPath } from "../config/paths.js";
 import {
   DEFAULT_GROUP_NAME_FORMAT,
@@ -31,6 +36,7 @@ import {
   type SessionTaskCardGroup,
   type ShellCommandCardView,
   type TaskListCardAction,
+  type ThreadWriterConflictCardView,
 } from "../feishu/CardRenderer.js";
 import { CardUpdateScheduler } from "../feishu/CardUpdateScheduler.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../feishu/GroupAvatarGenerator.js";
@@ -42,6 +48,7 @@ import {
 import { normalizeFeishuPostText } from "../feishu/InboundText.js";
 import { allowsFeishuUser } from "../feishu/ownerAccess.js";
 import { classifyFileContent } from "../local-files/LocalFileViewerServer.js";
+import { errorLogValue } from "../logging/errorLogValue.js";
 import type { OutboundRouter } from "../presentation/OutboundRouter.js";
 import type { TurnActivity, TurnViewState } from "../presentation/turnViewTypes.js";
 import { buildTurnGraphRows } from "../presentation/turnGraph.js";
@@ -114,6 +121,21 @@ interface ShellCommandJobMonitor {
   scheduler: CardUpdateScheduler<ShellCommandCardView>;
   timer: NodeJS.Timeout;
   refreshing: boolean;
+}
+
+interface RequestFailureDetails {
+  requestId?: string;
+  messageId?: string;
+  actionId?: string;
+  command?: string;
+  phase?: string;
+}
+
+class PresentedRequestError extends Error {
+  constructor(public readonly originalError: unknown) {
+    super(originalError instanceof Error ? originalError.message : String(originalError), { cause: originalError });
+    this.name = "PresentedRequestError";
+  }
 }
 
 const MESSAGE_RECEIVED_REACTION = "OnIt";
@@ -452,6 +474,7 @@ export class ProxySessionController {
     private readonly shellCommandJobs: ShellCommandJobManagerLike = new ShellCommandJobManager(
       path.join(path.dirname(config.storage.sqlitePath), "command-jobs"),
     ),
+    private readonly threadWriterProcesses: ThreadWriterProcessController = new SystemThreadWriterProcessController(),
   ) {
     for (const [, runtime] of this.runtimes.entries()) {
       this.unsubscribe.push(
@@ -608,7 +631,11 @@ export class ProxySessionController {
         await this.outbound.withReplyTarget(
           message.contextKey,
           replyTarget,
-          () => this.sendError(message.contextKey, new Error(`无法读取合并转发消息：${detail}`)),
+          () => this.sendError(message.contextKey, new Error(`无法读取合并转发消息：${detail}`), {
+            requestId: message.messageId,
+            messageId: message.messageId,
+            phase: "merged_forward_read",
+          }),
         );
         return;
       }
@@ -643,7 +670,11 @@ export class ProxySessionController {
         await this.outbound.withReplyTarget(
           message.contextKey,
           replyTarget,
-          () => this.sendError(message.contextKey, new Error(`无法读取引用消息：${detail}`)),
+          () => this.sendError(message.contextKey, new Error(`无法读取引用消息：${detail}`), {
+            requestId: message.messageId,
+            messageId: message.messageId,
+            phase: "referenced_message_read",
+          }),
         );
         return;
       }
@@ -681,7 +712,11 @@ export class ProxySessionController {
         await this.outbound.withReplyTarget(
           message.contextKey,
           replyTarget,
-          () => this.sendError(message.contextKey, error),
+          () => this.sendError(message.contextKey, error, {
+            requestId: message.messageId,
+            messageId: message.messageId,
+            phase: "image_download",
+          }),
         );
         return;
       }
@@ -708,7 +743,11 @@ export class ProxySessionController {
         await this.outbound.withReplyTarget(
           message.contextKey,
           replyTarget,
-          () => this.sendError(message.contextKey, error),
+          () => this.sendError(message.contextKey, error, {
+            requestId: message.messageId,
+            messageId: message.messageId,
+            phase: "file_download",
+          }),
         );
         return;
       }
@@ -724,9 +763,24 @@ export class ProxySessionController {
       await this.outbound.withReplyTarget(
         message.contextKey,
         replyTarget,
-        () => this.sendError(message.contextKey, error),
+        () => this.sendError(message.contextKey, error, {
+          requestId: message.messageId,
+          messageId: message.messageId,
+          phase: "command_parse",
+        }),
       );
       return;
+    }
+    if (command.type !== "prompt") {
+      this.logger.info(
+        {
+          requestId: message.messageId,
+          messageId: message.messageId,
+          contextKey: message.contextKey,
+          command: command.type,
+        },
+        "Processing Agent Bot command.",
+      );
     }
     // Operational and read-only commands must remain available even if a prompt operation is slow.
     if (isQueueIndependentCommand(command)) {
@@ -747,7 +801,12 @@ export class ProxySessionController {
           }
         } catch (error) {
           await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
-          await this.sendError(message.contextKey, error);
+          await this.sendError(message.contextKey, error, {
+            requestId: message.messageId,
+            messageId: message.messageId,
+            command: command.type,
+            phase: "command_execute",
+          });
         }
       });
       return;
@@ -772,7 +831,12 @@ export class ProxySessionController {
           }
         } catch (error) {
           await this.finalizeStandaloneMessageReaction(message.messageId, "failed");
-          await this.sendError(message.contextKey, error);
+          await this.sendError(message.contextKey, error, {
+            requestId: message.messageId,
+            messageId: message.messageId,
+            command: command.type,
+            phase: "command_execute",
+          });
         }
       }),
     );
@@ -794,7 +858,11 @@ export class ProxySessionController {
     try {
       resolvedAction = this.resolveCardActionBinding(action);
     } catch (error) {
-      await this.sendError(action.contextKey, error);
+      await this.sendError(action.contextKey, error, {
+        requestId: action.actionId,
+        actionId: action.actionId,
+        phase: "card_action_resolve",
+      });
       return;
     }
     const contextKey = this.cardActionContextKey(resolvedAction);
@@ -829,6 +897,16 @@ export class ProxySessionController {
             contextKey,
             String(scopedAction.value.jobId ?? ""),
           );
+        } else if (kind === "thread_writer_close") {
+          await this.closeThreadWriter(scopedAction, contextKey);
+        } else if (kind === "thread_writer_fork") {
+          const sessionId = String(scopedAction.value.sessionId ?? "");
+          const threadId = String(scopedAction.value.threadId ?? "");
+          const record = this.requireSession(contextKey, sessionId);
+          if (!threadId || record.remoteSessionId !== threadId) {
+            throw new Error("任务占用卡片已经失效，请重新发送消息获取最新状态。");
+          }
+          await this.forkSessionReference(contextKey, sessionId);
         } else if (kind === "turn_reset") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           const turnId = String(scopedAction.value.turnId ?? "");
@@ -1069,7 +1147,12 @@ export class ProxySessionController {
           await this.resolveApproval(scopedAction);
         }
       } catch (error) {
-        await this.sendError(contextKey, error);
+        await this.sendError(contextKey, error, {
+          requestId: scopedAction.actionId,
+          actionId: scopedAction.actionId,
+          command: String(scopedAction.value.action ?? "unknown"),
+          phase: "card_action_execute",
+        });
       }
     });
   }
@@ -2401,6 +2484,9 @@ export class ProxySessionController {
     try {
       loaded = await this.loadSession(record);
     } catch (error) {
+      if (await this.presentThreadWriterConflict(record, contextKey, error, true)) {
+        throw new PresentedRequestError(error);
+      }
       await this.outbound.failPendingTurn(record.localSessionId, error instanceof Error ? error.message : String(error));
       throw error;
     }
@@ -3809,6 +3895,7 @@ export class ProxySessionController {
             lastTurnStatus: record.lastTurnStatus,
           });
         } catch (error) {
+          if (activeWriterThreadId(error)) throw error;
           if (!(agent.kind === "app-server" && !record.lastTurnId && isMissingRolloutError(error))) throw error;
           this.logger.warn({ error, sessionId: record.localSessionId }, "App Server task has no rollout; creating a replacement task.");
           session = await runtime.createSession({
@@ -6509,18 +6596,34 @@ export class ProxySessionController {
         description: command.description,
       })),
     }));
-    await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderHelpCard(
-      "Agent Bot 使用帮助",
-      [
-        "直接发送消息即可继续当前任务；执行中发送的新消息会追加到本次任务。",
-        "点击命令按钮可执行默认形式；有必填参数的命令需要手动发送。",
-        "> 命令前缀示例：/sess 等同于 /sessions。",
-        "> 命令缩写示例：/fg 等同于 /forkgroup。",
-        "前缀或缩写匹配多个命令时，需要输入更长的形式。",
-        "**[参数]** 可选　**&#60;参数&#62;** 必填",
-      ],
-      sections,
-    ));
+    const introLines = [
+      "直接发送消息即可继续当前任务；执行中发送的新消息会追加到本次任务。",
+      "点击命令按钮可执行默认形式；有必填参数的命令需要手动发送。",
+      "> 命令前缀示例：/sess 等同于 /sessions。",
+      "> 命令缩写示例：/fg 等同于 /forkgroup。",
+      "前缀或缩写匹配多个命令时，需要输入更长的形式。",
+      "**[参数]** 可选　**&#60;参数&#62;** 必填",
+    ];
+    try {
+      await this.outbound.sendInteractiveCard(contextKey, this.cardRenderer.renderHelpCard(
+        "Agent Bot 使用帮助",
+        introLines,
+        sections,
+      ));
+    } catch (cardError) {
+      this.logger.warn(
+        { error: cardError, contextKey, command: "help", phase: "help_card_send" },
+        "Failed to send the help card; falling back to plain text.",
+      );
+      try {
+        await this.outbound.sendText(contextKey, renderPlainHelp(introLines, sections));
+      } catch (textError) {
+        throw new AggregateError(
+          [cardError, textError],
+          "帮助卡片和纯文本帮助均发送失败。",
+        );
+      }
+    }
   }
 
   private async setGroupMute(contextKey: string, enabled: boolean): Promise<void> {
@@ -6636,10 +6739,342 @@ export class ProxySessionController {
     return record;
   }
 
-  private async sendError(contextKey: string, error: unknown): Promise<void> {
-    this.logger.warn({ error, contextKey }, "Request failed.");
-    await this.outbound.sendText(contextKey, error instanceof Error ? error.message : String(error));
+  private async presentThreadWriterConflict(
+    record: SessionRecord,
+    contextKey: string,
+    error: unknown,
+    replacePendingTurn: boolean,
+  ): Promise<boolean> {
+    if (contextKey.startsWith("console:")) return false;
+    const threadId = activeWriterThreadId(error);
+    if (!threadId || record.remoteSessionId !== threadId) return false;
+    const runtime = this.runtimes.forAgent(record.agentName);
+    const lockPath = runtime.getThreadWriterLockPath?.(threadId);
+    let owners: ThreadWriterProcess[] = [];
+    if (lockPath) {
+      try {
+        owners = await this.threadWriterProcesses.inspect(lockPath);
+      } catch (inspectionError) {
+        this.logger.warn(
+          { error: inspectionError, threadId, lockPath },
+          "Failed to inspect the process holding a thread writer lock.",
+        );
+      }
+    }
+    const owner = owners.length === 1 ? owners[0] : undefined;
+    const applicationIdle = owner && lockPath
+      ? await this.inspectThreadWriterApplicationIdle(runtime, lockPath, threadId, owner)
+      : undefined;
+    const card = this.cardRenderer.renderThreadWriterConflict(this.threadWriterConflictView(
+      record,
+      contextKey,
+      threadId,
+      owners,
+      "occupied",
+      lockPath
+        ? undefined
+        : "无法识别占用进程。",
+      applicationIdle,
+    ));
+    if (replacePendingTurn) {
+      const replaced = await this.outbound.failPendingTurn(
+        record.localSessionId,
+        "任务被占用。",
+        card,
+      );
+      if (!replaced) await this.outbound.sendInteractiveCard(contextKey, card);
+    } else {
+      await this.outbound.sendInteractiveCard(contextKey, card);
+    }
+    return true;
   }
+
+  private threadWriterConflictView(
+    record: SessionRecord,
+    contextKey: string,
+    threadId: string,
+    owners: ThreadWriterProcess[],
+    status: ThreadWriterConflictCardView["status"],
+    notice?: string,
+    applicationIdle?: boolean,
+  ): ThreadWriterConflictCardView {
+    const owner = owners.length === 1 ? owners[0] : undefined;
+    return {
+      status,
+      contextKey,
+      sessionId: record.localSessionId,
+      threadId,
+      taskTitle: record.title,
+      notice: notice ?? (owners.length > 1
+        ? `检测到 ${owners.length} 个相关进程，无法安全地自动关闭。`
+        : undefined),
+      applicationIdle,
+      ...(owner ? {
+        owner: {
+          displayName: owner.displayName,
+          writerPid: owner.writerPid,
+          writerProcessName: owner.writerProcessName,
+          writerStartedAt: owner.writerStartedAt,
+          applicationPid: owner.applicationPid,
+          applicationProcessName: owner.applicationProcessName,
+          applicationStartedAt: owner.applicationStartedAt,
+          canClose: owner.canClose,
+        },
+      } : {}),
+    };
+  }
+
+  private async closeThreadWriter(action: CardAction, contextKey: string): Promise<void> {
+    const messageId = requiredCardMessageId(action.messageId);
+    const sessionId = String(action.value.sessionId ?? "");
+    const threadId = String(action.value.threadId ?? "");
+    const expectedWriterPid = positiveActionPid(action.value.writerPid);
+    const expectedApplicationPid = positiveActionPid(action.value.applicationPid);
+    const expectedWriterStartedAt = String(action.value.writerStartedAt ?? "");
+    const expectedApplicationStartedAt = String(action.value.applicationStartedAt ?? "");
+    const force = action.value.force === true || action.value.force === "true";
+    const record = this.requireSession(contextKey, sessionId);
+    if (!threadId || record.remoteSessionId !== threadId) {
+      throw new Error("任务占用卡片已经失效，请重新发送消息获取最新状态。");
+    }
+    const runtime = this.runtimes.forAgent(record.agentName);
+    const lockPath = runtime.getThreadWriterLockPath?.(threadId);
+    if (!lockPath) throw new Error("当前 Agent 不支持自动关闭占用程序。");
+
+    let owners = await this.threadWriterProcesses.inspect(lockPath);
+    const expectedOwner = owners.length === 1 && threadWriterMatches(
+      owners[0],
+      expectedWriterPid,
+      expectedWriterStartedAt,
+      expectedApplicationPid,
+      expectedApplicationStartedAt,
+    ) ? owners[0] : undefined;
+    if (!expectedOwner) {
+      const currentOwner = owners.length === 1 ? owners[0] : undefined;
+      const applicationIdle = currentOwner
+        ? await this.inspectThreadWriterApplicationIdle(runtime, lockPath, threadId, currentOwner)
+        : undefined;
+      await this.outbound.updateInteractiveCard(
+        contextKey,
+        messageId,
+        this.cardRenderer.renderThreadWriterConflict(this.threadWriterConflictView(
+          record,
+          contextKey,
+          threadId,
+          owners,
+          owners.length === 0 ? "released" : "occupied",
+          owners.length === 0
+            ? "请重新发送消息。"
+            : "占用进程已变化，请重试。",
+          applicationIdle,
+        )),
+      );
+      return;
+    }
+    if (!expectedOwner.canClose) throw new Error("无法确认占用者是 Agent 程序，已拒绝关闭。");
+
+    try {
+      await this.threadWriterProcesses.close(expectedOwner, force);
+    } catch (error) {
+      owners = await this.threadWriterProcesses.inspect(lockPath);
+      if (owners.some((owner) => threadWriterMatches(
+        owner,
+        expectedWriterPid,
+        expectedWriterStartedAt,
+        expectedApplicationPid,
+        expectedApplicationStartedAt,
+      ))) throw error;
+    }
+    owners = await this.waitForThreadWriterChange(lockPath, expectedOwner);
+    const sameOwnerRemains = owners.some((owner) => threadWriterMatches(
+      owner,
+      expectedOwner.writerPid,
+      expectedOwner.writerStartedAt ?? "",
+      expectedOwner.applicationPid,
+      expectedOwner.applicationStartedAt ?? "",
+    ));
+    if (sameOwnerRemains && force) {
+      throw new Error(`无法关闭 ${expectedOwner.displayName}（PID ${expectedOwner.applicationPid}）。`);
+    }
+    const status: ThreadWriterConflictCardView["status"] = owners.length === 0
+      ? "released"
+      : sameOwnerRemains ? "force_required" : "occupied";
+    const notice = owners.length === 0
+      ? "请重新发送消息。"
+      : sameOwnerRemains
+        ? "普通关闭失败，可强制关闭。"
+        : "占用进程已变化，请重试。";
+    const currentOwner = owners.length === 1 ? owners[0] : undefined;
+    const applicationIdle = currentOwner
+      ? await this.inspectThreadWriterApplicationIdle(runtime, lockPath, threadId, currentOwner)
+      : undefined;
+    await this.outbound.updateInteractiveCard(
+      contextKey,
+      messageId,
+      this.cardRenderer.renderThreadWriterConflict(this.threadWriterConflictView(
+        record,
+        contextKey,
+        threadId,
+        owners,
+        status,
+        notice,
+        applicationIdle,
+      )),
+    );
+  }
+
+  private async inspectThreadWriterApplicationIdle(
+    runtime: AgentRuntime,
+    lockPath: string,
+    threadId: string,
+    owner: ThreadWriterProcess,
+  ): Promise<boolean | undefined> {
+    if (!owner.applicationStartedAt
+      || !this.threadWriterProcesses.inspectApplicationThreadIds
+      || !runtime.inspectRemoteSessionActivity) return undefined;
+    try {
+      const ownedThreadIds = await this.threadWriterProcesses.inspectApplicationThreadIds(lockPath, owner);
+      if (!ownedThreadIds.includes(threadId)) return undefined;
+      const activities = await Promise.all(
+        ownedThreadIds.map((ownedThreadId) => runtime.inspectRemoteSessionActivity!(ownedThreadId)),
+      );
+      return activities.every((activity) => !activity.active);
+    } catch (error) {
+      this.logger.warn(
+        { error, threadId, applicationPid: owner.applicationPid },
+        "Failed to inspect thread-writer application activity.",
+      );
+      return undefined;
+    }
+  }
+
+  private async waitForThreadWriterChange(
+    lockPath: string,
+    expectedOwner: ThreadWriterProcess,
+  ): Promise<ThreadWriterProcess[]> {
+    const deadline = Date.now() + 5_000;
+    let owners: ThreadWriterProcess[] = [];
+    do {
+      owners = await this.threadWriterProcesses.inspect(lockPath);
+      if (!owners.some((owner) => threadWriterMatches(
+        owner,
+        expectedOwner.writerPid,
+        expectedOwner.writerStartedAt ?? "",
+        expectedOwner.applicationPid,
+        expectedOwner.applicationStartedAt ?? "",
+      ))) return owners;
+      await delay(250);
+    } while (Date.now() < deadline);
+    return owners;
+  }
+
+  private async sendError(
+    contextKey: string,
+    error: unknown,
+    details: RequestFailureDetails = {},
+  ): Promise<void> {
+    if (error instanceof PresentedRequestError) {
+      this.logger.warn(
+        { error: errorLogValue(error.originalError), contextKey, ...details },
+        "Request failed after a dedicated error card was presented.",
+      );
+      return;
+    }
+    const record = this.currentSession(contextKey);
+    if (record) {
+      try {
+        if (await this.presentThreadWriterConflict(record, contextKey, error, false)) return;
+      } catch (presentationError) {
+        this.logger.warn(
+          { error: presentationError, originalError: errorLogValue(error), contextKey, ...details },
+          "Failed to present the thread writer conflict card.",
+        );
+      }
+    }
+    this.logger.warn({ error, contextKey, ...details }, "Request failed.");
+    try {
+      await this.outbound.sendText(contextKey, error instanceof Error ? error.message : String(error));
+    } catch (deliveryError) {
+      this.logger.error(
+        {
+          error: deliveryError,
+          originalError: errorLogValue(error),
+          contextKey,
+          ...details,
+          phase: "error_response_send",
+        },
+        "Failed to deliver the request failure to the user.",
+      );
+    }
+  }
+}
+
+function activeWriterThreadId(error: unknown): string | undefined {
+  const visited = new Set<unknown>();
+  let current = error;
+  while (current !== undefined && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const message = current instanceof Error
+      ? current.message
+      : typeof current === "string" ? current : undefined;
+    const match = message?.match(
+      /thread(?:\/resume failed:\s*thread)?\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+already has an active writer/iu,
+    );
+    if (match?.[1]) return match[1];
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
+}
+
+function positiveActionPid(value: unknown): number {
+  const pid = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(pid) || pid <= 4) {
+    throw new Error("任务占用卡片中的进程信息无效，请重新发送消息获取最新状态。");
+  }
+  return pid;
+}
+
+function threadWriterMatches(
+  owner: ThreadWriterProcess,
+  writerPid: number,
+  writerStartedAt: string,
+  applicationPid: number,
+  applicationStartedAt: string,
+): boolean {
+  return Boolean(writerStartedAt)
+    && Boolean(applicationStartedAt)
+    && owner.writerPid === writerPid
+    && owner.writerStartedAt === writerStartedAt
+    && owner.applicationPid === applicationPid
+    && owner.applicationStartedAt === applicationStartedAt;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function renderPlainHelp(introLines: string[], sections: HelpCardSection[]): string {
+  return [
+    "Agent Bot 使用帮助",
+    "",
+    ...introLines.map((line) => decodeHelpEntities(line.replace(/^>\s*/u, "").replaceAll("**", ""))),
+    ...sections.flatMap((section) => [
+      "",
+      section.title,
+      ...section.commands.map((command) => [
+        command.text,
+        command.usage ? decodeHelpEntities(command.usage) : "",
+        `- ${command.description}`,
+      ].filter(Boolean).join(" ")),
+    ]),
+  ].join("\n");
+}
+
+function decodeHelpEntities(value: string): string {
+  return value
+    .replaceAll("&#60;", "<")
+    .replaceAll("&#62;", ">")
+    .replaceAll("&amp;", "&");
 }
 
 function threadForkAnchorMessageIds(message: IncomingMessage): string[] {

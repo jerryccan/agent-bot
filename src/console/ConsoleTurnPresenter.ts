@@ -32,9 +32,10 @@ export class ConsoleTurnPresenter implements TurnPresenter {
     return undefined;
   }
 
-  async failPendingTurn(sessionId: string, message: string): Promise<void> {
+  async failPendingTurn(sessionId: string, message: string): Promise<boolean> {
     const contextKey = this.contexts.get(sessionId);
     if (contextKey) await this.outbound.sendText(contextKey, `${this.agentLabel(sessionId)} failed to start: ${message}`);
+    return false;
   }
 
   async interruptTurnForRecovery(): Promise<void> {}

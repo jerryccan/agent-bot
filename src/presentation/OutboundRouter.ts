@@ -26,7 +26,11 @@ export interface TurnPresenter {
     replyTarget?: MessageReplyTarget,
     prompt?: string,
   ): Promise<string | undefined>;
-  failPendingTurn(sessionId: string, message: string): Promise<void>;
+  failPendingTurn(
+    sessionId: string,
+    message: string,
+    replacementCard?: Record<string, unknown>,
+  ): Promise<boolean>;
   interruptTurnForRecovery(sessionId: string, contextKey: string, turnId: string, message: string): Promise<void>;
   appendSteerMessage(sessionId: string, turnId: string, text: string, messageId?: string): Promise<void>;
   onEvent(event: AgentEvent): Promise<void>;
@@ -109,8 +113,16 @@ export class OutboundRouter {
     return route.presenter.startPendingTurn(sessionId, contextKey, taskTitle, replyTarget, prompt);
   }
 
-  async failPendingTurn(sessionId: string, message: string): Promise<void> {
-    await this.sessionRoutes.get(sessionId)?.presenter.failPendingTurn(sessionId, message);
+  async failPendingTurn(
+    sessionId: string,
+    message: string,
+    replacementCard?: Record<string, unknown>,
+  ): Promise<boolean> {
+    return await this.sessionRoutes.get(sessionId)?.presenter.failPendingTurn(
+      sessionId,
+      message,
+      replacementCard,
+    ) ?? false;
   }
 
   async interruptTurnForRecovery(

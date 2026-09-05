@@ -164,9 +164,13 @@ export class FeishuTurnPresenter {
     }
   }
 
-  async failPendingTurn(sessionId: string, message: string): Promise<void> {
+  async failPendingTurn(
+    sessionId: string,
+    message: string,
+    replacementCard?: Record<string, unknown>,
+  ): Promise<boolean> {
     const entry = this.pendingEntries.get(sessionId);
-    if (!entry) return;
+    if (!entry) return false;
     this.pendingEntries.delete(sessionId);
     this.stopElapsedUpdates(entry);
     const completedAt = Date.now();
@@ -183,9 +187,18 @@ export class FeishuTurnPresenter {
       await entry.scheduler?.flush(entry.state);
     } catch (error) {
       this.options.onError?.(error);
-      return;
+      return false;
+    }
+    if (replacementCard && entry.messageId) {
+      try {
+        await this.outbound.updateInteractiveCard(entry.messageId, replacementCard);
+      } catch (error) {
+        this.options.onError?.(error);
+        return false;
+      }
     }
     await this.syncThinkingCardReaction(entry);
+    return Boolean(replacementCard && entry.messageId);
   }
 
   async interruptTurnForRecovery(

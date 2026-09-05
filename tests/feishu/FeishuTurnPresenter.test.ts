@@ -306,6 +306,20 @@ describe("FeishuTurnPresenter", () => {
     await vi.waitFor(() => expect(outbound.updateInteractiveCard).toHaveBeenCalled());
   });
 
+  test("replaces a failed pending turn with a dedicated card when requested", async () => {
+    const { presenter, outbound } = createFixture();
+    const replacementCard = {
+      schema: "2.0",
+      header: { title: { tag: "plain_text", content: "任务被其他程序占用" } },
+    };
+    await presenter.startPendingTurn("s1", "chat_id:c1", "Occupied task");
+
+    const replaced = await presenter.failPendingTurn("s1", "active writer", replacementCard);
+
+    expect(replaced).toBe(true);
+    expect(outbound.updateInteractiveCard).toHaveBeenLastCalledWith("progress_1", replacementCard);
+  });
+
   test("persists and renders the registered Agent label on the starting card", async () => {
     const { presenter, outbound, store } = createFixture();
     presenter.registerSession("s1", "chat_id:c1", undefined, "D:\\dev\\agent-bot", "TraeX");

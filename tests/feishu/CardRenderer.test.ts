@@ -53,6 +53,112 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("renders a thread-writer conflict with the owning process and a safe close action", () => {
+    const card = new CardRenderer().renderThreadWriterConflict({
+      status: "occupied",
+      contextKey: "chat_id:c1",
+      sessionId: "s1",
+      threadId: "01a05543-1cfd-75b1-9eba-1ce331ab4230",
+      taskTitle: "Desktop task",
+      applicationIdle: true,
+      owner: {
+        displayName: "Codex Desktop",
+        writerPid: 53704,
+        writerProcessName: "codex.exe",
+        writerStartedAt: "2026-09-05T10:00:00.000Z",
+        applicationPid: 81552,
+        applicationProcessName: "ChatGPT.exe",
+        applicationStartedAt: "2026-09-05T09:00:00.000Z",
+        canClose: true,
+      },
+    });
+    const buttons = collectObjects(card).filter((item) => item.tag === "button");
+    const forkButton = buttons.find((item) => (item.text as { content?: unknown } | undefined)?.content === "Fork");
+    const closeButton = buttons.find(
+      (item) => (item.text as { content?: unknown } | undefined)?.content === "Close 81552",
+    );
+
+    expect(card).toMatchObject({
+      header: {
+        template: "orange",
+        title: { tag: "plain_text", content: "任务被占用" },
+      },
+    });
+    expect(JSON.stringify(card)).toContain("ChatGPT.exe (81552)");
+    expect(JSON.stringify(card)).not.toContain("Codex Desktop");
+    expect(JSON.stringify(card)).not.toContain("任务 ID");
+    expect(JSON.stringify(card)).not.toContain("Writer");
+    expect(JSON.stringify(card)).toContain("无执行中任务，可安全关闭");
+    expect(forkButton).toMatchObject({
+      text: { tag: "plain_text", content: "Fork" },
+      behaviors: [{
+        type: "callback",
+        value: expect.objectContaining({
+          action: "thread_writer_fork",
+          sessionId: "s1",
+        }),
+      }],
+    });
+    expect(closeButton).toMatchObject({
+      text: { tag: "plain_text", content: "Close 81552" },
+      type: "danger",
+      behaviors: [{
+        type: "callback",
+        value: expect.objectContaining({
+          action: "thread_writer_close",
+          writerPid: 53704,
+          applicationPid: 81552,
+          force: false,
+        }),
+      }],
+    });
+  });
+
+  test("offers Force Close only after a normal close request leaves the writer active", () => {
+    const card = new CardRenderer().renderThreadWriterConflict({
+      status: "force_required",
+      contextKey: "chat_id:c1",
+      sessionId: "s1",
+      threadId: "01a05543-1cfd-75b1-9eba-1ce331ab4230",
+      applicationIdle: false,
+      owner: {
+        displayName: "Codex CLI",
+        writerPid: 53704,
+        writerProcessName: "codex.exe",
+        writerStartedAt: "2026-09-05T10:00:00.000Z",
+        applicationPid: 53704,
+        applicationProcessName: "codex.exe",
+        applicationStartedAt: "2026-09-05T10:00:00.000Z",
+        canClose: true,
+      },
+    });
+
+    expect(card).toMatchObject({ header: { template: "red" } });
+    expect(JSON.stringify(card)).toContain("Force 53704");
+    expect(JSON.stringify(card)).toContain("有任务执行中，关闭会中断任务");
+  });
+
+  test("does not offer a close action without a stable process fingerprint", () => {
+    const card = new CardRenderer().renderThreadWriterConflict({
+      status: "occupied",
+      contextKey: "chat_id:c1",
+      sessionId: "s1",
+      threadId: "01a05543-1cfd-75b1-9eba-1ce331ab4230",
+      owner: {
+        displayName: "Unknown process",
+        writerPid: 53704,
+        writerProcessName: "unknown.exe",
+        applicationPid: 53704,
+        applicationProcessName: "unknown.exe",
+        canClose: false,
+      },
+    });
+
+    const buttons = collectObjects(card).filter((item) => item.tag === "button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toMatchObject({ text: { content: "Fork" } });
+  });
+
   test("renders live shell output with head-and-tail truncation", () => {
     const card = new CardRenderer().renderShellCommandCard({
       command: "npm run noisy",

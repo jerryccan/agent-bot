@@ -255,11 +255,120 @@ export interface ShellCommandCardView {
   outputTruncated: boolean;
 }
 
+export interface ThreadWriterConflictCardView {
+  status: "occupied" | "force_required" | "released";
+  contextKey: string;
+  sessionId: string;
+  threadId: string;
+  taskTitle?: string;
+  notice?: string;
+  applicationIdle?: boolean;
+  owner?: {
+    displayName: string;
+    writerPid: number;
+    writerProcessName: string;
+    writerStartedAt?: string;
+    applicationPid: number;
+    applicationProcessName: string;
+    applicationStartedAt?: string;
+    canClose: boolean;
+  };
+}
+
 export class CardRenderer {
   private readonly thinkingCardLayout: ThinkingCardLayout;
 
   constructor(options: CardRendererOptions = {}) {
     this.thinkingCardLayout = options.thinkingCardLayout ?? "grouped";
+  }
+
+  renderThreadWriterConflict(view: ThreadWriterConflictCardView): Record<string, unknown> {
+    if (view.status === "released") {
+      return sectionCard("任务占用已解除", [markdown([
+        view.taskTitle ? `**任务**：${inlineCode(view.taskTitle)}` : undefined,
+        view.notice ?? "请重新发送消息。",
+      ].filter((line): line is string => Boolean(line)).join("\n"))], "green");
+    }
+
+    const owner = view.owner;
+    const lines = [
+      view.taskTitle ? `**任务**：${inlineCode(view.taskTitle)}` : undefined,
+      owner ? `**进程**：${inlineCode(`${owner.applicationProcessName} (${owner.applicationPid})`)}` : undefined,
+      view.notice,
+      owner
+        ? view.applicationIdle === true
+          ? "> 无执行中任务，可安全关闭；也可 **Fork** 后继续发送消息。"
+          : view.applicationIdle === false
+            ? "> 有任务执行中，关闭会中断任务；可 **Fork** 后继续发送消息。"
+            : "> 可 **Fork** 后继续发送消息；关闭进程后请重发消息。"
+        : "> 可 **Fork** 后继续发送消息；或手动关闭占用任务。",
+    ].filter((line): line is string => Boolean(line));
+    const elements: Record<string, unknown>[] = [markdown(lines.join("\n"))];
+    const canClose = owner?.canClose
+      && Boolean(owner.writerStartedAt)
+      && Boolean(owner.applicationStartedAt);
+    const actions: Record<string, unknown>[] = [{
+      tag: "button",
+      text: {
+        tag: "plain_text",
+        content: "Fork",
+      },
+      type: "default",
+      size: "small",
+      behaviors: [{
+        type: "callback",
+        value: {
+          action: "thread_writer_fork",
+          contextKey: view.contextKey,
+          sessionId: view.sessionId,
+          threadId: view.threadId,
+        },
+      }],
+    }];
+    if (canClose && owner) {
+      actions.push({
+        tag: "button",
+        text: {
+          tag: "plain_text",
+          content: view.status === "force_required"
+            ? `Force ${owner.applicationPid}`
+            : `Close ${owner.applicationPid}`,
+        },
+        type: "danger",
+        size: "small",
+        behaviors: [{
+          type: "callback",
+          value: {
+            action: "thread_writer_close",
+            contextKey: view.contextKey,
+            sessionId: view.sessionId,
+            threadId: view.threadId,
+            writerPid: owner.writerPid,
+            writerStartedAt: owner.writerStartedAt,
+            applicationPid: owner.applicationPid,
+            applicationStartedAt: owner.applicationStartedAt,
+            force: view.status === "force_required",
+          },
+        }],
+      });
+    }
+    elements.push({
+      tag: "column_set",
+      flex_mode: "none",
+      horizontal_spacing: "8px",
+      vertical_align: "center",
+      columns: actions.map((button) => ({
+        tag: "column",
+        width: "auto",
+        vertical_align: "center",
+        elements: [button],
+      })),
+    });
+    return sectionCard(
+      view.status === "force_required" ? "仍被占用" : "任务被占用",
+      elements,
+      view.status === "force_required" ? "red" : "orange",
+    );
   }
 
   renderShellCommandCard(view: ShellCommandCardView): Record<string, unknown> {

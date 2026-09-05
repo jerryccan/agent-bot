@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import type {
+  ThreadWriterProcess,
+  ThreadWriterProcessController,
+} from "../../src/codex/ThreadWriterProcess.js";
 import type { AppConfig } from "../../src/config/schema.js";
 import { generateGroupAvatarPng, resolveGroupAvatarProjectName } from "../../src/feishu/GroupAvatarGenerator.js";
 import type { FeishuOutbound, IncomingMessage } from "../../src/feishu/types.js";
@@ -39,6 +43,19 @@ afterEach(() => {
 
 function message(text: string): IncomingMessage {
   return { messageId: `m-${text}`, contextKey: "chat_id:c1", text };
+}
+
+function threadWriterOwner(): ThreadWriterProcess {
+  return {
+    writerPid: 53704,
+    writerProcessName: "codex.exe",
+    writerStartedAt: "2026-09-05T10:00:00.000Z",
+    applicationPid: 81552,
+    applicationProcessName: "ChatGPT.exe",
+    applicationStartedAt: "2026-09-05T09:00:00.000Z",
+    displayName: "Codex Desktop",
+    canClose: true,
+  };
 }
 
 class FakeShellCommandJobManager implements ShellCommandJobManagerLike {
@@ -255,7 +272,13 @@ function threadMessage(
   };
 }
 
-function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
+function fixture(
+  extraRuntimes: Record<string, AgentRuntime> = {},
+  threadWriterProcesses: ThreadWriterProcessController = {
+    inspect: vi.fn(async () => []),
+    close: vi.fn(async () => undefined),
+  },
+) {
   const sessions = new Map<string, RuntimeSession>();
   const remoteSessions: RemoteSessionSummary[] = [];
   let nextRemoteSessionNumber = 1;
@@ -263,6 +286,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
   const listeners = new Set<(event: RuntimeEvent) => void>();
   const runtime: AgentRuntime = {
     kind: "codex",
+    getThreadWriterLockPath: vi.fn((remoteSessionId) => path.join("C:\\codex-home", `${remoteSessionId}.lock`)),
     createSession: vi.fn(async (input) => {
       const session: RuntimeSession = {
         ...input,
@@ -465,7 +489,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     updateSessionTitle: vi.fn(),
     unregisterSession: vi.fn(),
     startPendingTurn: vi.fn(async () => undefined),
-    failPendingTurn: vi.fn(async () => undefined),
+    failPendingTurn: vi.fn(async () => false),
     interruptTurnForRecovery: vi.fn(async () => undefined),
     appendSteerMessage: vi.fn(async () => undefined),
     onEvent: vi.fn(async () => undefined),
@@ -536,6 +560,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     shellCommandExecutor,
     windowsDriveLister,
     shellCommandJobs,
+    threadWriterProcesses,
   );
   cleanups.push(() => {
     controller.close();
@@ -551,6 +576,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     outboundRouter,
     presenter,
     store,
+    logger,
     listeners,
     restart,
     cancelSafeRestart,
@@ -559,6 +585,7 @@ function fixture(extraRuntimes: Record<string, AgentRuntime> = {}) {
     shellCommandExecutor,
     shellCommandJobs,
     windowsDriveLister,
+    threadWriterProcesses,
     config,
   };
 }
@@ -5384,6 +5411,193 @@ describe("ProxySessionController", () => {
     expect(store.getSession("empty")?.remoteSessionId).toBe("thr_1");
   });
 
+  test("replaces a resume failure with a dedicated thread-writer conflict card", async () => {
+    const owner = threadWriterOwner();
+    const threadId = "01a05543-1cfd-75b1-9eba-1ce331ab4230";
+    const threadWriterProcesses: ThreadWriterProcessController = {
+      inspect: vi.fn(async () => [owner]),
+      inspectApplicationThreadIds: vi.fn(async () => [threadId, "other-idle-thread"]),
+      close: vi.fn(async () => undefined),
+    };
+    const { controller, runtime, remoteSessions, presenter, outbound, store } = fixture({}, threadWriterProcesses);
+    remoteSessions.push({
+      id: threadId,
+      title: "Desktop task",
+      cwd: process.cwd(),
+      source: "vscode",
+      status: "idle",
+    });
+    remoteSessions.push({
+      id: "other-idle-thread",
+      cwd: process.cwd(),
+      source: "vscode",
+      status: "idle",
+    });
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "occupied",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("occupied", {
+      runtimeKind: "codex",
+      remoteSessionId: threadId,
+      title: "Desktop task",
+      model: "gpt-test",
+      reasoningEffort: "high",
+      permissionMode: "auto",
+    });
+    store.setCurrentSession("chat_id:c1", "occupied");
+    (runtime.resumeSession as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error(`thread/resume failed: thread ${threadId} already has an active writer`),
+    );
+    (presenter.failPendingTurn as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+
+    await controller.onMessage(message("continue occupied task"));
+
+    expect(threadWriterProcesses.inspect).toHaveBeenCalledOnce();
+    expect(presenter.failPendingTurn).toHaveBeenCalledWith(
+      "occupied",
+      "任务被占用。",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          template: "orange",
+          title: { tag: "plain_text", content: "任务被占用" },
+        }),
+      }),
+    );
+    const card = (presenter.failPendingTurn as ReturnType<typeof vi.fn>).mock.calls[0]?.[2];
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain("ChatGPT.exe (81552)");
+    expect(serialized).not.toContain("Codex Desktop");
+    expect(serialized).toContain("无执行中任务，可安全关闭");
+    expect(serialized).toContain("thread_writer_fork");
+    expect(serialized).toContain("Fork");
+    expect(serialized).toContain("Close 81552");
+    expect(outbound.sendText).not.toHaveBeenCalled();
+    expect(outbound.sendInteractiveCard).not.toHaveBeenCalled();
+    expect(threadWriterProcesses.inspectApplicationThreadIds).toHaveBeenCalledWith(
+      path.join("C:\\codex-home", `${threadId}.lock`),
+      owner,
+    );
+    expect(runtime.inspectRemoteSessionActivity).toHaveBeenCalledWith(threadId);
+    expect(runtime.inspectRemoteSessionActivity).toHaveBeenCalledWith("other-idle-thread");
+  });
+
+  test("revalidates and closes the exact thread-writer process from the conflict card", async () => {
+    const owner = threadWriterOwner();
+    const threadWriterProcesses: ThreadWriterProcessController = {
+      inspect: vi.fn()
+        .mockResolvedValueOnce([owner])
+        .mockResolvedValueOnce([]),
+      close: vi.fn(async () => undefined),
+    };
+    const { controller, outbound, store } = fixture({}, threadWriterProcesses);
+    const threadId = "01a05543-1cfd-75b1-9eba-1ce331ab4230";
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "occupied",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("occupied", {
+      runtimeKind: "codex",
+      remoteSessionId: threadId,
+      title: "Desktop task",
+    });
+
+    await controller.onCardAction({
+      actionId: "close-writer",
+      contextKey: "chat_id:c1",
+      messageId: "om_conflict",
+      value: {
+        action: "thread_writer_close",
+        contextKey: "chat_id:c1",
+        sessionId: "occupied",
+        threadId,
+        writerPid: owner.writerPid,
+        writerStartedAt: owner.writerStartedAt,
+        applicationPid: owner.applicationPid,
+        applicationStartedAt: owner.applicationStartedAt,
+        force: false,
+      },
+    });
+
+    expect(threadWriterProcesses.close).toHaveBeenCalledWith(owner, false);
+    expect(outbound.updateInteractiveCard).toHaveBeenCalledWith(
+      "om_conflict",
+      expect.objectContaining({
+        header: expect.objectContaining({
+          template: "green",
+          title: { tag: "plain_text", content: "任务占用已解除" },
+        }),
+      }),
+    );
+  });
+
+  test("forks the occupied task from the conflict card without resuming it", async () => {
+    const { controller, runtime, remoteSessions, outbound, store } = fixture();
+    const threadId = "01a05543-1cfd-75b1-9eba-1ce331ab4230";
+    remoteSessions.push({
+      id: threadId,
+      title: "Occupied task",
+      cwd: process.cwd(),
+      source: "vscode",
+      status: "idle",
+      lastTurnId: "turn_completed",
+      lastTurnStatus: "completed",
+      lastCompletedTurnId: "turn_completed",
+      completedTurns: [{
+        id: "turn_completed",
+        prompt: "completed work",
+        startedAt: 100,
+        completedAt: 200,
+      }],
+    });
+    store.getOrCreateUserContext("chat_id:c1", "codex");
+    store.createSession({
+      localSessionId: "occupied",
+      contextKey: "chat_id:c1",
+      agentName: "codex",
+      cwd: process.cwd(),
+      status: "ready",
+    });
+    store.updateRuntimeSession("occupied", {
+      runtimeKind: "codex",
+      remoteSessionId: threadId,
+      title: "Occupied task",
+      lastTurnId: "turn_completed",
+      lastTurnStatus: "completed",
+    });
+    store.setCurrentSession("chat_id:c1", "occupied");
+
+    await controller.onCardAction({
+      actionId: "fork-writer",
+      contextKey: "chat_id:c1",
+      messageId: "om_conflict",
+      value: {
+        action: "thread_writer_fork",
+        contextKey: "chat_id:c1",
+        sessionId: "occupied",
+        threadId,
+      },
+    });
+
+    expect(runtime.resumeSession).not.toHaveBeenCalled();
+    expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
+      remoteSessionId: threadId,
+      lastTurnId: "turn_completed",
+    }));
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("已从指定任务创建分支并切换到新任务"),
+    );
+  });
+
   test("lists all Codex tasks through one unified view", async () => {
     const { controller, remoteSessions, outbound, store } = fixture();
     store.createSession({
@@ -8466,6 +8680,49 @@ describe("ProxySessionController", () => {
     expect(serialized).not.toContain("<name>");
     expect(serialized).not.toContain("###");
     expect(serialized).not.toContain("`");
+  });
+
+  test("falls back to plain text when the help card cannot be sent", async () => {
+    const { controller, outbound, logger } = fixture();
+    const cardError = Object.assign(new Error("card rejected"), { code: 200621 });
+    (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mockRejectedValueOnce(cardError);
+
+    await controller.onMessage(message("/help"));
+
+    expect(outbound.sendText).toHaveBeenCalledOnce();
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("Agent Bot 使用帮助\n"),
+    );
+    expect(outbound.sendText).toHaveBeenCalledWith(
+      "chat_id:c1",
+      expect.stringContaining("/file <文件路径> - 将指定文件发送到当前飞书会话"),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: cardError, command: "help", phase: "help_card_send" }),
+      "Failed to send the help card; falling back to plain text.",
+    );
+  });
+
+  test("records a secondary failure when neither help response can be delivered", async () => {
+    const { controller, outbound, logger } = fixture();
+    (outbound.sendInteractiveCard as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("card rejected"));
+    (outbound.sendText as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("message delivery failed"));
+
+    await controller.onMessage(message("/help"));
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({ message: "message delivery failed" }),
+        originalError: expect.objectContaining({
+          name: "AggregateError",
+          message: "帮助卡片和纯文本帮助均发送失败。",
+        }),
+        command: "help",
+        phase: "error_response_send",
+      }),
+      "Failed to deliver the request failure to the user.",
+    );
   });
 
   test("executes only registered default commands from help-card callbacks", async () => {

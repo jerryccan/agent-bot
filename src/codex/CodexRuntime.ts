@@ -26,6 +26,7 @@ import { AppServerRequestError } from "./AppServerConnection.js";
 import { mapCodexNotification } from "./CodexEventMapper.js";
 import { CodexLocalActivityDetector } from "./CodexLocalActivityDetector.js";
 import { detectProjectlessWorkspace } from "./ProjectlessWorkspace.js";
+import { threadWriterLockPath } from "./ThreadWriterProcess.js";
 
 const WINDOWS_SCREENSHOT_DEVELOPER_INSTRUCTIONS = [
   "When capturing any screenshot on Windows, use one fresh process and make it Per-Monitor DPI Aware V2 before loading System.Windows.Forms, System.Drawing, or UI Automation, and before calling any screen, window, or bounds API.",
@@ -88,14 +89,15 @@ export class CodexRuntime implements AgentRuntime {
   private readonly unsubscribeDisconnect?: () => void;
   private readonly sessionSyncs = new Map<string, Promise<RuntimeSession>>();
   private readonly localActivityDetector?: CodexLocalActivityDetector;
+  private readonly codexHome?: string;
   private threadListSortKey: ThreadListSortKey = "recency_at";
 
   constructor(
     private readonly provider: AppServerClientProvider,
     private readonly logger: Logger,
   ) {
-    const codexHome = provider.getCodexHome?.();
-    if (codexHome) this.localActivityDetector = new CodexLocalActivityDetector(codexHome);
+    this.codexHome = provider.getCodexHome?.();
+    if (this.codexHome) this.localActivityDetector = new CodexLocalActivityDetector(this.codexHome);
     this.unsubscribeDisconnect = provider.onDisconnect?.((error) => this.handleDisconnect(error));
   }
 
@@ -105,6 +107,10 @@ export class CodexRuntime implements AgentRuntime {
 
   getProcessInfo(): AgentProcessInfo {
     return this.provider.getProcessInfo?.() ?? {};
+  }
+
+  getThreadWriterLockPath(remoteSessionId: string): string | undefined {
+    return this.codexHome ? threadWriterLockPath(this.codexHome, remoteSessionId) : undefined;
   }
 
   async createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {
