@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.19-alpha.0] - 2026-09-05
+
 - Detect Codex thread-writer conflicts and replace generic failures with a compact Lark card that identifies the owning process and PID, supports Fork and guarded close actions, and marks the process safe to close only when all of its tasks are idle.
 - Preserve standard, custom, nested-cause, and aggregate error details in structured logs, including fallback delivery failures that previously lost their useful context.
 - Shorten the safe-restart quiet-message countdown from 15 seconds to 5 seconds.
