@@ -140,7 +140,7 @@ export class SafeRestartScheduler {
       await this.restart(reason, scheduleId, state);
       return;
     }
-    const quietPeriodMs = this.options.quietPeriodMs ?? 15_000;
+    const quietPeriodMs = this.options.quietPeriodMs ?? 5_000;
     const latestInboundAt = state.latestInboundAt ?? "";
     if (this.idleSince === undefined || this.idleInboundAt !== latestInboundAt) {
       this.idleSince = Date.now();

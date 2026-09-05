@@ -276,7 +276,7 @@ async function requestRestart(
   await outbound.sendText(
     contextKey,
     newlyScheduled
-      ? "已安排安全重启。Agent Bot 会等待所有任务完成、最终结果投递完成，并保持 15 秒无新消息后重启。"
+      ? "已安排安全重启。Agent Bot 会等待所有任务完成、最终结果投递完成，并保持 5 秒无新消息后重启。"
       : "安全重启已在等待中；当前会话已加入通知范围，并已更新重启原因。",
   ).catch((error: unknown) => {
     logger.warn({ error, contextKey }, "Failed to send safe restart acknowledgement.");
@@ -396,7 +396,7 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
         return {
           ok: true,
           message: newlyScheduled
-            ? "Safe restart scheduled. It will run after all tasks finish and the server stays idle for 15 seconds."
+            ? "Safe restart scheduled. It will run after all tasks finish and the server stays idle for 5 seconds."
             : "A safe restart is already pending. Its reason has been updated.",
         };
       }

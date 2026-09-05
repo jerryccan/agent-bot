@@ -4,6 +4,29 @@ import { SafeRestartScheduler, type ServerActivityState } from "../../src/superv
 afterEach(() => vi.useRealTimers());
 
 describe("SafeRestartScheduler", () => {
+  test("uses a five-second quiet period by default", async () => {
+    vi.useFakeTimers();
+    const onReady = vi.fn();
+    const onStatus = vi.fn();
+    const scheduler = new SafeRestartScheduler({
+      readActivity: () => ({ runningSessions: 0, pendingFinalDeliveries: 0 }),
+      onReady,
+      onStatus,
+    });
+
+    scheduler.schedule("default countdown");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: "countdown",
+      remainingMs: 5_000,
+    }));
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(onReady).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onReady).toHaveBeenCalledWith("default countdown", []);
+  });
+
   test("waits for all tasks and final deliveries plus a quiet inbound window", async () => {
     vi.useFakeTimers();
     let state: ServerActivityState = { runningSessions: 1, pendingFinalDeliveries: 0, latestInboundAt: "a" };
