@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-09-05
+
 - Read only lightweight recent Turn summaries when forking a Codex task that has never been bound to Agent Bot, avoiding complete-history pagination errors and timeouts.
 
 ## [0.1.19-alpha.1] - 2026-09-05
