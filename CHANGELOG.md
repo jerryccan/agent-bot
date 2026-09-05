@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.19-alpha.1] - 2026-09-05
+
 - Add `/release` to hand shared App Server tasks back to Codex Desktop, with a five-second idle countdown, safe waiting for active and queued work, and **Release Now** and **Cancel** card actions.
 - Include unbound user-resumable Codex tasks across every `thread/list` cursor in `/sessions`, and hydrate missing completed Turn history from App Server before rendering `/turns`.
 
