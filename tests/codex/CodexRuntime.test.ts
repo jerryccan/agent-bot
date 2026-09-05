@@ -185,6 +185,42 @@ describe("CodexRuntime", () => {
     expect(runtime.getSession("archive-local")).toBeUndefined();
   });
 
+  test("releases the shared App Server only when idle unless forced", async () => {
+    const client = new FakeAppServerClient();
+    const release = vi.fn(async () => undefined);
+    const runtime = new CodexRuntime({ ...provider(client), release }, logger());
+    const events: RuntimeEvent[] = [];
+    runtime.onEvent((event) => events.push(event));
+    await runtime.createSession({
+      localSessionId: "release-local",
+      agentName: "codex",
+      cwd: process.cwd(),
+      permissionMode: "auto",
+    });
+    await runtime.startTurn("release-local", "keep working");
+
+    await expect(runtime.release()).resolves.toEqual({
+      status: "busy",
+      activeSessionIds: ["release-local"],
+    });
+    expect(release).not.toHaveBeenCalled();
+
+    await expect(runtime.release({ force: true })).resolves.toEqual({ status: "released" });
+    expect(release).toHaveBeenCalledOnce();
+    expect(events).toContainEqual({
+      type: "turn_failed",
+      sessionId: "release-local",
+      turnId: "turn_1",
+      message: "Task interrupted because Agent Bot released the App Server.",
+    });
+
+    await runtime.startTurn("release-local", "resume through Agent Bot");
+    expect(client.requests.slice(-2).map((request) => request.method)).toEqual([
+      "thread/resume",
+      "turn/start",
+    ]);
+  });
+
   test("forks a thread through the requested completed turn", async () => {
     const client = new FakeAppServerClient();
     client.forkResult = {

@@ -190,6 +190,24 @@ describe("local CLI control", () => {
     });
   });
 
+  test("round-trips a task release request", async () => {
+    const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-release-${process.pid}-${Date.now()}.sqlite`));
+    const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));
+    servers.push(server);
+    await server.start();
+
+    await expect(sendControlRequest(endpoint, {
+      action: "task_release",
+      localSessionId: "session_release",
+    })).resolves.toEqual({
+      ok: true,
+      data: {
+        action: "task_release",
+        localSessionId: "session_release",
+      },
+    });
+  });
+
   test("round-trips a task dismiss request", async () => {
     const endpoint = controlEndpoint(path.join(os.tmpdir(), `agent-bot-control-dismiss-${process.pid}-${Date.now()}.sqlite`));
     const server = new LocalControlServer(endpoint, async (request) => ({ ok: true, data: request }));

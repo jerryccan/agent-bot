@@ -18,6 +18,7 @@ export const COMMAND_NAMES = [
   "permissions",
   "provider",
   "queue",
+  "release",
   "restart",
   "sessions",
   "status",
@@ -114,6 +115,9 @@ export class CommandRouter {
         if (args.length === 0) return { type: "restart" };
         if (args.length === 1 && args[0] === "--force") return { type: "restart", force: true };
         throw new Error("/restart 只接受一个可选的 --force 参数。");
+      case "release":
+        if (args.length > 0) throw new Error("/release 不接受参数。");
+        return { type: "release" };
       case "mute": {
         if (args.length === 0 || (args.length === 1 && args[0]!.toLowerCase() === "on")) {
           return { type: "mute", enabled: true };

@@ -26,6 +26,7 @@ import type {
   ReferencedMessageContent,
 } from "../feishu/types.js";
 import {
+  type AppServerReleaseCardView,
   CardRenderer,
   type CardSection,
   type DirectoryBrowserCardEntry,
@@ -131,6 +132,27 @@ interface ShellCommandJobMonitor {
   refreshing: boolean;
 }
 
+interface AppServerReleaseCardTarget {
+  contextKey: string;
+  messageId: string;
+}
+
+interface AppServerReleaseSchedule {
+  id: number;
+  agentName: string;
+  runtime: AgentRuntime;
+  status: AppServerReleaseCardView["status"];
+  blockingTaskCount: number;
+  targets: Map<string, AppServerReleaseCardTarget>;
+  forced: boolean;
+  releaseAt?: number;
+  releaseCountdownSeconds?: number;
+  releaseStarted?: boolean;
+  error?: string;
+  timer?: NodeJS.Timeout;
+  inFlight?: Promise<void>;
+}
+
 interface RequestFailureDetails {
   requestId?: string;
   messageId?: string;
@@ -161,6 +183,8 @@ const RECOVERY_ACTIVITY_WINDOW_MS = 10 * 60 * 1_000;
 const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
 const SHELL_COMMAND_JOB_POLL_INTERVAL_MS = 1_000;
 const SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS = 5_000;
+const APP_SERVER_RELEASE_POLL_INTERVAL_MS = 500;
+const APP_SERVER_RELEASE_IDLE_DELAY_MS = 5_000;
 const FORWARD_ATTACHMENT_WINDOW_MS = 800;
 const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
 const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
@@ -295,6 +319,10 @@ const HELP_COMMAND_SECTIONS: Array<{
         description: "默认安全重启；--force 立即重启",
       },
       {
+        command: "/release",
+        description: "释放 Agent Bot 占用的 App Server 任务",
+      },
+      {
         command: "/mute",
         usage: "[on|off]",
         description: "开启或关闭当前群的仅 @ 响应模式",
@@ -422,6 +450,13 @@ export interface ControlTaskGroupResult {
   task: SessionRecord;
 }
 
+export interface ControlTaskReleaseResult {
+  agentName: string;
+  status: "waiting" | "released";
+  blockingTaskCount: number;
+  releaseInSeconds?: number;
+}
+
 export interface ProxyLifecycle {
   supervised?: boolean;
   restart(contextKey: string, force: boolean, replyTarget?: MessageReplyTarget): Promise<void>;
@@ -467,6 +502,8 @@ export class ProxySessionController {
   private readonly pendingResourceForwards = new Map<string, PendingForwardAttachment>();
   private readonly relatedReactionMessageIds = new Map<string, string[]>();
   private readonly shellCommandJobMonitors = new Map<string, ShellCommandJobMonitor>();
+  private readonly appServerReleaseSchedules = new Map<string, AppServerReleaseSchedule>();
+  private nextAppServerReleaseScheduleId = 1;
   private readonly unsubscribe: Array<() => void> = [];
   private readonly recoveryActivityHeartbeat: NodeJS.Timeout;
   private startupRecovery?: Promise<void>;
@@ -938,6 +975,10 @@ export class ProxySessionController {
             throw new Error("任务占用卡片已经失效，请重新发送消息获取最新状态。");
           }
           await this.forkSessionReference(contextKey, sessionId);
+        } else if (kind === "app_server_release_now") {
+          await this.releaseAppServerNow(scopedAction);
+        } else if (kind === "app_server_release_cancel") {
+          await this.cancelAppServerRelease(scopedAction);
         } else if (kind === "turn_reset") {
           const sessionId = String(scopedAction.value.sessionId ?? "");
           const turnId = String(scopedAction.value.turnId ?? "");
@@ -1218,6 +1259,10 @@ export class ProxySessionController {
     this.queuedPromptRetryTimers.clear();
     for (const timer of this.recoveryRetryTimers.values()) clearTimeout(timer);
     this.recoveryRetryTimers.clear();
+    for (const schedule of this.appServerReleaseSchedules.values()) {
+      if (schedule.timer) clearTimeout(schedule.timer);
+    }
+    this.appServerReleaseSchedules.clear();
     for (const [jobId] of this.shellCommandJobMonitors) this.stopShellCommandJobMonitor(jobId);
     clearInterval(this.recoveryActivityHeartbeat);
   }
@@ -1227,6 +1272,23 @@ export class ProxySessionController {
     if (!record || record.status === "closed") throw new Error(`Task not found: ${localSessionId}`);
     await this.cancelSession(record);
     return `Task stop requested: ${record.title ?? record.remoteSessionId ?? record.localSessionId}`;
+  }
+
+  async controlReleaseTask(localSessionId: string): Promise<ControlTaskReleaseResult> {
+    const record = this.requireControlSession(localSessionId);
+    const contextKey = this.controlSessionContextKey(record);
+    const result = await this.outbound.withReplyTarget(
+      contextKey,
+      this.controlSessionReplyTarget(record),
+      () => this.requestAppServerRelease(contextKey, record),
+    );
+    if (result.status === "failed") throw new Error(result.error ?? "Failed to release App Server tasks.");
+    return {
+      agentName: result.agentName,
+      status: result.status,
+      blockingTaskCount: result.blockingTaskCount,
+      ...(result.releaseInSeconds !== undefined ? { releaseInSeconds: result.releaseInSeconds } : {}),
+    };
   }
 
   async controlArchiveTask(localSessionId: string): Promise<{
@@ -1966,6 +2028,9 @@ export class ProxySessionController {
       case "restart":
         if (!this.lifecycle) throw new Error("当前运行方式不支持自动重启。");
         await this.lifecycle.restart(contextKey, command.force === true, replyTarget);
+        return;
+      case "release":
+        await this.requestAppServerRelease(contextKey);
         return;
       case "mute":
         await this.setGroupMute(contextKey, command.enabled);
@@ -6896,6 +6961,311 @@ export class ProxySessionController {
     return record;
   }
 
+  private async requestAppServerRelease(
+    contextKey: string,
+    requestedRecord?: SessionRecord,
+  ): Promise<{
+    agentName: string;
+    status: "waiting" | "released" | "failed";
+    blockingTaskCount: number;
+    releaseInSeconds?: number;
+    error?: string;
+  }> {
+    const record = requestedRecord ?? this.requireCurrentSession(contextKey);
+    const runtime = this.runtimes.forAgent(record.agentName);
+    if (!this.isCodexSession(record) || runtime.kind !== "codex" || !runtime.release) {
+      throw new Error("当前 Agent 不使用可释放的 App Server。");
+    }
+
+    let schedule = this.appServerReleaseSchedules.get(record.agentName);
+    const created = !schedule;
+    if (!schedule) {
+      const blockingTaskCount = this.appServerReleaseBlockers(record.agentName, runtime).length;
+      schedule = {
+        id: this.nextAppServerReleaseScheduleId++,
+        agentName: record.agentName,
+        runtime,
+        status: "waiting",
+        blockingTaskCount,
+        targets: new Map(),
+        forced: false,
+        ...(blockingTaskCount === 0
+          ? {
+              releaseCountdownSeconds: Math.ceil(APP_SERVER_RELEASE_IDLE_DELAY_MS / 1_000),
+            }
+          : {}),
+      };
+      this.appServerReleaseSchedules.set(record.agentName, schedule);
+    }
+
+    try {
+      const messageId = await this.outbound.sendInteractiveCard(
+        contextKey,
+        this.cardRenderer.renderAppServerRelease(this.appServerReleaseCardView(schedule, contextKey)),
+      );
+      if (messageId) {
+        schedule.targets.set(`${contextKey}\u0000${messageId}`, { contextKey, messageId });
+      }
+      if (
+        schedule.status === "waiting"
+        && schedule.blockingTaskCount === 0
+        && schedule.releaseCountdownSeconds !== undefined
+        && schedule.releaseAt === undefined
+      ) {
+        schedule.releaseAt = Date.now() + APP_SERVER_RELEASE_IDLE_DELAY_MS;
+      }
+    } catch (error) {
+      if (created && schedule.targets.size === 0) {
+        this.clearAppServerReleaseSchedule(schedule);
+      }
+      throw error;
+    }
+
+    this.armAppServerReleaseCheck(schedule);
+    return {
+      agentName: schedule.agentName,
+      status: schedule.status === "failed" ? "failed" : schedule.status === "released" ? "released" : "waiting",
+      blockingTaskCount: schedule.blockingTaskCount,
+      ...(schedule.releaseCountdownSeconds !== undefined
+        ? { releaseInSeconds: schedule.releaseCountdownSeconds }
+        : {}),
+      ...(schedule.error ? { error: schedule.error } : {}),
+    };
+  }
+
+  private async releaseAppServerNow(action: CardAction): Promise<void> {
+    const scheduleId = Number(action.value.scheduleId);
+    const agentName = typeof action.value.agentName === "string" ? action.value.agentName : "";
+    const schedule = this.appServerReleaseSchedules.get(agentName);
+    if (!Number.isSafeInteger(scheduleId) || !schedule || schedule.id !== scheduleId || schedule.status !== "waiting") {
+      throw new Error("释放卡片已失效，请重新发送 /release。");
+    }
+    await this.performAppServerRelease(schedule, true);
+  }
+
+  private async cancelAppServerRelease(action: CardAction): Promise<void> {
+    const scheduleId = Number(action.value.scheduleId);
+    const agentName = typeof action.value.agentName === "string" ? action.value.agentName : "";
+    const schedule = this.appServerReleaseSchedules.get(agentName);
+    const cancellable = schedule?.status === "waiting"
+      || (schedule?.status === "releasing" && schedule.releaseStarted !== true);
+    if (!Number.isSafeInteger(scheduleId) || !schedule || schedule.id !== scheduleId || !cancellable) {
+      throw new Error("释放卡片已失效，请重新发送 /release。");
+    }
+    const pendingRelease = schedule.inFlight;
+    schedule.status = "cancelled";
+    if (schedule.timer) {
+      clearTimeout(schedule.timer);
+      schedule.timer = undefined;
+    }
+    if (pendingRelease) await pendingRelease;
+    await this.publishAppServerReleaseSchedule(schedule);
+    this.clearAppServerReleaseSchedule(schedule);
+  }
+
+  private appServerReleaseBlockers(agentName: string, runtime: AgentRuntime): SessionRecord[] {
+    return this.store.listAllSessions().filter((session) => {
+      if (session.agentName !== agentName || session.status === "closed") return false;
+      return session.status === "starting"
+        || session.status === "running"
+        || this.store.countQueuedPrompts(session.localSessionId) > 0
+        || this.queuedPromptStarts.has(session.localSessionId)
+        || this.sessionLoads.has(session.localSessionId)
+        || Boolean(runtime.getSession(session.localSessionId)?.activeTurnId);
+    });
+  }
+
+  private armAppServerReleaseCheck(schedule: AppServerReleaseSchedule): void {
+    if (schedule.status !== "waiting" || schedule.timer || schedule.inFlight) return;
+    schedule.timer = setTimeout(() => {
+      schedule.timer = undefined;
+      void this.refreshAppServerReleaseSchedule(schedule).catch((error: unknown) => {
+        this.logger.warn({ error, agentName: schedule.agentName }, "Failed to refresh App Server release status.");
+        this.armAppServerReleaseCheck(schedule);
+      });
+    }, APP_SERVER_RELEASE_POLL_INTERVAL_MS);
+    schedule.timer.unref?.();
+  }
+
+  private async refreshAppServerReleaseSchedule(schedule: AppServerReleaseSchedule): Promise<void> {
+    if (this.appServerReleaseSchedules.get(schedule.agentName) !== schedule || schedule.status !== "waiting") return;
+    const blockingTaskCount = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length;
+    if (blockingTaskCount > 0) {
+      const changed = schedule.blockingTaskCount !== blockingTaskCount || schedule.releaseAt !== undefined;
+      schedule.releaseAt = undefined;
+      schedule.releaseCountdownSeconds = undefined;
+      if (changed) {
+        schedule.blockingTaskCount = blockingTaskCount;
+        await this.publishAppServerReleaseSchedule(schedule);
+      }
+      this.armAppServerReleaseCheck(schedule);
+      return;
+    }
+    schedule.blockingTaskCount = 0;
+    if (schedule.releaseAt !== undefined) {
+      const releaseCountdownSeconds = Math.max(0, Math.ceil((schedule.releaseAt - Date.now()) / 1_000));
+      if (releaseCountdownSeconds > 0) {
+        if (schedule.releaseCountdownSeconds !== releaseCountdownSeconds) {
+          schedule.releaseCountdownSeconds = releaseCountdownSeconds;
+          await this.publishAppServerReleaseSchedule(schedule);
+        }
+        this.armAppServerReleaseCheck(schedule);
+        return;
+      }
+    }
+    await this.performAppServerRelease(schedule, false);
+  }
+
+  private async performAppServerRelease(schedule: AppServerReleaseSchedule, force: boolean): Promise<void> {
+    if (schedule.inFlight) return schedule.inFlight;
+    const operation = this.performAppServerReleaseNow(schedule, force);
+    schedule.inFlight = operation;
+    try {
+      await operation;
+    } finally {
+      if (schedule.inFlight === operation) schedule.inFlight = undefined;
+      if (schedule.status === "waiting") this.armAppServerReleaseCheck(schedule);
+    }
+  }
+
+  private async performAppServerReleaseNow(schedule: AppServerReleaseSchedule, force: boolean): Promise<void> {
+    if (schedule.timer) {
+      clearTimeout(schedule.timer);
+      schedule.timer = undefined;
+    }
+    const interruptedWork = force && this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length > 0;
+    if (force) await this.cancelQueuedPromptsForAppServerRelease(schedule.agentName);
+    else {
+      const blockingTaskCount = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length;
+      if (blockingTaskCount > 0) {
+        schedule.status = "waiting";
+        schedule.blockingTaskCount = blockingTaskCount;
+        schedule.releaseAt = undefined;
+        schedule.releaseCountdownSeconds = undefined;
+        schedule.releaseStarted = false;
+        await this.publishAppServerReleaseSchedule(schedule);
+        this.armAppServerReleaseCheck(schedule);
+        return;
+      }
+    }
+
+    schedule.status = "releasing";
+    schedule.blockingTaskCount = 0;
+    schedule.releaseAt = undefined;
+    schedule.releaseCountdownSeconds = undefined;
+    schedule.releaseStarted = false;
+    schedule.forced = interruptedWork;
+    await this.publishAppServerReleaseSchedule(schedule);
+    if (
+      this.appServerReleaseWasCancelled(schedule)
+      || this.appServerReleaseSchedules.get(schedule.agentName) !== schedule
+    ) return;
+    schedule.releaseStarted = true;
+    try {
+      const result = await schedule.runtime.release?.({ force });
+      if (!result) throw new Error("当前 Agent 不支持释放 App Server。");
+      if (result.status === "busy") {
+        schedule.status = "waiting";
+        schedule.blockingTaskCount = Math.max(
+          result.activeSessionIds?.length ?? 0,
+          this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length,
+          1,
+        );
+        schedule.forced = false;
+        schedule.releaseAt = undefined;
+        schedule.releaseCountdownSeconds = undefined;
+        schedule.releaseStarted = false;
+        await this.publishAppServerReleaseSchedule(schedule);
+        this.armAppServerReleaseCheck(schedule);
+        return;
+      }
+      schedule.status = "released";
+    } catch (error) {
+      schedule.status = "failed";
+      schedule.error = error instanceof Error ? error.message : String(error);
+      this.logger.warn({ error, agentName: schedule.agentName }, "Failed to release App Server tasks.");
+    }
+    await this.publishAppServerReleaseSchedule(schedule);
+    this.clearAppServerReleaseSchedule(schedule);
+  }
+
+  private appServerReleaseWasCancelled(schedule: AppServerReleaseSchedule): boolean {
+    return schedule.status === "cancelled";
+  }
+
+  private async cancelQueuedPromptsForAppServerRelease(agentName: string): Promise<void> {
+    for (const session of this.store.listAllSessions()) {
+      if (session.agentName !== agentName) continue;
+      const retryTimer = this.queuedPromptRetryTimers.get(session.localSessionId);
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        this.queuedPromptRetryTimers.delete(session.localSessionId);
+      }
+      const queued = this.store.listQueuedPrompts(session.localSessionId);
+      for (const prompt of queued) {
+        const cancelled = this.store.cancelQueuedPrompt(prompt.promptId, session.localSessionId);
+        if (!cancelled?.messageId) continue;
+        await this.finalizeStandaloneMessageReaction(cancelled.messageId, "cancelled").catch((error: unknown) => {
+          this.logger.warn(
+            { error, agentName, sessionId: session.localSessionId, promptId: cancelled.promptId },
+            "Failed to finalize a queued Prompt reaction during App Server release.",
+          );
+        });
+      }
+      if (queued.length > 0) {
+        await this.refreshPromptQueueCards(session.localSessionId).catch((error: unknown) => {
+          this.logger.warn(
+            { error, agentName, sessionId: session.localSessionId },
+            "Failed to refresh queued Prompt cards during App Server release.",
+          );
+        });
+      }
+    }
+  }
+
+  private appServerReleaseCardView(
+    schedule: AppServerReleaseSchedule,
+    contextKey: string,
+  ): AppServerReleaseCardView {
+    return {
+      status: schedule.status,
+      contextKey,
+      scheduleId: schedule.id,
+      agentName: schedule.agentName,
+      ...(schedule.blockingTaskCount > 0 ? { blockingTaskCount: schedule.blockingTaskCount } : {}),
+      ...(schedule.releaseCountdownSeconds !== undefined
+        ? { releaseInSeconds: schedule.releaseCountdownSeconds }
+        : {}),
+      ...(schedule.forced ? { forced: true } : {}),
+      ...(schedule.error ? { error: schedule.error } : {}),
+    };
+  }
+
+  private async publishAppServerReleaseSchedule(schedule: AppServerReleaseSchedule): Promise<void> {
+    await Promise.all([...schedule.targets.values()].map(async (target) => {
+      try {
+        await this.outbound.updateInteractiveCard(
+          target.contextKey,
+          target.messageId,
+          this.cardRenderer.renderAppServerRelease(this.appServerReleaseCardView(schedule, target.contextKey)),
+        );
+      } catch (error) {
+        this.logger.warn(
+          { error, agentName: schedule.agentName, messageId: target.messageId },
+          "Failed to update App Server release card.",
+        );
+      }
+    }));
+  }
+
+  private clearAppServerReleaseSchedule(schedule: AppServerReleaseSchedule): void {
+    if (schedule.timer) clearTimeout(schedule.timer);
+    schedule.timer = undefined;
+    if (this.appServerReleaseSchedules.get(schedule.agentName) === schedule) {
+      this.appServerReleaseSchedules.delete(schedule.agentName);
+    }
+  }
+
   private async presentThreadWriterConflict(
     record: SessionRecord,
     contextKey: string,
@@ -7786,7 +8156,7 @@ function isBotOwnedActiveTurn(record: SessionRecord, remote: RemoteSessionSummar
 }
 
 function isQueueIndependentCommand(command: Command): boolean {
-  if (["archive", "dismiss", "stop", "status", "restart", "mute", "help", "sessions", "dir", "file", "goal", "nosteer", "shell"].includes(command.type)) return true;
+  if (["archive", "dismiss", "stop", "status", "restart", "release", "mute", "help", "sessions", "dir", "file", "goal", "nosteer", "shell"].includes(command.type)) return true;
   if (command.type === "agent") return command.agent === undefined;
   if (["model", "provider", "thinking", "permissions"].includes(command.type)) return true;
   return false;

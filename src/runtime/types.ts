@@ -209,6 +209,11 @@ export interface RuntimeExecutionSettings {
   permissionMode: PermissionMode;
 }
 
+export interface RuntimeReleaseResult {
+  status: "released" | "busy";
+  activeSessionIds?: string[];
+}
+
 export interface ReasoningEffortOption {
   value: string;
   description?: string;
@@ -244,6 +249,7 @@ export interface AgentRuntime {
   respondToApproval(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
   listModels(): Promise<ModelOption[]>;
   listModelProviders?(): Promise<ModelProviderOption[]>;
+  release?(options?: { force?: boolean }): Promise<RuntimeReleaseResult>;
   onEvent(listener: (event: RuntimeEvent) => void): () => void;
   close(): void;
 }

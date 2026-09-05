@@ -245,10 +245,13 @@ Send a message beginning with `/` to run a command. Use `/help` in Feishu for th
 | `/newgroup [title] [--dir <path> \| --nodir]` | Start a task in a new private group  |
 | `/forkgroup [title]`                          | Branch a task into a new private group |
 | `/restart [--force]`                          | Restart safely, or interrupt with `--force` |
+| `/release`                                    | Release Agent Bot's App Server tasks for Desktop |
 | `/mute [on\|off]`                            | Require @ mentions in the current group |
 | `/help`                                       | Show command help                    |
 
 Private chats, group timelines, and topics keep separate current tasks. A new topic remains unbound while you use commands such as `/help`, `/status`, or `/sessions`; those commands do not create a hidden fork. Its first ordinary message forks from the mapped source turn, or starts a fresh task when no source turn can be identified. `/new` starts a fresh topic task, while `/sessions` can bind an existing task. Commands that require a current task explain how to bind one instead of operating on the parent conversation. Ordinary messages sent while a task is running add instructions to that turn; use `/queue` when the message should run afterward as a separate turn.
+
+`/release` stops the shared App Server used by the current task's Agent so its tasks can be opened in Codex Desktop. When idle, it shows a release card and counts down for 5 seconds; otherwise it waits for that Agent's running and queued work to finish. **Release Now** skips the wait, interrupts active work, and clears queued Prompts. **Cancel** cancels the pending release. Releasing does not archive or delete task history, but it affects every task loaded by that shared App Server.
 
 In a group, `/mute` and `/mute on` make the bot process only messages that mention it. Mention the bot and send `/mute off` to restore automatic responses. The setting applies to every topic in that group.
 

@@ -17,6 +17,7 @@ import type {
   RuntimeEvent,
   RuntimeExecutionSettings,
   RuntimePrompt,
+  RuntimeReleaseResult,
   RuntimeSession,
   RuntimeSessionMetadata,
 } from "../runtime/types.js";
@@ -62,6 +63,7 @@ export interface AppServerClientProvider {
   getProcessInfo?(): AgentProcessInfo;
   getCodexHome?(): string;
   onDisconnect?(listener: (error: Error) => void): () => void;
+  release?(): Promise<void>;
   close(): void;
 }
 
@@ -92,6 +94,7 @@ export class CodexRuntime implements AgentRuntime {
   private readonly localActivityDetector?: CodexLocalActivityDetector;
   private readonly codexHome?: string;
   private threadListSortKey: ThreadListSortKey = "recency_at";
+  private releaseInFlight?: Promise<RuntimeReleaseResult>;
 
   constructor(
     private readonly provider: AppServerClientProvider,
@@ -604,6 +607,29 @@ export class CodexRuntime implements AgentRuntime {
     return () => this.listeners.delete(listener);
   }
 
+  async release(options: { force?: boolean } = {}): Promise<RuntimeReleaseResult> {
+    if (this.releaseInFlight) return this.releaseInFlight;
+    const activeSessionIds = [...this.sessions.values()]
+      .filter((session) => Boolean(session.activeTurnId))
+      .map((session) => session.localSessionId);
+    if (activeSessionIds.length > 0 && options.force !== true) {
+      return { status: "busy", activeSessionIds };
+    }
+
+    const operation = (async (): Promise<RuntimeReleaseResult> => {
+      this.handleDisconnect(new Error("App Server released by user."), true);
+      if (this.provider.release) await this.provider.release();
+      else this.provider.close();
+      return { status: "released" };
+    })();
+    this.releaseInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.releaseInFlight === operation) this.releaseInFlight = undefined;
+    }
+  }
+
   close(): void {
     this.unsubscribe?.();
     this.unsubscribeDisconnect?.();
@@ -615,6 +641,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private async client(): Promise<AppServerClient> {
+    if (this.releaseInFlight) await this.releaseInFlight;
     const client = await this.provider.getClient();
     if (client !== this.attachedClient) this.attachClient(client);
     return client;
@@ -1014,7 +1041,7 @@ export class CodexRuntime implements AgentRuntime {
     for (const listener of this.listeners) listener(event);
   }
 
-  private handleDisconnect(error: Error): void {
+  private handleDisconnect(error: Error, intentionalRelease = false): void {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.attachedClient = undefined;
@@ -1029,7 +1056,9 @@ export class CodexRuntime implements AgentRuntime {
         type: "turn_failed",
         sessionId: session.localSessionId,
         turnId,
-        message: `App Server disconnected: ${error.message}`,
+        message: intentionalRelease
+          ? "Task interrupted because Agent Bot released the App Server."
+          : `App Server disconnected: ${error.message}`,
       });
     }
     for (const [requestId, pending] of this.approvals) {

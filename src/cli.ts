@@ -14,6 +14,7 @@ import {
   type TaskGoalControlData,
   type TaskGroupControlData,
   type TaskMuteControlData,
+  type TaskReleaseControlData,
   type TaskSettingsControlData,
   type TaskShellControlData,
   type TaskStatusControlData,
@@ -1315,6 +1316,38 @@ async function taskCommand(input: string[]): Promise<void> {
         `Task archived: ${archived.title} (${archived.remoteSessionId})\n`,
         `任务已归档：${archived.title}（${archived.remoteSessionId}）\n`,
       ));
+      return;
+    }
+    if (action === "release") {
+      const target = resolveTaskCommandTarget(allSessions, rest, action);
+      const options = target.args;
+      rejectUnsupportedTaskOptions(action, options, ["--json"]);
+      if (options.some((value) => !value.startsWith("--"))) throw new Error(cliText(
+        "task release accepts only one task reference.",
+        "task release 只接受一个任务引用。",
+      ));
+      const released = controlData<TaskReleaseControlData>(await sendControlRequest(
+        controlEndpoint(config.storage.sqlitePath),
+        { action: "task_release", localSessionId: target.session.localSessionId },
+        60_000,
+      ));
+      if (options.includes("--json")) printJson(released);
+      else if (released.status === "released") {
+        process.stdout.write(cliText(
+          `App Server tasks released for ${released.agentName}.\n`,
+          `已释放 ${released.agentName} 的 App Server 任务。\n`,
+        ));
+      } else if (released.releaseInSeconds !== undefined) {
+        process.stdout.write(cliText(
+          `App Server release scheduled for ${released.agentName} in ${released.releaseInSeconds} seconds.\n`,
+          `已安排在 ${released.releaseInSeconds} 秒后释放 ${released.agentName} 的 App Server。\n`,
+        ));
+      } else {
+        process.stdout.write(cliText(
+          `App Server release scheduled for ${released.agentName} (${released.blockingTaskCount} waiting).\n`,
+          `已安排释放 ${released.agentName} 的 App Server（等待 ${released.blockingTaskCount} 个任务）。\n`,
+        ));
+      }
       return;
     }
     if (action === "dismiss") {

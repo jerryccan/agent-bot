@@ -432,6 +432,8 @@ async function handleControlRequest(request: ControlRequest): Promise<ControlRes
       return { ok: true, data: await controller.controlGetTaskStatus(request.localSessionId) };
     case "task_stop":
       return { ok: true, message: await controller.controlStopTask(request.localSessionId) };
+    case "task_release":
+      return { ok: true, data: await controller.controlReleaseTask(request.localSessionId) };
     case "task_archive":
       return { ok: true, data: await controller.controlArchiveTask(request.localSessionId) };
     case "task_dismiss":

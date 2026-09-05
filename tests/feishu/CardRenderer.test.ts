@@ -53,6 +53,85 @@ function state(): TurnViewState {
 }
 
 describe("CardRenderer", () => {
+  test("renders waiting and completed App Server release cards", () => {
+    const renderer = new CardRenderer();
+    const waiting = renderer.renderAppServerRelease({
+      status: "waiting",
+      contextKey: "chat_id:c1",
+      scheduleId: 7,
+      agentName: "codex",
+      blockingTaskCount: 2,
+    });
+    const button = collectObjects(waiting).find(
+      (item) => item.tag === "button" && (item.text as { content?: unknown } | undefined)?.content === "Release Now",
+    );
+
+    expect(waiting).toMatchObject({
+      header: { template: "orange", title: { content: "等待释放" } },
+    });
+    expect(JSON.stringify(waiting)).toContain("**等待任务**：2");
+    expect(button).toMatchObject({
+      type: "danger",
+      behaviors: [{
+        type: "callback",
+        value: {
+          action: "app_server_release_now",
+          contextKey: "chat_id:c1",
+          scheduleId: 7,
+          agentName: "codex",
+        },
+      }],
+    });
+
+    const countdown = renderer.renderAppServerRelease({
+      status: "waiting",
+      contextKey: "chat_id:c1",
+      scheduleId: 8,
+      agentName: "codex",
+      releaseInSeconds: 5,
+    });
+    const cancelButton = collectObjects(countdown).find(
+      (item) => item.tag === "button" && (item.text as { content?: unknown } | undefined)?.content === "Cancel",
+    );
+    expect(JSON.stringify(countdown)).toContain("**自动释放**：5 秒后");
+    expect(cancelButton).toMatchObject({
+      type: "default",
+      behaviors: [{
+        type: "callback",
+        value: {
+          action: "app_server_release_cancel",
+          contextKey: "chat_id:c1",
+          scheduleId: 8,
+          agentName: "codex",
+        },
+      }],
+    });
+
+    const released = renderer.renderAppServerRelease({
+      status: "released",
+      contextKey: "chat_id:c1",
+      scheduleId: 7,
+      agentName: "codex",
+      forced: true,
+    });
+    expect(released).toMatchObject({
+      header: { template: "green", title: { content: "任务已释放" } },
+    });
+    expect(JSON.stringify(released)).toContain("执行中的任务已中断");
+    expect(JSON.stringify(released)).toContain("Retry");
+
+    const cancelled = renderer.renderAppServerRelease({
+      status: "cancelled",
+      contextKey: "chat_id:c1",
+      scheduleId: 8,
+      agentName: "codex",
+    });
+    expect(cancelled).toMatchObject({
+      header: { template: "grey", title: { content: "已取消释放" } },
+    });
+    expect(JSON.stringify(cancelled)).toContain("Agent Bot 将继续保持当前任务连接");
+  });
+
   test("renders a thread-writer conflict with the owning process and a safe close action", () => {
     const card = new CardRenderer().renderThreadWriterConflict({
       status: "occupied",

@@ -275,6 +275,17 @@ export interface ThreadWriterConflictCardView {
   };
 }
 
+export interface AppServerReleaseCardView {
+  status: "waiting" | "releasing" | "released" | "cancelled" | "failed";
+  contextKey: string;
+  scheduleId: number;
+  agentName: string;
+  blockingTaskCount?: number;
+  releaseInSeconds?: number;
+  forced?: boolean;
+  error?: string;
+}
+
 export class CardRenderer {
   private readonly thinkingCardLayout: ThinkingCardLayout;
 
@@ -369,6 +380,91 @@ export class CardRenderer {
       elements,
       view.status === "force_required" ? "red" : "orange",
     );
+  }
+
+  renderAppServerRelease(view: AppServerReleaseCardView): Record<string, unknown> {
+    const agent = inlineCode(view.agentName);
+    if (view.status === "released") {
+      return sectionCard("任务已释放", [markdown([
+        `**Agent**：${agent}`,
+        view.forced ? "执行中的任务已中断。" : undefined,
+        "> 请在 Codex Desktop 点击 **Retry**。",
+      ].filter((line): line is string => Boolean(line)).join("\n"))], "green");
+    }
+    if (view.status === "cancelled") {
+      return sectionCard("已取消释放", [markdown(`**Agent**：${agent}\n> Agent Bot 将继续保持当前任务连接。`)], "grey");
+    }
+    if (view.status === "failed") {
+      return sectionCard("释放失败", [markdown([
+        `**Agent**：${agent}`,
+        view.error ? truncateText(view.error, 500) : "无法释放 App Server。",
+      ].join("\n"))], "red");
+    }
+    if (view.status === "releasing") {
+      return sectionCard("正在释放", [markdown(`**Agent**：${agent}\n正在停止 Agent Bot 的 App Server。`)], "blue");
+    }
+
+    const blockingTaskCount = Math.max(0, view.blockingTaskCount ?? 0);
+    const releaseInSeconds = Math.max(1, view.releaseInSeconds ?? 1);
+    return sectionCard("等待释放", [
+      markdown([
+        `**Agent**：${agent}`,
+        blockingTaskCount > 0
+          ? `**等待任务**：${blockingTaskCount}`
+          : `**自动释放**：${releaseInSeconds} 秒后`,
+        blockingTaskCount > 0
+          ? "> 任务结束后自动释放；立即释放会中断执行。"
+          : "> 可立即释放或取消。",
+      ].join("\n")),
+      {
+        tag: "column_set",
+        flex_mode: "none",
+        horizontal_spacing: "8px",
+        vertical_align: "center",
+        columns: [
+          {
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: [{
+              tag: "button",
+              text: { tag: "plain_text", content: "Release Now" },
+              type: "danger",
+              size: "small",
+              behaviors: [{
+                type: "callback",
+                value: {
+                  action: "app_server_release_now",
+                  contextKey: view.contextKey,
+                  scheduleId: view.scheduleId,
+                  agentName: view.agentName,
+                },
+              }],
+            }],
+          },
+          {
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: [{
+              tag: "button",
+              text: { tag: "plain_text", content: "Cancel" },
+              type: "default",
+              size: "small",
+              behaviors: [{
+                type: "callback",
+                value: {
+                  action: "app_server_release_cancel",
+                  contextKey: view.contextKey,
+                  scheduleId: view.scheduleId,
+                  agentName: view.agentName,
+                },
+              }],
+            }],
+          },
+        ],
+      },
+    ], "orange");
   }
 
   renderShellCommandCard(view: ShellCommandCardView): Record<string, unknown> {

@@ -33,6 +33,12 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/restart --force extra")).toThrow("只接受一个可选的 --force 参数");
   });
 
+  test("parses App Server release commands", () => {
+    expect(router.parse("/release")).toEqual({ type: "release" });
+    expect(router.parse("/rel")).toEqual({ type: "release" });
+    expect(() => router.parse("/release now")).toThrow("不接受参数");
+  });
+
   test("parses group mute commands", () => {
     expect(router.parse("/mute")).toEqual({ type: "mute", enabled: true });
     expect(router.parse("/mute on")).toEqual({ type: "mute", enabled: true });
@@ -309,7 +315,10 @@ describe("CommandRouter", () => {
     expect(() => router.parse("/f")).toThrow(
       "命令前缀 /f 不唯一，可匹配：/file、/fork、/forkgroup",
     );
-    expect(router.parse("/re")).toEqual({ type: "restart" });
+    expect(() => router.parse("/re")).toThrow(
+      "命令前缀 /re 不唯一，可匹配：/release、/restart",
+    );
+    expect(router.parse("/res")).toEqual({ type: "restart" });
     expect(() => router.parse("/t")).toThrow(
       "命令前缀 /t 不唯一，可匹配：/thinking、/title、/turns",
     );

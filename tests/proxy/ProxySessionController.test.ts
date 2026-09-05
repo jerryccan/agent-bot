@@ -453,6 +453,14 @@ function fixture(
       { id: "openai", displayName: "OpenAI", isDefault: true },
       { id: "azure", displayName: "Azure OpenAI" },
     ]),
+    release: vi.fn(async ({ force = false }: { force?: boolean } = {}) => {
+      const activeSessionIds = [...sessions.values()]
+        .filter((session) => Boolean(session.activeTurnId))
+        .map((session) => session.localSessionId);
+      if (activeSessionIds.length > 0 && !force) return { status: "busy" as const, activeSessionIds };
+      for (const session of sessions.values()) session.activeTurnId = undefined;
+      return { status: "released" as const };
+    }),
     onEvent: vi.fn((listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -5305,6 +5313,242 @@ describe("ProxySessionController", () => {
     expect(restart).toHaveBeenCalledWith("chat_id:c1", true, undefined);
   });
 
+  test("counts down for five seconds before releasing an idle App Server", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+    vi.mocked(runtime.release!).mockClear();
+    vi.mocked(outbound.sendInteractiveCard).mockClear();
+    vi.mocked(outbound.updateInteractiveCard).mockClear();
+    vi.useFakeTimers();
+
+    try {
+      await controller.onMessage(message("/release"));
+
+      expect(runtime.release).not.toHaveBeenCalled();
+      const countdownCard = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(countdownCard).toMatchObject({
+        header: { template: "orange", title: { content: "等待释放" } },
+      });
+      expect(JSON.stringify(countdownCard)).toContain("**自动释放**：5 秒后");
+      expect(JSON.stringify(countdownCard)).toContain("Release Now");
+      expect(JSON.stringify(countdownCard)).toContain("Cancel");
+
+      await vi.advanceTimersByTimeAsync(5_500);
+
+      expect(runtime.release).toHaveBeenCalledWith({ force: false });
+      const finalCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(finalCard).toMatchObject({
+        header: { template: "green", title: { content: "任务已释放" } },
+      });
+      expect(JSON.stringify(finalCard)).toContain("Retry");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("cancels a pending idle App Server release from its card", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+    vi.mocked(runtime.release!).mockClear();
+    vi.mocked(outbound.updateInteractiveCard).mockClear();
+    vi.useFakeTimers();
+
+    try {
+      await controller.onMessage(message("/release"));
+      await controller.onCardAction({
+        actionId: "cancel-release",
+        contextKey: "chat_id:c1",
+        messageId: "card",
+        value: {
+          action: "app_server_release_cancel",
+          contextKey: "chat_id:c1",
+          scheduleId: 1,
+          agentName: "codex",
+        },
+      });
+
+      const cancelledCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(cancelledCard).toMatchObject({
+        header: { template: "grey", title: { content: "已取消释放" } },
+      });
+      expect(JSON.stringify(cancelledCard)).toContain("Agent Bot 将继续保持当前任务连接");
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(runtime.release).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("releases immediately from an idle countdown without reporting interrupted work", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+    vi.mocked(runtime.release!).mockClear();
+    vi.mocked(outbound.updateInteractiveCard).mockClear();
+    vi.useFakeTimers();
+
+    try {
+      await controller.onMessage(message("/release"));
+      await controller.onCardAction({
+        actionId: "release-idle-now",
+        contextKey: "chat_id:c1",
+        messageId: "card",
+        value: {
+          action: "app_server_release_now",
+          contextKey: "chat_id:c1",
+          scheduleId: 1,
+          agentName: "codex",
+        },
+      });
+
+      expect(runtime.release).toHaveBeenCalledWith({ force: true });
+      const releasedCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(releasedCard).toMatchObject({
+        header: { template: "green", title: { content: "任务已释放" } },
+      });
+      expect(JSON.stringify(releasedCard)).not.toContain("执行中的任务已中断");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("starts the idle release countdown after the release card has been sent", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+    vi.mocked(runtime.release!).mockClear();
+    let resolveCard!: (messageId: string) => void;
+    vi.mocked(outbound.sendInteractiveCard).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveCard = resolve; }),
+    );
+    vi.useFakeTimers();
+
+    try {
+      const releaseCommand = controller.onMessage(message("/release"));
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(outbound.sendInteractiveCard).toHaveBeenCalled();
+      expect(runtime.release).not.toHaveBeenCalled();
+
+      resolveCard("card");
+      await releaseCommand;
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(runtime.release).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(501);
+      expect(runtime.release).toHaveBeenCalledWith({ force: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("lets cancellation win while the card is updating to the releasing state", async () => {
+    const { controller, runtime, outbound } = fixture();
+    await controller.onMessage(message("/new"));
+    vi.mocked(runtime.release!).mockClear();
+    let markReleasingUpdate!: () => void;
+    let finishReleasingUpdate!: () => void;
+    const releasingUpdateStarted = new Promise<void>((resolve) => { markReleasingUpdate = resolve; });
+    const releasingUpdateGate = new Promise<void>((resolve) => { finishReleasingUpdate = resolve; });
+    vi.mocked(outbound.updateInteractiveCard).mockImplementation(async (_messageId, card) => {
+      const title = (card.header as { title?: { content?: string } } | undefined)?.title?.content;
+      if (title === "正在释放") {
+        markReleasingUpdate();
+        await releasingUpdateGate;
+      }
+    });
+    vi.useFakeTimers();
+
+    try {
+      await controller.onMessage(message("/release"));
+      const countdown = vi.advanceTimersByTimeAsync(5_500);
+      await releasingUpdateStarted;
+
+      const cancellation = controller.onCardAction({
+        actionId: "cancel-release-during-update",
+        contextKey: "chat_id:c1",
+        messageId: "card",
+        value: {
+          action: "app_server_release_cancel",
+          contextKey: "chat_id:c1",
+          scheduleId: 1,
+          agentName: "codex",
+        },
+      });
+      finishReleasingUpdate();
+      await countdown;
+      await cancellation;
+
+      expect(runtime.release).not.toHaveBeenCalled();
+      const cancelledCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(cancelledCard).toMatchObject({
+        header: { template: "grey", title: { content: "已取消释放" } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("waits for App Server tasks to finish before releasing", async () => {
+    const { controller, runtime, outbound, sessions, listeners, store } = fixture();
+    await controller.onMessage(message("build it"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    vi.mocked(runtime.release!).mockClear();
+    vi.mocked(outbound.sendInteractiveCard).mockClear();
+
+    await controller.onMessage(message("/release"));
+
+    expect(runtime.release).not.toHaveBeenCalled();
+    const waitingCard = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
+    expect(waitingCard).toMatchObject({
+      header: { template: "orange", title: { content: "等待释放" } },
+    });
+    expect(JSON.stringify(waitingCard)).toContain("Release Now");
+
+    sessions.get(sessionId)!.activeTurnId = undefined;
+    for (const listener of listeners) {
+      listener({ type: "turn_completed", sessionId, turnId: "turn_1", finalResponse: "done" });
+    }
+
+    await vi.waitFor(() => expect(runtime.release).toHaveBeenCalledWith({ force: false }), { timeout: 2_000 });
+    const finalCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+    expect(finalCard).toMatchObject({
+      header: { template: "green", title: { content: "任务已释放" } },
+    });
+  });
+
+  test("releases App Server tasks immediately from the waiting card and clears queued Prompts", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    await controller.onMessage(message("build it"));
+    const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
+    store.enqueuePrompt({
+      promptId: "queued-before-release",
+      localSessionId: sessionId,
+      contextKey: "chat_id:c1",
+      text: "run later",
+      messageId: "om-queued-before-release",
+    });
+    vi.mocked(runtime.release!).mockClear();
+
+    await controller.onMessage(message("/release"));
+    await controller.onCardAction({
+      actionId: "release-now",
+      contextKey: "chat_id:c1",
+      messageId: "card",
+      value: {
+        action: "app_server_release_now",
+        contextKey: "chat_id:c1",
+        scheduleId: 1,
+        agentName: "codex",
+      },
+    });
+
+    expect(runtime.release).toHaveBeenCalledWith({ force: true });
+    expect(store.countQueuedPrompts(sessionId)).toBe(0);
+    const finalCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+    expect(finalCard).toMatchObject({
+      header: { template: "green", title: { content: "任务已释放" } },
+    });
+    expect(JSON.stringify(finalCard)).toContain("执行中的任务已中断");
+  });
+
   test("passes the requesting topic message to the restart lifecycle", async () => {
     const { controller, restart, store } = fixture();
     const contextKey = "chat_id:c1:thread_id:topic_restart";
@@ -8816,6 +9060,7 @@ describe("ProxySessionController", () => {
       "/agent",
       "/status",
       "/restart",
+      "/release",
       "/mute",
       "/help",
     ];

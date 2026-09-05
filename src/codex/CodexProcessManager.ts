@@ -13,6 +13,7 @@ import type { AgentProcessInfo } from "../runtime/types.js";
 import { spawnStdioCommand } from "../utils/spawnCommand.js";
 
 export class CodexProcessManager implements AppServerClientProvider {
+  private static readonly RELEASE_TIMEOUT_MS = 5_000;
   private client?: AppServerConnection;
   private child?: ChildProcessWithoutNullStreams;
   private version?: string;
@@ -78,6 +79,48 @@ export class CodexProcessManager implements AppServerClientProvider {
     if (this.child && !this.child.killed) this.child.kill();
     this.client = undefined;
     this.child = undefined;
+  }
+
+  async release(): Promise<void> {
+    const child = this.child;
+    if (!child) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let forceTimer: NodeJS.Timeout | undefined;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (forceTimer) clearTimeout(forceTimer);
+        child.off("exit", onExit);
+        child.off("error", onError);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onExit = (): void => finish();
+      const onError = (error: Error): void => finish(error);
+      const timer = setTimeout(() => {
+        finish(new Error(`Timed out waiting for App Server process ${child.pid ?? "unknown"} to exit.`));
+      }, CodexProcessManager.RELEASE_TIMEOUT_MS);
+      timer.unref?.();
+      child.once("exit", onExit);
+      child.once("error", onError);
+      try {
+        child.stdin.end();
+        if (!settled) {
+          forceTimer = setTimeout(() => {
+            if (!child.killed && !child.kill()) {
+              finish(new Error(`Failed to stop App Server process ${child.pid ?? "unknown"}.`));
+            }
+          }, 1_000);
+          forceTimer.unref?.();
+        }
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
 
   onDisconnect(listener: (error: Error) => void): () => void {

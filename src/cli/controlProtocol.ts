@@ -29,6 +29,7 @@ export type ControlRequest =
   | { action: "server_stop" }
   | { action: "task_status"; localSessionId: string }
   | { action: "task_stop"; localSessionId: string }
+  | { action: "task_release"; localSessionId: string }
   | { action: "task_archive"; localSessionId: string }
   | { action: "task_dismiss"; localSessionId: string }
   | { action: "task_title"; localSessionId: string; title: string }
@@ -106,6 +107,13 @@ export interface TaskDismissControlData {
   remoteSessionId: string;
   title: string;
   chatId: string;
+}
+
+export interface TaskReleaseControlData {
+  agentName: string;
+  status: "waiting" | "released";
+  blockingTaskCount: number;
+  releaseInSeconds?: number;
 }
 
 export interface TaskForkControlData {

@@ -83,20 +83,61 @@ describe("CodexProcessManager", () => {
     await client;
     manager.close();
   });
+
+  test("releases the current App Server process and can start a fresh one later", async () => {
+    const first = fakeChildProcess();
+    const second = fakeChildProcess(4322);
+    mocks.spawnStdioCommand.mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
+    const manager = new CodexProcessManager("codex", ["app-server"], {}, logger());
+
+    const firstClient = manager.getClient();
+    await vi.waitFor(() => expect(first.writtenJson()).toHaveLength(1));
+    first.pushStdout({ id: 1, result: { userAgent: "codex-cli/0.149.1" } });
+    await firstClient;
+
+    const released = manager.release();
+    expect(first.child.stdin.writableEnded).toBe(true);
+    expect(first.child.kill).not.toHaveBeenCalled();
+    first.exit(0);
+    await expect(released).resolves.toBeUndefined();
+    expect(manager.getProcessInfo()).toEqual({});
+
+    const secondClient = manager.getClient();
+    await vi.waitFor(() => expect(second.writtenJson()).toHaveLength(1));
+    second.pushStdout({ id: 1, result: { userAgent: "codex-cli/0.149.1" } });
+    await secondClient;
+    expect(manager.getProcessInfo()).toEqual({ pid: 4322, version: "0.149.1" });
+    manager.close();
+  });
 });
 
-function fakeChildProcess() {
+function fakeChildProcess(pid = 4321) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  const child = Object.assign(new EventEmitter(), {
+  const processState: EventEmitter & {
+    stdin: PassThrough;
+    stdout: PassThrough;
+    stderr: PassThrough;
+    killed: boolean;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    pid: number;
+    kill: ReturnType<typeof vi.fn>;
+  } = Object.assign(new EventEmitter(), {
     stdin,
     stdout,
     stderr,
     killed: false,
-    pid: 4321,
-    kill: vi.fn(),
-  }) as unknown as ChildProcessWithoutNullStreams;
+    exitCode: null,
+    signalCode: null,
+    pid,
+    kill: vi.fn(() => {
+      processState.killed = true;
+      return true;
+    }),
+  });
+  const child = processState as unknown as ChildProcessWithoutNullStreams;
   const writes: string[] = [];
   stdin.on("data", (chunk) => writes.push(chunk.toString("utf8")));
   return {
@@ -110,6 +151,11 @@ function fakeChildProcess() {
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as unknown);
+    },
+    exit(code: number | null, signal: NodeJS.Signals | null = null) {
+      processState.exitCode = code;
+      processState.signalCode = signal;
+      processState.emit("exit", code, signal);
     },
   };
 }

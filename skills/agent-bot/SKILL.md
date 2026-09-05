@@ -65,6 +65,7 @@ agentbot task status
 agentbot task prompt "<prompt>"
 agentbot task queue "<prompt>"
 agentbot task stop
+agentbot task release
 agentbot task archive
 agentbot task dismiss --yes
 agentbot task title "<title>"
@@ -74,6 +75,8 @@ agentbot task title "<title>"
 - `queue` creates a later turn instead of steering the active turn. `nosteer` is an alias.
 - `stop` requests an Agent interrupt; it does not kill the Agent process.
 - `dismiss --yes` irreversibly dissolves the task's current Feishu group and archives its current task. Use it only after the user explicitly confirms.
+
+From Feishu, `/release` hands App Server tasks back to Codex Desktop without archiving them. When idle, it sends a release card and counts down for five seconds; otherwise it waits for the current Agent's running and queued work. **Release Now** interrupts active work and clears queued Prompts, while **Cancel** cancels the pending release. Because each App Server Agent is shared, releasing affects every task loaded by that Agent process.
 
 Create or branch work in the same conversation:
 

@@ -6,6 +6,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add `/release` to hand shared App Server tasks back to Codex Desktop, with a five-second idle countdown, safe waiting for active and queued work, and **Release Now** and **Cancel** card actions.
+- Include unbound user-resumable Codex tasks across every `thread/list` cursor in `/sessions`, and hydrate missing completed Turn history from App Server before rendering `/turns`.
+
 ## [0.1.19-alpha.0] - 2026-09-05
 
 - Detect Codex thread-writer conflicts and replace generic failures with a compact Lark card that identifies the owning process and PID, supports Fork and guarded close actions, and marks the process safe to close only when all of its tasks are idle.
