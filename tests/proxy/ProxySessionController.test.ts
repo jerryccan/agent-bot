@@ -2877,8 +2877,14 @@ describe("ProxySessionController", () => {
     );
   });
 
-  test("does not treat a topic root parent as an explicitly referenced message", async () => {
-    const { controller, outbound } = fixture();
+  test("injects an unanchored topic root once into the task Prompt", async () => {
+    const { controller, runtime, outbound, store } = fixture();
+    vi.mocked(outbound.readReferencedMessage!).mockResolvedValueOnce({
+      text: "[消息类型：文本]\nhttps://github.com/example/project/pull/1",
+      messageType: "text",
+      images: [],
+      files: [],
+    });
 
     await controller.onMessage(threadMessage(
       "topic_group",
@@ -2888,7 +2894,29 @@ describe("ProxySessionController", () => {
       "继续处理",
     ));
 
-    expect(outbound.readReferencedMessage).not.toHaveBeenCalled();
+    expect(outbound.readReferencedMessage).toHaveBeenCalledWith("om_topic_root");
+    expect(runtime.startTurn).toHaveBeenCalledWith(
+      expect.any(String),
+      "继续处理\n\n话题根消息：\n[消息类型：文本]\nhttps://github.com/example/project/pull/1",
+    );
+    const sessionId = store.getUserContext("chat_id:topic_group:thread_id:topic_quote_guard")?.currentSessionId;
+    expect(sessionId).toBeDefined();
+    expect(store.hasInjectedTopicRoot(sessionId!, "om_topic_root")).toBe(true);
+
+    await controller.onMessage(threadMessage(
+      "topic_group",
+      "group",
+      "topic_quote_guard",
+      "om_topic_root",
+      "继续第二步",
+    ));
+
+    expect(outbound.readReferencedMessage).toHaveBeenCalledOnce();
+    expect(runtime.steerTurn).toHaveBeenCalledWith(
+      sessionId,
+      expect.any(String),
+      "继续第二步",
+    );
   });
 
   test("rejects unknown slash commands without sending text or images to the model", async () => {
@@ -3164,10 +3192,15 @@ describe("ProxySessionController", () => {
       lastTurnId: "turn_1",
     }));
     expect(store.getUserContext(topicContextKey)?.currentSessionId).toBeDefined();
+    expect(outbound.readReferencedMessage).not.toHaveBeenCalled();
+    expect(runtime.startTurn).toHaveBeenLastCalledWith(
+      expect.any(String),
+      "continue from the source turn",
+    );
   });
 
-  test("creates a fresh topic task with new without creating an intermediate fork", async () => {
-    const { controller, runtime, store, listeners } = fixture();
+  test("creates a fresh topic task with new and injects a root absent from that task", async () => {
+    const { controller, runtime, store, listeners, outbound } = fixture();
     await controller.onMessage({
       messageId: "om_new_topic_source",
       contextKey: "chat_id:c1",
@@ -3202,6 +3235,26 @@ describe("ProxySessionController", () => {
     expect(topicSessionId).toBeDefined();
     expect(topicSessionId).not.toBe(sourceSessionId);
     expect(store.getSession(topicSessionId!)?.title).toBe("fresh topic task");
+
+    vi.mocked(outbound.readReferencedMessage!).mockResolvedValueOnce({
+      text: "[消息类型：文本]\nsource context",
+      messageType: "text",
+      images: [],
+      files: [],
+    });
+    await controller.onMessage(threadMessage(
+      "c1",
+      "p2p",
+      "omt_new_topic",
+      "om_new_topic_source",
+      "work independently",
+    ));
+
+    expect(outbound.readReferencedMessage).toHaveBeenCalledWith("om_new_topic_source");
+    expect(runtime.startTurn).toHaveBeenLastCalledWith(
+      topicSessionId,
+      "work independently\n\n话题根消息：\n[消息类型：文本]\nsource context",
+    );
   });
 
   test("shows an empty status instead of requiring a fork anchor in a new standalone topic", async () => {

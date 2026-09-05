@@ -1138,6 +1138,24 @@ describe("StateStore runtime metadata", () => {
     expect(store.findLatestMessageIdForContext("chat_id:missing")).toBeUndefined();
   });
 
+  test("persists whether a topic root was injected for a task", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
+    tempDirectories.push(directory);
+    const store = new StateStore(path.join(directory, "state.sqlite"));
+    stores.push(store);
+
+    expect(store.hasInjectedTopicRoot("session_1", "om_root_1")).toBe(false);
+    store.audit("chat_id:c1:thread_id:t1", "topic_root_injected", {
+      localSessionId: "session_1",
+      rootMessageId: "om_root_1",
+      promptMessageId: "om_prompt_1",
+    });
+
+    expect(store.hasInjectedTopicRoot("session_1", "om_root_1")).toBe(true);
+    expect(store.hasInjectedTopicRoot("session_1", "om_root_2")).toBe(false);
+    expect(store.hasInjectedTopicRoot("session_2", "om_root_1")).toBe(false);
+  });
+
   test("retries a reaction replacement interrupted by process restart", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-bot-state-"));
     tempDirectories.push(directory);

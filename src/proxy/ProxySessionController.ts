@@ -117,6 +117,13 @@ interface ForwardAttachmentReservation {
   registry: Map<string, PendingForwardAttachment>;
 }
 
+interface PreparedTopicRootPrompt {
+  text: string;
+  localImagePaths?: string[];
+  displayPrompt: string;
+  injectedRootMessageId?: string;
+}
+
 interface ShellCommandJobMonitor {
   scheduler: CardUpdateScheduler<ShellCommandCardView>;
   timer: NodeJS.Timeout;
@@ -816,16 +823,37 @@ export class ProxySessionController {
     const next = previous.catch(() => undefined).then(() =>
       this.outbound.withReplyTarget(message.contextKey, replyTarget, async () => {
         try {
-          if (command.type === "prompt") await this.ensureThreadFork(message);
+          let executableCommand = command;
+          let executableImagePaths = localImagePaths;
+          let executableMessage = message;
+          let injectedRootMessageId: string | undefined;
+          if (command.type === "prompt") {
+            await this.ensureThreadFork(message);
+            const prepared = await this.prepareTopicRootPrompt(message, command.text, localImagePaths);
+            executableCommand = { ...command, text: prepared.text };
+            executableImagePaths = prepared.localImagePaths;
+            executableMessage = { ...message, displayText: prepared.displayPrompt };
+            injectedRootMessageId = prepared.injectedRootMessageId;
+          }
           await this.execute(
             message.contextKey,
-            command,
+            executableCommand,
             message.messageId,
             replyTarget,
-            localImagePaths,
+            executableImagePaths,
             message.userId,
-            message,
+            executableMessage,
           );
+          if (injectedRootMessageId) {
+            const current = this.currentSession(message.contextKey);
+            if (current) {
+              this.store.audit(message.contextKey, "topic_root_injected", {
+                localSessionId: current.localSessionId,
+                rootMessageId: injectedRootMessageId,
+                promptMessageId: message.messageId,
+              });
+            }
+          }
           if (!commandDefersReactionFinalization(command)) {
             await this.finalizeStandaloneMessageReaction(message.messageId, "completed");
           }
@@ -2738,6 +2766,61 @@ export class ProxySessionController {
         this.threadInitializations.delete(message.contextKey);
       }
     }
+  }
+
+  private async prepareTopicRootPrompt(
+    message: IncomingMessage,
+    text: string,
+    localImagePaths?: string[],
+  ): Promise<PreparedTopicRootPrompt> {
+    const displayPrompt = message.displayText ?? text;
+    const rootMessageId = topicRootMessageId(message);
+    if (!rootMessageId) return { text, localImagePaths, displayPrompt };
+
+    const current = this.currentSession(message.contextKey);
+    if (current && (
+      this.store.hasInjectedTopicRoot(current.localSessionId, rootMessageId)
+      || this.taskHistoryContainsMessage(current, rootMessageId)
+    )) {
+      return { text, localImagePaths, displayPrompt };
+    }
+
+    try {
+      const root = await this.resolveReferencedMessage(message.contextKey, rootMessageId);
+      const rootImagePaths = await Promise.all(root.images.map((image) =>
+        this.outbound.downloadImage(message.contextKey, image.messageId, image.imageKey)));
+      let promptText = topicRootMessagePrompt(text, root.text);
+      if (root.files.length > 0) {
+        const downloadedFiles = await Promise.all(root.files.map(async (file) => ({
+          fileName: file.fileName,
+          filePath: await this.outbound.downloadFile(
+            message.contextKey,
+            file.messageId,
+            file.fileKey,
+            file.fileName,
+          ),
+        })));
+        promptText = appendDownloadedFiles(promptText, downloadedFiles);
+      }
+      const combinedImagePaths = [...new Set([...(localImagePaths ?? []), ...rootImagePaths])];
+      return {
+        text: promptText,
+        ...(combinedImagePaths.length > 0 ? { localImagePaths: combinedImagePaths } : {}),
+        displayPrompt,
+        injectedRootMessageId: rootMessageId,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`无法读取话题根消息：${detail}`);
+    }
+  }
+
+  private taskHistoryContainsMessage(record: SessionRecord, messageId: string): boolean {
+    const anchor = this.store.findTurnAnchorByMessageId(messageId);
+    if (!anchor) return false;
+    if (record.lastTurnId === anchor.turnId) return true;
+    return this.store.listTaskTurnGraph(record.localSessionId)
+      .some((turn) => turn.turnId === anchor.turnId);
   }
 
   private async forkThreadSession(message: IncomingMessage): Promise<void> {
@@ -7856,6 +7939,17 @@ function mergedForwardPrompt(
 
 function referencedMessagePrompt(instruction: string, referencedMessage: string): string {
   return `${instruction}\n\n引用消息：\n${referencedMessage}`;
+}
+
+function topicRootMessagePrompt(instruction: string, rootMessage: string): string {
+  return `${instruction}\n\n话题根消息：\n${rootMessage}`;
+}
+
+function topicRootMessageId(message: IncomingMessage): string | undefined {
+  if (!message.threadContext) return undefined;
+  const rootMessageId = message.rootMessageId?.trim();
+  if (!rootMessageId || rootMessageId === message.messageId) return undefined;
+  return rootMessageId;
 }
 
 function quotedMessageId(message: IncomingMessage): string | undefined {

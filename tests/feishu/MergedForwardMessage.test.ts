@@ -129,9 +129,10 @@ describe("merged-forward message rendering", () => {
       body: { content: JSON.stringify({ zh_cn: { content: [[
         { tag: "text", text: "截图：" },
         { tag: "img", image_key: "img_post" },
+        { tag: "a", text: "Pull request", href: "https://github.com/example/project/pull/1" },
       ]] } }) },
     }])).toMatchObject({
-      text: "[消息类型：富文本]\n截图：[图片 1]",
+      text: "[消息类型：富文本]\n截图：[图片 1]Pull request (https://github.com/example/project/pull/1)",
       images: [{ messageId: "om_post", imageKey: "img_post" }],
     });
 

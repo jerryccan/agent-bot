@@ -1741,6 +1741,17 @@ export class StateStore {
       .run(contextKey, eventType, JSON.stringify(payload), new Date().toISOString());
   }
 
+  hasInjectedTopicRoot(localSessionId: string, rootMessageId: string): boolean {
+    return Boolean(this.db.prepare(`
+      SELECT 1
+      FROM audit_events
+      WHERE event_type = 'topic_root_injected'
+        AND json_extract(payload_json, '$.localSessionId') = ?
+        AND json_extract(payload_json, '$.rootMessageId') = ?
+      LIMIT 1
+    `).get(localSessionId, rootMessageId));
+  }
+
   claimInboundEvent(eventId: string, eventKind: "message" | "card_action"): boolean {
     const result = this.db
       .prepare(

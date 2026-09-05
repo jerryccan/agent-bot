@@ -273,8 +273,12 @@ function renderPost(
     for (const rawElement of row) {
       if (!isRecord(rawElement)) continue;
       const tag = textValue(rawElement.tag);
-      if (tag === "text" || tag === "a") {
+      if (tag === "text") {
         rowText += textValue(rawElement.text);
+      } else if (tag === "a") {
+        const text = textValue(rawElement.text);
+        const href = textValue(rawElement.href);
+        rowText += href && href !== text ? `${text || href} (${href})` : text || href;
       } else if (tag === "at") {
         rowText += renderMention(rawElement, mentions);
       } else if (tag === "img") {
