@@ -1337,15 +1337,14 @@ async function taskCommand(input: string[]): Promise<void> {
           `App Server tasks released for ${released.agentName}.\n`,
           `已释放 ${released.agentName} 的 App Server 任务。\n`,
         ));
-      } else if (released.releaseInSeconds !== undefined) {
-        process.stdout.write(cliText(
-          `App Server release scheduled for ${released.agentName} in ${released.releaseInSeconds} seconds.\n`,
-          `已安排在 ${released.releaseInSeconds} 秒后释放 ${released.agentName} 的 App Server。\n`,
-        ));
       } else {
         process.stdout.write(cliText(
-          `App Server release scheduled for ${released.agentName} (${released.blockingTaskCount} waiting).\n`,
-          `已安排释放 ${released.agentName} 的 App Server（等待 ${released.blockingTaskCount} 个任务）。\n`,
+          released.blockingTaskCount > 0
+            ? `App Server release card sent for ${released.agentName} (${released.blockingTaskCount} blocking). Confirm in Lark to release.\n`
+            : `App Server release card sent for ${released.agentName}. Confirm in Lark to release.\n`,
+          released.blockingTaskCount > 0
+            ? `已发送 ${released.agentName} 的 App Server 释放卡片（${released.blockingTaskCount} 个任务阻塞）。请在飞书中确认释放。\n`
+            : `已发送 ${released.agentName} 的 App Server 释放卡片。请在飞书中确认释放。\n`,
         ));
       }
       return;

@@ -74,9 +74,10 @@ agentbot task title "<title>"
 - `prompt` posts the Prompt to the task's Feishu conversation before submitting it.
 - `queue` creates a later turn instead of steering the active turn. `nosteer` is an alias.
 - `stop` requests an Agent interrupt; it does not kill the Agent process.
+- `release` sends a Lark confirmation card for releasing the Agent's shared App Server. It never releases automatically; the user must click **Release** or **Release Now** on the card.
 - `dismiss --yes` irreversibly dissolves the task's current Feishu group and archives its current task. Use it only after the user explicitly confirms.
 
-From Feishu, `/release` hands App Server tasks back to Codex Desktop without archiving them. When idle, it sends a release card and counts down for five seconds; otherwise it waits for the current Agent's running and queued work. **Release Now** interrupts active work and clears queued Prompts, while **Cancel** cancels the pending release. Because each App Server Agent is shared, releasing affects every task loaded by that Agent process.
+From Feishu, `/release` sends a confirmation card for handing App Server tasks back to Codex Desktop without archiving them. It lists the current Agent's running and queued work and never releases automatically. **Release** confirms an idle release, **Release Now** interrupts active work and clears queued Prompts, and **Cancel** cancels the pending release. Because each App Server Agent is shared, releasing affects every task loaded by that Agent process.
 
 Create or branch work in the same conversation:
 

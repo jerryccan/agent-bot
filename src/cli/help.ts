@@ -45,7 +45,7 @@ export function renderCliHelp(version: string, language: CliLanguage = cliLangua
   task shell [任务] <命令>          在任务目录执行本地命令
   task stop [任务]                  停止任务
   task archive [任务]               归档任务
-  task release [任务]               释放任务所属 Agent 的共享 App Server
+  task release [任务]               发送共享 App Server 释放确认卡片
   task dismiss [任务] --yes         归档任务并解散其当前群聊
   task title [任务] <标题>          重命名任务
   task restart [任务] [--force]     从任务会话请求安全或立即重启
@@ -138,7 +138,7 @@ Task commands:
   task shell [task] <command>       Run a local command in the task directory
   task stop [task]                  Stop a task
   task archive [task]               Archive a task
-  task release [task]               Release the task Agent's shared App Server
+  task release [task]               Send a confirmation card to release the shared App Server
   task dismiss [task] --yes         Archive a task and dissolve its current group
   task title [task] <title>         Rename a task
   task restart [task] [--force]     Request a safe or immediate restart from a task

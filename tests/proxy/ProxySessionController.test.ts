@@ -5320,7 +5320,7 @@ describe("ProxySessionController", () => {
     expect(restart).toHaveBeenCalledWith("chat_id:c1", true, undefined);
   });
 
-  test("counts down for five seconds before releasing an idle App Server", async () => {
+  test("requires a card click before releasing an idle App Server", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("/new"));
     vi.mocked(runtime.release!).mockClear();
@@ -5332,17 +5332,30 @@ describe("ProxySessionController", () => {
       await controller.onMessage(message("/release"));
 
       expect(runtime.release).not.toHaveBeenCalled();
-      const countdownCard = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
-      expect(countdownCard).toMatchObject({
-        header: { template: "orange", title: { content: "等待释放" } },
+      const confirmationCard = vi.mocked(outbound.sendInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(confirmationCard).toMatchObject({
+        header: { template: "orange", title: { content: "确认释放" } },
       });
-      expect(JSON.stringify(countdownCard)).toContain("**自动释放**：5 秒后");
-      expect(JSON.stringify(countdownCard)).toContain("Release Now");
-      expect(JSON.stringify(countdownCard)).toContain("Cancel");
+      expect(JSON.stringify(confirmationCard)).toContain("**状态**：可以释放");
+      expect(JSON.stringify(confirmationCard)).toContain('"content":"Release"');
+      expect(JSON.stringify(confirmationCard)).toContain("Cancel");
 
-      await vi.advanceTimersByTimeAsync(5_500);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runtime.release).not.toHaveBeenCalled();
 
-      expect(runtime.release).toHaveBeenCalledWith({ force: false });
+      await controller.onCardAction({
+        actionId: "confirm-idle-release",
+        contextKey: "chat_id:c1",
+        messageId: "card",
+        value: {
+          action: "app_server_release_now",
+          contextKey: "chat_id:c1",
+          scheduleId: 1,
+          agentName: "codex",
+        },
+      });
+
+      expect(runtime.release).toHaveBeenCalledWith({ force: true });
       const finalCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
       expect(finalCard).toMatchObject({
         header: { template: "green", title: { content: "任务已释放" } },
@@ -5386,7 +5399,7 @@ describe("ProxySessionController", () => {
     }
   });
 
-  test("releases immediately from an idle countdown without reporting interrupted work", async () => {
+  test("releases an idle App Server without reporting interrupted work after confirmation", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("/new"));
     vi.mocked(runtime.release!).mockClear();
@@ -5418,34 +5431,6 @@ describe("ProxySessionController", () => {
     }
   });
 
-  test("starts the idle release countdown after the release card has been sent", async () => {
-    const { controller, runtime, outbound } = fixture();
-    await controller.onMessage(message("/new"));
-    vi.mocked(runtime.release!).mockClear();
-    let resolveCard!: (messageId: string) => void;
-    vi.mocked(outbound.sendInteractiveCard).mockImplementationOnce(
-      () => new Promise<string>((resolve) => { resolveCard = resolve; }),
-    );
-    vi.useFakeTimers();
-
-    try {
-      const releaseCommand = controller.onMessage(message("/release"));
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(outbound.sendInteractiveCard).toHaveBeenCalled();
-      expect(runtime.release).not.toHaveBeenCalled();
-
-      resolveCard("card");
-      await releaseCommand;
-      await vi.advanceTimersByTimeAsync(4_999);
-      expect(runtime.release).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(501);
-      expect(runtime.release).toHaveBeenCalledWith({ force: false });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   test("lets cancellation win while the card is updating to the releasing state", async () => {
     const { controller, runtime, outbound } = fixture();
     await controller.onMessage(message("/new"));
@@ -5461,39 +5446,42 @@ describe("ProxySessionController", () => {
         await releasingUpdateGate;
       }
     });
-    vi.useFakeTimers();
-
-    try {
-      await controller.onMessage(message("/release"));
-      const countdown = vi.advanceTimersByTimeAsync(5_500);
-      await releasingUpdateStarted;
-
-      const cancellation = controller.onCardAction({
-        actionId: "cancel-release-during-update",
+    await controller.onMessage(message("/release"));
+    const release = controller.onCardAction({
+      actionId: "release-during-update",
+      contextKey: "chat_id:c1",
+      messageId: "card",
+      value: {
+        action: "app_server_release_now",
         contextKey: "chat_id:c1",
-        messageId: "card",
-        value: {
-          action: "app_server_release_cancel",
-          contextKey: "chat_id:c1",
-          scheduleId: 1,
-          agentName: "codex",
-        },
-      });
-      finishReleasingUpdate();
-      await countdown;
-      await cancellation;
+        scheduleId: 1,
+        agentName: "codex",
+      },
+    });
+    await releasingUpdateStarted;
 
-      expect(runtime.release).not.toHaveBeenCalled();
-      const cancelledCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
-      expect(cancelledCard).toMatchObject({
-        header: { template: "grey", title: { content: "已取消释放" } },
-      });
-    } finally {
-      vi.useRealTimers();
-    }
+    const cancellation = controller.onCardAction({
+      actionId: "cancel-release-during-update",
+      contextKey: "chat_id:c1",
+      messageId: "card",
+      value: {
+        action: "app_server_release_cancel",
+        contextKey: "chat_id:c1",
+        scheduleId: 1,
+        agentName: "codex",
+      },
+    });
+    finishReleasingUpdate();
+    await Promise.all([release, cancellation]);
+
+    expect(runtime.release).not.toHaveBeenCalled();
+    const cancelledCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+    expect(cancelledCard).toMatchObject({
+      header: { template: "grey", title: { content: "已取消释放" } },
+    });
   });
 
-  test("waits for App Server tasks to finish before releasing", async () => {
+  test("keeps waiting for confirmation after App Server tasks finish", async () => {
     const { controller, runtime, outbound, sessions, listeners, store } = fixture();
     await controller.onMessage(message("build it"));
     const sessionId = store.getUserContext("chat_id:c1")!.currentSessionId!;
@@ -5507,18 +5495,28 @@ describe("ProxySessionController", () => {
     expect(waitingCard).toMatchObject({
       header: { template: "orange", title: { content: "等待释放" } },
     });
+    expect(JSON.stringify(waitingCard)).toContain("1. `build it`");
     expect(JSON.stringify(waitingCard)).toContain("Release Now");
+
+    store.updateRuntimeSession(sessionId, { title: "renamed active task" });
+    await vi.waitFor(() => {
+      const cards = vi.mocked(outbound.updateInteractiveCard).mock.calls.map((call) => JSON.stringify(call[1]));
+      expect(cards.some((card) => card.includes("1. `renamed active task`"))).toBe(true);
+    }, { timeout: 2_000 });
 
     sessions.get(sessionId)!.activeTurnId = undefined;
     for (const listener of listeners) {
       listener({ type: "turn_completed", sessionId, turnId: "turn_1", finalResponse: "done" });
     }
 
-    await vi.waitFor(() => expect(runtime.release).toHaveBeenCalledWith({ force: false }), { timeout: 2_000 });
-    const finalCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
-    expect(finalCard).toMatchObject({
-      header: { template: "green", title: { content: "任务已释放" } },
-    });
+    await vi.waitFor(() => {
+      const readyCard = vi.mocked(outbound.updateInteractiveCard).mock.calls.at(-1)?.[1];
+      expect(readyCard).toMatchObject({
+        header: { template: "orange", title: { content: "确认释放" } },
+      });
+      expect(JSON.stringify(readyCard)).toContain('"content":"Release"');
+    }, { timeout: 2_000 });
+    expect(runtime.release).not.toHaveBeenCalled();
   });
 
   test("releases App Server tasks immediately from the waiting card and clears queued Prompts", async () => {

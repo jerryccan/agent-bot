@@ -143,10 +143,9 @@ interface AppServerReleaseSchedule {
   runtime: AgentRuntime;
   status: AppServerReleaseCardView["status"];
   blockingTaskCount: number;
+  blockingTaskTitles: string[];
   targets: Map<string, AppServerReleaseCardTarget>;
   forced: boolean;
-  releaseAt?: number;
-  releaseCountdownSeconds?: number;
   releaseStarted?: boolean;
   error?: string;
   timer?: NodeJS.Timeout;
@@ -184,7 +183,6 @@ const RECOVERY_HEARTBEAT_INTERVAL_MS = 60 * 1_000;
 const SHELL_COMMAND_JOB_POLL_INTERVAL_MS = 1_000;
 const SHELL_COMMAND_JOB_RELAUNCH_DELAY_MS = 5_000;
 const APP_SERVER_RELEASE_POLL_INTERVAL_MS = 500;
-const APP_SERVER_RELEASE_IDLE_DELAY_MS = 5_000;
 const FORWARD_ATTACHMENT_WINDOW_MS = 800;
 const DEFAULT_MERGED_FORWARD_INSTRUCTION = "请参考以下内容回复用户";
 const DEFAULT_REFERENCED_MESSAGE_INSTRUCTION = "请参考引用消息回复用户";
@@ -454,7 +452,6 @@ export interface ControlTaskReleaseResult {
   agentName: string;
   status: "waiting" | "released";
   blockingTaskCount: number;
-  releaseInSeconds?: number;
 }
 
 export interface ProxyLifecycle {
@@ -1287,7 +1284,6 @@ export class ProxySessionController {
       agentName: result.agentName,
       status: result.status,
       blockingTaskCount: result.blockingTaskCount,
-      ...(result.releaseInSeconds !== undefined ? { releaseInSeconds: result.releaseInSeconds } : {}),
     };
   }
 
@@ -6974,7 +6970,6 @@ export class ProxySessionController {
     agentName: string;
     status: "waiting" | "released" | "failed";
     blockingTaskCount: number;
-    releaseInSeconds?: number;
     error?: string;
   }> {
     const record = requestedRecord ?? this.requireCurrentSession(contextKey);
@@ -6986,20 +6981,17 @@ export class ProxySessionController {
     let schedule = this.appServerReleaseSchedules.get(record.agentName);
     const created = !schedule;
     if (!schedule) {
-      const blockingTaskCount = this.appServerReleaseBlockers(record.agentName, runtime).length;
+      const blockers = this.appServerReleaseBlockers(record.agentName, runtime);
+      const blockingTaskCount = blockers.length;
       schedule = {
         id: this.nextAppServerReleaseScheduleId++,
         agentName: record.agentName,
         runtime,
         status: "waiting",
         blockingTaskCount,
+        blockingTaskTitles: this.appServerReleaseTaskTitles(blockers),
         targets: new Map(),
         forced: false,
-        ...(blockingTaskCount === 0
-          ? {
-              releaseCountdownSeconds: Math.ceil(APP_SERVER_RELEASE_IDLE_DELAY_MS / 1_000),
-            }
-          : {}),
       };
       this.appServerReleaseSchedules.set(record.agentName, schedule);
     }
@@ -7011,14 +7003,6 @@ export class ProxySessionController {
       );
       if (messageId) {
         schedule.targets.set(`${contextKey}\u0000${messageId}`, { contextKey, messageId });
-      }
-      if (
-        schedule.status === "waiting"
-        && schedule.blockingTaskCount === 0
-        && schedule.releaseCountdownSeconds !== undefined
-        && schedule.releaseAt === undefined
-      ) {
-        schedule.releaseAt = Date.now() + APP_SERVER_RELEASE_IDLE_DELAY_MS;
       }
     } catch (error) {
       if (created && schedule.targets.size === 0) {
@@ -7032,9 +7016,6 @@ export class ProxySessionController {
       agentName: schedule.agentName,
       status: schedule.status === "failed" ? "failed" : schedule.status === "released" ? "released" : "waiting",
       blockingTaskCount: schedule.blockingTaskCount,
-      ...(schedule.releaseCountdownSeconds !== undefined
-        ? { releaseInSeconds: schedule.releaseCountdownSeconds }
-        : {}),
       ...(schedule.error ? { error: schedule.error } : {}),
     };
   }
@@ -7046,7 +7027,7 @@ export class ProxySessionController {
     if (!Number.isSafeInteger(scheduleId) || !schedule || schedule.id !== scheduleId || schedule.status !== "waiting") {
       throw new Error("释放卡片已失效，请重新发送 /release。");
     }
-    await this.performAppServerRelease(schedule, true);
+    await this.performAppServerRelease(schedule);
   }
 
   private async cancelAppServerRelease(action: CardAction): Promise<void> {
@@ -7081,6 +7062,10 @@ export class ProxySessionController {
     });
   }
 
+  private appServerReleaseTaskTitles(blockers: SessionRecord[]): string[] {
+    return blockers.map((session) => session.title?.trim() || "未命名任务");
+  }
+
   private armAppServerReleaseCheck(schedule: AppServerReleaseSchedule): void {
     if (schedule.status !== "waiting" || schedule.timer || schedule.inFlight) return;
     schedule.timer = setTimeout(() => {
@@ -7095,36 +7080,22 @@ export class ProxySessionController {
 
   private async refreshAppServerReleaseSchedule(schedule: AppServerReleaseSchedule): Promise<void> {
     if (this.appServerReleaseSchedules.get(schedule.agentName) !== schedule || schedule.status !== "waiting") return;
-    const blockingTaskCount = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length;
-    if (blockingTaskCount > 0) {
-      const changed = schedule.blockingTaskCount !== blockingTaskCount || schedule.releaseAt !== undefined;
-      schedule.releaseAt = undefined;
-      schedule.releaseCountdownSeconds = undefined;
-      if (changed) {
-        schedule.blockingTaskCount = blockingTaskCount;
-        await this.publishAppServerReleaseSchedule(schedule);
-      }
-      this.armAppServerReleaseCheck(schedule);
-      return;
+    const blockers = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime);
+    const blockingTaskCount = blockers.length;
+    const blockingTaskTitles = this.appServerReleaseTaskTitles(blockers);
+    const titlesChanged = schedule.blockingTaskTitles.length !== blockingTaskTitles.length
+      || schedule.blockingTaskTitles.some((title, index) => title !== blockingTaskTitles[index]);
+    if (schedule.blockingTaskCount !== blockingTaskCount || titlesChanged) {
+      schedule.blockingTaskCount = blockingTaskCount;
+      schedule.blockingTaskTitles = blockingTaskTitles;
+      await this.publishAppServerReleaseSchedule(schedule);
     }
-    schedule.blockingTaskCount = 0;
-    if (schedule.releaseAt !== undefined) {
-      const releaseCountdownSeconds = Math.max(0, Math.ceil((schedule.releaseAt - Date.now()) / 1_000));
-      if (releaseCountdownSeconds > 0) {
-        if (schedule.releaseCountdownSeconds !== releaseCountdownSeconds) {
-          schedule.releaseCountdownSeconds = releaseCountdownSeconds;
-          await this.publishAppServerReleaseSchedule(schedule);
-        }
-        this.armAppServerReleaseCheck(schedule);
-        return;
-      }
-    }
-    await this.performAppServerRelease(schedule, false);
+    this.armAppServerReleaseCheck(schedule);
   }
 
-  private async performAppServerRelease(schedule: AppServerReleaseSchedule, force: boolean): Promise<void> {
+  private async performAppServerRelease(schedule: AppServerReleaseSchedule): Promise<void> {
     if (schedule.inFlight) return schedule.inFlight;
-    const operation = this.performAppServerReleaseNow(schedule, force);
+    const operation = this.performAppServerReleaseNow(schedule);
     schedule.inFlight = operation;
     try {
       await operation;
@@ -7134,31 +7105,17 @@ export class ProxySessionController {
     }
   }
 
-  private async performAppServerReleaseNow(schedule: AppServerReleaseSchedule, force: boolean): Promise<void> {
+  private async performAppServerReleaseNow(schedule: AppServerReleaseSchedule): Promise<void> {
     if (schedule.timer) {
       clearTimeout(schedule.timer);
       schedule.timer = undefined;
     }
-    const interruptedWork = force && this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length > 0;
-    if (force) await this.cancelQueuedPromptsForAppServerRelease(schedule.agentName);
-    else {
-      const blockingTaskCount = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length;
-      if (blockingTaskCount > 0) {
-        schedule.status = "waiting";
-        schedule.blockingTaskCount = blockingTaskCount;
-        schedule.releaseAt = undefined;
-        schedule.releaseCountdownSeconds = undefined;
-        schedule.releaseStarted = false;
-        await this.publishAppServerReleaseSchedule(schedule);
-        this.armAppServerReleaseCheck(schedule);
-        return;
-      }
-    }
+    const interruptedWork = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length > 0;
+    await this.cancelQueuedPromptsForAppServerRelease(schedule.agentName);
 
     schedule.status = "releasing";
     schedule.blockingTaskCount = 0;
-    schedule.releaseAt = undefined;
-    schedule.releaseCountdownSeconds = undefined;
+    schedule.blockingTaskTitles = [];
     schedule.releaseStarted = false;
     schedule.forced = interruptedWork;
     await this.publishAppServerReleaseSchedule(schedule);
@@ -7168,18 +7125,18 @@ export class ProxySessionController {
     ) return;
     schedule.releaseStarted = true;
     try {
-      const result = await schedule.runtime.release?.({ force });
+      const result = await schedule.runtime.release?.({ force: true });
       if (!result) throw new Error("当前 Agent 不支持释放 App Server。");
       if (result.status === "busy") {
+        const blockers = this.appServerReleaseBlockers(schedule.agentName, schedule.runtime);
         schedule.status = "waiting";
         schedule.blockingTaskCount = Math.max(
           result.activeSessionIds?.length ?? 0,
-          this.appServerReleaseBlockers(schedule.agentName, schedule.runtime).length,
+          blockers.length,
           1,
         );
+        schedule.blockingTaskTitles = this.appServerReleaseTaskTitles(blockers);
         schedule.forced = false;
-        schedule.releaseAt = undefined;
-        schedule.releaseCountdownSeconds = undefined;
         schedule.releaseStarted = false;
         await this.publishAppServerReleaseSchedule(schedule);
         this.armAppServerReleaseCheck(schedule);
@@ -7239,9 +7196,7 @@ export class ProxySessionController {
       scheduleId: schedule.id,
       agentName: schedule.agentName,
       ...(schedule.blockingTaskCount > 0 ? { blockingTaskCount: schedule.blockingTaskCount } : {}),
-      ...(schedule.releaseCountdownSeconds !== undefined
-        ? { releaseInSeconds: schedule.releaseCountdownSeconds }
-        : {}),
+      ...(schedule.blockingTaskTitles.length > 0 ? { blockingTaskTitles: schedule.blockingTaskTitles } : {}),
       ...(schedule.forced ? { forced: true } : {}),
       ...(schedule.error ? { error: schedule.error } : {}),
     };

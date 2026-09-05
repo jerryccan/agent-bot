@@ -61,6 +61,7 @@ describe("CardRenderer", () => {
       scheduleId: 7,
       agentName: "codex",
       blockingTaskCount: 2,
+      blockingTaskTitles: ["Fix release card", "Run\nverification"],
     });
     const button = collectObjects(waiting).find(
       (item) => item.tag === "button" && (item.text as { content?: unknown } | undefined)?.content === "Release Now",
@@ -70,6 +71,8 @@ describe("CardRenderer", () => {
       header: { template: "orange", title: { content: "等待释放" } },
     });
     expect(JSON.stringify(waiting)).toContain("**等待任务**：2");
+    expect(JSON.stringify(waiting)).toContain("1. `Fix release card`");
+    expect(JSON.stringify(waiting)).toContain("2. `Run verification`");
     expect(button).toMatchObject({
       type: "danger",
       behaviors: [{
@@ -88,12 +91,15 @@ describe("CardRenderer", () => {
       contextKey: "chat_id:c1",
       scheduleId: 8,
       agentName: "codex",
-      releaseInSeconds: 5,
     });
     const cancelButton = collectObjects(countdown).find(
       (item) => item.tag === "button" && (item.text as { content?: unknown } | undefined)?.content === "Cancel",
     );
-    expect(JSON.stringify(countdown)).toContain("**自动释放**：5 秒后");
+    expect(countdown).toMatchObject({
+      header: { template: "orange", title: { content: "确认释放" } },
+    });
+    expect(JSON.stringify(countdown)).toContain("**状态**：可以释放");
+    expect(JSON.stringify(countdown)).toContain('"content":"Release"');
     expect(cancelButton).toMatchObject({
       type: "default",
       behaviors: [{

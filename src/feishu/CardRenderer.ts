@@ -281,7 +281,7 @@ export interface AppServerReleaseCardView {
   scheduleId: number;
   agentName: string;
   blockingTaskCount?: number;
-  releaseInSeconds?: number;
+  blockingTaskTitles?: string[];
   forced?: boolean;
   error?: string;
 }
@@ -405,16 +405,20 @@ export class CardRenderer {
     }
 
     const blockingTaskCount = Math.max(0, view.blockingTaskCount ?? 0);
-    const releaseInSeconds = Math.max(1, view.releaseInSeconds ?? 1);
-    return sectionCard("等待释放", [
+    const blockingTaskLines = (view.blockingTaskTitles ?? []).map((title, index) => {
+      const normalizedTitle = title.replace(/\s+/g, " ").trim() || "未命名任务";
+      return `${index + 1}. ${inlineCode(truncateText(normalizedTitle, 80))}`;
+    });
+    return sectionCard(blockingTaskCount > 0 ? "等待释放" : "确认释放", [
       markdown([
         `**Agent**：${agent}`,
         blockingTaskCount > 0
           ? `**等待任务**：${blockingTaskCount}`
-          : `**自动释放**：${releaseInSeconds} 秒后`,
+          : "**状态**：可以释放",
+        ...blockingTaskLines,
         blockingTaskCount > 0
-          ? "> 任务结束后自动释放；立即释放会中断执行。"
-          : "> 可立即释放或取消。",
+          ? "> 点击 **Release Now** 会中断执行；也可等待任务结束后再释放。"
+          : "> 点击 **Release** 释放，或取消。",
       ].join("\n")),
       {
         tag: "column_set",
@@ -428,7 +432,7 @@ export class CardRenderer {
             vertical_align: "center",
             elements: [{
               tag: "button",
-              text: { tag: "plain_text", content: "Release Now" },
+              text: { tag: "plain_text", content: blockingTaskCount > 0 ? "Release Now" : "Release" },
               type: "danger",
               size: "small",
               behaviors: [{

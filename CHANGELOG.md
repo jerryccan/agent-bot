@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Require explicit confirmation on App Server release cards instead of releasing automatically, and list the currently running or queued task names while waiting.
+
 ## [0.1.19] - 2026-09-05
 
 - Read only lightweight recent Turn summaries when forking a Codex task that has never been bound to Agent Bot, avoiding complete-history pagination errors and timeouts.

@@ -113,7 +113,6 @@ export interface TaskReleaseControlData {
   agentName: string;
   status: "waiting" | "released";
   blockingTaskCount: number;
-  releaseInSeconds?: number;
 }
 
 export interface TaskForkControlData {
