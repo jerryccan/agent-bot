@@ -42,6 +42,8 @@ const SESSION_REQUEST_TIMEOUT_MS = 60_000;
 const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const SYNC_REQUEST_TIMEOUT_MS = 5_000;
 const THREAD_TURN_PAGE_SIZE = 100;
+const FORK_SOURCE_TURN_PAGE_SIZE = 20;
+const FORK_SOURCE_REQUEST_TIMEOUT_MS = 15_000;
 const USER_RESUMABLE_THREAD_SOURCE_KINDS = ["cli", "vscode", "exec", "appServer"] as const;
 // A timed-out fork keeps running in App Server and can create an orphan thread.
 // Wait for its response; connection closure still rejects the request.
@@ -305,7 +307,37 @@ export class CodexRuntime implements AgentRuntime {
   async readRemoteSession(remoteSessionId: string): Promise<RemoteSessionSummary> {
     const client = await this.client();
     const response = await this.readThreadWithTurns(client, remoteSessionId);
-    const summary = remoteSessionSummary(response.thread);
+    return this.decorateRemoteSession(remoteSessionId, remoteSessionSummary(response.thread));
+  }
+
+  async readRemoteForkSource(remoteSessionId: string): Promise<RemoteSessionSummary> {
+    const client = await this.client();
+    const metadata = await client.request<ThreadReadResponse>(
+      "thread/read",
+      { threadId: remoteSessionId, includeTurns: false },
+      FORK_SOURCE_REQUEST_TIMEOUT_MS,
+    );
+    let turns: CodexTurnSnapshot[];
+    try {
+      turns = await this.listRecentThreadTurnsThroughCompleted(client, remoteSessionId);
+    } catch (error) {
+      if (!isUnsupportedThreadTurnsListError(error)) throw error;
+      this.logger.warn(
+        { error, remoteSessionId },
+        "App Server does not support lightweight Fork source reads; falling back to complete thread history.",
+      );
+      return this.readRemoteSession(remoteSessionId);
+    }
+    return this.decorateRemoteSession(remoteSessionId, remoteSessionSummary({
+      ...metadata.thread,
+      turns,
+    }));
+  }
+
+  private async decorateRemoteSession(
+    remoteSessionId: string,
+    summary: RemoteSessionSummary,
+  ): Promise<RemoteSessionSummary> {
     const activeThreads = await this.localActivityDetector?.activeThreads([remoteSessionId]);
     const activeSummary = activeThreads ? markLocallyDetectedActive(summary, activeThreads) : summary;
     const settings = await this.localActivityDetector?.threadSettings([remoteSessionId]);
@@ -313,6 +345,46 @@ export class CodexRuntime implements AgentRuntime {
       ...activeSummary,
       ...settings?.get(remoteSessionId),
     };
+  }
+
+  private async listRecentThreadTurnsThroughCompleted(
+    client: AppServerClient,
+    remoteSessionId: string,
+  ): Promise<CodexTurnSnapshot[]> {
+    const turns: CodexTurnSnapshot[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const response = await client.request<ThreadTurnsListResponse>(
+        "thread/turns/list",
+        {
+          threadId: remoteSessionId,
+          ...(cursor ? { cursor } : {}),
+          limit: FORK_SOURCE_TURN_PAGE_SIZE,
+          sortDirection: "desc",
+          itemsView: "summary",
+        },
+        FORK_SOURCE_REQUEST_TIMEOUT_MS,
+      );
+      turns.push(...response.data);
+      const completedIndex = turns.findIndex((turn) => turn.status === "completed");
+      if (completedIndex >= 0) {
+        turns.splice(completedIndex + 1);
+        break;
+      }
+      const nextCursor = response.nextCursor ?? undefined;
+      if (!nextCursor) break;
+      if (seenCursors.has(nextCursor)) {
+        this.logger.warn(
+          { remoteSessionId, cursor: nextCursor },
+          "App Server repeated a Fork source Turn cursor; stopping pagination.",
+        );
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    } while (cursor);
+    return turns.reverse();
   }
 
   private async readThreadWithTurns(
@@ -1227,6 +1299,12 @@ function isUnsupportedRecencySortError(error: unknown): boolean {
 function isPaginatedThreadReadError(error: unknown): boolean {
   const details = appServerErrorDetails(error);
   return /paginated threads?[^\n]*do(?:es)? not support[^\n]*thread\/read[^\n]*includeTurns\s*=\s*true/i.test(details);
+}
+
+function isUnsupportedThreadTurnsListError(error: unknown): boolean {
+  if (!(error instanceof AppServerRequestError) || error.method !== "thread/turns/list") return false;
+  return error.code === -32601
+    || /method not found|unknown method|unsupported|not supported/i.test(appServerErrorDetails(error));
 }
 
 function isUnmaterializedThreadReadError(error: unknown): boolean {

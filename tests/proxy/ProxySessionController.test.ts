@@ -362,6 +362,11 @@ function fixture(
       if (!session) throw new Error(`Unknown remote session: ${id}`);
       return session;
     }),
+    readRemoteForkSource: vi.fn(async (id: string) => {
+      const session = remoteSessions.find((candidate) => candidate.id === id);
+      if (!session) throw new Error(`Unknown remote session: ${id}`);
+      return session;
+    }),
     inspectRemoteSessionActivity: vi.fn(async (id: string) => {
       const session = remoteSessions.find((candidate) => candidate.id === id);
       if (!session) throw new Error(`Unknown remote session: ${id}`);
@@ -4117,6 +4122,8 @@ describe("ProxySessionController", () => {
     await controller.onMessage(message("/fork external_fork_source"));
 
     const forkedSessionId = store.getUserContext("chat_id:c1")?.currentSessionId;
+    expect(runtime.readRemoteForkSource).toHaveBeenCalledWith("external_fork_source");
+    expect(runtime.readRemoteSession).not.toHaveBeenCalled();
     expect(runtime.forkSession).toHaveBeenCalledWith(expect.objectContaining({
       localSessionId: forkedSessionId,
       remoteSessionId: "external_fork_source",

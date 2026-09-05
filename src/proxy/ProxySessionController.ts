@@ -3041,7 +3041,7 @@ export class ProxySessionController {
       runtime = this.runtimes.forAgent(agentName);
     } else {
       if (!taskId) throw new Error("缺少要 fork 的 App Server 任务 ID。");
-      const resolved = await this.resolveRemoteCodexSession(taskId);
+      const resolved = await this.resolveRemoteCodexSession(taskId, { forFork: true });
       agentName = resolved.agentName;
       runtime = resolved.runtime;
       remote = resolved.remote;
@@ -6218,7 +6218,10 @@ export class ProxySessionController {
       : this.store.findSessionByRemoteSessionId(reference, contextKey);
   }
 
-  private async resolveRemoteCodexSession(reference: string): Promise<AgentRemoteSession> {
+  private async resolveRemoteCodexSession(
+    reference: string,
+    options: { forFork?: boolean } = {},
+  ): Promise<AgentRemoteSession> {
     const scoped = parseRemoteSessionReference(reference);
     const candidates = scoped
       ? [[scoped.agentName, this.runtimes.forAgent(scoped.agentName)] as const]
@@ -6229,10 +6232,13 @@ export class ProxySessionController {
       if (runtime.kind !== "codex" || !runtime.readRemoteSession) {
         throw new Error(`Agent ${agentName} 不支持读取远端任务。`);
       }
+      const remoteSessionId = scoped?.remoteSessionId ?? reference;
       return {
         agentName,
         runtime,
-        remote: await runtime.readRemoteSession(scoped?.remoteSessionId ?? reference),
+        remote: options.forFork && runtime.readRemoteForkSource
+          ? await runtime.readRemoteForkSource(remoteSessionId)
+          : await runtime.readRemoteSession(remoteSessionId),
       } satisfies AgentRemoteSession;
     }));
     const matches = reads

@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Read only lightweight recent Turn summaries when forking a Codex task that has never been bound to Agent Bot, avoiding complete-history pagination errors and timeouts.
+
 ## [0.1.19-alpha.1] - 2026-09-05
 
 - Add `/release` to hand shared App Server tasks back to Codex Desktop, with a five-second idle countdown, safe waiting for active and queued work, and **Release Now** and **Cancel** card actions.

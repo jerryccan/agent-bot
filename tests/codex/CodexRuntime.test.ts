@@ -1358,6 +1358,86 @@ describe("CodexRuntime", () => {
     }));
   });
 
+  test("reads only recent summary Turns when resolving an external Fork source", async () => {
+    const client = new FakeAppServerClient();
+    client.readResult = {
+      thread: {
+        id: "external_fork_source",
+        name: "Large external task",
+        cwd: "D:\\work\\large-external",
+        source: "vscode",
+        status: { type: "active" },
+        turns: [],
+      },
+    };
+    client.turnListResults.push(
+      {
+        data: [
+          {
+            id: "turn_running",
+            status: "inProgress",
+            items: [{ type: "userMessage", content: [{ type: "text", text: "Current work" }] }],
+          },
+          { id: "turn_failed", status: "failed", items: [] },
+        ],
+        nextCursor: "next_page",
+      },
+      {
+        data: [
+          { id: "turn_interrupted", status: "interrupted", items: [] },
+          {
+            id: "turn_completed",
+            status: "completed",
+            items: [{ type: "userMessage", content: [{ type: "text", text: "Fork anchor" }] }],
+          },
+          {
+            id: "turn_older",
+            status: "completed",
+            items: [{ type: "userMessage", content: [{ type: "text", text: "Older history" }] }],
+          },
+        ],
+        nextCursor: "older_history",
+      },
+    );
+    const runtime = new CodexRuntime(provider(client), logger());
+
+    await expect(runtime.readRemoteForkSource("external_fork_source")).resolves.toEqual(expect.objectContaining({
+      id: "external_fork_source",
+      lastTurnId: "turn_running",
+      lastCompletedTurnId: "turn_completed",
+      lastTurnStatus: "inProgress",
+      completedTurns: [expect.objectContaining({ id: "turn_completed", prompt: "Fork anchor" })],
+    }));
+    expect(client.requests).toContainEqual({
+      method: "thread/read",
+      params: { threadId: "external_fork_source", includeTurns: false },
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/turns/list",
+      params: {
+        threadId: "external_fork_source",
+        limit: 20,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+    });
+    expect(client.requests).toContainEqual({
+      method: "thread/turns/list",
+      params: {
+        threadId: "external_fork_source",
+        cursor: "next_page",
+        limit: 20,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+    });
+    expect(client.requests.some((request) => (
+      request.method === "thread/read"
+      && (request.params as { includeTurns?: boolean }).includeTurns === true
+    ))).toBe(false);
+    expect(client.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(2);
+  });
+
   test("reads paginated thread history through thread/turns/list", async () => {
     const client = new FakeAppServerClient();
     client.readErrors.push(new AppServerRequestError(

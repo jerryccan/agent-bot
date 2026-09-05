@@ -230,6 +230,7 @@ export interface AgentRuntime {
   readSessionMetadata(remoteSessionId: string): Promise<RuntimeSessionMetadata>;
   listRemoteSessions?(input?: { searchTerm?: string; cursor?: string; limit?: number }): Promise<RemoteSessionPage>;
   readRemoteSession?(remoteSessionId: string): Promise<RemoteSessionSummary>;
+  readRemoteForkSource?(remoteSessionId: string): Promise<RemoteSessionSummary>;
   inspectRemoteSessionActivity?(remoteSessionId: string): Promise<RemoteSessionActivity>;
   synchronizeSession(sessionId: string): Promise<RuntimeSession>;
   startTurn(sessionId: string, prompt: RuntimePrompt): Promise<string>;

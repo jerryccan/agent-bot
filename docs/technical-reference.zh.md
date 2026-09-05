@@ -261,7 +261,7 @@ AGENT_BOT_LARK_USER_OPEN_ID=<已保存的授权用户 open_id，可用时提供>
 
 `/forkgroup` 会根据话题状态选择来源。话题尚未绑定任务，或者已绑定任务但尚未完成过自己的 turn 时，直接从话题原始锚点 turn fork，不创建中间话题任务。话题任务完成过 turn 后，使用本地持久化的最近完成 turn；更晚的执行中 turn 不会阻塞命令，也不会成为 fork 点。
 
-Agent Bot 会在每个 `thread/fork` 请求中默认发送实验性的 `excludeTurns: true`。它只阻止响应填充 `thread.turns`，不会改变复制到分支中的历史。App Server 连接已启用 `experimentalApi`，不需要用户提供命令参数。如果旧版 App Server 明确提示 `excludeTurns` 字段未知、不支持或需要实验能力，Agent Bot 会移除该字段并重试一次。超时、断连和无关的 Fork 错误绝不重试，因为第一次请求可能已经创建分支。
+Fork 从未绑定过 Agent Bot 的任务前，Agent Bot 会先读取不含 Turns 的元数据，再通过轻量的 `summary` Turn 视图从新到旧分页，只读到最近一个已完成 Turn，不再把完整工具历史作为 Fork 前置条件。随后每个 `thread/fork` 请求仍默认发送实验性的 `excludeTurns: true`；它只阻止响应填充 `thread.turns`，不会改变复制到分支中的历史。App Server 连接已启用 `experimentalApi`，不需要用户提供命令参数。如果旧版 App Server 明确不支持轻量 Turn 列表或 `excludeTurns` 字段，Agent Bot 会分别回退到兼容的完整历史读取或 Fork 请求。超时、断连和无关的 Fork 错误绝不重试，因为超时的 Fork 请求可能已经创建分支。
 
 新群欢迎消息会显示分支任务持久化后的 Provider、模型、思考强度和权限类型；权限类型显示为自动执行或执行前确认。
 
