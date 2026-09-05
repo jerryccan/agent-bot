@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { DailyLogStream, dailyLogPath } from "../../src/logging/DailyLogStream.js";
+import { errorLogValue } from "../../src/logging/errorLogValue.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -38,6 +39,36 @@ describe("DailyLogStream", () => {
     expect(fs.readFileSync(path.join(directory, "agent-bot.2026-08-15.log"), "utf8"))
       .toBe("third\n");
     expect(fs.existsSync(basePath)).toBe(false);
+  });
+});
+
+describe("errorLogValue", () => {
+  test("preserves standard, custom, cause, and aggregate error details", () => {
+    const cause = new Error("socket closed");
+    const apiError = Object.assign(new Error("card rejected", { cause }), {
+      code: 200621,
+      httpStatus: 400,
+    });
+    const aggregate = new AggregateError([apiError, new Error("text fallback failed")], "delivery failed");
+
+    expect(errorLogValue(apiError)).toMatchObject({
+      name: "Error",
+      message: "card rejected",
+      code: 200621,
+      httpStatus: 400,
+      cause: {
+        name: "Error",
+        message: "socket closed",
+      },
+    });
+    expect(errorLogValue(aggregate)).toMatchObject({
+      name: "AggregateError",
+      message: "delivery failed",
+      errors: [
+        { message: "card rejected", code: 200621 },
+        { message: "text fallback failed" },
+      ],
+    });
   });
 });
 

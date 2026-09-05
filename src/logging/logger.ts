@@ -3,6 +3,7 @@ import path from "node:path";
 import pino, { type Logger } from "pino";
 import type { AppConfig } from "../config/schema.js";
 import { DailyLogStream } from "./DailyLogStream.js";
+import { errorLogValue } from "./errorLogValue.js";
 
 export function createLogger(config: AppConfig): Logger {
   const streams: pino.StreamEntry[] = [
@@ -23,6 +24,9 @@ export function createLogger(config: AppConfig): Logger {
       level: config.logging.level,
       base: undefined,
       timestamp: pino.stdTimeFunctions.isoTime,
+      serializers: {
+        error: errorLogValue,
+      },
     },
     pino.multistream(streams),
   );
